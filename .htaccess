@@ -1,0 +1,23 @@
+# DO NOT REMOVE. CLOUDLINUX PASSENGER CONFIGURATION BEGIN
+PassengerAppRoot "/home/gponzghq/reconciler.flowcode.co.ke"
+PassengerBaseURI "/"
+PassengerNodejs "/home/gponzghq/nodevenv/reconciler.flowcode.co.ke/20/bin/node"
+PassengerAppType node
+PassengerStartupFile server.js
+# DO NOT REMOVE. CLOUDLINUX PASSENGER CONFIGURATION END
+
+# Security hardening for cPanel/Apache fallback handling.
+# Passenger should serve the app, but these rules prevent static leakage if
+# Apache resolves files directly from the app directory.
+Options -Indexes
+ServerSignature Off
+
+<FilesMatch "^(\.env|\.env\..*|package-lock\.json|tsconfig\.json|README\.md|stderr\.log|.*\.sql|.*\.db|.*\.db-(?:wal|shm)|.*\.zip)$">
+  Require all denied
+</FilesMatch>
+
+<FilesMatch "\.(?:ts|map|log|sql|sqlite|db|db-wal|db-shm|bak|old|orig|save)$">
+  Require all denied
+</FilesMatch>
+
+RedirectMatch 404 ^/(?:storage|tmp|tmp_xlsx_read|uploads|scripts|src|node_modules)(?:/|$)

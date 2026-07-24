@@ -1,0 +1,689 @@
+<%- include('partials/head') %>
+<%- include('partials/header') %>
+
+<main class="container-fluid px-3 px-lg-4 py-4 mpesa-workspace">
+  <section class="mpesa-statement-titlebar mb-3">
+    <div>
+      <p class="eyebrow">Finance</p>
+      <h1 class="display-6 mb-0">M-PESA Full Statement</h1>
+    </div>
+    <div class="hero-actions">
+      <span class="meta-card">
+        <span class="meta-label">Rows</span>
+        <strong><%= selectedBatch ? selectedBatch.transactionCount : 0 %></strong>
+      </span>
+      <span class="meta-card">
+        <span class="meta-label">Matched</span>
+        <strong><%= selectedBatch ? selectedBatch.matchedCount : 0 %></strong>
+      </span>
+      <% if (selectedBatch && authUser && authUser.role === 'admin') { %>
+        <form method="post" action="/mpesa-reconciliation/batches/<%= selectedBatch.id %>/auto-match" class="d-inline">
+          <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+          <button type="submit" class="btn btn-outline-primary btn-sm align-self-center" title="Re-extracts the statement and re-runs Odoo PO/invoice candidate matching against every transaction">🔗 Match to POs & Invoices</button>
+        </form>
+      <% } %>
+      <% if (authUser && authUser.role === 'admin') { %>
+        <a href="/mpesa-reconciliation/transactions" class="btn btn-light btn-sm align-self-center">Transaction Search</a>
+      <% } %>
+    </div>
+  </section>
+
+  <%- include('partials/alerts', { status, validationErrors: [] }) %>
+
+  <%
+    const money = (value) =>
+      value === null || value === undefined
+        ? '-'
+        : Number(value).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const cleanDateTimeText = (value) => String(value || '').replace(/\s+GMT[+-]\d{4}\s+\([^)]+\)$/i, '');
+    const displayTransactionDate = (value) => {
+      const raw = cleanDateTimeText(value);
+      if (!raw) return '-';
+      const isoDate = raw.match(/^(\d{4}-\d{1,2}-\d{1,2})/)?.[1] || null;
+      const date = isoDate ? new Date(`${isoDate}T00:00:00`) : new Date(raw);
+      if (Number.isNaN(date.getTime())) return value;
+      return date.toLocaleDateString('en-KE', { day: '2-digit', month: 'short', year: 'numeric' });
+    };
+    const statusClassForReview = (value) =>
+      value === 'reviewed' || value === 'verified' ? 'success' : value === 'ignored' ? 'secondary' : value === 'needs_followup' ? 'warning' : 'info';
+    const poValue = (candidate) => `${candidate.id}|${candidate.name}`;
+    const knownPayerAliases = [
+      { customerName: 'OKEVAM FURNITURE', payerNames: ['Kevin Okumayia Amalanda'] },
+    ];
+    const normalizeSearch = (value) =>
+      String(value || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .trim();
+    const hasAllSearchTokens = (value, phrase) => {
+      const valueTokens = new Set(normalizeSearch(value).split(' ').filter(Boolean));
+      return normalizeSearch(phrase)
+        .split(' ')
+        .filter(Boolean)
+        .every((token) => valueTokens.has(token));
+    };
+    const knownPayerAliasForTransaction = (transaction) => {
+      const transactionText = `${transaction.counterparty || ''} ${transaction.userSupplier || ''} ${transaction.details || ''}`;
+      return knownPayerAliases.find((alias) =>
+        alias.payerNames.some((payerName) => hasAllSearchTokens(transactionText, payerName)),
+      );
+    };
+    const candidateAllowedForTransaction = (transaction, candidate) => {
+      const alias = knownPayerAliasForTransaction(transaction);
+      return !alias || hasAllSearchTokens(candidate.vendorName || '', alias.customerName);
+    };
+    const visibleCandidatesForTransaction = (transaction) =>
+      (transaction.candidates || []).filter((candidate) => candidateAllowedForTransaction(transaction, candidate));
+    const candidateReasonsForDisplay = (candidate) => {
+      const reasons = (candidate.reasons || [])
+        .filter((reason) => !/^Invoice date is within/i.test(reason))
+        .filter((reason, index, list) => list.indexOf(reason) === index);
+      if (candidate.dateOrder && !reasons.some((reason) => reason.startsWith('Invoice date used:'))) {
+        return [...reasons, `Invoice date used: ${candidate.dateOrder}.`];
+      }
+      return reasons;
+    };
+    const shouldShowStoredSelection = (transaction, visibleCandidates) =>
+      Boolean(
+        transaction.matchedPoId &&
+          !knownPayerAliasForTransaction(transaction) &&
+          !visibleCandidates.some((candidate) => candidate.id === transaction.matchedPoId),
+      );
+    const matchKindForTransaction = (transaction) => {
+      if (transaction.direction === 'in' || Number(transaction.paidIn || 0) > 0) return 'Invoice';
+      if (transaction.direction === 'out' || Number(transaction.withdrawn || 0) > 0) return 'PO';
+      return 'Match';
+    };
+    const noMatchTextForTransaction = (transaction) =>
+      matchKindForTransaction(transaction) === 'PO' ? 'No PO selected' : 'No invoice selected';
+    const unmatchedPartyTextForTransaction = (transaction) =>
+      matchKindForTransaction(transaction) === 'Invoice' ? 'Customer unreadable' : 'Supplier unreadable';
+    const matchLabelForCandidate = (candidate) => {
+      const documentNumber = String(candidate.name || `Match ${candidate.id}`).replace(/^Invoice\s+/i, '');
+      return candidate.amountTotal !== null && candidate.amountTotal !== undefined
+        ? `${documentNumber} - ${money(candidate.amountTotal)}`
+        : documentNumber;
+    };
+    const categoryOptions = [
+      ['staff_lunch_expense', 'Staff lunch'],
+      ['staff_transport_expense', 'Staff transport'],
+      ['staff_overtime_expense', 'Staff overtime'],
+      ['advance_salary', 'Advance Salary'],
+      ['staff_loan', 'Staff loan'],
+      ['transport_expense', 'Transport'],
+      ['office_water_expense', 'Office water'],
+      ['supplier_payment', 'Supplier payment'],
+      ['customer_receipt', 'Customer receipt'],
+      ['mpesa_charge', 'M-Pesa charge'],
+      ['cash_withdrawal', 'Cash withdrawal'],
+      ['outgoing_payment', 'Outgoing payment'],
+      ['bank_transfer', 'Bank transfer'],
+      ['internal_transfer', 'Internal transfer'],
+      ['unknown', 'Unknown'],
+    ];
+    const rawPreview = selectedBatch ? selectedBatch.rawTextPreview || '' : '';
+    const readStatementMetaFrom = (source, label) => {
+      const match = String(source || '').match(new RegExp(`${label}\\s*(?:-|:)\\s*([^\\n]+)`, 'i'));
+      return match ? match[1].trim() : '';
+    };
+    const readStatementMeta = (label) => readStatementMetaFrom(rawPreview, label);
+    const statementGeneratedDateForBatch = (batch) =>
+      readStatementMetaFrom(batch.rawTextPreview, 'Request Date') ||
+      readStatementMetaFrom(batch.rawTextPreview, 'Statement Generated Date') ||
+      readStatementMetaFrom(batch.rawTextPreview, 'Generated Date') ||
+      readStatementMetaFrom(batch.rawTextPreview, 'Statement Period') ||
+      formatDateTime(batch.createdAt);
+    const organisationMatch = rawPreview.match(/Organisation Name\s*:?\s*([^\n]+)(?:\n(?!Shortcode|Statement Period|Request Date|Transaction Type)([^\n]+))?/i);
+    const organisationName = organisationMatch
+      ? [organisationMatch[1], organisationMatch[2]].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim()
+      : activeOdooCompanyName || '-';
+    const statementMeta = {
+      accountType: readStatementMeta('Account Type') || 'Merchant Account',
+      organisationName,
+      shortcode: readStatementMeta('Shortcode') || '-',
+      statementPeriod: readStatementMeta('Statement Period') || (transactions[0] ? displayTransactionDate(transactions[0].transactionDate) : '-'),
+      requestDate: readStatementMeta('Request Date') || '-',
+    };
+    const statementTransactionType = (transaction) => {
+      const raw = `${transaction.raw && transaction.raw.row ? transaction.raw.row : ''} ${transaction.raw && transaction.raw.otherPartyText ? transaction.raw.otherPartyText : ''}`;
+      if (/OD\s+Payment\s+Transfer/i.test(raw)) return 'OD Payment Transfer';
+      if (/Merchant\s+Customer\s+Payment/i.test(raw)) return 'Merchant Customer Payment';
+      if (/Customer\s+Merchant\s+Payment/i.test(raw)) return 'Customer Merchant Payment';
+      return transaction.transactionType || '-';
+    };
+    const statementOtherParty = (transaction) => {
+      const raw = String(transaction.raw && transaction.raw.otherPartyText ? transaction.raw.otherPartyText : '');
+      const cleaned = raw
+        .replace(/\b(?:Customer\s+Merchant\s+Payment|Merchant\s+Customer\s+Payment|OD\s+Payment\s+Transfer)\b/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      return cleaned || transaction.counterparty || '-';
+    };
+    const totalChecks = statementTotalChecks || [];
+    const shouldShowRetryExtraction = Boolean(selectedBatch);
+    const totalCheckStatusLabel = (status) =>
+      status === 'match' ? 'Matched' : status === 'mismatch' ? 'Mismatch' : 'Summary missing';
+    const salaryAdvanceCount = salaryAdvanceShare ? Number(salaryAdvanceShare.count || 0) : 0;
+    const salaryAdvanceTotal = salaryAdvanceShare ? Number(salaryAdvanceShare.total || 0) : 0;
+    const generalAdvanceCount = generalAdvanceShare ? Number(generalAdvanceShare.count || 0) : 0;
+    const generalAdvanceTotal = generalAdvanceShare ? Number(generalAdvanceShare.total || 0) : 0;
+    const generalAdvanceStatementCount = generalAdvanceShare ? Number(generalAdvanceShare.statementCount || 0) : 0;
+  %>
+
+  <section class="mpesa-command-band mb-3">
+    <form method="post" action="/mpesa-reconciliation/upload?_csrf=<%= encodeURIComponent(csrfToken || '') %>" enctype="multipart/form-data" class="mpesa-upload-form">
+      <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+      <div>
+        <label class="form-label">Statement PDF or Image</label>
+        <input
+          type="file"
+          class="form-control"
+          name="file"
+          accept=".pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff"
+          required
+        />
+      </div>
+      <button type="submit" class="btn btn-primary">Import Statement</button>
+    </form>
+
+    <% if (authUser && authUser.role === 'admin') { %>
+      <form
+        method="post"
+        action="/mpesa-reconciliation/reconcile-all"
+        class="mpesa-upload-form"
+        data-confirm="This will reconcile ALL matched transactions from the selected month onwards across ALL batches: approve POs, create vendor bills, and register payments in Odoo. This may take a while. Continue?"
+      >
+        <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+        <div>
+          <label class="form-label">Reconcile All From</label>
+          <input
+            type="month"
+            class="form-control"
+            name="fromMonth"
+            value="2026-01"
+            required
+          />
+        </div>
+        <button type="submit" class="btn btn-success">Reconcile All POs</button>
+      </form>
+    <% } %>
+
+    <% if (selectedBatch && authUser && authUser.role === 'admin') { %>
+      <div class="mpesa-batch-summary">
+        <div>
+          <p class="eyebrow mb-1">Active Batch</p>
+          <h2 class="h5 mb-1"><%= selectedBatch.originalFilename %></h2>
+          <div class="text-secondary small">
+            Imported <%= formatDateTime(selectedBatch.createdAt) %> - <%= selectedBatch.transactionCount %> rows - <%= selectedBatch.matchedCount %> matched
+          </div>
+        </div>
+        <div class="mpesa-batch-actions">
+          <span class="badge text-bg-<%= selectedBatch.status === 'parsed' ? 'success' : selectedBatch.status === 'failed' ? 'danger' : 'warning' %>">
+            <%= selectedBatch.status %>
+          </span>
+          <% if (selectedBatch.warningCount > 0) { %>
+            <span class="badge text-bg-warning"><%= selectedBatch.warningCount %> warning(s)</span>
+          <% } %>
+          <span class="badge text-bg-info">
+            This statement: <%= salaryAdvanceCount %> advance(s) - <%= money(salaryAdvanceTotal) %>
+          </span>
+          <span class="badge text-bg-success">
+            Monthly total: <%= generalAdvanceCount %> advance(s) - <%= money(generalAdvanceTotal) %>
+            <% if (generalAdvanceStatementCount > 1) { %>
+              across <%= generalAdvanceStatementCount %> statements
+            <% } %>
+          </span>
+          <% if (shouldShowRetryExtraction) { %>
+            <form
+              method="post"
+              action="/mpesa-reconciliation/batches/<%= selectedBatch.id %>/reprocess"
+              data-confirm="Retry extraction for this uploaded M-Pesa document? Saved review choices, notes, parties, categories, and selected invoices/POs will be kept where rows can be matched."
+            >
+              <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+              <button type="submit" class="btn btn-sm btn-outline-primary">Retry Extraction</button>
+            </form>
+          <% } %>
+          <form
+            method="post"
+            action="/mpesa-reconciliation/batches/<%= selectedBatch.id %>/share-salary-advances"
+          >
+            <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+            <input
+              type="date"
+              name="periodStart"
+              class="form-control form-control-sm"
+              value="<%= salaryAdvanceShare ? salaryAdvanceShare.periodStart : '' %>"
+              required
+            />
+            <input
+              type="date"
+              name="periodEnd"
+              class="form-control form-control-sm"
+              value="<%= salaryAdvanceShare ? salaryAdvanceShare.periodEnd : '' %>"
+              required
+            />
+            <button type="submit" class="btn btn-sm btn-outline-success">Share Monthly Advances</button>
+          </form>
+          <% if (selectedBatch.matchedCount > 0) { %>
+            <form
+              method="post"
+              action="/mpesa-reconciliation/batches/<%= selectedBatch.id %>/reconcile-pos"
+              data-confirm="This will approve matched POs, create vendor bills, and register payments in Odoo for all matched transactions in this batch. Continue?"
+            >
+              <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+              <button type="submit" class="btn btn-sm btn-success">Reconcile POs</button>
+            </form>
+          <% } %>
+          <form
+            method="post"
+            action="/mpesa-reconciliation/batches/<%= selectedBatch.id %>/delete"
+            data-confirm="Delete this imported M-Pesa document and all transaction rows?"
+          >
+            <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+            <button type="submit" class="btn btn-sm btn-outline-danger">Delete Document</button>
+          </form>
+        </div>
+      </div>
+    <% } %>
+  </section>
+
+  <% if (batches.length) { %>
+    <section class="mpesa-batch-strip mb-3" aria-label="Recent M-Pesa batches">
+      <% batches.forEach((batch) => { %>
+        <div
+          class="mpesa-batch-chip <%= selectedBatch && selectedBatch.id === batch.id ? 'active-batch' : '' %>"
+        >
+          <a
+            class="mpesa-batch-main"
+            href="/mpesa-reconciliation?batch=<%= encodeURIComponent(batch.id) %>"
+          >
+            <strong><%= batch.originalFilename %></strong>
+            <span><%= statementGeneratedDateForBatch(batch) %> - <%= batch.transactionCount %> rows - <%= batch.matchedCount %> matched</span>
+            <% if (batch.newCount > 0 || batch.needsFollowupCount > 0) { %>
+              <span class="mpesa-batch-alerts">
+                <span class="badge text-bg-warning">REVIEW NEEDED</span>
+              </span>
+            <% } %>
+          </a>
+          <div class="mpesa-batch-actions">
+            <a
+              class="mpesa-batch-download"
+              href="/mpesa-reconciliation/batches/<%= encodeURIComponent(batch.id) %>/download"
+              download="<%= batch.originalFilename %>"
+              title="Download <%= batch.originalFilename %>"
+              aria-label="Download <%= batch.originalFilename %>"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M12 3a1 1 0 0 1 1 1v8.59l2.3-2.3a1 1 0 1 1 1.4 1.42l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 1 1 1.4-1.42l2.3 2.3V4a1 1 0 0 1 1-1Zm-7 13a1 1 0 0 1 1 1v2h12v-2a1 1 0 1 1 2 0v3a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1Z" />
+              </svg>
+            </a>
+            <% if (authUser && authUser.role === 'admin') { %>
+              <form
+                class="mpesa-batch-reprocess"
+                method="post"
+                action="/mpesa-reconciliation/batches/<%= encodeURIComponent(batch.id) %>/reprocess?_csrf=<%= encodeURIComponent(csrfToken || '') %>"
+                data-disable-submit="true"
+                data-loading-message="Re-extracting statement..."
+                data-confirm="Re-extract transactions from this statement using updated parsing rules? Saved review choices will be kept where rows can be matched."
+              >
+                <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+                <button
+                  type="submit"
+                  class="mpesa-batch-reprocess-btn"
+                  title="Re-extract transactions"
+                  aria-label="Re-extract transactions from <%= batch.originalFilename %>"
+                >
+                  <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                    <path d="M17.65 6.35A7.96 7.96 0 0 0 12 4a8 8 0 0 0-8 8 8 8 0 0 0 8 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18a6 6 0 0 1-6-6 6 6 0 0 1 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35Z" />
+                  </svg>
+                </button>
+              </form>
+            <% } %>
+          </div>
+          <% if (authUser && authUser.role === 'admin') { %>
+            <form
+              class="mpesa-batch-reupload"
+              method="post"
+              action="/mpesa-reconciliation/batches/<%= encodeURIComponent(batch.id) %>/reupload?_csrf=<%= encodeURIComponent(csrfToken || '') %>"
+              enctype="multipart/form-data"
+              data-disable-submit="true"
+              data-loading-message="Reuploading statement..."
+              data-confirm="Replace this uploaded M-Pesa statement and re-run extraction? Saved review choices will be kept where transaction rows can be matched."
+            >
+              <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+              <label class="btn btn-sm btn-outline-secondary mb-0">
+                Reupload
+                <input
+                  type="file"
+                  name="file"
+                  accept=".pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff"
+                  required
+                  onchange="this.form.requestSubmit();"
+                  hidden
+                />
+              </label>
+            </form>
+          <% } %>
+        </div>
+      <% }) %>
+    </section>
+  <% } %>
+
+  <% if (selectedBatch) { %>
+    <form method="post" action="/mpesa-reconciliation/batches/<%= selectedBatch.id %>/transactions" class="mpesa-grid-form">
+      <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+      <div class="mpesa-grid-shell">
+        <div class="mpesa-statement-head">
+          <div class="mpesa-statement-brand">
+            <div>
+              <span class="mpesa-brand-pill">M-PESA</span>
+              <strong>FULL STATEMENT</strong>
+            </div>
+            <span><%= selectedBatch.originalFilename %></span>
+          </div>
+          <div class="mpesa-statement-meta">
+            <div>
+              <span>Account Type</span>
+              <strong><%= statementMeta.accountType %></strong>
+            </div>
+            <div>
+              <span>Organisation Name</span>
+              <strong><%= statementMeta.organisationName %></strong>
+            </div>
+            <div>
+              <span>Shortcode</span>
+              <strong><%= statementMeta.shortcode %></strong>
+            </div>
+            <div>
+              <span>Statement Period</span>
+              <strong><%= statementMeta.statementPeriod %></strong>
+            </div>
+            <div>
+              <span>Request Date</span>
+              <strong><%= statementMeta.requestDate %></strong>
+            </div>
+          </div>
+          <% if (totalChecks.length) { %>
+            <div class="mpesa-total-checks">
+              <% totalChecks.forEach((check) => { %>
+                <div class="mpesa-total-check mpesa-total-check-<%= check.status %>">
+                  <span><%= check.label %></span>
+                  <strong><%= totalCheckStatusLabel(check.status) %></strong>
+                  <div>
+                    Statement <%= money(check.expected) %> - Rows <%= money(check.extracted) %>
+                  </div>
+                  <% if (check.difference !== null && Math.abs(check.difference) > 0.01) { %>
+                    <small>Difference <%= money(check.difference) %></small>
+                  <% } %>
+                </div>
+              <% }) %>
+            </div>
+          <% } %>
+        </div>
+        <div class="mpesa-grid-toolbar">
+          <div>
+            <h2 class="h6 mb-1">Transaction Statement</h2>
+            <p class="text-secondary small mb-0"><%= selectedBatch.transactionCount %> rows imported - <%= selectedBatch.matchedCount %> matched</p>
+          </div>
+          <div class="mpesa-grid-actions">
+            <div class="mpesa-grid-search">
+              <input
+                type="search"
+                class="form-control form-control-sm"
+                id="mpesa-statement-search"
+                placeholder="Search anything (receipt, name, phone, notes, amount…)"
+                autocomplete="off"
+              />
+            </div>
+            <button
+              type="button"
+              class="btn btn-sm btn-outline-secondary mpesa-column-toggle"
+              data-mpesa-column-toggle
+              data-collapsed-label="Expand statement columns"
+              data-expanded-label="Minimize statement columns"
+              aria-controls="mpesa-transactions-grid"
+              aria-expanded="false"
+            >
+              Expand statement columns
+            </button>
+            <button type="submit" class="btn btn-primary">Save Grid</button>
+          </div>
+        </div>
+
+        <div class="table-responsive mpesa-grid-wrap">
+          <table id="mpesa-transactions-grid" class="table table-sm align-middle mb-0 mpesa-grid mpesa-grid-statement-collapsed" data-mpesa-grid>
+            <colgroup>
+              <col class="mpesa-col-rownum" />
+              <col class="mpesa-col-receipt" />
+              <col class="mpesa-col-time" />
+              <col class="mpesa-col-money" />
+              <col class="mpesa-col-money" />
+              <col class="mpesa-col-party" />
+              <col class="mpesa-col-po" />
+              <col class="mpesa-col-score" />
+              <col class="mpesa-col-category" />
+              <col class="mpesa-col-review" />
+              <col class="mpesa-col-notes" />
+              <col class="mpesa-col-notes" />
+            </colgroup>
+            <thead>
+              <tr>
+                <th class="mpesa-rownum" rowspan="2">#</th>
+                <th colspan="5" class="mpesa-grid-group">M-PESA Statement</th>
+                <th colspan="6" class="mpesa-grid-group mpesa-grid-group-recon">Reconciliation</th>
+              </tr>
+              <tr>
+                <th class="mpesa-collapsible-col">
+                  <span class="mpesa-col-full-label">Receipt No</span>
+                  <span class="mpesa-col-min-label">Rec.</span>
+                </th>
+                <th>Completion Time</th>
+                <th>Paid in</th>
+                <th>Withdrawn</th>
+                <th>Other Party</th>
+                <th>Invoice / PO Match</th>
+                <th>Score</th>
+                <th>Category</th>
+                <th>Review</th>
+                <th>Notes</th>
+                <th>AI Notes</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% if (!transactions.length) { %>
+                <tr>
+                  <td colspan="12" class="text-secondary py-4 text-center">No transaction rows were extracted from this statement.</td>
+                </tr>
+              <% } %>
+              <% transactions.forEach((transaction, index) => { %>
+                <tr>
+                  <td class="mpesa-rownum"><%= index + 1 %></td>
+                  <td class="mpesa-receipt-cell mpesa-collapsible-col">
+                    <input type="hidden" name="transactionId[]" value="<%= transaction.id %>" />
+                    <span class="mpesa-collapsible-content" title="<%= transaction.receiptNumber || '-' %>"><%= transaction.receiptNumber || '-' %></span>
+                  </td>
+                  <td class="mpesa-date-cell">
+                    <strong><%= displayTransactionDate(transaction.transactionDate) %></strong>
+                    <div><%= cleanDateTimeText(transaction.completionTime) %></div>
+                  </td>
+                  <td class="text-end"><%= money(transaction.paidIn) %></td>
+                  <td class="text-end"><%= money(transaction.withdrawn) %></td>
+                  <td>
+                    <input
+                      type="text"
+                      class="form-control form-control-sm mpesa-sheet-input"
+                      name="userSupplier[]"
+                      value="<%= transaction.userSupplier || transaction.counterparty || '' %>"
+                      placeholder="<%= matchKindForTransaction(transaction) === 'Invoice' ? 'Customer or counterparty' : 'Supplier or counterparty' %>"
+                    />
+                    <div class="small text-secondary"><%= statementOtherParty(transaction) %></div>
+                    <% if (transaction.phoneNumber) { %>
+                      <div class="small text-secondary"><%= transaction.phoneNumber %></div>
+                    <% } %>
+                  </td>
+                  <td>
+                    <% const matchKind = matchKindForTransaction(transaction); %>
+                    <% const visibleCandidates = visibleCandidatesForTransaction(transaction); %>
+                    <% const selectedCandidateIsVisible = visibleCandidates.some((candidate) => candidate.id === transaction.matchedPoId); %>
+                    <div class="mpesa-match-kind"><%= matchKind %></div>
+                    <select class="form-select form-select-sm" name="poSelection[]">
+                      <option value=""><%= noMatchTextForTransaction(transaction) %></option>
+                      <% if (shouldShowStoredSelection(transaction, visibleCandidates)) { %>
+                        <option value="<%= transaction.matchedPoId %>|<%= transaction.matchedPoName || '' %>" selected>
+                          <%= transaction.matchedPoName || `Match ${transaction.matchedPoId}` %>
+                        </option>
+                      <% } %>
+                      <% visibleCandidates.forEach((candidate) => { %>
+                        <option
+                          value="<%= poValue(candidate) %>"
+                          <%= transaction.matchedPoId === candidate.id ? 'selected' : '' %>
+                        >
+                          <%= matchLabelForCandidate(candidate) %>
+                        </option>
+                      <% }) %>
+                    </select>
+                    <% if (visibleCandidates.length) { %>
+                      <details class="small mt-1">
+                        <summary>Why</summary>
+                        <ul class="mb-0 ps-3">
+                          <% visibleCandidates.slice(0, 3).forEach((candidate) => { %>
+                            <li><strong><%= candidate.name %></strong>: <%= candidateReasonsForDisplay(candidate).join(' ') || 'Matched by available transaction signals.' %></li>
+                          <% }) %>
+                        </ul>
+                      </details>
+                    <% } %>
+                  </td>
+                  <td>
+                    <% if (selectedCandidateIsVisible && transaction.matchConfidence !== null && transaction.matchConfidence !== undefined) { %>
+                      <span class="badge text-bg-<%= transaction.matchConfidence >= 70 ? 'success' : transaction.matchConfidence >= 45 ? 'warning' : 'secondary' %>">
+                        <%= Math.round(transaction.matchConfidence) %>
+                      </span>
+                    <% } else { %>
+                      -
+                    <% } %>
+                  </td>
+                  <td>
+                    <select class="form-select form-select-sm" name="userCategory[]">
+                      <% categoryOptions.forEach(([value, label]) => { %>
+                        <option value="<%= value %>" <%= (transaction.userCategory || transaction.transactionType) === value ? 'selected' : '' %>><%= label %></option>
+                      <% }) %>
+                    </select>
+                  </td>
+                  <td>
+                    <select class="form-select form-select-sm mpesa-review-select mpesa-review-<%= transaction.reviewStatus %>" name="reviewStatus[]">
+                      <% ['new', 'reviewed', 'verified', 'ignored', 'needs_followup'].forEach((value) => { %>
+                        <option value="<%= value %>" <%= transaction.reviewStatus === value ? 'selected' : '' %>><%= value %></option>
+                      <% }) %>
+                    </select>
+                    <span class="badge text-bg-<%= statusClassForReview(transaction.reviewStatus) %> mt-1"><%= transaction.reviewStatus %></span>
+                  </td>
+                  <td>
+                    <input
+                      type="text"
+                      class="form-control form-control-sm mpesa-sheet-input"
+                      name="notes[]"
+                      value="<%= transaction.notes || '' %>"
+                      placeholder="Add note"
+                    />
+                  </td>
+                  <td>
+                    <% if (transaction.aiNotes) { %>
+                      <div class="small text-secondary d-flex align-items-start gap-1" style="max-width:250px; line-height:1.2">
+                        <span class="fs-6">🤖</span>
+                        <span><%= transaction.aiNotes %></span>
+                      </div>
+                    <% } else { %>
+                      <span class="text-muted small">—</span>
+                    <% } %>
+                  </td>
+                </tr>
+              <% }) %>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="mpesa-grid-toolbar border-top">
+          <details class="w-100">
+            <summary class="fw-semibold">Raw Statement Text Preview</summary>
+            <pre class="bg-body-tertiary border rounded p-3 small mt-3 mb-0" style="white-space: pre-wrap;"><code><%= selectedBatch.rawTextPreview || 'No raw text saved.' %></code></pre>
+          </details>
+        </div>
+        <% if (selectedBatch.warnings.length) { %>
+          <div class="mpesa-grid-toolbar border-top">
+            <details class="w-100">
+              <summary class="fw-semibold">Import Warnings</summary>
+              <div class="alert alert-warning mt-3 mb-0">
+                <ul class="mb-0">
+                  <% selectedBatch.warnings.forEach((warning) => { %>
+                    <li><%= warning %></li>
+                  <% }) %>
+                </ul>
+              </div>
+            </details>
+          </div>
+        <% } %>
+      </div>
+    </form>
+  <% } else { %>
+    <div class="card shadow-sm border-0 app-card">
+      <div class="card-body p-4 text-secondary">
+        Import an M-Pesa statement to start reconciliation.
+      </div>
+    </div>
+  <% } %>
+</main>
+
+<script>
+(function() {
+  var searchInput = document.getElementById('mpesa-statement-search');
+  if (!searchInput) return;
+
+  var grid = document.querySelector('[data-mpesa-grid]');
+  if (!grid) return;
+
+  var tbody = grid.querySelector('tbody');
+  if (!tbody) return;
+
+  function filterRows() {
+    var query = searchInput.value.trim().toLowerCase();
+    var tokens = query.split(/\s+/).filter(Boolean);
+    var rows = tbody.querySelectorAll('tr');
+    var visibleCount = 0;
+
+    rows.forEach(function(row) {
+      if (tokens.length === 0) {
+        row.style.display = '';
+        visibleCount++;
+        return;
+      }
+
+      var text = (row.textContent || '').toLowerCase();
+      var match = tokens.every(function(token) {
+        return text.indexOf(token) >= 0;
+      });
+
+      row.style.display = match ? '' : 'none';
+      if (match) visibleCount++;
+    });
+
+    // Show count badge
+    var countEl = document.getElementById('mpesa-search-count');
+    if (!countEl) {
+      countEl = document.createElement('span');
+      countEl.id = 'mpesa-search-count';
+      countEl.className = 'badge text-bg-info ms-2';
+      searchInput.parentNode.appendChild(countEl);
+    }
+    if (tokens.length > 0) {
+      countEl.textContent = visibleCount + ' matching';
+      countEl.style.display = '';
+    } else {
+      countEl.style.display = 'none';
+    }
+  }
+
+  searchInput.addEventListener('input', filterRows);
+})();
+</script>
+
+<%- include('partials/footer') %>

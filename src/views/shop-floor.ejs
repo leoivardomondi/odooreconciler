@@ -1,0 +1,2023 @@
+<%- include('partials/head') %>
+<%- include('partials/header') %>
+
+<main class="container-fluid px-3 px-sm-4 px-lg-5 py-3 py-sm-4" style="max-width:1200px">
+  <!-- Language Toggle -->
+  <div class="d-flex justify-content-end mb-2">
+    <button id="langToggleBtn" class="btn btn-sm rounded-pill px-3 py-1 d-flex align-items-center gap-2 fw-semibold" style="background:#1e293b;color:#fff;font-size:0.78rem;border:none;box-shadow:0 2px 6px rgba(0,0,0,0.15);transition:all 0.2s" onclick="toggleLanguage()">
+      <span style="font-size:1rem">🌐</span>
+      <span id="langBtnLabel">Swahili</span>
+    </button>
+  </div>
+
+  <%
+    const resolvedFeatureFlags = typeof featureFlags !== 'undefined' ? featureFlags : {
+      'start-finish': true,
+      'add-stock': true,
+      receipts: true,
+      deliveries: true,
+      attendance: true,
+      maintenance: true,
+      payroll: true,
+      'table-saw': true,
+      'edge-banding': true,
+      'panel-rack': true,
+    };
+    const resolvedCanManageFeatures = typeof canManageFeatures !== 'undefined'
+      ? canManageFeatures
+      : Boolean(typeof authUser !== 'undefined' && authUser && (authUser.role === 'admin' || authUser.apps?.includes('shop-floor-admin')));
+    const areaAttentionCount = (areaName) => (data.workOrders || []).filter((order) => {
+      if (order.area !== areaName || order.state === 'done') return false;
+      const isOverdue = Boolean(order.isOverdue);
+      return isOverdue || order.hasStockIssue || order.stockStatus === 'no_stock';
+    }).length;
+    const attendanceNotificationCount =
+      (data.failedCheckouts || []).length +
+      (data.attendance && !data.attendance.checkedIn && !data.attendance.checkedOut ? 1 : 0);
+    const appNotificationCounts = {
+      'start-finish': (data.workOrders || []).filter((order) => order.state !== 'done').length,
+      'add-stock': (data.stockAlerts || []).length,
+      receipts: data.teamPenalties?.undoneReceipts || 0,
+      deliveries: data.teamPenalties?.unmarkedDeliveries || 0,
+      attendance: attendanceNotificationCount,
+      maintenance: (data.incidents || []).filter((incident) => incident.status === 'open').length,
+      payroll: 0,
+      'table-saw': areaAttentionCount('Table Saw Area'),
+      'edge-banding': areaAttentionCount('Edge Banding Area'),
+      'panel-rack': areaAttentionCount('Panel Rack Area'),
+    };
+    const launcherApps = [
+      { key: 'start-finish', label: 'Start / Finish', subtitle: 'Open manufacturing orders', href: '#manufacturing-orders', iconPath: 'M8 5v14l11-7L8 5Zm12 0v14M4 5v14', color: '#15803d', tint: '#dcfce7' },
+      { key: 'add-stock', label: 'Add Stock', subtitle: 'Record incoming boards', href: '/shop-floor/boards', iconPath: 'M3 6.5 12 2l9 4.5-9 4.5-9-4.5Zm0 0V17l9 5 9-5V6.5M12 11v11M7.5 8.75l9-4.5', color: '#0f766e', tint: '#ccfbf1' },
+      { key: 'receipts', label: 'Receipts', subtitle: 'Validate incoming purchased boards', href: '/shop-floor/receipts', iconPath: 'M5 3h14v18l-3-2-4 2-4-2-3 2V3Zm3 5h8m-8 4h8m-8 4h5', color: '#be123c', tint: '#ffe4e6' },
+      { key: 'deliveries', label: 'Deliveries', subtitle: 'Validate outgoing deliveries', href: '/shop-floor/deliveries', iconPath: 'M3 6h12v11H3V6Zm12 4h3l3 3v4h-6v-7ZM7 20a2 2 0 1 0 0-4 2 2 0 0 0 0 4Zm10 0a2 2 0 1 0 0-4 2 2 0 0 0 0 4Z', color: '#1d4ed8', tint: '#dbeafe' },
+      { key: 'attendance', label: 'Attendance', subtitle: 'Check-ins and shifts', href: '#attendance-app', iconPath: 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm7-1 2 2 4-5', color: '#b45309', tint: '#fef3c7' },
+      { key: 'maintenance', label: 'Maintenance', subtitle: 'Machine breakdowns', href: '#maintenance-app', iconPath: 'm14.7 6.3 3-3a4 4 0 0 0-5 5L4 17l3 3 8.7-8.7a4 4 0 0 0 5-5l-3 3-3-3Z', color: '#6d28d9', tint: '#ede9fe' },
+      { key: 'payroll', label: 'Payroll', subtitle: 'Payslips and advances', href: '#payroll-app', iconPath: 'M6 2h12v20l-3-2-3 2-3-2-3 2V2Zm3 5h6m-6 4h6m-6 4h3', color: '#0369a1', tint: '#e0f2fe' },
+      { key: 'table-saw', label: 'Table Saw Area', subtitle: 'Table saw work orders', href: '#area-table-saw', iconPath: 'M12 3a7 7 0 1 0 7 7h-7V3Zm0 0 2.5 4.5L19 10M3 21h18M6 17v4m12-4v4', color: '#7c3aed', tint: '#ede9fe' },
+      { key: 'edge-banding', label: 'Edge Banding Area', subtitle: 'Edge banding work', href: '#area-edge-banding', iconPath: 'M4 17h16v4H4v-4Zm2-4a6 6 0 1 1 12 0H6Zm6-3v3m-3-1.5 1.5 1.5m4.5-1.5L13.5 13', color: '#c2410c', tint: '#ffedd5' },
+      { key: 'panel-rack', label: 'Panel Rack', subtitle: 'Panel rack work orders', href: '#area-panel-rack', iconPath: 'M4 3v18m16-18v18M4 7h16M4 13h16M4 19h16M9 7v6m6 0v6', color: '#0f766e', tint: '#ccfbf1' },
+    ];
+    const enabledLauncherApps = launcherApps.filter((app) => resolvedFeatureFlags[app.key]);
+    const totalAppAttentionCount = enabledLauncherApps.reduce((total, app) => total + (appNotificationCounts[app.key] || 0), 0);
+  %>
+  <section class="shop-app-launcher mb-4" aria-labelledby="shopAppsHeading">
+    <div class="d-flex flex-wrap justify-content-between align-items-end gap-3 mb-3">
+      <div><div class="text-uppercase fw-bold mb-1" style="color:#0f766e;font-size:.7rem;letter-spacing:.12em">Shop Floor Apps</div><h1 id="shopAppsHeading" class="h3 mb-1 fw-bold" style="color:#0f172a">What would you like to do?</h1><p class="text-muted mb-0 small">Open a work area or operation directly.</p></div>
+      <% if (resolvedCanManageFeatures) { %><button type="button" class="btn btn-sm btn-outline-secondary d-inline-flex align-items-center gap-2 px-3" data-bs-toggle="offcanvas" data-bs-target="#manageShopApps"><i class="bi bi-sliders"></i> Manage Apps</button><% } %>
+    </div>
+    <div class="shop-app-grid">
+      <% enabledLauncherApps.forEach((app) => { %>
+        <a class="shop-app-tile" href="<%= app.href %>" style="--app-color:<%= app.color %>;--app-tint:<%= app.tint %>">
+          <span class="shop-app-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="<%= app.iconPath %>" /></svg></span>
+          <span class="shop-app-copy"><strong><%= app.label %></strong><small><%= app.subtitle %></small></span>
+          <% if (appNotificationCounts[app.key] > 0) { %><span class="shop-app-notification" title="<%= appNotificationCounts[app.key] %> item<%= appNotificationCounts[app.key] === 1 ? '' : 's' %> requiring attention"><%= appNotificationCounts[app.key] > 99 ? '99+' : appNotificationCounts[app.key] %></span><% } %>
+          <i class="bi bi-arrow-right shop-app-arrow" aria-hidden="true"></i>
+        </a>
+      <% }) %>
+      <% if (!enabledLauncherApps.length) { %><div class="text-muted small border rounded-3 p-4">No Shop Floor apps are currently enabled.</div><% } %>
+    </div>
+  </section>
+
+  <a href="#shopAppsHeading" class="floating-apps-button" aria-label="Open Shop Floor apps" title="Shop Floor Apps">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 3h7v7H3V3Zm11 0h7v7h-7V3ZM3 14h7v7H3v-7Zm11 0h7v7h-7v-7Z" /></svg><span>Apps</span>
+    <% if (totalAppAttentionCount > 0) { %><span class="floating-apps-count"><%= totalAppAttentionCount > 99 ? '99+' : totalAppAttentionCount %></span><% } %>
+  </a>
+
+  <% if (resolvedCanManageFeatures) { %>
+    <div class="offcanvas offcanvas-end" tabindex="-1" id="manageShopApps" aria-labelledby="manageShopAppsLabel">
+      <div class="offcanvas-header border-bottom"><div><h2 class="offcanvas-title h5 fw-bold mb-1" id="manageShopAppsLabel">Manage Shop Floor Apps</h2><div class="text-muted small">Enable or disable apps for all users.</div></div><button type="button" class="btn-close" data-bs-dismiss="offcanvas" aria-label="Close"></button></div>
+      <form method="post" action="/shop-floor/features" class="offcanvas-body d-flex flex-column p-0">
+        <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+        <div class="flex-grow-1 px-4 py-2"><% launcherApps.forEach((app) => { %><label class="d-flex align-items-center gap-3 py-3 border-bottom" for="feature-<%= app.key %>"><span class="shop-app-icon shop-app-icon-sm" style="--app-color:<%= app.color %>;--app-tint:<%= app.tint %>"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="<%= app.iconPath %>" /></svg></span><span class="flex-grow-1"><strong class="d-block"><%= app.label %></strong><small class="text-muted"><%= app.subtitle %></small></span><span class="form-check form-switch m-0"><input class="form-check-input" type="checkbox" role="switch" name="<%= app.key %>" id="feature-<%= app.key %>" <%= resolvedFeatureFlags[app.key] ? 'checked' : '' %>></span></label><% }) %></div>
+        <div class="p-4 border-top bg-white"><button class="btn btn-primary w-100" type="submit"><i class="bi bi-floppy me-2"></i>Save Changes</button></div>
+      </form>
+    </div>
+  <% } %>
+
+  <style>
+    .shop-app-launcher{background:#fff;border:1px solid #e2e8f0;border-radius:1rem;padding:1.25rem;box-shadow:0 10px 30px rgba(15,23,42,.05)}
+    .shop-app-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:.75rem}
+    .shop-app-tile{position:relative;min-height:96px;display:flex;align-items:center;gap:.85rem;padding:1rem;border:1px solid #e2e8f0;border-left:4px solid var(--app-color);border-radius:.75rem;background:#fff;color:#0f172a;text-decoration:none;transition:transform .15s ease,box-shadow .15s ease,border-color .15s ease}
+    .shop-app-tile:hover{color:#0f172a;transform:translateY(-2px);border-color:var(--app-color);box-shadow:0 8px 22px rgba(15,23,42,.09)}
+    .shop-app-icon{width:46px;height:46px;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto;border-radius:.85rem;background:var(--app-color);color:#fff;box-shadow:0 6px 14px color-mix(in srgb,var(--app-color) 28%,transparent)}.shop-app-icon svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.shop-app-icon-sm{width:38px;height:38px}.shop-app-icon-sm svg{width:20px;height:20px}
+    .shop-app-notification{position:absolute;top:.55rem;right:.55rem;min-width:1.4rem;height:1.4rem;padding:0 .38rem;display:inline-flex;align-items:center;justify-content:center;border:2px solid #fff;border-radius:999px;background:#dc2626;color:#fff;font-size:.65rem;font-weight:800;line-height:1;box-shadow:0 2px 7px rgba(127,29,29,.28)}
+    .floating-apps-button{position:fixed;right:1.1rem;bottom:1.25rem;z-index:1040;display:inline-flex;align-items:center;gap:.5rem;min-height:48px;padding:.7rem 1rem;border:1px solid rgba(255,255,255,.35);border-radius:999px;background:#0f172a;color:#fff;text-decoration:none;font-size:.8rem;font-weight:800;box-shadow:0 10px 30px rgba(15,23,42,.3);transition:transform .15s ease,background .15s ease}
+    .floating-apps-button:hover{color:#fff;background:#0f766e;transform:translateY(-2px)}.floating-apps-button>svg{width:18px;height:18px;fill:currentColor}.floating-apps-count{min-width:1.35rem;height:1.35rem;padding:0 .32rem;display:inline-flex;align-items:center;justify-content:center;border:2px solid rgba(255,255,255,.9);border-radius:999px;background:#dc2626;color:#fff;font-size:.62rem}
+    .shop-app-copy{min-width:0;flex:1}.shop-app-copy strong{display:block;font-size:.93rem}.shop-app-copy small{display:block;color:#64748b;font-size:.72rem;margin-top:.15rem}.shop-app-arrow{color:#94a3b8;font-size:.85rem}.shop-app-tile:hover .shop-app-arrow{color:var(--app-color)}
+    @media(max-width:575.98px){.shop-app-launcher{padding:1rem}.shop-app-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.shop-app-tile{min-height:122px;flex-direction:column;align-items:flex-start}.shop-app-arrow{display:none}}
+  </style>
+
+  <% if (data.error) { %>
+    <div class="alert alert-warning rounded-3 mb-4"><%= data.error %></div>
+  <% } %>
+
+  <% if (data.employee) { %>
+    <!-- Profile Banner -->
+    <div class="rounded-4 p-4 mb-4 d-flex flex-wrap align-items-center gap-3" style="background: linear-gradient(135deg, #1e3a5f 0%, #2563eb 100%); color: #fff;">
+      <div class="rounded-circle d-flex align-items-center justify-content-center fw-bold flex-shrink-0" style="width:3.5rem;height:3.5rem;background:rgba(255,255,255,0.2);font-size:1.4rem">
+        <%= data.employee.name.charAt(0).toUpperCase() %>
+      </div>
+      <div class="flex-grow-1">
+        <h1 class="h5 mb-1"><%= data.employee.name %></h1>
+        <span style="opacity:0.85;font-size:0.88rem"><%= data.employee.jobTitle || 'Operator' %><% if (data.employee.department) { %> · <%= data.employee.department %><% } %></span>
+      </div>
+      <div>
+        <% if (data.attendance) { %>
+          <% if (data.attendance.checkedIn) { %>
+            <span class="badge rounded-pill px-3 py-2" style="background:rgba(255,255,255,0.2);font-size:0.85rem" data-i18n="checked_in">Checked In</span>
+            <% if (data.attendance.isLate) { %>
+              <div class="mt-1 text-warning-emphasis" style="font-size:0.72rem;opacity:0.9" data-i18n="checked_in_late">You checked in late today</div>
+            <% } %>
+          <% } else if (data.attendance.checkedOut) { %>
+            <span class="badge rounded-pill px-3 py-2" style="background:rgba(255,255,255,0.15);font-size:0.85rem" data-i18n="checked_out">Checked Out</span>
+          <% } else { %>
+            <span class="badge rounded-pill px-3 py-2" style="background:rgba(239,68,68,0.8);font-size:0.85rem" data-i18n="not_checked_in">Not Checked In</span>
+          <% } %>
+        <% } %>
+      </div>
+    </div>
+
+    <% if (!data.isLimitedDashboard) { %>
+      <div class="rounded-4 border border-warning-subtle mb-4 p-4" style="background: linear-gradient(135deg, #fff7ed 0%, #fefce8 100%); box-shadow:0 1px 3px rgba(0,0,0,0.04)">
+        <div class="d-flex flex-wrap align-items-start gap-3">
+          <div class="rounded-circle d-flex align-items-center justify-content-center flex-shrink-0" style="width:2.6rem;height:2.6rem;background:#f59e0b;color:#fff;font-weight:700">
+            !
+          </div>
+          <div class="flex-grow-1">
+            <div class="fw-bold mb-1" style="color:#92400e;font-size:0.98rem" data-i18n="manufacturing_notice_title">Manufacturing timing matters</div>
+            <div class="small" style="color:#7c2d12;line-height:1.5" data-i18n="manufacturing_notice_body">
+              Recording incoming boards is the first step, whether the boards come directly from a client or through the Receipt app. Count the boards first, then key them in immediately. Tapping <strong>Start</strong> on a manufacturing order should take a maximum of 20 seconds. Confirming received receipts and marking edge banding rolls as received are also quick actions. Failure to do them reduces MO visibility, readiness, and stock accuracy for everyone.
+            </div>
+          </div>
+        </div>
+      </div>
+    <% } %>
+
+    <!-- Failed Check Out Card -->
+    <% if (data.failedCheckouts && data.failedCheckouts.length > 0) { %>
+      <div class="alert alert-danger rounded-4 mb-4 d-flex align-items-center gap-3 border border-danger-subtle" style="background:#fef2f2;color:#991b1b;box-shadow:0 1px 3px rgba(0,0,0,0.04)">
+        <i class="bi bi-exclamation-triangle-fill fs-3 text-danger flex-shrink-0"></i>
+        <div>
+          <div class="fw-bold fs-6 mb-1" data-i18n="failed_checkout_title">Failed Checkout Detected</div>
+          <p class="mb-0 small" style="opacity: 0.9" data-i18n="failed_checkout_desc">You did not check out properly on the following days. Your attendance ran until the next day:</p>
+          <ul class="mb-0 mt-2 small fw-medium ps-3">
+            <% data.failedCheckouts.forEach(fc => { %>
+              <li><%= fc.date %> (<%= fc.hours %> <span data-i18n="hours_logged">hours logged</span>)</li>
+            <% }); %>
+          </ul>
+        </div>
+      </div>
+    <% } %>
+
+    <!-- Performance Rate Card -->
+    <% if (data.performanceRate && !data.isLimitedDashboard) { %>
+      <% 
+        const pr = data.performanceRate;
+        let prBg = pr.color === 'green' ? '#dcfce7' : pr.color === 'orange' ? '#ffedd5' : '#fef2f2';
+        let prBorder = pr.color === 'green' ? '#bbf7d0' : pr.color === 'orange' ? '#fed7aa' : '#fecaca';
+        let prText = pr.color === 'green' ? '#166534' : pr.color === 'orange' ? '#9a3412' : '#991b1b';
+      %>
+      <div class="rounded-4 p-4 mb-4 border d-flex align-items-center gap-4" data-manufacturing-rate-card style="background:<%= prBg %>;border-color:<%= prBorder %> !important;color:<%= prText %>;box-shadow:0 1px 3px rgba(0,0,0,0.04)">
+        <div class="d-flex align-items-center justify-content-center fw-bold rounded-circle flex-shrink-0 border" data-manufacturing-rate-value style="width:4.5rem;height:4.5rem;font-size:1.4rem;background:#fff;border-color:<%= prBorder %> !important;border-width:4px !important">
+          <%= pr.percentage %>%
+        </div>
+        <div>
+          <div class="fw-bold fs-5 mb-1" data-i18n="performance_rate">Real Manufacturing Rate</div>
+          <p class="mb-0" style="opacity:0.85;font-size:0.9rem">
+            <span data-i18n="perf_desc_prefix">Based on confirmed jobs plus open backlog,</span> <strong data-manufacturing-rate-inline><%= pr.percentage %>%</strong> <span data-i18n="perf_desc_mid">is the real manufacturing rate</span> (<span data-manufacturing-rate-total><%= pr.totalOrders %></span> <span data-i18n="total">items considered</span>).
+          </p>
+          <div class="mt-2 small" style="opacity:0.8"><%= pr.details %></div>
+        </div>
+      </div>
+    <% } %>
+
+    <% if (data.areaPerformanceRates && data.areaPerformanceRates.length && !data.isLimitedDashboard) { %>
+      <div class="rounded-4 p-4 mb-4 border" style="background:#ffffff;border-color:#e2e8f0 !important;box-shadow:0 1px 3px rgba(0,0,0,0.04)">
+        <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3">
+          <div>
+            <div class="fw-bold fs-5 mb-1 text-dark">Performance by Area</div>
+            <p class="mb-0 text-muted" style="font-size:0.86rem">
+              Rated from completed manufacturing orders in each work centre area. Overdue MOs started and closed within 30 minutes are treated as late marking, not success.
+            </p>
+          </div>
+        </div>
+        <div class="row g-3">
+          <% data.areaPerformanceRates.forEach((areaRate) => {
+            const areaBg = areaRate.color === 'green' ? '#f0fdf4' : areaRate.color === 'orange' ? '#fff7ed' : '#fef2f2';
+            const areaBorder = areaRate.color === 'green' ? '#bbf7d0' : areaRate.color === 'orange' ? '#fed7aa' : '#fecaca';
+            const areaText = areaRate.color === 'green' ? '#166534' : areaRate.color === 'orange' ? '#9a3412' : '#991b1b';
+          %>
+            <div class="col-md-4">
+              <div class="h-100 rounded-3 border p-3" style="background:<%= areaBg %>;border-color:<%= areaBorder %> !important;color:<%= areaText %>">
+                <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+                  <div class="fw-bold text-dark" style="font-size:0.9rem"><%= areaRate.area %></div>
+                  <div class="fw-bold" style="font-size:1.25rem"><%= areaRate.percentage %>%</div>
+                </div>
+                <div class="small" style="opacity:0.88">
+                  <strong><%= areaRate.onTimeOrders %></strong> / <strong><%= areaRate.completedOrders %></strong> real on-time completions
+                </div>
+                <div class="small mt-1" style="opacity:0.78">
+                  Avg finish: <strong><%= areaRate.avgDaysToComplete %></strong> days
+                </div>
+                <div class="small mt-1" style="opacity:0.78">
+                  Overdue quick close: <strong><%= areaRate.overdueQuickClose || 0 %></strong>
+                </div>
+              </div>
+            </div>
+          <% }) %>
+        </div>
+      </div>
+    <% } %>
+
+    <!-- Team Performance Card -->
+    <% if (data.teamPenalties && !data.isLimitedDashboard) { %>
+      <%
+        const timing = data.manufacturingTimingSummary;
+        const totalTimedOrders = timing?.withSalesOrders || timing?.totalOrders || 0;
+        const startRate = timing && totalTimedOrders > 0 ? Math.round((timing.startedWithin1Day / totalTimedOrders) * 100) : 0;
+        const sameDayRate = timing && totalTimedOrders > 0 ? Math.round((timing.sameDayStartFinish / totalTimedOrders) * 100) : 0;
+      %>
+      <div class="rounded-4 p-4 mb-4 border" style="background:#f8fafc;border-color:#e2e8f0 !important;box-shadow:0 1px 3px rgba(0,0,0,0.04);color:#0f172a">
+        <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3">
+          <div>
+            <div class="fw-bold fs-5 mb-1 text-dark" data-i18n="team_perf_title">Manufacturing Performance</div>
+            <p class="mb-0" style="opacity:0.85;font-size:0.9rem;color:#475569" data-i18n="team_perf_desc">
+              This panel focuses on start timing. Same-day completion is shown separately because it can hide overdue work.
+            </p>
+          </div>
+        </div>
+
+        <% if (timing) { %>
+          <div class="d-flex flex-wrap gap-3 mt-1">
+            <div class="border rounded-3 px-3 py-2 bg-white flex-fill text-center">
+              <div class="text-muted small fw-bold text-uppercase mb-1">Started within 1 day</div>
+              <div class="fs-4 fw-bold text-primary"><%= startRate %>%</div>
+              <div class="text-muted small"><%= timing.startedWithin1Day %> / <%= totalTimedOrders %> orders</div>
+            </div>
+            <div class="border rounded-3 px-3 py-2 bg-white flex-fill text-center">
+              <div class="text-muted small fw-bold text-uppercase mb-1">Same-day start/finish</div>
+              <div class="fs-4 fw-bold text-indigo-600"><%= sameDayRate %>%</div>
+              <div class="text-muted small">Shown as a caution, not a success rate.</div>
+            </div>
+          </div>
+        <% } %>
+
+        <div class="mt-3 pt-3 border-top">
+          <div class="small fw-bold text-muted mb-2 text-uppercase" style="letter-spacing:0.06em">Penalty Signals</div>
+          <div class="d-flex flex-wrap gap-3">
+            <%
+              const expectedBoardsCount = data.stockAlerts ? data.stockAlerts.reduce((sum, item) => sum + (item.qtyNeeded || 0), 0) : 0;
+            %>
+            <div class="border rounded-3 px-3 py-2 bg-white flex-fill text-center">
+              <div class="text-muted small fw-bold text-uppercase mb-1" data-i18n="expected_boards">Expected Boards</div>
+              <div class="fs-4 fw-bold <%= expectedBoardsCount > 0 ? 'text-warning' : 'text-success' %>">
+                <%= expectedBoardsCount %>
+              </div>
+            </div>
+            <div class="border rounded-3 px-3 py-2 bg-white flex-fill text-center">
+              <div class="text-muted small fw-bold text-uppercase mb-1" data-i18n="unmarked_deliveries">Outgoing Deliveries Still Open</div>
+              <div class="fs-4 fw-bold <%= data.teamPenalties.unmarkedDeliveries > 0 ? 'text-warning' : 'text-success' %>">
+                <%= data.teamPenalties.unmarkedDeliveries %>
+              </div>
+            </div>
+            <div class="border rounded-3 px-3 py-2 bg-white flex-fill text-center">
+              <div class="text-muted small fw-bold text-uppercase mb-1" data-i18n="undone_receipts">Undone Receipts</div>
+              <div class="fs-4 fw-bold <%= data.teamPenalties.undoneReceipts > 0 ? 'text-warning' : 'text-success' %>">
+                <%= data.teamPenalties.undoneReceipts %>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    <% } %>
+
+    <% if (data.manufacturingTimelineData && !data.isLimitedDashboard) { %>
+      <%
+        const timelineJson = JSON.stringify(data.manufacturingTimelineData).replace(/</g, '\\u003c');
+      %>
+      <div class="rounded-4 border bg-white p-4 mb-4" style="box-shadow:0 1px 3px rgba(0,0,0,0.04)">
+        <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3">
+          <div>
+            <h2 class="h6 mb-1 fw-bold">Manufacturing Timeline</h2>
+            <div class="text-muted" style="font-size:0.76rem">
+              Starts and finishes by day, week, or month. Scope is limited to the user's allowed work centres or area.
+            </div>
+          </div>
+          <div class="d-flex flex-wrap gap-2">
+            <select id="timelineGranularity" class="form-select form-select-sm" style="min-width:120px">
+              <option value="day" selected>Per Day</option>
+              <option value="week">Per Week</option>
+              <option value="month">Per Month</option>
+            </select>
+            <select id="timelineScopeType" class="form-select form-select-sm" style="min-width:150px">
+              <option value="workCenter">Work Centre</option>
+              <option value="area">Area</option>
+            </select>
+            <select id="timelineScopeValue" class="form-select form-select-sm" style="min-width:180px"></select>
+          </div>
+        </div>
+        <div class="row g-3 align-items-stretch">
+          <div class="col-lg-8">
+            <div class="border rounded-4 p-3 bg-light h-100" style="overflow-x: auto; -webkit-overflow-scrolling: touch;">
+              <div style="min-width: 550px; width: 100%; position: relative;">
+                <canvas id="manufacturingTimelineChart" height="280" style="width:100%;height:280px;display:block"></canvas>
+              </div>
+            </div>
+          </div>
+          <div class="col-lg-4">
+            <div class="border rounded-4 p-3 bg-light h-100">
+              <div class="fw-semibold mb-2" style="font-size:0.85rem">Quick View</div>
+              <div id="timelineStats" class="small text-muted mb-3"></div>
+              <div class="d-flex flex-column gap-2 small">
+                <div class="d-flex align-items-center gap-2"><span style="width:12px;height:12px;background:#2563eb;border-radius:3px;display:inline-block"></span> Started</div>
+                <div class="d-flex align-items-center gap-2"><span style="width:12px;height:12px;background:#16a34a;border-radius:3px;display:inline-block"></span> Finished</div>
+                <div class="d-flex align-items-center gap-2"><span style="width:12px;height:12px;background:#9333ea;border-radius:3.5px;display:inline-block;border:1.5px solid #ffffff;box-shadow:0 0 0 1px #9333ea"></span> Confirmed</div>
+              </div>
+              <div class="mt-3 small text-muted">Tip: switch the scope to compare a work centre against an area.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <script type="application/json" id="manufacturingTimelineData"><%- timelineJson %></script>
+    <% } %>
+
+    <% if (data.boardRegistrationSummary && !data.isLimitedDashboard) { %>
+      <%
+        const br = data.boardRegistrationSummary;
+        const brBg = br.missingBoards > 0 ? '#fef2f2' : '#ecfdf5';
+        const brBorder = br.missingBoards > 0 ? '#fecaca' : '#bbf7d0';
+        const brText = br.missingBoards > 0 ? '#991b1b' : '#166534';
+      %>
+      <div class="rounded-4 p-4 mb-4 border" style="background:<%= brBg %>;border-color:<%= brBorder %> !important;box-shadow:0 1px 3px rgba(0,0,0,0.04);color:<%= brText %>">
+        <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
+          <div>
+            <div class="fw-bold fs-5 mb-1" data-i18n="board_registration_title">Board Registration vs Expected Logs</div>
+            <div class="small" style="opacity:0.85" data-i18n="board_registration_desc">
+              Physical inventory move history is compared with incoming board receipts. Edge banding is excluded so the count reflects board logs that affect manufacturing readiness.
+            </div>
+          </div>
+          <div class="badge rounded-pill px-3 py-2" style="background:#fff;border:1px solid <%= brBorder %>;color:<%= brText %>;font-weight:700">
+            <%= br.monthLabel %>
+          </div>
+        </div>
+        <div class="d-flex flex-wrap gap-3">
+          <div class="border rounded-3 px-3 py-2 bg-white flex-fill text-center">
+            <div class="text-muted small fw-bold text-uppercase mb-1" data-i18n="physical_inventory_boards">Physical Inventory Boards</div>
+            <div class="fs-4 fw-bold"><%= br.registeredBoards %></div>
+          </div>
+          <div class="border rounded-3 px-3 py-2 bg-white flex-fill text-center">
+            <div class="text-muted small fw-bold text-uppercase mb-1" data-i18n="expected_board_logs">Expected Board Logs</div>
+            <div class="fs-4 fw-bold"><%= br.expectedBoards %></div>
+          </div>
+          <div class="border rounded-3 px-3 py-2 bg-white flex-fill text-center">
+            <div class="text-muted small fw-bold text-uppercase mb-1" data-i18n="unlogged_board_logs">Unlogged Boards</div>
+            <div class="fs-4 fw-bold <%= br.missingBoards > 0 ? 'text-danger' : 'text-success' %>"><%= br.missingBoards %></div>
+          </div>
+          <div class="border rounded-3 px-3 py-2 bg-white flex-fill text-center">
+            <div class="text-muted small fw-bold text-uppercase mb-1" data-i18n="board_coverage">Coverage</div>
+            <div class="fs-4 fw-bold"><%= br.coveragePercent %>%</div>
+          </div>
+        </div>
+        <div class="mt-3 small" style="opacity:0.85"><%= br.details %></div>
+      </div>
+    <% } %>
+
+    <%
+      // Compute stats
+      const completedOrders = data.workOrders.filter(w => w.state === 'done').length;
+      const inProgress = data.workOrders.filter(w => w.state === 'progress').length;
+      const overdue = data.workOrders.filter(w => {
+        if (w.state === 'done' || !w.plannedStart) return false;
+        return Boolean(w.isOverdue);
+      }).length;
+      const totalAssigned = data.workOrders.length;
+      const avgProgress = totalAssigned > 0 ? Math.round(data.workOrders.reduce((s,w) => s + w.progress, 0) / totalAssigned) : 0;
+    %>
+
+    <% if (data.isLimitedDashboard) { %>
+    <div class="row g-4 mb-4">
+      <div class="col-lg-5">
+        <% if (data.employee) { %>
+        <div class="rounded-4 border bg-white p-4 mb-4" style="box-shadow:0 1px 3px rgba(0,0,0,0.04)">
+          <h2 class="h6 mb-3 fw-bold" data-i18n="my_details">My Details</h2>
+          <dl class="row mb-0" style="font-size:0.84rem">
+            <% if (data.employee.jobTitle) { %>
+              <dt class="col-sm-5 text-muted fw-normal" data-i18n="job_title">Job Title</dt>
+              <dd class="col-sm-7 fw-medium"><%= data.employee.jobTitle %></dd>
+            <% } %>
+            <% if (data.employee.department) { %>
+              <dt class="col-sm-5 text-muted fw-normal" data-i18n="department">Department</dt>
+              <dd class="col-sm-7 fw-medium"><%= data.employee.department %></dd>
+            <% } %>
+            <% if (data.employee.manager) { %>
+              <dt class="col-sm-5 text-muted fw-normal" data-i18n="manager">Manager</dt>
+              <dd class="col-sm-7 fw-medium"><%= data.employee.manager %></dd>
+            <% } %>
+            <% if (data.employee.workEmail) { %>
+              <dt class="col-sm-5 text-muted fw-normal" data-i18n="email">Email</dt>
+              <dd class="col-sm-7 fw-medium"><%= data.employee.workEmail %></dd>
+            <% } %>
+            <% if (data.employee.mobilePhone) { %>
+              <dt class="col-sm-5 text-muted fw-normal" data-i18n="phone">Phone</dt>
+              <dd class="col-sm-7 fw-medium"><%= data.employee.mobilePhone %></dd>
+            <% } %>
+          </dl>
+        </div>
+        <% } %>
+
+        <div class="rounded-4 border bg-white p-3 p-sm-4" style="box-shadow:0 1px 3px rgba(0,0,0,0.04)">
+          <h2 class="h6 mb-3 fw-bold" data-i18n="my_assigned_items">My Assigned Items</h2>
+          <% if (data.assignedItems && data.assignedItems.length) { %>
+            <div class="d-flex flex-wrap gap-2">
+              <% data.assignedItems.forEach(item => { %>
+                <span class="badge rounded-pill px-3 py-2" style="background:#f0f9ff;color:#0369a1;border:1px solid #bae6fd;font-size:0.78rem;font-weight:500">
+                  <%= item.itemName %> x <%= item.quantity %>
+                  <small class="ms-1 opacity-75"><%= item.assignedDate %></small>
+                </span>
+              <% }) %>
+            </div>
+          <% } else { %>
+            <p class="text-muted small mb-0" data-i18n="no_items_assigned">No items assigned yet.</p>
+          <% } %>
+        </div>
+      </div>
+
+      <div class="col-lg-7">
+        <div class="rounded-4 border bg-white overflow-hidden" style="box-shadow:0 1px 3px rgba(0,0,0,0.04)">
+          <div class="px-4 py-3 border-bottom">
+            <h2 class="h6 mb-0 fw-bold" data-i18n="payslips">Payslips</h2>
+          </div>
+          <div>
+            <% if (!data.payslips.length) { %>
+              <div class="p-4 text-muted small" data-i18n="no_payslips">No payslips available.</div>
+            <% } %>
+            <% data.payslips.forEach((ps) => { %>
+              <div class="d-flex justify-content-between align-items-center px-4 py-3 border-bottom">
+                <div>
+                  <div class="fw-semibold" style="font-size:0.88rem"><%= ps.name %></div>
+                  <div class="text-muted" style="font-size:0.75rem"><%= ps.dateFrom.slice(0,10) %> to <%= ps.dateTo.slice(0,10) %></div>
+                </div>
+                <a href="/shop-floor/payslip/<%= ps.id %>/download" class="btn btn-sm rounded-pill px-3 d-inline-flex align-items-center gap-1" style="background:#f0fdf4;color:#166534;border:1px solid #bbf7d0;font-weight:500" download="<%= ps.name.replace(/[<>:"/\\|?*]/g, '').trim() %>.pdf" title="Download payslip PDF">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                  PDF
+                </a>
+              </div>
+            <% }) %>
+          </div>
+        </div>
+      </div>
+    </div>
+    <% } %>
+
+    <% if (!data.isLimitedDashboard) { %>
+    <!-- Stats Row -->
+    <div class="row g-3 mb-4">
+      <div class="col-6 col-md-3 col-lg-2">
+        <div class="rounded-4 border bg-white p-3 text-center">
+          <div class="text-muted mb-1" style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;font-weight:700" data-i18n="assigned_mo">Assigned MO</div>
+          <div class="fw-bold" style="font-size:1.5rem"><%= totalAssigned %></div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3 col-lg-2">
+        <div class="rounded-4 border bg-white p-3 text-center" style="border-left:3px solid #3b82f6 !important">
+          <div class="text-primary mb-1" style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;font-weight:700" data-i18n="active_mo">Active MO</div>
+          <div class="fw-bold text-primary" style="font-size:1.5rem"><%= inProgress %></div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3 col-lg-2">
+        <div class="rounded-4 border bg-white p-3 text-center" style="<%= overdue > 0 ? 'border-left:3px solid #ef4444 !important' : '' %>">
+          <div class="<%= overdue > 0 ? 'text-danger' : 'text-muted' %> mb-1" style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;font-weight:700" data-i18n="overdue_mo">Overdue MO</div>
+          <div class="fw-bold <%= overdue > 0 ? 'text-danger' : '' %>" style="font-size:1.5rem"><%= overdue %></div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3 col-lg-2">
+        <div class="rounded-4 border bg-white p-3 text-center" style="<%= (data.lateCount || 0) > 0 ? 'border-left:3px solid #f59e0b !important' : '' %>">
+          <div class="<%= (data.lateCount || 0) > 0 ? 'text-warning' : 'text-muted' %> mb-1" style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;font-weight:700" data-i18n="late_checkin">Late Check-in</div>
+          <div class="fw-bold <%= (data.lateCount || 0) > 0 ? 'text-warning' : '' %>" style="font-size:1.5rem"><%= data.lateCount || 0 %></div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3 col-lg-2">
+        <%
+          const expectedBoardsCountVal = data.stockAlerts ? data.stockAlerts.reduce((sum, item) => sum + (item.qtyNeeded || 0), 0) : 0;
+        %>
+        <div class="rounded-4 border bg-white p-3 text-center" style="<%= expectedBoardsCountVal > 0 ? 'border-left:3px solid #f59e0b !important' : '' %>">
+          <div class="<%= expectedBoardsCountVal > 0 ? 'text-warning' : 'text-muted' %> mb-1" style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;font-weight:700" data-i18n="expected_boards">Expected Boards</div>
+          <div class="fw-bold <%= expectedBoardsCountVal > 0 ? 'text-warning' : '' %>" style="font-size:1.5rem"><%= expectedBoardsCountVal %></div>
+        </div>
+      </div>
+      <div class="col-6 col-md-3 col-lg-2">
+        <div class="rounded-4 border bg-white p-3 text-center" style="border-left:3px solid #10b981 !important">
+          <div class="text-success mb-1" style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;font-weight:700;color:#059669" data-i18n="reserved_boards">Reserved Boards</div>
+          <div class="fw-bold text-success" style="font-size:1.5rem;color:#059669"><%= data.reservedBoardsCount || 0 %></div>
+        </div>
+      </div>
+    </div>
+    <% } %>
+
+    <div class="row g-4">
+      <!-- Left: All Work Orders grouped by Area -->
+      <% if (!data.isLimitedDashboard) { %>
+      <div id="manufacturing-orders" class="col-lg-8 order-2 order-lg-1" style="scroll-margin-top:1rem">
+        <%
+          // Group work orders by area
+          const areaGroups = {};
+          data.workOrders.forEach(wo => {
+            const area = wo.area || 'General';
+            if (!areaGroups[area]) areaGroups[area] = [];
+            areaGroups[area].push(wo);
+          });
+          const areaOrder = ['Table Saw Area', 'Edge Banding Area', 'Panel Rack Area'];
+          const sortedAreas = Object.keys(areaGroups).sort((a, b) => {
+            const aIndex = areaOrder.indexOf(a);
+            const bIndex = areaOrder.indexOf(b);
+            if (aIndex === -1 && bIndex === -1) return a.localeCompare(b);
+            if (aIndex === -1) return 1;
+            if (bIndex === -1) return -1;
+            return aIndex - bIndex;
+          });
+        %>
+
+        <% sortedAreas.forEach((area) => {
+          const orders = areaGroups[area];
+          const doneCount = orders.filter(o => o.state === 'done').length;
+          const progressCount = orders.filter(o => o.state === 'progress').length;
+        %>
+        <div id="area-<%= area.toLowerCase().replace(/ area$/, '').replace(/[^a-z0-9]+/g, '-') %>" class="rounded-4 border bg-white overflow-hidden mb-4" style="box-shadow:0 1px 3px rgba(0,0,0,0.04)">
+          <div class="px-4 py-2 d-flex justify-content-between align-items-center" style="background:#f8fafc;border-bottom:1px solid #e2e8f0">
+            <div>
+              <span class="fw-bold" style="font-size:0.85rem;color:#1e293b"><%= area %></span>
+              <span class="badge rounded-pill ms-2" style="background:#e2e8f0;color:#475569;font-weight:600"><%= orders.length %></span>
+            </div>
+            <div style="font-size:0.72rem;color:#94a3b8">
+              <%= progressCount %> <span data-i18n="in_progress">in progress</span> · <%= doneCount %> <span data-i18n="done">done</span>
+            </div>
+          </div>
+          <% orders.forEach((wo) => {
+            const isOverdue = wo.state !== 'done' && wo.isOverdue;
+            const planFormId = `planDate${wo.id}`;
+          %>
+            <div class="px-4 py-3 border-bottom d-flex flex-column gap-2" style="<%= isOverdue ? 'background:#fef2f2' : '' %>">
+              <!-- Top Row: MO Name & Badges -->
+              <div class="d-flex justify-content-between align-items-center">
+                <button
+                  type="button"
+                  class="btn btn-link p-0 fw-bold text-dark text-decoration-none text-start"
+                  style="font-size:0.9rem"
+                  data-mo-action
+                  data-bs-toggle="modal"
+                  data-bs-target="#manufacturingOrderActionModal"
+                  data-mo-id="<%= wo.id %>"
+                  data-mo-name="<%= wo.name %>"
+                  data-mo-product="<%= wo.product %>"
+                  data-mo-state="<%= wo.state %>"
+                  data-stock-status="<%= wo.stockStatus %>"
+                ><%= wo.name %></button>
+                <div class="d-flex align-items-center gap-2">
+                  <!-- State Badge -->
+                  <% 
+                    const sb = wo.state === 'done' ? 'background:#dcfce7;color:#166534' 
+                             : wo.state === 'progress' ? 'background:#dbeafe;color:#1e40af' 
+                             : wo.state === 'confirmed' ? 'background:#fef9c3;color:#854d0e' 
+                             : 'background:#f1f5f9;color:#475569';
+                  %>
+                  <span class="badge rounded-pill" style="<%= sb %>;font-weight:600;font-size:0.68rem"><%= wo.state %></span>
+                  
+                  <!-- Overdue Badge -->
+                  <% if (isOverdue) { %>
+                    <span class="badge rounded-pill bg-danger-subtle text-danger border border-danger-subtle" style="font-size:0.68rem;font-weight:600" data-i18n="overdue">Overdue</span>
+                  <% } %>
+
+                  <!-- Stock Status Badge -->
+                  <% if (wo.stockStatus === 'no_stock') { %>
+                    <span class="badge bg-danger-subtle text-danger border border-danger-subtle py-0.5 px-2 rounded-pill" style="font-size:0.68rem;font-weight:600" data-i18n="no_stock">No Stock</span>
+                  <% } else if (wo.stockStatus === 'incoming') { %>
+                    <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle py-0.5 px-2 rounded-pill" style="font-size:0.68rem;font-weight:600" data-i18n="incoming">Incoming</span>
+                  <% } else { %>
+                    <span class="badge bg-success-subtle text-success border border-success-subtle py-0.5 px-2 rounded-pill" style="font-size:0.68rem;font-weight:600" data-i18n="ready">Ready</span>
+                  <% } %>
+                </div>
+              </div>
+
+              <!-- Middle Row: Product Name -->
+              <div class="text-secondary fw-medium" style="font-size:0.8rem; line-height:1.25"><%= wo.product %></div>
+
+              <!-- Sub-info Row: Client & Assigned -->
+              <div class="text-muted d-flex flex-wrap align-items-center" style="font-size:0.72rem; gap:6px">
+                <% if (wo.client) { %>
+                  <span><span data-i18n="client">Client</span>: <span class="text-dark-emphasis fw-medium"><%= wo.client %></span></span>
+                <% } %>
+                <% if (wo.client && wo.assignedTo) { %>
+                  <span style="opacity:0.5">•</span>
+                <% } %>
+                <% if (wo.assignedTo) { %>
+                  <span><span data-i18n="assigned">Assigned</span>: <span class="text-dark-emphasis fw-medium"><%= wo.assignedTo %></span></span>
+                <% } else { %>
+                  <span class="text-warning-emphasis fw-medium" data-i18n="unassigned">Unassigned</span>
+                <% } %>
+              </div>
+
+              <!-- Bottom Row: Progress Bar and Quantity Fraction -->
+              <div class="d-flex align-items-center gap-3 mt-1 pt-1" style="border-top: 1px dashed rgba(226, 232, 240, 0.8) !important">
+                <div class="d-flex align-items-center gap-1.5" style="min-width:65px">
+                  <small class="fw-bold text-dark"><%= wo.progress %>%</small>
+                  <small class="text-muted" style="font-size:0.7rem">(<%= wo.produced %>/<%= wo.qty %>)</small>
+                </div>
+                <div class="progress flex-grow-1" style="height:6px; background-color:#e2e8f0; border-radius:3px">
+                  <div class="progress-bar <%= wo.progress >= 100 ? 'bg-success' : 'bg-primary' %>" style="width:<%= wo.progress %>%; border-radius:3px"></div>
+                </div>
+              </div>
+
+              <div class="d-flex flex-wrap align-items-center gap-2">
+                <button
+                  type="button"
+                  class="btn btn-sm rounded-pill px-3 fw-bold <%= wo.state === 'progress' ? 'btn-primary' : wo.state === 'done' ? 'btn-outline-secondary' : 'btn-success' %>"
+                  data-mo-action
+                  data-bs-toggle="modal"
+                  data-bs-target="#manufacturingOrderActionModal"
+                  data-mo-id="<%= wo.id %>"
+                  data-mo-name="<%= wo.name %>"
+                  data-mo-product="<%= wo.product %>"
+                  data-mo-state="<%= wo.state %>"
+                  data-stock-status="<%= wo.stockStatus %>"
+                  <%= wo.state === 'done' ? 'disabled' : '' %>
+                >
+                  <i class="bi <%= wo.state === 'progress' ? 'bi-stop-fill' : wo.state === 'done' ? 'bi-check-circle-fill' : 'bi-play-fill' %> me-1" aria-hidden="true"></i>
+                  <%= wo.state === 'progress' ? 'Finish' : wo.state === 'done' ? 'Completed' : 'Start' %>
+                </button>
+                <button
+                  type="button"
+                  class="btn btn-sm rounded-pill px-3"
+                  style="background:#eef2ff;color:#3730a3;border:1px solid #c7d2fe;font-size:0.72rem;font-weight:600"
+                  data-bs-toggle="collapse"
+                  data-bs-target="#<%= planFormId %>"
+                  aria-expanded="false"
+                  aria-controls="<%= planFormId %>"
+                >
+                  Plan Date
+                </button>
+                <% if (wo.dateDeadline) { %>
+                  <span class="text-muted small">Client required by <strong><%= wo.dateDeadline.slice(0,10) %></strong></span>
+                <% } %>
+                <% if (wo.estimatedFinishAt) { %>
+                  <span class="text-muted small">Estimated finish <strong><%= new Date(wo.estimatedFinishAt).toLocaleString('en-KE', { timeZone: 'Africa/Nairobi', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true }) %></strong></span>
+                <% } %>
+                <% if (wo.queuePriority === 'small-mo-priority') { %>
+                  <span class="badge rounded-pill bg-success-subtle text-success border border-success-subtle">Small job priority</span>
+                <% } %>
+              </div>
+
+              <div class="collapse" id="<%= planFormId %>">
+                <form method="post" action="/shop-floor/work-order/<%= wo.id %>/plan-date" class="d-flex flex-wrap gap-2 align-items-end">
+                  <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+                  <input type="hidden" name="returnTo" value="/shop-floor" />
+                  <div style="min-width: 180px; flex: 1 1 180px;">
+                    <label class="form-label small mb-1 text-muted">Required date</label>
+                    <input
+                      type="date"
+                      name="planDate"
+                      class="form-control form-control-sm"
+                      value="<%= wo.dateDeadline ? wo.dateDeadline.slice(0,10) : '' %>"
+                      required
+                    />
+                  </div>
+                  <div>
+                    <button type="submit" class="btn btn-sm rounded-pill px-3" style="background:#4338ca;color:#fff;font-size:0.72rem;font-weight:600">
+                      Save Plan Date
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          <% }) %>
+        </div>
+        <% }) %>
+
+        <% if (!Object.keys(areaGroups).length) { %>
+          <div class="rounded-4 border bg-white p-5 text-center text-muted" style="box-shadow:0 1px 3px rgba(0,0,0,0.04)">
+            <span data-i18n="no_active_mo">No active manufacturing orders.</span>
+          </div>
+        <% } %>
+      </div>
+
+      <!-- Right: Quick Info & Actions -->
+      <div class="col-lg-4 order-1 order-lg-2">
+        <!-- Attendance -->
+        <div class="rounded-4 border bg-white mb-4 p-3 p-sm-4" style="box-shadow:0 1px 3px rgba(0,0,0,0.04)">
+          <span id="attendance-app" class="position-relative" style="top:-5rem"></span>
+          <h2 class="h6 mb-3 fw-bold" data-i18n="recent_attendance">Recent Attendance</h2>
+          
+          <%
+          function formatAttendanceTime(dateTimeStr) {
+            if (!dateTimeStr) return '';
+            const parts = dateTimeStr.split(' ');
+            const timePart = parts[1] || '';
+            if (!timePart) return '';
+            
+            const [hh, mm] = timePart.split(':').map(Number);
+            const ampm = hh >= 12 ? 'PM' : 'AM';
+            const hour12 = hh % 12 || 12;
+            return `${hour12}:${String(mm).padStart(2, '0')} ${ampm}`;
+          }
+
+          function formatAttendanceDate(dateTimeStr) {
+            if (!dateTimeStr) return '';
+            const dateStr = dateTimeStr.split(' ')[0];
+            const [y, m, d] = dateStr.split('-').map(Number);
+            const dateObj = new Date(y, m - 1, d);
+            return dateObj.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+          }
+
+          function calculateDuration(checkInStr, checkOutStr) {
+            if (!checkInStr || !checkOutStr) return '';
+            try {
+              const parseDateTime = (str) => {
+                const [dPart, tPart] = str.split(' ');
+                const [y, m, d] = dPart.split('-').map(Number);
+                const [hh, mm] = tPart.split(':').map(Number);
+                return new Date(y, m - 1, d, hh, mm);
+              };
+              const inDate = parseDateTime(checkInStr);
+              const outDate = parseDateTime(checkOutStr);
+              const diffMs = outDate.getTime() - inDate.getTime();
+              if (diffMs <= 0) return '';
+              const diffMins = Math.floor(diffMs / 60000);
+              const hrs = Math.floor(diffMins / 60);
+              const mins = diffMins % 60;
+              if (hrs > 0) {
+                return `${hrs}h ${mins}m`;
+              }
+              return `${mins}m`;
+            } catch {
+              return '';
+            }
+          }
+          %>
+
+          <% if (data.attendance && data.attendance.recentRecords.length) { %>
+            <div class="d-flex flex-column gap-2">
+              <% data.attendance.recentRecords.forEach((rec) => { %>
+                <div class="d-flex align-items-center justify-content-between p-2 rounded-3 border bg-light-subtle" style="font-size: 0.82rem; border-color: #f1f5f9 !important;">
+                  <div class="d-flex align-items-center gap-2.5">
+                    <!-- Date badge -->
+                    <div class="text-center rounded-3 px-2 py-1 flex-shrink-0" style="background: #f0f9ff; color: #0284c7; min-width: 66px; border: 1px solid #e0f2fe;">
+                      <div class="fw-semibold text-uppercase text-muted" style="font-size: 0.58rem; letter-spacing: 0.05em; line-height: 1;">
+                        <%= rec.check_in ? formatAttendanceDate(rec.check_in).split(',')[0] : '' %>
+                      </div>
+                      <div class="fw-bold my-0.5" style="font-size: 1rem; line-height: 1; color: #0369a1;">
+                        <%= rec.check_in ? formatAttendanceDate(rec.check_in).split(' ')[2] || formatAttendanceDate(rec.check_in).split(' ')[1] : '-' %>
+                      </div>
+                      <div class="text-uppercase fw-semibold" style="font-size: 0.55rem; letter-spacing: 0.05em; line-height: 1; opacity: 0.8;">
+                        <%= rec.check_in ? formatAttendanceDate(rec.check_in).split(' ')[1] : '' %>
+                      </div>
+                    </div>
+                    
+                    <!-- Times -->
+                    <div>
+                      <div class="fw-bold text-dark d-flex align-items-center gap-1.5" style="font-size: 0.85rem;">
+                        <span><%= rec.check_in ? formatAttendanceTime(rec.check_in) : '-' %></span>
+                        <span class="text-muted opacity-50">&rarr;</span>
+                        <% if (rec.check_out) { %>
+                          <span><%= formatAttendanceTime(rec.check_out) %></span>
+                        <% } else { %>
+                          <span class="d-inline-flex align-items-center gap-1 badge bg-success-subtle text-success border border-success-subtle px-1.5 py-0.5 rounded-pill" style="font-size: 0.65rem; font-weight: 600;">
+                            <span class="pulse-green-dot"></span> <span data-i18n="on_duty">On Duty</span>
+                          </span>
+                        <% } %>
+                      </div>
+                      <div class="text-muted mt-0.5" style="font-size: 0.72rem;">
+                        <% if (rec.check_out) { %>
+                          <span data-i18n="duration">Duration</span>: <strong><%= calculateDuration(rec.check_in, rec.check_out) %></strong>
+                        <% } else { %>
+                          <span data-i18n="shift_started">Shift started today</span>
+                        <% } %>
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <div class="text-end">
+                    <% if (rec.check_out) { %>
+                      <span class="badge bg-secondary-subtle text-secondary px-2 py-0.5 rounded-pill" style="font-size: 0.7rem; font-weight: 500;">Done</span>
+                    <% } else { %>
+                      <span class="badge bg-success text-white px-2 py-0.5 rounded-pill" style="font-size: 0.7rem; font-weight: 600; box-shadow: 0 2px 6px rgba(34, 197, 94, 0.2);">Active</span>
+                    <% } %>
+                  </div>
+                </div>
+              <% }) %>
+            </div>
+          <% } else { %>
+            <p class="text-muted small mb-0" data-i18n="no_attendance">No recent attendance records.</p>
+          <% } %>
+        </div>
+
+        <span id="maintenance-app" class="position-relative" style="top:-5rem"></span>
+        <!-- Machine Breakdown Logs -->
+        <div class="rounded-4 border bg-white mb-4 overflow-hidden" id="breakdownLogsCard" style="box-shadow:0 1px 3px rgba(0,0,0,0.04)">
+          <!-- Card Header -->
+          <div class="px-4 py-3 d-flex justify-content-between align-items-center" style="background:#f8fafc;border-bottom:1px solid #e2e8f0">
+            <div>
+              <h2 class="h6 mb-0 fw-bold" style="color:#0f172a" data-i18n="breakdown_logs">Machine Breakdown Logs</h2>
+              <div style="font-size:0.7rem;color:#64748b;margin-top:1px">
+                <% const openIncidents = (data.incidents || []).filter(i => i.status === 'open'); %>
+                <% if (openIncidents.length > 0) { %>
+                  <span class="d-inline-block bg-danger rounded-circle me-1" style="width:6px;height:6px;vertical-align:middle"></span>
+                  <span class="text-danger fw-semibold"><%= openIncidents.length %> open issue<%= openIncidents.length > 1 ? 's' : '' %></span>
+                <% } else { %>
+                  <span class="text-success" data-i18n="all_machines_running">All machines running</span>
+                <% } %>
+              </div>
+            </div>
+            <button class="btn btn-sm btn-danger rounded-pill px-3 d-flex align-items-center gap-1 fw-semibold"
+              style="font-size:0.78rem"
+              type="button"
+              data-bs-toggle="modal" data-bs-target="#reportIncidentModal">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              <span data-i18n="report_breakdown">Report Breakdown</span>
+            </button>
+          </div>
+
+          <!-- Incidents List -->
+          <div class="p-3">
+            <% if (data.incidents && data.incidents.length) { %>
+              <div class="d-flex flex-column gap-2">
+                <% data.incidents.forEach((inc, idx) => {
+                  const isOpen = inc.status === 'open';
+                  let severity = 'medium';
+                  let desc = inc.description || '';
+                  const sevMatch = desc.match(/^\[([A-Z]+)\]\s*/);
+                  if (sevMatch) { severity = sevMatch[1].toLowerCase(); desc = desc.replace(sevMatch[0], ''); }
+                  const borderColors = { critical: '#dc2626', high: '#ea580c', medium: '#d97706', low: '#16a34a' };
+                  const bColor = borderColors[severity] || borderColors.medium;
+                %>
+                <div class="incident-card rounded-3 border bg-white overflow-hidden" style="border-left: 4px solid <%= bColor %> !important; border-color: #e2e8f0 !important; transition: box-shadow 0.15s">
+                  <!-- Incident Header -->
+                  <div class="d-flex align-items-center justify-content-between px-3 py-2"
+                    style="background:#f8fafc;cursor:pointer"
+                    data-bs-toggle="collapse" data-bs-target="#incDetail<%= idx %>" aria-expanded="false">
+                    <div class="d-flex align-items-center gap-2 flex-wrap">
+                      <span class="badge rounded-pill" style="background:#f1f5f9;color:#475569;border:1px solid #cbd5e1;font-size:0.65rem;font-weight:700;text-transform:uppercase;letter-spacing:0.05em">
+                        <%= severity %>
+                      </span>
+                      <strong style="font-size:0.85rem;color:#1e293b"><%= inc.machineName %></strong>
+                    </div>
+                    <div class="d-flex align-items-center gap-2 flex-shrink-0">
+                      <% if (isOpen) { %>
+                        <span class="badge rounded-pill bg-danger-subtle text-danger border border-danger-subtle" style="font-size:0.68rem;font-weight:600">Open</span>
+                      <% } else { %>
+                        <span class="badge rounded-pill bg-success-subtle text-success border border-success-subtle" style="font-size:0.68rem;font-weight:600">Resolved</span>
+                      <% } %>
+                      <svg class="chevron-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#94a3b8" stroke-width="2.5" style="transition:transform 0.2s;flex-shrink:0"><polyline points="6 9 12 15 18 9"/></svg>
+                    </div>
+                  </div>
+                  <!-- Incident Detail (collapsed) -->
+                  <div class="collapse" id="incDetail<%= idx %>">
+                    <div class="px-3 py-3" style="background:#fff;border-top:1px solid #e2e8f0">
+                      <% if (desc) { %>
+                        <div class="mb-2" style="font-size:0.82rem;color:#334155;line-height:1.5">
+                          <span class="text-muted fw-semibold" style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.06em">Description</span><br>
+                          <%= desc %>
+                      <% } %>
+                      <div class="d-flex flex-wrap gap-3 mb-2" style="font-size:0.75rem;color:#64748b">
+                        <span>
+                          Reported: <strong><%= inc.reportedAt ? inc.reportedAt.slice(0,16).replace('T',' ') : 'Unknown' %></strong>
+                        </span>
+                        <% if (inc.reportedBy) { %>
+                          <span>
+                            By: <strong><%= inc.reportedBy %></strong>
+                          </span>
+                        <% } %>
+                      </div>
+                      <% if (isOpen && authUser && (authUser.role === 'admin' || authUser.apps?.includes('shop-floor-admin'))) { %>
+                        <form method="post" action="/shop-floor/incident/<%= inc.id %>/resolve" class="mt-2">
+                          <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+                          <button type="submit" class="btn btn-sm btn-outline-success rounded-pill px-3" style="font-size:0.72rem;font-weight:600" data-i18n="mark_resolved">
+                            Mark Resolved
+                          </button>
+                        </form>
+                      <% } %>
+                    </div>
+                  </div>
+                </div>
+                <% }) %>
+              </div>
+            <% } else { %>
+              <div class="text-center py-4 text-muted">
+                <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="#22c55e" stroke-width="2" class="mb-2"><polyline points="20 6 9 17 4 12"/></svg>
+                <div class="fw-semibold mb-1" style="font-size:0.85rem;color:#1e293b" data-i18n="no_breakdowns">No breakdowns reported</div>
+                <div style="font-size:0.75rem" data-i18n="machines_smooth">All machines are running smoothly</div>
+              </div>
+            <% } %>
+          </div>
+        </div>
+
+        <!-- Report Breakdown Modal -->
+        <div class="modal fade report-incident-modal" id="reportIncidentModal" tabindex="-1" aria-labelledby="reportIncidentModalLabel" aria-hidden="true">
+          <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable modal-fullscreen-sm-down report-incident-modal__dialog">
+            <form method="post" action="/shop-floor/incident" id="breakdownForm" class="modal-content border-0 report-incident-modal__content needs-validation" novalidate style="border-radius:12px; box-shadow:0 10px 30px rgba(0,0,0,0.15); overflow:hidden">
+              <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+              <!-- Modal Header -->
+              <div class="modal-header px-4 py-3 border-bottom" style="background:#1e293b; color:#fff">
+                <div>
+                  <h5 class="modal-title fw-bold text-white mb-0" id="reportIncidentModalLabel" data-i18n="report_breakdown">Report Machine Breakdown</h5>
+                  <p class="text-white mb-0" style="opacity:0.8; font-size:0.78rem; margin-top:2px">Fill in the details to notify the maintenance team</p>
+                </div>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+              </div>
+
+              <!-- Modal Body -->
+              <div class="modal-body px-4 py-3 report-incident-modal__body" style="background:#f8fafc">
+                  <!-- Machine Selection -->
+                  <div class="mb-3">
+                    <label for="machineSelect" class="form-label fw-semibold" style="font-size:0.85rem; color:#334155">
+                      Select Machine <span class="text-danger">*</span>
+                    </label>
+                    <select name="machine" id="machineSelect" class="form-select form-select-md" style="font-size:0.88rem" required>
+                      <option value="" disabled selected>-- Select machine --</option>
+                      <% Object.keys(breakdownCatalog).forEach(function(machineName) { %>
+                        <option value="<%= machineName %>"><%= machineName %></option>
+                      <% }); %>
+                    </select>
+                    <div class="invalid-feedback" style="font-size:0.75rem">Please select a machine.</div>
+                    
+                    <!-- Custom Machine Name (Hidden by default) -->
+                    <div id="customMachineContainer" class="mt-2 d-none">
+                      <input type="text" id="machineCustomInput" name="machineCustom" class="form-control" placeholder="Enter machine name..." style="font-size:0.85rem">
+                      <div class="invalid-feedback" id="customMachineError" style="font-size:0.75rem">Please enter the machine name.</div>
+                    </div>
+                  </div>
+
+                  <div class="mb-3">
+                    <label for="machineComponentSelect" class="form-label fw-semibold" style="font-size:0.85rem; color:#334155">
+                      Failed Component <span class="text-danger">*</span>
+                    </label>
+                    <select name="component" id="machineComponentSelect" class="form-select form-select-md" style="font-size:0.88rem" required disabled>
+                      <option value="">-- Select a machine first --</option>
+                    </select>
+                    <div class="invalid-feedback" style="font-size:0.75rem">Select the component that has failed.</div>
+                    <div class="form-text" style="font-size:0.72rem">Only components for the selected major machine are shown.</div>
+                  </div>
+
+                  <!-- Severity Level -->
+                  <div class="mb-3">
+                    <label class="form-label fw-semibold" style="font-size:0.85rem; color:#334155">
+                      Severity Level <span class="text-danger">*</span>
+                    </label>
+                    <div class="btn-group w-100" role="group" aria-label="Severity Level">
+                      <input type="radio" class="btn-check" name="_severity" id="sev_critical" value="critical" required>
+                      <label class="btn btn-outline-danger py-2 fw-medium" style="font-size:0.82rem; flex:1" for="sev_critical">Critical</label>
+                      
+                      <input type="radio" class="btn-check" name="_severity" id="sev_high" value="high">
+                      <label class="btn btn-outline-warning py-2 fw-medium" style="font-size:0.82rem; flex:1" for="sev_high">High</label>
+                      
+                      <input type="radio" class="btn-check" name="_severity" id="sev_medium" value="medium" checked>
+                      <label class="btn btn-outline-primary py-2 fw-medium" style="font-size:0.82rem; flex:1" for="sev_medium">Medium</label>
+                      
+                      <input type="radio" class="btn-check" name="_severity" id="sev_low" value="low">
+                      <label class="btn btn-outline-success py-2 fw-medium" style="font-size:0.82rem; flex:1" for="sev_low">Low</label>
+                    </div>
+                    <div class="text-muted mt-1" style="font-size:0.72rem" id="severityHelperText">
+                      Partial issue, can work around
+                    </div>
+                  </div>
+
+                  <!-- What Happened -->
+                  <div class="mb-3">
+                    <label for="incidentDescription" class="form-label fw-semibold" style="font-size:0.85rem; color:#334155">
+                      What happened? <span class="text-danger">*</span>
+                    </label>
+                    <textarea name="description" id="incidentDescription" class="form-control" rows="3" required
+                      placeholder="Describe the issue (e.g. noise, smoke, stopped feeding boards...)"
+                      style="font-size:0.85rem; resize:vertical; border-color:#cbd5e1"></textarea>
+                    <div class="invalid-feedback" style="font-size:0.75rem">Please describe what happened.</div>
+                    <div class="d-flex justify-content-between mt-1 text-muted" style="font-size:0.72rem">
+                      <span>Specific symptoms help response times.</span>
+                      <span><span id="descCharCount">0</span>/500</span>
+                    </div>
+                  </div>
+
+                  <!-- Affected Work Area -->
+                  <div class="mb-3">
+                    <label for="areaSelect" class="form-label fw-semibold" style="font-size:0.85rem; color:#334155">Affected Work Area</label>
+                    <select name="area" id="areaSelect" class="form-select" style="font-size:0.85rem">
+                      <option value="">-- Select area (optional) --</option>
+                      <option value="Table Saw Area">Table Saw Area</option>
+                      <option value="Edge Banding Area">Edge Banding Area</option>
+                      <option value="Panel Rack Area">Panel Rack Area</option>
+                    </select>
+                  </div>
+
+                  <!-- Estimated Downtime -->
+                  <div class="mb-3">
+                    <label for="downtimeSelect" class="form-label fw-semibold" style="font-size:0.85rem; color:#334155">Estimated Downtime</label>
+                    <select name="downtime" id="downtimeSelect" class="form-select" style="font-size:0.85rem">
+                      <option value="">-- Select estimated downtime (optional) --</option>
+                      <option value="<30 min">Less than 30 minutes</option>
+                      <option value="30–60 min">30 to 60 minutes</option>
+                      <option value="1–2 hrs">1 to 2 hours</option>
+                      <option value="2–4 hrs">2 to 4 hours</option>
+                      <option value="Half day">Half a day</option>
+                      <option value="Full day+">Full day or more</option>
+                      <option value="Unknown">Unknown</option>
+                    </select>
+                  </div>
+
+                  <!-- Actions Taken & Notes -->
+                  <div class="mb-3">
+                    <label class="form-label fw-semibold" style="font-size:0.85rem; color:#334155">Immediate Action Taken</label>
+                    <div class="d-flex flex-wrap gap-3">
+                      <div class="form-check">
+                        <input class="form-check-input" type="checkbox" name="actions" value="Power off" id="act_power">
+                        <label class="form-check-label text-secondary" style="font-size:0.83rem" for="act_power">Power off</label>
+                      </div>
+                      <div class="form-check">
+                        <input class="form-check-input" type="checkbox" name="actions" value="Cordoned" id="act_cordon">
+                        <label class="form-check-label text-secondary" style="font-size:0.83rem" for="act_cordon">Area cordoned</label>
+                      </div>
+                      <div class="form-check">
+                        <input class="form-check-input" type="checkbox" name="actions" value="Supervisor" id="act_super">
+                        <label class="form-check-label text-secondary" style="font-size:0.83rem" for="act_super">Supervisor notified</label>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div class="mb-1">
+                    <label for="additionalNotes" class="form-label fw-semibold" style="font-size:0.85rem; color:#334155">Additional Notes</label>
+                    <textarea name="notes" id="additionalNotes" class="form-control" rows="2"
+                      placeholder="Any other information the maintenance team should know..."
+                      style="font-size:0.83rem; border-color:#cbd5e1"></textarea>
+                  </div>
+                </div>
+
+                <!-- Modal Footer -->
+                <div class="modal-footer px-4 py-3 bg-light border-top d-flex justify-content-end gap-2">
+                  <button type="button" class="btn btn-outline-secondary rounded-pill px-4" style="font-size:0.85rem" data-bs-dismiss="modal">Cancel</button>
+                  <button type="submit" class="btn btn-danger rounded-pill px-4 fw-bold" style="font-size:0.88rem" id="submitBreakdownBtn">
+                    <span class="submit-text">Submit Breakdown Report</span>
+                    <span class="submit-spinner d-none">
+                      <span class="spinner-border spinner-border-sm me-1"></span> Submitting...
+                    </span>
+                  </button>
+                </div>
+            </form>
+          </div>
+        </div>
+        <!-- Assigned Items -->
+        <div class="rounded-4 border bg-white mb-4 p-3 p-sm-4" style="box-shadow:0 1px 3px rgba(0,0,0,0.04)">
+          <h2 class="h6 mb-3 fw-bold" data-i18n="my_assigned_items">My Assigned Items</h2>
+          <% if (data.assignedItems && data.assignedItems.length) { %>
+            <div class="d-flex flex-wrap gap-2">
+              <% data.assignedItems.forEach(item => { %>
+                <span class="badge rounded-pill px-3 py-2" style="background:#f0f9ff;color:#0369a1;border:1px solid #bae6fd;font-size:0.78rem;font-weight:500">
+                  <%= item.itemName %> × <%= item.quantity %>
+                  <small class="ms-1 opacity-75"><%= item.assignedDate %></small>
+                </span>
+              <% }) %>
+            </div>
+          <% } else { %>
+            <p class="text-muted small mb-0" data-i18n="no_items_assigned">No items assigned yet.</p>
+          <% } %>
+
+          <div class="mt-3 pt-3 border-top">
+            <div class="small fw-semibold text-muted mb-2" style="letter-spacing:0.04em;text-transform:uppercase">Add Assigned Item</div>
+            <form method="post" action="/shop-floor/assign-item" class="row g-3">
+              <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+              <input type="hidden" name="email" value="<%= authUser?.email || '' %>" />
+              <div class="col-12">
+                <label class="form-label small mb-1" for="assignedItemName">Item</label>
+                <select name="itemName" id="assignedItemName" class="form-select form-select-sm" required>
+                  <option value="">Choose item</option>
+                  <option>Gloves</option>
+                  <option>Overalls</option>
+                  <option>T-shirt</option>
+                  <option>Pen</option>
+                  <option>Shoes</option>
+                </select>
+              </div>
+              <div class="col-12 col-sm-6 col-md-4">
+                <label class="form-label small mb-1" for="assignedItemDate">Date</label>
+                <input type="date" name="assignedDate" id="assignedItemDate" class="form-control form-control-sm" value="<%= new Date().toISOString().slice(0,10) %>" required />
+              </div>
+              <div class="col-12 col-sm-6 col-md-4">
+                <label class="form-label small mb-1" for="assignedItemQty">Qty</label>
+                <input type="number" name="quantity" id="assignedItemQty" min="1" step="1" value="1" class="form-control form-control-sm" required />
+              </div>
+              <div class="col-12 col-md-4">
+                <label class="form-label small mb-1" for="assignedItemNotes">Notes</label>
+                <input type="text" name="notes" id="assignedItemNotes" class="form-control form-control-sm" placeholder="Optional notes" />
+              </div>
+              <div class="col-12 d-flex justify-content-start">
+                <button type="submit" class="btn btn-sm rounded-pill px-3" style="background:#0284c7;color:#fff;font-size:0.78rem">Save Item</button>
+              </div>
+            </form>
+          </div>
+        </div>
+
+        <div id="payroll-app"></div>
+        <!-- Payslips -->
+        <div class="rounded-4 border bg-white mb-4 overflow-hidden" style="box-shadow:0 1px 3px rgba(0,0,0,0.04)">
+          <div class="px-4 py-3 border-bottom">
+            <h2 class="h6 mb-0 fw-bold" data-i18n="payslips">Payslips</h2>
+          </div>
+          <div>
+            <% if (!data.payslips.length) { %>
+              <div class="p-4 text-muted small" data-i18n="no_payslips">No payslips available.</div>
+            <% } %>
+            <% data.payslips.forEach((ps) => { %>
+              <div class="d-flex justify-content-between align-items-center px-4 py-3 border-bottom">
+                <div>
+                  <div class="fw-semibold" style="font-size:0.88rem"><%= ps.name %></div>
+                  <div class="text-muted" style="font-size:0.75rem"><%= ps.dateFrom.slice(0,10) %> → <%= ps.dateTo.slice(0,10) %></div>
+                </div>
+                <a href="/shop-floor/payslip/<%= ps.id %>/download" class="btn btn-sm rounded-pill px-3 d-inline-flex align-items-center gap-1" style="background:#f0fdf4;color:#166534;border:1px solid #bbf7d0;font-weight:500" download="<%= ps.name.replace(/[<>:"/\\|?*]/g, '').trim() %>.pdf" title="Download payslip PDF">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                  PDF
+                </a>
+              </div>
+            <% }) %>
+          </div>
+        </div>
+
+        <!-- Salary Advances -->
+        <% if (data.salaryAdvances.length) { %>
+        <div class="rounded-4 border bg-white mb-4 overflow-hidden" style="box-shadow:0 1px 3px rgba(0,0,0,0.04)">
+          <div class="px-4 py-3 border-bottom">
+            <h2 class="h6 mb-0 fw-bold" data-i18n="salary_advances">Salary Advances</h2>
+          </div>
+          <% data.salaryAdvances.forEach((adv) => { %>
+            <div class="d-flex justify-content-between align-items-center px-4 py-3 border-bottom">
+              <div>
+                <div class="fw-semibold" style="font-size:0.88rem"><%= adv.reference %></div>
+                <div class="text-muted" style="font-size:0.75rem"><%= adv.date %></div>
+              </div>
+              <span class="fw-bold text-danger" style="font-size:0.9rem">KES <%= Number(adv.amount).toLocaleString('en-KE', {minimumFractionDigits:2}) %></span>
+            </div>
+          <% }) %>
+        </div>
+        <% } %>
+
+        <!-- Details -->
+        <% if (data.employee) { %>
+        <div class="rounded-4 border bg-white p-4" style="box-shadow:0 1px 3px rgba(0,0,0,0.04)">
+          <h2 class="h6 mb-3 fw-bold" data-i18n="my_details">My Details</h2>
+          <dl class="row mb-0" style="font-size:0.84rem">
+            <% if (data.employee.jobTitle) { %>
+              <dt class="col-sm-5 text-muted fw-normal" data-i18n="job_title">Job Title</dt>
+              <dd class="col-sm-7 fw-medium"><%= data.employee.jobTitle %></dd>
+            <% } %>
+            <% if (data.employee.department) { %>
+              <dt class="col-sm-5 text-muted fw-normal" data-i18n="department">Department</dt>
+              <dd class="col-sm-7 fw-medium"><%= data.employee.department %></dd>
+            <% } %>
+            <% if (data.employee.manager) { %>
+              <dt class="col-sm-5 text-muted fw-normal" data-i18n="manager">Manager</dt>
+              <dd class="col-sm-7 fw-medium"><%= data.employee.manager %></dd>
+            <% } %>
+            <% if (data.employee.workEmail) { %>
+              <dt class="col-sm-5 text-muted fw-normal" data-i18n="email">Email</dt>
+              <dd class="col-sm-7 fw-medium"><%= data.employee.workEmail %></dd>
+            <% } %>
+            <% if (data.employee.mobilePhone) { %>
+              <dt class="col-sm-5 text-muted fw-normal" data-i18n="phone">Phone</dt>
+              <dd class="col-sm-7 fw-medium"><%= data.employee.mobilePhone %></dd>
+            <% } %>
+          </dl>
+        </div>
+        <% } %>
+
+        <% if (data.manufacturingTimingSummary) { %>
+        <div class="rounded-4 border bg-white p-4 mt-4" style="box-shadow:0 1px 3px rgba(0,0,0,0.04)">
+          <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
+            <div>
+              <h2 class="h6 mb-1 fw-bold" data-i18n="manufacturing_summary">Manufacturing Summary</h2>
+              <div class="text-muted" style="font-size:0.76rem">
+                <span data-i18n="manufacturing_summary_month">For</span> <%= data.manufacturingTimingSummary.monthLabel %>
+              </div>
+            </div>
+            <span class="badge rounded-pill text-bg-light border" style="font-size:0.72rem;font-weight:600">
+              <%= data.manufacturingTimingSummary.totalOrders %> <span data-i18n="total_mos">MOs</span>
+            </span>
+          </div>
+
+          <div class="d-flex flex-column gap-2">
+            <div>
+              <div class="rounded-4 border bg-light-subtle p-3">
+                <div class="text-muted mb-1" style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;font-weight:700" data-i18n="mos_total">June MOs</div>
+                <div class="fw-bold" style="font-size:1.25rem"><%= data.manufacturingTimingSummary.totalOrders %></div>
+                <div class="text-muted small" data-i18n="mos_total_note">Started in the month, linked to your work centers.</div>
+              </div>
+            </div>
+            <div>
+              <div class="rounded-4 border bg-light-subtle p-3">
+                <div class="text-muted mb-1" style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;font-weight:700" data-i18n="start_within_1d">Started within 1 day</div>
+                <div class="fw-bold text-primary" style="font-size:1.25rem"><%= data.manufacturingTimingSummary.startedWithin1Day %></div>
+                <div class="text-muted small"><%= data.manufacturingTimingSummary.withSalesOrders %> <span data-i18n="with_so">with SO timing</span></div>
+              </div>
+            </div>
+            <div>
+              <div class="rounded-4 border bg-light-subtle p-3">
+                <div class="text-muted mb-1" style="font-size:0.7rem;text-transform:uppercase;letter-spacing:0.08em;font-weight:700" data-i18n="finish_within_3d">Finished within 3 days</div>
+                <div class="fw-bold text-success" style="font-size:1.25rem"><%= data.manufacturingTimingSummary.finishedWithin3Days %></div>
+                <div class="text-muted small" data-i18n="finish_within_3d_note">Counted from Sales Order confirmation.</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="mt-3 rounded-4 border border-warning-subtle bg-warning-subtle p-3">
+            <div class="fw-semibold text-warning-emphasis" style="font-size:0.78rem;text-transform:uppercase;letter-spacing:0.08em" data-i18n="timing_caution">Timing caution</div>
+            <div class="small text-warning-emphasis mt-1" data-i18n="timing_caution_body">
+              Same-day start and finish can make a result look better than it really is, so the real score is based on completion within 3 days.
+            </div>
+            <div class="small text-warning-emphasis mt-2">
+              <strong><%= data.manufacturingTimingSummary.sameDayStartFinish %></strong> <span data-i18n="same_day_start_finish">same-day start/finish MOs</span>
+            </div>
+          </div>
+        </div>
+        <% } %>
+      </div>
+      <% } %>
+    </div>
+  <% } else if (!data.error) { %>
+    <div class="text-center py-5">
+      <div class="spinner-border text-muted mb-3" style="width: 3rem; height: 3rem;" role="status"></div>
+      <h2 data-i18n="loading_dashboard">Loading your dashboard...</h2>
+      <p class="text-muted" data-i18n="fetching_data">Fetching your work orders, attendance, and payslips.</p>
+    </div>
+  <% } %>
+  <div class="modal fade" id="manufacturingOrderActionModal" tabindex="-1" aria-labelledby="manufacturingOrderActionTitle" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content border-0 rounded-4 overflow-hidden shadow">
+        <div class="modal-header border-bottom px-4 py-3">
+          <div><h2 class="modal-title h5 fw-bold mb-1" id="manufacturingOrderActionTitle">Manufacturing Order</h2><div class="small text-muted" id="manufacturingOrderProduct"></div></div>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body p-4">
+          <div id="addStockNotice" class="alert alert-danger d-none" role="alert">
+            <div class="fw-bold mb-1">ADD STOCK NOTICE</div>
+            <div class="small mb-3">This manufacturing order has no available stock. Add or receive the required stock before starting.</div>
+            <a href="/shop-floor/boards" class="btn btn-danger btn-sm">Add Stock</a>
+          </div>
+          <div class="d-grid gap-3">
+            <form id="manufacturingOrderActionForm" method="post" action="">
+              <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+              <input type="hidden" name="action" id="manufacturingOrderActionValue" value="start" />
+              <button id="manufacturingOrderStartButton" class="btn btn-success w-100 py-3 fw-bold" type="submit"><i class="bi bi-play-fill me-2"></i><span>Start</span></button>
+            </form>
+            <button type="button" class="btn btn-light border w-100 py-3 text-start" disabled>
+              <span class="d-flex align-items-center justify-content-between gap-3"><strong>Stock Status</strong><span id="manufacturingOrderStockBadge" class="badge rounded-pill"></span></span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<%- include('partials/footer') %>
+
+<style>
+@keyframes stock-blink-red {
+  0%, 100% { opacity: 1; color: #dc2626; }
+  50% { opacity: 0.3; color: #ef4444; }
+}
+.stock-blink-red {
+  animation: stock-blink-red 1s infinite;
+  font-weight: 700;
+  font-size: 0.72rem;
+  cursor: help;
+}
+@keyframes pulse-green {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.85); }
+}
+.pulse-green-dot {
+  width: 6px;
+  height: 6px;
+  background-color: #22c55e;
+  border-radius: 50%;
+  display: inline-block;
+  box-shadow: 0 0 6px #22c55e;
+  animation: pulse-green 1.5s infinite;
+}
+
+/* ===== Breakdown Logs ===== */
+.incident-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.06) !important; }
+.incident-card [data-bs-toggle="collapse"].collapsed .chevron-icon { transform: rotate(0deg); }
+.incident-card [data-bs-toggle="collapse"]:not(.collapsed) .chevron-icon { transform: rotate(180deg); }
+</style>
+
+<script>
+(function() {
+  var actionModal = document.getElementById('manufacturingOrderActionModal');
+  if (!actionModal) return;
+
+  var form = document.getElementById('manufacturingOrderActionForm');
+  var actionValue = document.getElementById('manufacturingOrderActionValue');
+  var actionButton = document.getElementById('manufacturingOrderStartButton');
+  var actionLabel = actionButton.querySelector('span');
+  var stockBadge = document.getElementById('manufacturingOrderStockBadge');
+  var addStockNotice = document.getElementById('addStockNotice');
+  var currentStockStatus = 'ready';
+
+  actionModal.addEventListener('show.bs.modal', function(event) {
+    var trigger = event.relatedTarget;
+    if (!trigger) return;
+    var moId = trigger.getAttribute('data-mo-id');
+    var moState = trigger.getAttribute('data-mo-state') || 'confirmed';
+    currentStockStatus = trigger.getAttribute('data-stock-status') || 'ready';
+    var isInProgress = moState === 'progress';
+    var isDone = moState === 'done';
+
+    document.getElementById('manufacturingOrderActionTitle').textContent = trigger.getAttribute('data-mo-name') || 'Manufacturing Order';
+    document.getElementById('manufacturingOrderProduct').textContent = trigger.getAttribute('data-mo-product') || '';
+    form.action = '/shop-floor/work-order/' + encodeURIComponent(moId) + '/advance';
+    actionValue.value = isInProgress ? 'finish' : 'start';
+    actionLabel.textContent = isDone ? 'Completed' : (isInProgress ? 'Finish' : 'Start');
+    actionButton.disabled = isDone;
+    actionButton.classList.toggle('btn-success', !isInProgress);
+    actionButton.classList.toggle('btn-primary', isInProgress);
+    addStockNotice.classList.add('d-none');
+
+    var stockLabels = { ready: 'Ready', incoming: 'Incoming', no_stock: 'No Stock' };
+    stockBadge.textContent = stockLabels[currentStockStatus] || currentStockStatus;
+    stockBadge.className = 'badge rounded-pill ' + (currentStockStatus === 'ready' ? 'bg-success-subtle text-success' : currentStockStatus === 'incoming' ? 'bg-warning-subtle text-warning-emphasis' : 'bg-danger-subtle text-danger');
+  });
+
+  form.addEventListener('submit', function(event) {
+    if (actionValue.value === 'start' && currentStockStatus === 'no_stock') {
+      event.preventDefault();
+      addStockNotice.classList.remove('d-none');
+      addStockNotice.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  });
+})();
+
+(function() {
+  var breakdownCatalog = <%- JSON.stringify(breakdownCatalog) %>;
+  // Machine custom input toggle
+  var machineSelect = document.getElementById('machineSelect');
+  var componentSelect = document.getElementById('machineComponentSelect');
+  var customContainer = document.getElementById('customMachineContainer');
+  var customInput = document.getElementById('machineCustomInput');
+
+  if (machineSelect && customContainer) {
+    machineSelect.addEventListener('change', function() {
+      if (machineSelect.value === '__custom__') {
+        customContainer.classList.remove('d-none');
+        customInput.setAttribute('required', 'required');
+        customInput.focus();
+      } else {
+        customContainer.classList.add('d-none');
+        customInput.removeAttribute('required');
+        customInput.value = '';
+      }
+
+      if (componentSelect) {
+        var components = breakdownCatalog[machineSelect.value] || [];
+        componentSelect.innerHTML = '<option value="">-- Select failed component --</option>';
+        components.forEach(function(component) {
+          var option = document.createElement('option');
+          option.value = component;
+          option.textContent = component;
+          componentSelect.appendChild(option);
+        });
+        componentSelect.disabled = components.length === 0;
+        componentSelect.classList.remove('is-invalid');
+      }
+    });
+  }
+
+  // Severity helper text update
+  var severityTexts = {
+    critical: 'Machine completely stopped, production halted',
+    high: 'Major issue, production severely limited',
+    medium: 'Partial issue, can work around',
+    low: 'Minor, can wait for scheduled maintenance'
+  };
+  var sevRadios = document.querySelectorAll('input[name="_severity"]');
+  var helperText = document.getElementById('severityHelperText');
+  if (sevRadios && helperText) {
+    sevRadios.forEach(function(radio) {
+      radio.addEventListener('change', function() {
+        if (radio.checked) {
+          helperText.textContent = severityTexts[radio.value] || '';
+        }
+      });
+    });
+  }
+
+  // Description character counter
+  var descField = document.getElementById('incidentDescription');
+  var charCount = document.getElementById('descCharCount');
+  if (descField && charCount) {
+    descField.addEventListener('input', function() {
+      var len = Math.min(descField.value.length, 500);
+      charCount.textContent = len;
+      if (len > 400) {
+        charCount.style.color = '#dc2626';
+        charCount.classList.add('fw-bold');
+      } else {
+        charCount.style.color = '';
+        charCount.classList.remove('fw-bold');
+      }
+    });
+  }
+
+  // Chevron rotation on collapse
+  document.querySelectorAll('[data-bs-toggle="collapse"]').forEach(function(el) {
+    el.addEventListener('click', function() {
+      var chevron = el.querySelector('.chevron-icon');
+      if (chevron) {
+        var expanded = el.getAttribute('aria-expanded') === 'true';
+        chevron.style.transform = expanded ? 'rotate(180deg)' : 'rotate(0deg)';
+      }
+    });
+  });
+
+  // Client side form validation and submission
+  var form = document.getElementById('breakdownForm');
+  if (form) {
+    form.addEventListener('submit', function(e) {
+      var isValid = true;
+
+      // Reset validation states
+      machineSelect.classList.remove('is-invalid');
+      componentSelect.classList.remove('is-invalid');
+      customInput.classList.remove('is-invalid');
+      descField.classList.remove('is-invalid');
+
+      // Validate Machine Select
+      if (!machineSelect.value) {
+        machineSelect.classList.add('is-invalid');
+        isValid = false;
+      }
+
+      if (!componentSelect.value) {
+        componentSelect.classList.add('is-invalid');
+        isValid = false;
+      }
+
+      // Validate Custom Machine Input if visible
+      if (machineSelect.value === '__custom__') {
+        var customVal = customInput.value.trim();
+        if (!customVal) {
+          customInput.classList.add('is-invalid');
+          isValid = false;
+        }
+      }
+
+      // Validate Description
+      if (!descField.value.trim()) {
+        descField.classList.add('is-invalid');
+        isValid = false;
+      }
+
+      if (!isValid) {
+        e.preventDefault();
+        e.stopPropagation();
+        return;
+      }
+
+      // If valid, configure submission fields
+      // Build the final machine name
+      var finalMachine = machineSelect.value;
+      if (finalMachine === '__custom__') {
+        finalMachine = customInput.value.trim();
+        var customOpt = machineSelect.querySelector('option[value="__custom__"]');
+        if (customOpt) {
+          customOpt.value = finalMachine;
+        }
+      }
+
+      // Prepend severity to description
+      var sevRadio = document.querySelector('input[name="_severity"]:checked');
+      var sevPrefix = sevRadio ? '[' + sevRadio.value.toUpperCase() + '] ' : '';
+      if (sevPrefix && !descField.value.startsWith('[')) {
+        descField.value = sevPrefix + descField.value.trim();
+      }
+
+      // Show spinner
+      var btn = document.getElementById('submitBreakdownBtn');
+      if (btn) {
+        btn.querySelector('.submit-text').classList.add('d-none');
+        btn.querySelector('.submit-spinner').classList.remove('d-none');
+        btn.disabled = true;
+      }
+    });
+  }
+
+  // Reset modal state when closed
+  var modal = document.getElementById('reportIncidentModal');
+  if (modal) {
+    modal.addEventListener('hidden.bs.modal', function() {
+      if (form) form.reset();
+      
+      // Clean classes
+      machineSelect.classList.remove('is-invalid');
+      componentSelect.classList.remove('is-invalid');
+      componentSelect.innerHTML = '<option value="">-- Select a machine first --</option>';
+      componentSelect.disabled = true;
+      customInput.classList.remove('is-invalid');
+      descField.classList.remove('is-invalid');
+      customContainer.classList.add('d-none');
+      customInput.removeAttribute('required');
+      
+      if (charCount) charCount.textContent = '0';
+      if (helperText) helperText.textContent = severityTexts['medium'];
+
+      var btn = document.getElementById('submitBreakdownBtn');
+      if (btn) {
+        btn.querySelector('.submit-text').classList.remove('d-none');
+        btn.querySelector('.submit-spinner').classList.add('d-none');
+        btn.disabled = false;
+      }
+    });
+  }
+})();
+
+// ===== Manufacturing Timeline Chart =====
+(function() {
+  var dataEl = document.getElementById('manufacturingTimelineData');
+  var canvas = document.getElementById('manufacturingTimelineChart');
+  var granularitySelect = document.getElementById('timelineGranularity');
+  var scopeTypeSelect = document.getElementById('timelineScopeType');
+  var scopeValueSelect = document.getElementById('timelineScopeValue');
+  var statsEl = document.getElementById('timelineStats');
+
+  if (!dataEl || !canvas || !granularitySelect || !scopeTypeSelect || !scopeValueSelect) return;
+
+  var timelineData = {};
+  try {
+    timelineData = JSON.parse(dataEl.textContent || '{}');
+  } catch (err) {
+    return;
+  }
+
+  var records = Array.isArray(timelineData.records) ? timelineData.records : [];
+  var workCenters = Array.isArray(timelineData.workCenters) ? timelineData.workCenters : [];
+  if (!records.length) {
+    if (statsEl) statsEl.textContent = 'No finished manufacturing orders found for the allowed work centres.';
+    return;
+  }
+
+  function asDate(value) {
+    var date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date;
+  }
+
+  function toEAT(date) {
+    return new Date(date.getTime() + 3 * 60 * 60 * 1000);
+  }
+
+  function fromEAT(eatDate) {
+    return new Date(eatDate.getTime() - 3 * 60 * 60 * 1000);
+  }
+
+  function startOfDay(date) {
+    var eat = toEAT(date);
+    var start = new Date(Date.UTC(eat.getUTCFullYear(), eat.getUTCMonth(), eat.getUTCDate(), 0, 0, 0, 0));
+    return fromEAT(start);
+  }
+
+  function startOfWeek(date) {
+    var eat = toEAT(date);
+    var day = (eat.getUTCDay() + 6) % 7;
+    var start = new Date(Date.UTC(eat.getUTCFullYear(), eat.getUTCMonth(), eat.getUTCDate() - day, 0, 0, 0, 0));
+    return fromEAT(start);
+  }
+
+  function startOfMonth(date) {
+    var eat = toEAT(date);
+    var start = new Date(Date.UTC(eat.getUTCFullYear(), eat.getUTCMonth(), 1, 0, 0, 0, 0));
+    return fromEAT(start);
+  }
+
+  function addDays(date, days) {
+    var eat = toEAT(date);
+    var added = new Date(Date.UTC(eat.getUTCFullYear(), eat.getUTCMonth(), eat.getUTCDate() + days, eat.getUTCHours(), eat.getUTCMinutes(), eat.getUTCSeconds(), eat.getUTCMilliseconds()));
+    return fromEAT(added);
+  }
+
+  function addMonths(date, months) {
+    var eat = toEAT(date);
+    var added = new Date(Date.UTC(eat.getUTCFullYear(), eat.getUTCMonth() + months, eat.getUTCDate(), eat.getUTCHours(), eat.getUTCMinutes(), eat.getUTCSeconds(), eat.getUTCMilliseconds()));
+    return fromEAT(added);
+  }
+
+  function pad(num) {
+    return String(num).padStart(2, '0');
+  }
+
+  function formatDayLabel(date) {
+    return date.toLocaleDateString('en-KE', { timeZone: 'Africa/Nairobi', month: 'short', day: 'numeric' });
+  }
+
+  function formatWeekLabel(date) {
+    var end = addDays(date, 6);
+    return `${formatDayLabel(date)} - ${formatDayLabel(end)}`;
+  }
+
+  function formatMonthLabel(date) {
+    return date.toLocaleDateString('en-KE', { timeZone: 'Africa/Nairobi', month: 'short', year: 'numeric' });
+  }
+
+  function buildBuckets(granularity) {
+    var now = new Date();
+    var buckets = [];
+    if (granularity === 'day') {
+      for (var i = 13; i >= 0; i--) {
+        var day = startOfDay(addDays(now, -i));
+        var eat = toEAT(day);
+        var key = `${eat.getUTCFullYear()}-${pad(eat.getUTCMonth() + 1)}-${pad(eat.getUTCDate())}`;
+        buckets.push({ key: key, start: day, end: addDays(day, 1), label: formatDayLabel(day) });
+      }
+    } else if (granularity === 'week') {
+      var currentWeek = startOfWeek(now);
+      for (var w = 7; w >= 0; w--) {
+        var weekStart = addDays(currentWeek, -(w * 7));
+        var eat = toEAT(weekStart);
+        var key = `${eat.getUTCFullYear()}-${pad(eat.getUTCMonth() + 1)}-W${w}`;
+        buckets.push({ key: key, start: weekStart, end: addDays(weekStart, 7), label: formatWeekLabel(weekStart) });
+      }
+    } else {
+      var currentMonth = startOfMonth(now);
+      for (var m = 5; m >= 0; m--) {
+        var monthStart = startOfMonth(addMonths(currentMonth, -m));
+        var eat = toEAT(monthStart);
+        var key = `${eat.getUTCFullYear()}-${pad(eat.getUTCMonth() + 1)}`;
+        var nextMonth = addMonths(monthStart, 1);
+        buckets.push({ key: key, start: monthStart, end: nextMonth, label: formatMonthLabel(monthStart) });
+      }
+    }
+    return buckets;
+  }
+
+  function getScopeOptions(scopeType) {
+    if (scopeType === 'workCenter') {
+      var seenWC = new Set();
+      var options = [{ value: 'all', label: 'All work centres' }];
+      workCenters.forEach(function(wc) {
+        if (!wc || !wc.name || seenWC.has(wc.name)) return;
+        seenWC.add(wc.name);
+        options.push({ value: wc.name, label: wc.name });
+      });
+      return options;
+    }
+
+    var seenArea = new Set();
+    var areaOptions = [{ value: 'all', label: 'All areas' }];
+    records.forEach(function(record) {
+      var area = record.area || 'General';
+      if (seenArea.has(area)) return;
+      seenArea.add(area);
+      areaOptions.push({ value: area, label: area });
+    });
+    return areaOptions;
+  }
+
+  function populateScopeValues() {
+    var scopeType = scopeTypeSelect.value;
+    var options = getScopeOptions(scopeType);
+    var previous = scopeValueSelect.value || 'all';
+    scopeValueSelect.innerHTML = '';
+    options.forEach(function(option) {
+      var opt = document.createElement('option');
+      opt.value = option.value;
+      opt.textContent = option.label;
+      scopeValueSelect.appendChild(opt);
+    });
+    if ([].slice.call(scopeValueSelect.options).some(function(opt) { return opt.value === previous; })) {
+      scopeValueSelect.value = previous;
+    } else {
+      scopeValueSelect.value = 'all';
+    }
+  }
+
+  function matchesScope(record, scopeType, scopeValue) {
+    if (scopeValue === 'all') return true;
+    return scopeType === 'workCenter'
+      ? (record.workCenter || '') === scopeValue
+      : (record.area || 'General') === scopeValue;
+  }
+
+  function aggregate(granularity, scopeType, scopeValue) {
+    var buckets = buildBuckets(granularity);
+    var startCounts = new Array(buckets.length).fill(0);
+    var finishCounts = new Array(buckets.length).fill(0);
+    var confirmCounts = new Array(buckets.length).fill(0);
+    var filtered = records.filter(function(record) { return matchesScope(record, scopeType, scopeValue); });
+
+    filtered.forEach(function(record) {
+      var started = asDate(record.startedAt);
+      var finished = asDate(record.finishedAt);
+      var confirmed = asDate(record.confirmedAt);
+      if (started) {
+        for (var i = 0; i < buckets.length; i++) {
+          if (started >= buckets[i].start && started < buckets[i].end) {
+            startCounts[i] += 1;
+            break;
+          }
+        }
+      }
+      if (finished) {
+        for (var j = 0; j < buckets.length; j++) {
+          if (finished >= buckets[j].start && finished < buckets[j].end) {
+            finishCounts[j] += 1;
+            break;
+          }
+        }
+      }
+      if (confirmed) {
+        for (var k = 0; k < buckets.length; k++) {
+          if (confirmed >= buckets[k].start && confirmed < buckets[k].end) {
+            confirmCounts[k] += 1;
+            break;
+          }
+        }
+      }
+    });
+
+    return { buckets: buckets, startCounts: startCounts, finishCounts: finishCounts, confirmCounts: confirmCounts, filtered: filtered };
+  }
+
+  function resizeCanvas() {
+    var rect = canvas.getBoundingClientRect();
+    var dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.max(320, Math.floor(rect.width * dpr));
+    canvas.height = Math.floor(280 * dpr);
+    return { width: Math.max(320, rect.width), height: 280, scale: dpr };
+  }
+
+  function drawChart(payload) {
+    var ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    var dims = resizeCanvas();
+    ctx.setTransform(dims.scale, 0, 0, dims.scale, 0, 0);
+    ctx.clearRect(0, 0, dims.width, dims.height);
+
+    var leftPad = 48;
+    var rightPad = 18;
+    var topPad = 18;
+    var bottomPad = 54;
+    var chartW = dims.width - leftPad - rightPad;
+    var chartH = dims.height - topPad - bottomPad;
+    var maxValue = Math.max(1, payload.startCounts.concat(payload.finishCounts).concat(payload.confirmCounts || []).reduce(function(max, val) { return Math.max(max, val); }, 0));
+    var axisColor = '#cbd5e1';
+    var gridColor = '#e2e8f0';
+    var labelColor = '#475569';
+    var startColor = '#2563eb';
+    var finishColor = '#16a34a';
+    var confirmColor = '#9333ea';
+
+    ctx.font = '12px Segoe UI, Arial, sans-serif';
+    ctx.fillStyle = labelColor;
+    ctx.strokeStyle = axisColor;
+    ctx.lineWidth = 1;
+
+    // Grid and Y axis labels
+    var gridSteps = 4;
+    for (var g = 0; g <= gridSteps; g++) {
+      var y = topPad + chartH - (chartH / gridSteps) * g;
+      ctx.beginPath();
+      ctx.moveTo(leftPad, y);
+      ctx.lineTo(leftPad + chartW, y);
+      ctx.strokeStyle = gridColor;
+      ctx.stroke();
+      ctx.fillStyle = labelColor;
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(Math.round((maxValue / gridSteps) * g)), leftPad - 8, y);
+    }
+
+    // Axis baseline
+    ctx.beginPath();
+    ctx.moveTo(leftPad, topPad + chartH);
+    ctx.lineTo(leftPad + chartW, topPad + chartH);
+    ctx.strokeStyle = axisColor;
+    ctx.stroke();
+
+    var bucketCount = payload.buckets.length;
+    var slotWidth = chartW / bucketCount;
+    var barWidth = Math.max(5, Math.min(18, slotWidth * 0.28));
+
+    payload.buckets.forEach(function(bucket, index) {
+      var center = leftPad + slotWidth * index + slotWidth / 2;
+      var startHeight = (payload.startCounts[index] / maxValue) * chartH;
+      var finishHeight = (payload.finishCounts[index] / maxValue) * chartH;
+      var startX = center - barWidth - 3;
+      var finishX = center + 3;
+      var baseY = topPad + chartH;
+
+      ctx.fillStyle = startColor;
+      ctx.fillRect(startX, baseY - startHeight, barWidth, startHeight);
+      ctx.fillStyle = finishColor;
+      ctx.fillRect(finishX, baseY - finishHeight, barWidth, finishHeight);
+
+      var label = bucket.label;
+      if (granularitySelect.value === 'month') {
+        label = bucket.label;
+      } else if (granularitySelect.value === 'week' && label.length > 18) {
+        label = label.slice(0, 18) + '...';
+      }
+
+      ctx.save();
+      ctx.fillStyle = labelColor;
+      ctx.font = '11px Segoe UI, Arial, sans-serif';
+      if (granularitySelect.value === 'day' || granularitySelect.value === 'week') {
+        ctx.textAlign = 'right';
+        ctx.textBaseline = 'middle';
+        ctx.translate(center, baseY + 10);
+        ctx.rotate(-Math.PI / 6); // 30 degrees counter-clockwise
+        ctx.fillText(label, 0, 0);
+      } else {
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        ctx.fillText(label, center, baseY + 8);
+      }
+      ctx.restore();
+    });
+
+    // Draw confirmed line chart
+    if (payload.confirmCounts && payload.confirmCounts.length > 0) {
+      ctx.beginPath();
+      payload.buckets.forEach(function(bucket, index) {
+        var center = leftPad + slotWidth * index + slotWidth / 2;
+        var confirmHeight = (payload.confirmCounts[index] / maxValue) * chartH;
+        var confirmY = topPad + chartH - confirmHeight;
+        if (index === 0) {
+          ctx.moveTo(center, confirmY);
+        } else {
+          ctx.lineTo(center, confirmY);
+        }
+      });
+      ctx.strokeStyle = confirmColor;
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+
+      // Draw points on the line
+      payload.buckets.forEach(function(bucket, index) {
+        var center = leftPad + slotWidth * index + slotWidth / 2;
+        var confirmHeight = (payload.confirmCounts[index] / maxValue) * chartH;
+        var confirmY = topPad + chartH - confirmHeight;
+        ctx.beginPath();
+        ctx.arc(center, confirmY, 4, 0, 2 * Math.PI);
+        ctx.fillStyle = confirmColor;
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+      });
+    }
+
+    // (Canvas text legend removed as it is fully represented by the sidebar HTML legend)
+  }
+
+  function render() {
+    var granularity = granularitySelect.value;
+    var scopeType = scopeTypeSelect.value;
+    var scopeValue = scopeValueSelect.value || 'all';
+    var payload = aggregate(granularity, scopeType, scopeValue);
+    drawChart(payload);
+
+    if (statsEl) {
+      var totalStarted = payload.startCounts.reduce(function(sum, value) { return sum + value; }, 0);
+      var totalFinished = payload.finishCounts.reduce(function(sum, value) { return sum + value; }, 0);
+      var totalConfirmed = payload.confirmCounts.reduce(function(sum, value) { return sum + value; }, 0);
+      statsEl.innerHTML =
+        '<div class="mb-1"><strong>' + payload.filtered.length + '</strong> work-order rows in scope</div>' +
+        '<div class="mb-1"><strong>' + totalStarted + '</strong> starts, <strong>' + totalFinished + '</strong> finishes, <strong>' + totalConfirmed + '</strong> confirmed</div>' +
+        '<div>Granularity: <strong>' + granularity.charAt(0).toUpperCase() + granularity.slice(1) + '</strong></div>';
+    }
+  }
+
+  granularitySelect.addEventListener('change', render);
+  scopeTypeSelect.addEventListener('change', function() {
+    populateScopeValues();
+    render();
+  });
+  scopeValueSelect.addEventListener('change', render);
+  window.addEventListener('resize', render);
+
+  populateScopeValues();
+  render();
+})();
+
+// ===== Language Toggle (English / Swahili) =====
+var _i18n = {
+  sw: {
+    checked_in: 'Umeingia',
+    checked_out: 'Umetoka',
+    not_checked_in: 'Haujaingia',
+    checked_in_late: 'Umechelewa kuingia leo',
+    failed_checkout_title: 'Kutotoka Kumegunduliwa',
+    failed_checkout_desc: 'Hukutoka vizuri siku zifuatazo. Mahudhurio yako yaliendelea hadi siku inayofuata:',
+    hours_logged: 'masaa yaliyorekodiwa',
+    performance_rate: 'Kiwango cha Utendaji',
+    perf_desc_prefix: 'Kulingana na kazi zilizothibitishwa pamoja na kazi zilizosalia,',
+    perf_desc_mid: 'hiki ni kiwango halisi cha uzalishaji',
+    total: 'vitu vilivyohesabiwa',
+    team_perf_title: 'Utendaji wa Timu na Adhabu',
+    team_perf_desc: 'Timu nzima inapimwa kwa kuepuka ubao unaokosekana, usafirishaji usiotiwa alama, na risiti ambazo hazikufanywa.',
+    expected_boards: 'Ubao Unaotarajiwa',
+    reserved_boards: 'Mbao Zilizowekwa Akiba',
+    board_registration_title: 'Usajili wa Ubao dhidi ya Rekodi Zinazotarajiwa',
+    board_registration_desc: 'Historia ya physical inventory inalinganishwa na risiti za boards zinazoingia. Edge banding haijahesabiwa ili namba ionyeshe board logs zinazoathiri utayari wa uzalishaji.',
+    physical_inventory_boards: 'Boards za Physical Inventory',
+    expected_board_logs: 'Board Logs Zinazotarajiwa',
+    unlogged_board_logs: 'Boards Zisizorekodiwa',
+    board_coverage: 'Ufunikaji',
+    unmarked_deliveries: 'Usafirishaji Usiotiwa Alama',
+    undone_receipts: 'Risiti Ambazo Hazikufanywa',
+    stock_needed: 'Hisa Inahitajika — Hakuna Maagizo ya Ununuzi',
+    items: 'bidhaa',
+    client: 'Mteja',
+    need: 'Inahitajika',
+    assigned_mo: 'MO Zilizopewa',
+    done_mo: 'MO Zilizomalizika',
+    active_mo: 'MO Zinazoendelea',
+    overdue_mo: 'MO Zilizochelewa',
+    late_checkin: 'Kuingia Kuchelewa',
+    in_progress: 'inaendelea',
+    done: 'imekamilika',
+    overdue: 'Imechelewa',
+    no_stock: 'Hakuna Hisa',
+    incoming: 'Inakuja',
+    ready: 'Tayari',
+    assigned: 'Amepewa',
+    unassigned: 'Hajapewa',
+    no_active_mo: 'Hakuna maagizo ya uzalishaji yanayoendelea.',
+    recent_attendance: 'Mahudhurio ya Hivi Karibuni',
+    on_duty: 'Kazini',
+    duration: 'Muda',
+    shift_started: 'Zamu imeanza leo',
+    no_attendance: 'Hakuna rekodi za mahudhurio.',
+    breakdown_logs: 'Kumbukumbu za Kuharibika kwa Mashine',
+    all_machines_running: 'Mashine zote zinafanya kazi',
+    report_breakdown: 'Ripoti Kuharibika',
+    mark_resolved: 'Weka Imetatuliwa',
+    no_breakdowns: 'Hakuna kuharibika kulikoripotiwa',
+    machines_smooth: 'Mashine zote zinafanya kazi vizuri',
+    my_assigned_items: 'Vifaa Vyangu Vilivyopewa',
+    no_items_assigned: 'Hakuna vifaa vilivyopewa bado.',
+    payslips: 'Hati za Malipo',
+    no_payslips: 'Hakuna hati za malipo.',
+    salary_advances: 'Mikopo ya Mshahara',
+    my_details: 'Maelezo Yangu',
+    job_title: 'Cheo cha Kazi',
+    department: 'Idara',
+    manager: 'Meneja',
+    email: 'Barua Pepe',
+    phone: 'Simu',
+    manufacturing_summary: 'Muhtasari wa Uzalishaji',
+    manufacturing_summary_month: 'Kwa',
+    total_mos: 'MOs',
+    mos_total: 'MO za Juni',
+    mos_total_note: 'Zilizoanza ndani ya mwezi, zimeunganishwa na maeneo yako ya kazi.',
+    start_within_1d: 'Zimeanza ndani ya siku 1',
+    with_so: 'zina muda wa SO',
+    finish_within_3d: 'Zimalizika ndani ya siku 3',
+    finish_within_3d_note: 'Zinahesabiwa kuanzia uthibitisho wa Sales Order.',
+    timing_caution: 'Tahadhari ya muda',
+    timing_caution_body: 'Kuanza na kumaliza siku hiyo hiyo kunaweza kufanya kiwango cha mafanikio cha kumaliza tu kionekane bora kuliko ilivyo, kwa hiyo tunaonyesha muda wa kuanza na wa kumaliza tofauti.',
+    same_day_start_finish: 'MO za kuanza na kumaliza siku hiyo hiyo',
+    manufacturing_notice_title: 'Muda wa uzalishaji ni muhimu',
+    manufacturing_notice_body: 'Kubofya Start kwenye manufacturing order kawaida huchukua dakika 1 hadi 2. Kurekodi boards zinazoingia, kuthibitisha receipts zilizopokelewa, na kuweka edge banding rolls kama received ni kazi fupi pia. Kukosa kuzifanya hupunguza uonekano, readiness, na usahihi wa stock kwa wote.',
+    loading_dashboard: 'Inapakia dashibodi yako...',
+    fetching_data: 'Inapata maagizo yako ya kazi, mahudhurio, na hati za malipo.',
+  },
+  en: {}
+};
+
+// Store original English text
+var _originals = {};
+(function() {
+  document.querySelectorAll('[data-i18n]').forEach(function(el) {
+    _originals[el.getAttribute('data-i18n')] = _originals[el.getAttribute('data-i18n')] || el.textContent.trim();
+  });
+})();
+
+function setLanguage(lang) {
+  document.querySelectorAll('[data-i18n]').forEach(function(el) {
+    var key = el.getAttribute('data-i18n');
+    if (lang === 'sw' && _i18n.sw[key]) {
+      el.textContent = _i18n.sw[key];
+    } else if (_originals[key]) {
+      el.textContent = _originals[key];
+    }
+  });
+  var btn = document.getElementById('langBtnLabel');
+  if (btn) btn.textContent = lang === 'sw' ? 'English' : 'Swahili';
+  localStorage.setItem('shopFloorLang', lang);
+}
+
+function toggleLanguage() {
+  var current = localStorage.getItem('shopFloorLang') || 'en';
+  setLanguage(current === 'en' ? 'sw' : 'en');
+}
+
+// Auto-apply saved language on load
+(function() {
+  var saved = localStorage.getItem('shopFloorLang');
+  if (saved === 'sw') setLanguage('sw');
+})();
+</script>
+

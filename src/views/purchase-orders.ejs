@@ -1,0 +1,174 @@
+<%- include('partials/head') %>
+<%- include('partials/header') %>
+
+<main class="container py-4 py-lg-5">
+  <%
+    const buildPageHref = (pageNumber) => `/purchase-orders${buildPurchaseOrderQuerySuffix({
+      q: query,
+      fromDate,
+      toDate,
+      page: pageNumber,
+      load: true,
+    })}`;
+    const appStatusLabel = (order) => {
+      if (order.appStatus.status === 'processed') return 'Bill Processed';
+      if (order.appStatus.status === 'processed_with_warnings') return 'Processed with Warnings';
+      if (order.appStatus.status === 'skipped') return 'Skipped';
+      if (order.appStatus.status === 'failed') return 'Failed';
+      return 'Auto Not Run';
+    };
+    const appStatusBadge = (order) => {
+      if (order.appStatus.status === 'processed') return 'success';
+      if (order.appStatus.status === 'processed_with_warnings') return 'warning';
+      if (order.appStatus.status === 'skipped') return 'secondary';
+      if (order.appStatus.status === 'failed') return 'danger';
+      return 'secondary';
+    };
+  %>
+  <section class="hero-panel mb-4">
+    <div>
+      <p class="eyebrow">Purchase Orders</p>
+      <h1 class="display-6 mb-2">Track PO bill automation status</h1>
+      <p class="lead text-secondary mb-0">
+        Review Purchase Orders and see which ones the automatic bill matcher has already handled.
+      </p>
+    </div>
+    <div class="hero-actions">
+      <span class="meta-card">
+        <span class="meta-label">From</span>
+        <strong><%= fromDate || 'All' %></strong>
+      </span>
+      <span class="meta-card">
+        <span class="meta-label">Page</span>
+        <strong><%= page %></strong>
+      </span>
+    </div>
+  </section>
+
+  <%- include('partials/alerts', { status, validationErrors: [] }) %>
+
+  <div class="card shadow-sm border-0 app-card">
+    <div class="card-body p-4">
+      <form method="get" action="/purchase-orders" class="row g-3 align-items-end mb-4" data-disable-submit="true" data-loading-message="Loading Purchase Orders...">
+        <input type="hidden" name="load" value="1" />
+        <div class="col-lg-4">
+          <label class="form-label">Search</label>
+          <input
+            type="text"
+            class="form-control"
+            name="q"
+            value="<%= query %>"
+            placeholder="PO number, vendor reference, or vendor name"
+          />
+        </div>
+        <div class="col-md-3 col-lg-2">
+          <label class="form-label">From</label>
+          <input type="date" class="form-control" name="from" value="<%= fromDate %>" />
+        </div>
+        <div class="col-md-3 col-lg-2">
+          <label class="form-label">To</label>
+          <input type="date" class="form-control" name="to" value="<%= toDate %>" />
+        </div>
+        <div class="col-md-3 col-lg-2 d-grid">
+          <button type="submit" class="btn btn-primary">Load POs</button>
+        </div>
+        <div class="col-md-3 col-lg-2 d-grid">
+          <a href="/po-bill-automation" class="btn btn-outline-secondary" data-loading-message="Opening PO Bill Automation...">Run Matcher</a>
+        </div>
+      </form>
+
+      <div class="table-responsive">
+        <table class="table align-middle mb-0">
+          <thead>
+            <tr>
+              <th>Purchase Order</th>
+              <th>Vendor</th>
+              <th>Date</th>
+              <th>Odoo Status</th>
+              <th>App Status</th>
+              <th>Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% if (orders.length === 0) { %>
+              <tr>
+                <td colspan="6" class="text-center text-secondary py-4">
+                  <%= hasLoaded ? 'No Purchase Orders were returned for this search.' : 'Use Load POs to fetch Purchase Orders from Odoo.' %>
+                </td>
+              </tr>
+            <% } %>
+            <% orders.forEach((order) => { %>
+              <tr>
+                <td>
+                  <strong><%= order.name %></strong>
+                  <div class="small text-secondary"><%= order.partner_ref || 'No vendor reference' %></div>
+                </td>
+                <td><%= getRelationLabel(order.partner_id) %></td>
+                <td><%= formatDateTime(order.date_order) %></td>
+                <td>
+                  <div class="d-flex flex-wrap gap-1">
+                    <span class="badge text-bg-secondary"><%= order.state || '-' %></span>
+                    <span class="badge text-bg-<%= order.invoice_status === 'invoiced' ? 'success' : 'secondary' %>">
+                      <%= order.invoice_status || 'no invoice status' %>
+                    </span>
+                  </div>
+                </td>
+                <td>
+                  <div class="d-flex flex-wrap gap-1">
+                    <span class="badge text-bg-<%= appStatusBadge(order) %>">
+                      <%= appStatusLabel(order) %>
+                    </span>
+                    <span class="badge text-bg-<%= order.appStatus.vendorBillName ? 'success' : 'secondary' %>">
+                      <%= order.appStatus.vendorBillName ? `Bill ${order.appStatus.vendorBillName}` : 'No Vendor Bill Created' %>
+                    </span>
+                    <span class="badge text-bg-<%= order.appStatus.matchedDocumentName ? 'info' : 'secondary' %>">
+                      <%= order.appStatus.matchedDocumentName ? 'Matched PDF' : 'No Matched PDF' %>
+                    </span>
+                  </div>
+                  <% if (order.appStatus.matchedDocumentName || order.appStatus.summary) { %>
+                    <div class="small text-secondary mt-1">
+                      <% if (order.appStatus.matchedDocumentName) { %>
+                        <span><%= order.appStatus.matchedDocumentName %></span>
+                      <% } %>
+                      <% if (order.appStatus.processedAt) { %>
+                        <span> - <%= formatDateTime(order.appStatus.processedAt) %></span>
+                      <% } %>
+                      <% if (order.appStatus.summary) { %>
+                        <div><%= order.appStatus.summary %></div>
+                      <% } %>
+                    </div>
+                  <% } %>
+                </td>
+                <td><%= order.amount_total ?? '-' %></td>
+              </tr>
+            <% }) %>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mt-4">
+        <span class="small text-secondary"><%= hasLoaded ? 'Showing page' : 'Ready to load page' %> <strong><%= page %></strong>.</span>
+        <div class="d-flex flex-wrap gap-2">
+          <a
+            href="<%= hasPreviousPage ? buildPageHref(page - 1) : '#' %>"
+            class="btn btn-sm btn-outline-secondary <%= hasPreviousPage ? '' : 'disabled' %>"
+            <%= hasPreviousPage ? '' : 'aria-disabled="true"' %>
+            data-loading-message="Loading Purchase Orders..."
+          >
+            Prev Page
+          </a>
+          <a
+            href="<%= hasNextPage ? buildPageHref(page + 1) : '#' %>"
+            class="btn btn-sm btn-outline-secondary <%= hasNextPage ? '' : 'disabled' %>"
+            <%= hasNextPage ? '' : 'aria-disabled="true"' %>
+            data-loading-message="Loading Purchase Orders..."
+          >
+            Next Page
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<%- include('partials/footer') %>

@@ -1,0 +1,54 @@
+<%- include('partials/head') %>
+<main class="login-only-page d-flex align-items-center justify-content-center px-3 py-4">
+  <div class="login-only-panel w-100">
+    <div class="text-center mb-4">
+      <img class="login-only-logo" src="/public/icons/urban-vibe-logo-light.png" alt="Urban Vibe Interior Design LTD" />
+    </div>
+    <%- include('partials/alerts', { status, validationErrors }) %>
+    <div class="card shadow-sm border-0">
+      <div class="card-body p-4 p-sm-5">
+          <h1 class="h4 mb-4 text-center">Login</h1>
+          <form method="post" action="/auth/password-login" data-disable-submit="true">
+            <input type="hidden" name="next" value="<%= form.next %>" />
+            <div class="mb-3">
+              <label class="form-label">Email</label>
+              <input
+                type="email"
+                class="form-control"
+                name="email"
+                value="<%= form.email %>"
+                autocomplete="email"
+                required
+              />
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Password</label>
+              <input
+                type="password"
+                class="form-control"
+                name="password"
+                autocomplete="current-password"
+                placeholder="Enter your password"
+                required
+              />
+            </div>
+            <button type="submit" class="btn btn-primary w-100">Sign In</button>
+          </form>
+          <div class="text-center mt-3">
+            <a href="/forgot-password" class="small">Forgot your password?</a>
+          </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<style>
+  .login-only-page{min-height:100vh;background:#f8fafc}
+  .login-only-panel{max-width:420px}
+  .login-only-logo{display:block;width:min(290px,82vw);height:auto;margin:0 auto}
+  .login-only-panel .card{border-radius:1rem;box-shadow:0 18px 45px rgba(15,23,42,.08)!important}
+  .login-only-panel .form-control{min-height:48px}
+  .login-only-panel .btn{min-height:48px;font-weight:700}
+</style>
+
+<%- include('partials/footer') %>

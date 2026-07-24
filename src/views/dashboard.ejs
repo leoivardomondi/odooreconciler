@@ -1,0 +1,529 @@
+<%- include('partials/head') %>
+<%- include('partials/header') %>
+
+<%
+  const safePwaDueTaskCount = typeof pwaDueTaskCount === 'undefined' ? 0 : Number(pwaDueTaskCount || 0);
+  const safePwaBadgeBreakdown = typeof pwaBadgeBreakdown === 'undefined' ? null : pwaBadgeBreakdown;
+  const statusClass = (value) => {
+    if (value === 'success') return 'success';
+    if (value === 'error') return 'danger';
+    if (value === 'completed') return 'success';
+    if (value === 'completed_with_errors') return 'warning';
+    if (value === 'processed') return 'success';
+    if (value === 'processed_with_warnings') return 'warning';
+    if (value === 'failed') return 'danger';
+    if (value === 'skipped') return 'secondary';
+    if (value === 'sent_to_odoo') return 'success';
+    if (value === 'failed' || value === 'odoo_update_failed') return 'danger';
+    if (value === 'parsed' || value === 'parsed_empty') return 'warning';
+    return 'secondary';
+  };
+%>
+
+<main class="container py-4 py-lg-5">
+  <section class="hero-panel mb-4">
+    <div>
+      <p class="eyebrow">Dashboard</p>
+      <h1 class="display-6 mb-2">Operations at a glance</h1>
+      <p class="lead text-secondary mb-0">
+        Monitor connection health, review recent extraction history, and jump into the next Sales Order quickly.
+      </p>
+    </div>
+    <div class="hero-actions">
+      <a href="/sales-orders" class="btn btn-primary" data-loading-message="Opening Sales Orders...">Search Sales Orders</a>
+      <a href="/settings" class="btn btn-outline-secondary">Open Settings</a>
+    </div>
+  </section>
+
+  <%- include('partials/alerts', { status, validationErrors: [] }) %>
+
+  <% if (safePwaDueTaskCount > 0 && safePwaBadgeBreakdown) { %>
+    <section class="due-tasks-panel app-card mb-4">
+      <div class="due-tasks-panel__copy">
+        <p class="eyebrow mb-1">Check-in reminder</p>
+        <h2 class="h5 mb-2">You have pending tasks waiting</h2>
+        <p class="text-secondary mb-0">
+          This is the same count shown on the installed PWA badge. Clear these items before the next handoff.
+        </p>
+      </div>
+      <div class="due-tasks-panel__counts">
+        <div class="due-tasks-chip due-tasks-chip--total">
+          <span>Total</span>
+          <strong><%= safePwaBadgeBreakdown.totalCount %></strong>
+        </div>
+        <div class="due-tasks-chip due-tasks-chip--mpesa">
+          <span>M-Pesa</span>
+          <strong><%= safePwaBadgeBreakdown.mpesaCount %></strong>
+        </div>
+        <div class="due-tasks-chip due-tasks-chip--shop">
+          <span>Shop Floor</span>
+          <strong><%= safePwaBadgeBreakdown.shopFloorCount %></strong>
+        </div>
+      </div>
+    </section>
+  <% } %>
+
+  <div class="row g-4 mb-4">
+    <div class="col-md-6 col-xl-3">
+      <div class="stat-card">
+        <span class="stat-label">Connection</span>
+        <strong class="stat-value"><%= settings.connection.status %></strong>
+        <span class="stat-note"><%= settings.connection.version || 'Version unknown' %></span>
+      </div>
+    </div>
+    <div class="col-md-6 col-xl-3">
+      <div class="stat-card">
+        <span class="stat-label">Last SO</span>
+        <strong class="stat-value"><%= stats.lastRun ? stats.lastRun.orderName : '—' %></strong>
+        <span class="stat-note"><%= stats.lastRun ? stats.lastRun.status : 'No history yet' %></span>
+      </div>
+    </div>
+    <div class="col-md-6 col-xl-3">
+      <div class="stat-card">
+        <span class="stat-label">Recent Runs</span>
+        <strong class="stat-value"><%= stats.totalRuns %></strong>
+        <span class="stat-note"><%= stats.parsedRuns %> parsed, <%= stats.failedRuns %> failed</span>
+      </div>
+    </div>
+    <div class="col-md-6 col-xl-3">
+      <div class="stat-card">
+        <span class="stat-label">Scheduler</span>
+        <strong class="stat-value"><%= scheduler.config.enabled ? 'Enabled' : 'Disabled' %></strong>
+        <span class="stat-note"><%= scheduler.mode === 'in_process_interval' ? 'In-process interval' : 'Cron only' %></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="row g-4">
+    <div class="col-lg-8">
+      <div class="card shadow-sm border-0 app-card mb-4">
+        <div class="card-body p-4">
+          <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap mb-3">
+            <div>
+              <h2 class="h4 mb-1">Background Scheduler</h2>
+              <p class="text-secondary small mb-0">
+                Run Sales Order processing or PO bill matching manually when you need an immediate pass.
+              </p>
+            </div>
+            <div class="d-flex flex-wrap gap-2 justify-content-end">
+              <form method="post" action="/jobs/run-scheduler" data-disable-submit="true" data-loading-message="Running sales scheduler...">
+                <button type="submit" class="btn btn-primary">Run Sales Scheduler</button>
+              </form>
+              <form method="post" action="/jobs/run-po-bill-scheduler" data-disable-submit="true" data-loading-message="Running PO bill scheduler...">
+                <button type="submit" class="btn btn-outline-primary">Run PO Scheduler</button>
+              </form>
+            </div>
+          </div>
+          <dl class="row small mb-0">
+            <dt class="col-sm-4 text-secondary">Sales Enabled</dt>
+            <dd class="col-sm-8"><%= settings.scheduler.enabled ? 'Yes' : 'No' %></dd>
+            <dt class="col-sm-4 text-secondary">Sales Batch Size</dt>
+            <dd class="col-sm-8"><%= settings.scheduler.batchSize %></dd>
+            <dt class="col-sm-4 text-secondary">Sales Interval</dt>
+            <dd class="col-sm-8"><%= settings.scheduler.intervalMinutes %> minute(s)</dd>
+            <dt class="col-sm-4 text-secondary">PO Enabled</dt>
+            <dd class="col-sm-8"><%= settings.poBillScheduler.enabled ? 'Yes' : 'No' %></dd>
+            <dt class="col-sm-4 text-secondary">PO Batch Size</dt>
+            <dd class="col-sm-8"><%= settings.poBillScheduler.batchSize %></dd>
+            <dt class="col-sm-4 text-secondary">PO Interval</dt>
+            <dd class="col-sm-8"><%= settings.poBillScheduler.intervalMinutes %> minute(s)</dd>
+            <dt class="col-sm-4 text-secondary">Mode</dt>
+            <dd class="col-sm-8"><%= scheduler.mode === 'in_process_interval' ? 'In-process interval' : 'Cron only' %></dd>
+            <dt class="col-sm-4 text-secondary">Checkpoint</dt>
+            <dd class="col-sm-8"><%= formatDateTime(scheduler.runtimeState.lastCheckpointAt) %></dd>
+            <dt class="col-sm-4 text-secondary">Last Error</dt>
+            <dd class="col-sm-8"><%= scheduler.runtimeState.lastErrorMessage || '—' %></dd>
+            <dt class="col-sm-4 text-secondary">Sales Cron URL</dt>
+            <dd class="col-sm-8">
+              <code><%= `${appBaseUrl}/jobs/run-scheduler?token=${settings.scheduler.cronToken || 'set-a-token-in-settings'}` %></code>
+            </dd>
+            <dt class="col-sm-4 text-secondary">PO Cron URL</dt>
+            <dd class="col-sm-8">
+              <code><%= `${appBaseUrl}/jobs/run-po-bill-scheduler?token=${settings.poBillScheduler.cronToken || settings.scheduler.cronToken || 'set-a-token-in-settings'}` %></code>
+            </dd>
+          </dl>
+          <% if (scheduler.lastRun) { %>
+            <div class="mt-3 small text-secondary">
+              Last scheduler run: <%= scheduler.lastRun.context.schedulerName || (scheduler.lastRun.context.jobType === 'po_bill_matching' ? 'PO Bill Scheduler' : 'Sales Order Scheduler') %>
+              - <%= formatDateTime(scheduler.lastRun.startedAt) %> •
+              scanned <%= scheduler.lastRun.scannedCount %>, processed <%= scheduler.lastRun.processedCount %>,
+              skipped <%= scheduler.lastRun.skippedCount %>, failed <%= scheduler.lastRun.failedCount %>
+            </div>
+          <% } %>
+        </div>
+      </div>
+
+      <div class="card shadow-sm border-0 app-card mb-4">
+        <div class="card-body p-4">
+          <h2 class="h4 mb-3">Scheduler Run Summary</h2>
+          <% if (!scheduler.recentRuns.length) { %>
+            <p class="text-secondary mb-0">No scheduler runs recorded yet.</p>
+          <% } %>
+          <%
+            const schedulerRunName = (run) =>
+              run.context.schedulerName || (run.context.jobType === 'po_bill_matching' ? 'PO Bill Scheduler' : 'Sales Order Scheduler');
+            const seenOrderOutcomeKeys = new Set();
+            const quietOrderCategories = new Set(['already_reconciled', 'missing_job_summary']);
+            const orderOutcomeKey = (run, item) => [
+              schedulerRunName(run),
+              item.orderId || '',
+              item.attachmentId || '',
+              item.stockSignature || '',
+              item.category || '',
+              item.reason || '',
+            ].join('|');
+            const isAttentionOrderOutcome = (item) =>
+              item.status === 'failed' || ['unexpected_error', 'order_locked', 'stock_failed'].includes(item.category);
+          %>
+          <% scheduler.recentRuns.forEach((run) => { %>
+            <% const activeLockRun = run.context.activeLockRun || null; %>
+            <article class="border rounded-3 p-3 mb-3">
+              <div class="d-flex justify-content-between align-items-start gap-3 mb-2">
+                <div>
+                  <div class="fw-semibold"><%= schedulerRunName(run) %> <code><%= run.id %></code></div>
+                  <div class="small text-secondary">
+                    Started <%= formatDateTime(run.startedAt) %>
+                    <% if (run.finishedAt) { %>
+                      • Finished <%= formatDateTime(run.finishedAt) %>
+                    <% } %>
+                    • Trigger <%= run.trigger %>
+                  </div>
+                </div>
+                <span class="badge text-bg-<%= statusClass(run.status) %>"><%= run.status %></span>
+              </div>
+              <div class="small mb-2">
+                Scanned <strong><%= run.scannedCount %></strong>,
+                processed <strong><%= run.processedCount %></strong>,
+                skipped <strong><%= run.skippedCount %></strong>,
+                failed <strong><%= run.failedCount %></strong>
+              </div>
+              <div class="small text-secondary mb-2"><%= run.summary || 'No summary recorded.' %></div>
+              <% if (run.status === 'skipped' && (activeLockRun || run.context.activeLockRunId)) { %>
+                <div class="small border rounded bg-body-tertiary p-2 mb-3">
+                  <strong>Skipped scheduler:</strong> <%= schedulerRunName(run) %>
+                  <br />
+                  <strong>Concurrent run:</strong>
+                  <% if (activeLockRun) { %>
+                    <%= activeLockRun.schedulerName || 'Scheduler' %>
+                    <code><%= activeLockRun.id %></code>
+                    started <%= formatDateTime(activeLockRun.startedAt) %>
+                    <% if (run.context.activeLockAcquiredAt) { %>
+                      - lock acquired <%= formatDateTime(run.context.activeLockAcquiredAt) %>
+                    <% } %>
+                    <% if (activeLockRun.summary) { %>
+                      <br /><span class="text-secondary"><%= activeLockRun.summary %></span>
+                    <% } %>
+                  <% } else { %>
+                    <code><%= run.context.activeLockRunId %></code>
+                    <% if (run.context.activeLockAcquiredAt) { %>
+                      - lock acquired <%= formatDateTime(run.context.activeLockAcquiredAt) %>
+                    <% } %>
+                    <% if (run.context.activeLockRunLookupError) { %>
+                      <br /><span class="text-secondary"><%= run.context.activeLockRunLookupError %></span>
+                    <% } %>
+                  <% } %>
+                </div>
+              <% } %>
+              <%
+                const rawOrderOutcomes = run.context.orderOutcomes || [];
+                const orderOutcomeRows = rawOrderOutcomes.map((item) => {
+                  const key = orderOutcomeKey(run, item);
+                  const repeated = seenOrderOutcomeKeys.has(key);
+                  const quiet = quietOrderCategories.has(item.category);
+                  return { item, key, repeated, quiet };
+                });
+                orderOutcomeRows.forEach((row) => seenOrderOutcomeKeys.add(row.key));
+                const primaryOrderOutcomes = orderOutcomeRows.filter((row) =>
+                  isAttentionOrderOutcome(row.item) || (!row.repeated && !row.quiet),
+                );
+                const hiddenOrderOutcomes = orderOutcomeRows.filter((row) => !primaryOrderOutcomes.includes(row));
+              %>
+              <% if (rawOrderOutcomes.length) { %>
+                <% if (primaryOrderOutcomes.length) { %>
+                  <div class="table-responsive">
+                    <table class="table table-sm align-middle mb-0">
+                    <thead>
+                      <tr>
+                        <th>Sales Order</th>
+                        <th>Status</th>
+                        <th>Category</th>
+                        <th>Attachment</th>
+                        <th>Detail</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <% primaryOrderOutcomes.forEach((row) => { const item = row.item; %>
+                        <tr>
+                          <td>
+                            <strong><%= item.orderName || `SO ${item.orderId}` %></strong>
+                            <div class="small text-secondary">ID <%= item.orderId || '—' %></div>
+                          </td>
+                          <td><span class="badge text-bg-<%= statusClass(item.status) %>"><%= item.status %></span></td>
+                          <td><code><%= item.category || '—' %></code></td>
+                          <td>
+                            <% if (item.attachmentName) { %>
+                              <%= item.attachmentName %>
+                              <div class="small text-secondary">Attachment ID <%= item.attachmentId || '—' %></div>
+                            <% } else { %>
+                              —
+                            <% } %>
+                          </td>
+                          <td>
+                            <div><%= item.reason || '—' %></div>
+                            <% if (item.historyId) { %>
+                              <div class="small mt-1">
+                                <a href="/extractions/<%= item.historyId %>" class="btn btn-sm btn-outline-secondary">Open Extraction</a>
+                              </div>
+                            <% } %>
+                          </td>
+                        </tr>
+                      <% }) %>
+                    </tbody>
+                    </table>
+                  </div>
+                <% } else { %>
+                  <div class="small text-secondary border rounded bg-body-tertiary p-2">
+                    All <%= rawOrderOutcomes.length %> Sales Order outcome(s) are routine or repeated from a newer run.
+                  </div>
+                <% } %>
+                <% if (hiddenOrderOutcomes.length) { %>
+                  <details class="small mt-2">
+                    <summary>
+                      Show hidden routine/repeated Sales Order outcome(s)
+                      (<%= hiddenOrderOutcomes.length %>)
+                    </summary>
+                    <div class="table-responsive mt-2">
+                      <table class="table table-sm align-middle mb-0">
+                        <thead>
+                          <tr>
+                            <th>Sales Order</th>
+                            <th>Status</th>
+                            <th>Category</th>
+                            <th>Attachment</th>
+                            <th>Detail</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <% hiddenOrderOutcomes.forEach((row) => { const item = row.item; %>
+                            <tr>
+                              <td>
+                                <strong><%= item.orderName || `SO ${item.orderId}` %></strong>
+                                <div class="small text-secondary">ID <%= item.orderId || 'â€”' %></div>
+                              </td>
+                              <td><span class="badge text-bg-<%= statusClass(item.status) %>"><%= item.status %></span></td>
+                              <td>
+                                <code><%= item.category || 'â€”' %></code>
+                                <% if (row.repeated) { %>
+                                  <div class="small text-secondary">Repeated from newer run</div>
+                                <% } %>
+                              </td>
+                              <td>
+                                <% if (item.attachmentName) { %>
+                                  <%= item.attachmentName %>
+                                  <div class="small text-secondary">Attachment ID <%= item.attachmentId || 'â€”' %></div>
+                                <% } else { %>
+                                  â€”
+                                <% } %>
+                              </td>
+                              <td>
+                                <div><%= item.reason || 'â€”' %></div>
+                                <% if (item.historyId) { %>
+                                  <div class="small mt-1">
+                                    <a href="/extractions/<%= item.historyId %>" class="btn btn-sm btn-outline-secondary">Open Extraction</a>
+                                  </div>
+                                <% } %>
+                              </td>
+                            </tr>
+                          <% }) %>
+                        </tbody>
+                      </table>
+                    </div>
+                  </details>
+                <% } %>
+              <% } %>
+              <%
+                const visibleDocumentOutcomes = (run.context.documentOutcomes || []).filter((item) =>
+                  ['processed', 'processed_with_warnings', 'skipped', 'failed'].includes(item.status),
+                );
+                const rowIdSafe = (value) => String(value || '').replace(/[^a-zA-Z0-9_-]/g, '-');
+              %>
+              <% if (visibleDocumentOutcomes.length) { %>
+                <div class="table-responsive mt-3">
+                  <table class="table table-sm align-middle mb-0">
+                    <thead>
+                      <tr>
+                        <th>PDF</th>
+                        <th>Status</th>
+                        <th></th>
+                        <th>Matched PO</th>
+                        <th>Detail</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <% visibleDocumentOutcomes.forEach((item, outcomeIndex) => { %>
+                        <% const detailId = `run-${rowIdSafe(run.id)}-doc-${outcomeIndex}`; %>
+                        <% const diagnostics = item.diagnostics || {}; %>
+                        <tr class="<%= item.status === 'processed' ? 'table-success' : item.status === 'processed_with_warnings' ? 'table-warning' : '' %>">
+                          <td>
+                            <strong><%= item.attachmentName || `Attachment ${item.attachmentId}` %></strong>
+                            <div class="small text-secondary">
+                              Attachment ID <%= item.attachmentId || 'â€”' %>
+                              <% if (item.documentId) { %>
+                                â€¢ Document ID <%= item.documentId %>
+                              <% } %>
+                            </div>
+                          </td>
+                          <td><span class="badge text-bg-<%= statusClass(item.status) %>"><%= item.status %></span></td>
+                          <td class="text-end">
+                            <details class="text-start">
+                              <summary class="btn btn-sm btn-outline-secondary">Details</summary>
+                              <div class="mt-3 p-3 bg-body-tertiary border rounded" style="min-width: min(42rem, 80vw);">
+                                <% if (diagnostics.checks && diagnostics.checks.length) { %>
+                                  <h3 class="h6">Checks</h3>
+                                  <div class="table-responsive mb-3">
+                                    <table class="table table-sm mb-0">
+                                      <tbody>
+                                        <% diagnostics.checks.forEach((check) => { %>
+                                          <tr>
+                                            <td><span class="badge text-bg-<%= check.status === 'pass' ? 'success' : check.status === 'warn' ? 'warning' : check.status === 'fail' ? 'danger' : 'secondary' %>"><%= check.status %></span></td>
+                                            <td><strong><%= check.label %></strong></td>
+                                            <td><%= check.detail %></td>
+                                          </tr>
+                                        <% }) %>
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                <% } %>
+                                <% if (diagnostics.actionsPending && diagnostics.actionsPending.length) { %>
+                                  <h3 class="h6">Why It Stopped</h3>
+                                  <ul class="small mb-3">
+                                    <% diagnostics.actionsPending.forEach((action) => { %>
+                                      <li><%= action %></li>
+                                    <% }) %>
+                                  </ul>
+                                <% } %>
+                                <% if (diagnostics.actionsTaken && diagnostics.actionsTaken.length) { %>
+                                  <h3 class="h6">Actions Taken</h3>
+                                  <ul class="small mb-3">
+                                    <% diagnostics.actionsTaken.forEach((action) => { %>
+                                      <li><%= action %></li>
+                                    <% }) %>
+                                  </ul>
+                                <% } %>
+                                <% if (diagnostics.candidates && diagnostics.candidates.length) { %>
+                                  <h3 class="h6">Top PO Candidates</h3>
+                                  <ul class="small mb-3">
+                                    <% diagnostics.candidates.forEach((candidate) => { %>
+                                      <li><strong><%= candidate.name %></strong> score <%= candidate.score %>: <%= (candidate.reasons || []).join(' | ') %></li>
+                                    <% }) %>
+                                  </ul>
+                                <% } %>
+                                <% if (diagnostics.parsedInvoice) { %>
+                                  <h3 class="h6">Parsed Invoice</h3>
+                                  <dl class="row small mb-3">
+                                    <dt class="col-sm-4">Vendor</dt><dd class="col-sm-8"><%= diagnostics.parsedInvoice.vendorName || 'Unreadable' %></dd>
+                                    <dt class="col-sm-4">Invoice Date</dt><dd class="col-sm-8"><%= diagnostics.parsedInvoice.invoiceDate || 'Unreadable' %></dd>
+                                    <dt class="col-sm-4">Invoice Number</dt><dd class="col-sm-8"><%= diagnostics.parsedInvoice.invoiceNumber || 'Unreadable' %></dd>
+                                    <dt class="col-sm-4">Order Number</dt><dd class="col-sm-8"><%= diagnostics.parsedInvoice.orderNumber || 'Unreadable' %></dd>
+                                    <dt class="col-sm-4">PIN</dt><dd class="col-sm-8"><%= diagnostics.parsedInvoice.taxPin || diagnostics.parsedInvoice.pinNote || 'Unreadable' %></dd>
+                                    <dt class="col-sm-4">Total</dt><dd class="col-sm-8"><%= diagnostics.parsedInvoice.grandTotal ?? 'Unreadable' %></dd>
+                                    <dt class="col-sm-4">Items</dt><dd class="col-sm-8"><%= diagnostics.parsedInvoice.itemCount ?? 0 %></dd>
+                                  </dl>
+                                  <% if (diagnostics.parsedInvoice.logs && diagnostics.parsedInvoice.logs.length) { %>
+                                    <h3 class="h6">Extraction Logs</h3>
+                                    <pre class="bg-body border rounded p-2 small mb-0" style="white-space: pre-wrap;"><code><%= diagnostics.parsedInvoice.logs.join('\n') %></code></pre>
+                                  <% } %>
+                                <% } %>
+                                <% if (diagnostics.error) { %>
+                                  <h3 class="h6">Error</h3>
+                                  <pre class="bg-body border rounded p-2 small mb-0" style="white-space: pre-wrap;"><code><%= diagnostics.error %></code></pre>
+                                <% } %>
+                                <% if (!diagnostics.checks && !diagnostics.actionsPending && !diagnostics.actionsTaken && !diagnostics.parsedInvoice && !diagnostics.error) { %>
+                                  <p class="text-secondary small mb-0">Detailed diagnostics were not saved for this older run. Run the scheduler again to capture full checks and extraction logs.</p>
+                                <% } %>
+                              </div>
+                            </details>
+                          </td>
+                          <td><%= item.purchaseOrder || 'â€”' %></td>
+                          <td><%= item.summary || 'â€”' %></td>
+                        </tr>
+                      <% }) %>
+                    </tbody>
+                  </table>
+                </div>
+              <% } %>
+            </article>
+          <% }) %>
+        </div>
+      </div>
+
+      <div class="card shadow-sm border-0 app-card">
+        <div class="card-body p-4">
+          <div class="d-flex justify-content-between align-items-center mb-3">
+            <h2 class="h4 mb-0">Recent Processing History</h2>
+            <a href="/sales-orders" class="btn btn-sm btn-outline-secondary">Find an SO</a>
+          </div>
+          <div class="table-responsive">
+            <table class="table align-middle mb-0">
+              <thead>
+                <tr>
+                  <th>Sales Order</th>
+                  <th>Attachment</th>
+                  <th>Status</th>
+                  <th>Updated</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <% if (history.length === 0) { %>
+                  <tr>
+                    <td colspan="5" class="text-center text-secondary py-4">No extraction history yet.</td>
+                  </tr>
+                <% } %>
+                <% history.forEach((entry) => { %>
+                  <tr>
+                    <td>
+                      <strong><%= entry.orderName %></strong>
+                      <div class="small text-secondary"><%= entry.summary || '—' %></div>
+                    </td>
+                    <td><%= entry.attachmentName %></td>
+                    <td><span class="badge text-bg-<%= statusClass(entry.status) %>"><%= entry.status %></span></td>
+                    <td><%= formatDateTime(entry.updatedAt) %></td>
+                    <td class="text-end">
+                      <a href="/extractions/<%= entry.id %>" class="btn btn-sm btn-outline-primary">View</a>
+                    </td>
+                  </tr>
+                <% }) %>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-lg-4">
+      <div class="card shadow-sm border-0 app-card h-100">
+        <div class="card-body p-4">
+          <h2 class="h4 mb-3">Recent Logs</h2>
+          <div class="log-stack">
+            <% if (logs.length === 0) { %>
+              <p class="text-secondary mb-0">No logs recorded yet.</p>
+            <% } %>
+            <% logs.forEach((entry) => { %>
+              <article class="log-entry">
+                <div class="d-flex justify-content-between gap-2">
+                  <strong class="text-capitalize"><%= entry.level %></strong>
+                  <span class="small text-secondary"><%= formatDateTime(entry.createdAt) %></span>
+                </div>
+                <p class="mb-1"><%= entry.message %></p>
+                <pre class="log-context mb-0"><%= stringify(entry.context) %></pre>
+              </article>
+            <% }) %>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<%- include('partials/footer') %>

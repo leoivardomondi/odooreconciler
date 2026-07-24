@@ -1,0 +1,189 @@
+<%- include('partials/head') %>
+<%- include('partials/header') %>
+
+<main class="container py-4 py-lg-5">
+  <section class="hero-panel mb-4">
+    <div>
+      <p class="eyebrow">Supplier Invoices</p>
+      <h1 class="display-6 mb-2">Invoice Parser</h1>
+      <p class="lead text-secondary mb-0">
+        Upload one Kenyan supplier invoice PDF or image and review structured extraction before any Odoo write-back.
+      </p>
+    </div>
+    <div class="hero-actions">
+      <span class="meta-card">
+        <span class="meta-label">OCR</span>
+        <strong><%= preferredOcr %></strong>
+      </span>
+    </div>
+  </section>
+
+  <%- include('partials/alerts', { status, validationErrors: [] }) %>
+
+  <div class="row g-4">
+    <div class="col-lg-4">
+      <div class="card shadow-sm border-0 app-card">
+        <div class="card-body p-4">
+          <form method="post" action="/invoice-parser" enctype="multipart/form-data" class="vstack gap-3">
+            <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+
+            <div>
+              <label class="form-label">PDF or Image</label>
+              <input
+                type="file"
+                class="form-control"
+                name="file"
+                accept=".pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff"
+                required
+              />
+            </div>
+
+            <div>
+              <label class="form-label">OCR Mode</label>
+              <select class="form-select" name="preferredOcr">
+                <option value="auto" <%= preferredOcr === 'auto' ? 'selected' : '' %>>Auto</option>
+                <option value="google" <%= preferredOcr === 'google' ? 'selected' : '' %>>Google Vision</option>
+                <option value="tesseract" <%= preferredOcr === 'tesseract' ? 'selected' : '' %>>Tesseract</option>
+              </select>
+            </div>
+
+            <button type="submit" class="btn btn-primary">Parse Invoice</button>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-lg-8">
+      <% if (parsedInvoice) { %>
+        <div class="card shadow-sm border-0 app-card mb-4">
+          <div class="card-body p-4">
+            <div class="d-flex flex-wrap justify-content-between gap-3 mb-3">
+              <div>
+                <p class="eyebrow mb-1">Extracted Invoice</p>
+                <h2 class="h4 mb-0"><%= parsedInvoice.supplier || 'Unknown Supplier' %></h2>
+              </div>
+              <span class="badge text-bg-<%= parsedInvoice.confidence.overall >= 0.75 ? 'success' : parsedInvoice.confidence.overall >= 0.45 ? 'warning' : 'danger' %> align-self-start">
+                <%= Math.round(parsedInvoice.confidence.overall * 100) %>% confidence
+              </span>
+            </div>
+
+            <dl class="row mb-0">
+              <dt class="col-sm-4">Supplier Key</dt>
+              <dd class="col-sm-8"><%= parsedInvoice.supplier_key %></dd>
+              <dt class="col-sm-4">Document Type</dt>
+              <dd class="col-sm-8"><%= parsedInvoice.document_type %></dd>
+              <dt class="col-sm-4">Invoice Number</dt>
+              <dd class="col-sm-8"><%= parsedInvoice.invoice_number || 'Unreadable' %></dd>
+              <dt class="col-sm-4">Serial Number</dt>
+              <dd class="col-sm-8"><%= parsedInvoice.serial_number || 'Unreadable' %></dd>
+              <dt class="col-sm-4">Invoice Date</dt>
+              <dd class="col-sm-8"><%= parsedInvoice.invoice_date || 'Unreadable' %></dd>
+              <dt class="col-sm-4">Customer</dt>
+              <dd class="col-sm-8"><%= parsedInvoice.customer || 'Unreadable' %></dd>
+              <dt class="col-sm-4">Customer PIN</dt>
+              <dd class="col-sm-8"><%= parsedInvoice.customer_pin || 'Unreadable' %></dd>
+            </dl>
+          </div>
+        </div>
+
+        <div class="card shadow-sm border-0 app-card mb-4">
+          <div class="card-body p-4">
+            <h2 class="h5 mb-3">Items</h2>
+            <div class="table-responsive">
+              <table class="table table-sm align-middle mb-0">
+                <thead>
+                  <tr>
+                    <th>Description</th>
+                    <th>Qty</th>
+                    <th>Unit</th>
+                    <th>Unit Price</th>
+                    <th>Net</th>
+                    <th>Conf.</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <% if (parsedInvoice.items.length === 0) { %>
+                    <tr>
+                      <td colspan="6" class="text-secondary py-3">No item rows were extracted.</td>
+                    </tr>
+                  <% } %>
+                  <% parsedInvoice.items.forEach((item) => { %>
+                    <tr>
+                      <td><%= item.description %></td>
+                      <td><%= item.quantity ?? '—' %></td>
+                      <td><%= item.unit || '—' %></td>
+                      <td><%= item.unit_price ?? '—' %></td>
+                      <td><%= item.net_amount ?? '—' %></td>
+                      <td><%= item.confidence ? `${Math.round(item.confidence * 100)}%` : '—' %></td>
+                    </tr>
+                  <% }) %>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="row g-4 mb-4">
+          <div class="col-md-6">
+            <div class="card shadow-sm border-0 app-card h-100">
+              <div class="card-body p-4">
+                <h2 class="h5 mb-3">Totals</h2>
+                <dl class="row mb-0">
+                  <dt class="col-6">Goods</dt>
+                  <dd class="col-6"><%= parsedInvoice.totals.goods_total ?? 'Unreadable' %></dd>
+                  <dt class="col-6">VAT</dt>
+                  <dd class="col-6"><%= parsedInvoice.totals.vat ?? 'Unreadable' %></dd>
+                  <dt class="col-6">Amount Due</dt>
+                  <dd class="col-6"><strong><%= parsedInvoice.totals.amount_due ?? 'Unreadable' %></strong></dd>
+                </dl>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-6">
+            <div class="card shadow-sm border-0 app-card h-100">
+              <div class="card-body p-4">
+                <h2 class="h5 mb-3">Confidence</h2>
+                <% Object.entries(parsedInvoice.confidence).forEach(([key, value]) => { %>
+                  <div class="d-flex justify-content-between border-bottom py-1">
+                    <span><%= key %></span>
+                    <strong><%= Math.round(value * 100) %>%</strong>
+                  </div>
+                <% }) %>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card shadow-sm border-0 app-card mb-4">
+          <div class="card-body p-4">
+            <h2 class="h5 mb-3">Warnings</h2>
+            <% if (parsedInvoice.warnings.length === 0) { %>
+              <p class="text-secondary mb-0">No parser warnings.</p>
+            <% } else { %>
+              <ul class="mb-0">
+                <% parsedInvoice.warnings.forEach((warning) => { %>
+                  <li><%= warning %></li>
+                <% }) %>
+              </ul>
+            <% } %>
+          </div>
+        </div>
+
+        <details class="card shadow-sm border-0 app-card">
+          <summary class="card-body p-4 fw-semibold">Raw OCR / PDF Text</summary>
+          <div class="card-body pt-0">
+            <pre class="bg-body-tertiary border rounded p-3 small"><%= parsedInvoice.raw.ocr_text || parsedInvoice.raw.pdf_text || 'No raw text.' %></pre>
+          </div>
+        </details>
+      <% } else { %>
+        <div class="card shadow-sm border-0 app-card">
+          <div class="card-body p-4 text-secondary">
+            Upload an invoice to see supplier, dates, items, totals, warnings, confidence, and raw OCR text.
+          </div>
+        </div>
+      <% } %>
+    </div>
+  </div>
+</main>
+
+<%- include('partials/footer') %>

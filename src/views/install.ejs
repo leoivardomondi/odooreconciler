@@ -1,0 +1,75 @@
+<%- include('partials/head') %>
+<%- include('partials/header') %>
+
+<main class="container py-4 py-lg-5">
+  <section class="hero-panel mb-4">
+    <div>
+      <p class="eyebrow">Installer</p>
+      <h1 class="display-6 mb-2">Bootstrap database access and the first admin</h1>
+      <p class="lead text-secondary mb-0">
+        Use this once on first deployment to connect the app to MySQL and approve the first admin email.
+      </p>
+    </div>
+  </section>
+
+  <%- include('partials/alerts', { status, validationErrors }) %>
+
+  <div class="row g-4">
+    <div class="col-lg-8">
+      <div class="card shadow-sm border-0 app-card">
+        <div class="card-body p-4">
+          <form method="post" action="/install" class="row g-3">
+            <div class="col-md-6">
+              <label class="form-label">MySQL Host</label>
+              <input type="text" class="form-control" name="mysqlHost" value="<%= form.mysqlHost %>" />
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">MySQL Port</label>
+              <input type="text" class="form-control" name="mysqlPort" value="<%= form.mysqlPort %>" />
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Pool Limit</label>
+              <input type="text" class="form-control" name="mysqlConnectionLimit" value="<%= form.mysqlConnectionLimit %>" />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">MySQL User</label>
+              <input type="text" class="form-control" name="mysqlUser" value="<%= form.mysqlUser %>" />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">MySQL Database</label>
+              <input type="text" class="form-control" name="mysqlDatabase" value="<%= form.mysqlDatabase %>" />
+            </div>
+            <div class="col-12">
+              <label class="form-label">MySQL Password</label>
+              <input type="password" class="form-control" name="mysqlPassword" value="" />
+            </div>
+            <div class="col-12">
+              <label class="form-label">First Admin Email</label>
+              <input type="email" class="form-control" name="adminEmail" value="<%= form.adminEmail %>" required />
+              <div class="form-text">Must use one of the approved work email domains.</div>
+            </div>
+            <div class="col-12 d-flex gap-2">
+              <button type="submit" class="btn btn-primary px-4">Complete Installer</button>
+              <a href="/login" class="btn btn-link text-decoration-none">Back to Login</a>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-lg-4">
+      <div class="card shadow-sm border-0 app-card h-100">
+        <div class="card-body p-4">
+          <h2 class="h5 mb-3">Notes</h2>
+          <ul class="list-unstyled small mb-0 soft-list">
+            <li>Enable the installer only for first deployment.</li>
+            <li>MySQL credentials are stored in the runtime config file encrypted with <code>APP_ENCRYPTION_KEY</code>.</li>
+            <li>The first admin email is added to the approved access list automatically.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<%- include('partials/footer') %>

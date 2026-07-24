@@ -1,0 +1,202 @@
+<% const safeMpesaOpenReviewStatementCount = typeof mpesaOpenReviewStatementCount === 'undefined' ? 0 : Number(mpesaOpenReviewStatementCount || 0); %>
+<% const safePwaDueTaskCount = typeof pwaDueTaskCount === 'undefined' ? 0 : Number(pwaDueTaskCount || 0); %>
+<% const safeAuthUser = typeof authUser === 'undefined' ? null : authUser; %>
+<% const safeViewingAsUser = typeof viewingAsUser === 'undefined' ? null : viewingAsUser; %>
+<% const displayUser = safeViewingAsUser || safeAuthUser; %>
+<% const profileDisplayName = displayUser && displayUser.displayName
+  ? displayUser.displayName
+  : String(displayUser && displayUser.email || 'User').split('@')[0].replace(/[._-]+/g, ' ').replace(/\d+/g, ' ').trim().replace(/\b\w/g, (letter) => letter.toUpperCase()) || 'User'; %>
+<% const displayRoleLabel = safeViewingAsUser
+  ? (safeViewingAsUser.role === 'admin' ? 'Admin' : 'Standard User')
+  : (typeof authRoleLabel === 'undefined' ? (safeAuthUser && safeAuthUser.role === 'admin' ? 'Admin' : 'Standard User') : authRoleLabel); %>
+<% if (isAuthenticated) { %>
+  <span data-pwa-badge-count="<%= safePwaDueTaskCount %>" hidden></span>
+  <div class="app-window-titlebar" data-window-titlebar aria-hidden="false">
+    <div class="app-window-titlebar-drag">
+      <span class="app-window-title"><%= pageTitle %> | <%= appName %></span>
+    </div>
+    <button
+      type="button"
+      class="btn app-window-refresh-btn"
+      data-app-refresh
+      data-loading-message="Refreshing app..."
+      title="Refresh app"
+      aria-label="Refresh app"
+    >
+      <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path d="M17.7 6.3A8 8 0 1 0 20 12a1 1 0 1 0-2 0 6 6 0 1 1-1.76-4.24H14a1 1 0 1 0 0 2h4.5a1 1 0 0 0 1-1V4a1 1 0 1 0-2 0v2.3Z" />
+      </svg>
+    </button>
+  </div>
+<% } %>
+
+<nav class="navbar navbar-expand-lg app-navbar sticky-top">
+  <div class="container">
+    <a class="navbar-brand" href="/dashboard" aria-label="<%= appName %> dashboard">
+      <img class="brand-logo-img brand-logo-light" src="/public/icons/urban-vibe-logo-light.png" alt="Urban Vibe Interior Design LTD" />
+      <img class="brand-logo-img brand-logo-dark" src="/public/icons/urban-vibe-logo-dark.png" alt="Urban Vibe Interior Design LTD" />
+    </a>
+    <button
+      class="navbar-toggler"
+      type="button"
+      data-bs-toggle="collapse"
+      data-bs-target="#mainNav"
+      aria-controls="mainNav"
+      aria-expanded="false"
+      aria-label="Toggle navigation"
+    >
+      <span class="navbar-toggler-icon"></span>
+    </button>
+    <div class="collapse navbar-collapse" id="mainNav">
+      <% if (isAuthenticated) { %>
+        <ul class="navbar-nav main-nav ms-auto">
+          <% if (canAccess && canAccess('GET', '/dashboard')) { %>
+            <li class="nav-item">
+              <a class="nav-link <%= currentPath.startsWith('/dashboard') || currentPath === '/' ? 'active' : '' %>" href="/dashboard">Home</a>
+            </li>
+          <% } %>
+          <% if (canAccess && canAccess('GET', '/shop-floor')) { %>
+            <li class="nav-item">
+              <a class="nav-link <%= currentPath === '/shop-floor' ? 'active' : '' %>" href="/shop-floor">My Work</a>
+            </li>
+            <li class="nav-item">
+              <a class="nav-link <%= currentPath.startsWith('/shop-floor/boards') ? 'active' : '' %>" href="/shop-floor/boards">Board Reservations</a>
+            </li>
+          <% } %>
+          <% if (canAccess && canAccess('GET', '/sales-orders') || canAccess && canAccess('GET', '/purchase-orders') || canAccess && canAccess('GET', '/po-bill-automation') || canAccess && canAccess('GET', '/mpesa-reconciliation')) { %>
+            <li class="nav-item dropdown">
+              <a class="nav-link dropdown-toggle <%= currentPath.startsWith('/sales-orders') || currentPath.startsWith('/purchase-orders') || currentPath.startsWith('/po-bill-automation') || currentPath.startsWith('/mpesa-reconciliation') ? 'active' : '' %>" href="#" role="button" data-bs-toggle="dropdown">Operations</a>
+              <ul class="dropdown-menu">
+                <% if (canAccess && canAccess('GET', '/mpesa-reconciliation')) { %>
+                  <li>
+                    <% const mpesaReviewCount = safeMpesaOpenReviewStatementCount; %>
+                    <a class="dropdown-item d-flex justify-content-between align-items-center" href="/mpesa-reconciliation">
+                      M-Pesa Reconciliation
+                      <% if (mpesaReviewCount > 0) { %>
+                        <span class="badge rounded-pill bg-danger"><%= mpesaReviewCount > 99 ? '99+' : mpesaReviewCount %></span>
+                      <% } %>
+                    </a>
+                  </li>
+                <% } %>
+                <% if (authUser && authUser.role === 'admin' && canAccess && canAccess('GET', '/mpesa-reconciliation/transactions')) { %>
+                  <li><a class="dropdown-item" href="/mpesa-reconciliation/transactions">M-Pesa Admin</a></li>
+                <% } %>
+                <% if (canAccess && canAccess('GET', '/sales-orders')) { %>
+                  <li><a class="dropdown-item" href="/sales-orders">Sales Orders</a></li>
+                <% } %>
+                <% if (canAccess && canAccess('GET', '/purchase-orders')) { %>
+                  <li><a class="dropdown-item" href="/purchase-orders">Purchase Orders</a></li>
+                <% } %>
+                <% if (canAccess && canAccess('GET', '/po-bill-automation')) { %>
+                  <li><a class="dropdown-item" href="/po-bill-automation">PO Bills</a></li>
+                <% } %>
+              </ul>
+            </li>
+          <% } %>
+          <% if (authUser && (authUser.role === 'admin' || (authUser.apps && authUser.apps.includes('shop-floor-admin')))) { %>
+            <li class="nav-item dropdown">
+              <a class="nav-link dropdown-toggle <%= currentPath.startsWith('/shop-floor/operators') || currentPath.startsWith('/settings') || currentPath.startsWith('/setup') ? 'active' : '' %>" href="#" role="button" data-bs-toggle="dropdown">People</a>
+              <ul class="dropdown-menu">
+                <li><a class="dropdown-item" href="/shop-floor/operators">Operators</a></li>
+                <% if (canAccess && canAccess('GET', '/settings/access')) { %>
+                  <li><a class="dropdown-item" href="/settings/access">Access Control</a></li>
+                <% } %>
+              </ul>
+            </li>
+          <% } %>
+          <% if (canAccess && canAccess('GET', '/settings')) { %>
+            <li class="nav-item dropdown">
+              <a class="nav-link dropdown-toggle <%= currentPath.startsWith('/settings') || currentPath.startsWith('/setup') ? 'active' : '' %>" href="#" role="button" data-bs-toggle="dropdown">Settings</a>
+              <ul class="dropdown-menu">
+                <li><a class="dropdown-item" href="/settings">App Settings</a></li>
+                <% if (canAccess && canAccess('GET', '/setup')) { %>
+                  <li><a class="dropdown-item" href="/setup">Setup</a></li>
+                <% } %>
+              </ul>
+            </li>
+          <% } %>
+        </ul>
+      <% } else { %>
+        <ul class="navbar-nav ms-auto gap-lg-2">
+          <li class="nav-item">
+            <a class="nav-link <%= currentPath.startsWith('/login') ? 'active' : '' %>" href="/login">Sign In</a>
+          </li>
+        </ul>
+      <% } %>
+      <% if (isAuthenticated && authUser) { %>
+        <div class="nav-utility ms-lg-3">
+          <button
+            type="button"
+            class="btn btn-sm btn-outline-secondary app-refresh-btn"
+            data-app-refresh
+            data-loading-message="Refreshing app..."
+            title="Refresh app"
+            aria-label="Refresh app"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+              <path d="M17.7 6.3A8 8 0 1 0 20 12a1 1 0 1 0-2 0 6 6 0 1 1-1.76-4.24H14a1 1 0 1 0 0 2h4.5a1 1 0 0 0 1-1V4a1 1 0 1 0-2 0v2.3Z" />
+            </svg>
+            <span>Refresh</span>
+          </button>
+          <div class="dropdown profile-menu">
+            <button
+              class="btn profile-trigger dropdown-toggle"
+              type="button"
+              data-bs-toggle="dropdown"
+              aria-expanded="false"
+            >
+              <span class="profile-avatar"><%= profileDisplayName.charAt(0).toUpperCase() %></span>
+              <span class="profile-trigger-label"><%= profileDisplayName %></span>
+            </button>
+            <div class="dropdown-menu dropdown-menu-end profile-dropdown shadow-sm border-0">
+              <div class="profile-dropdown-section">
+                <span class="profile-dropdown-label">Signed In</span>
+                <strong class="profile-dropdown-value"><%= profileDisplayName %></strong>
+              </div>
+              <div class="profile-dropdown-section">
+                <span class="profile-dropdown-label">Role</span>
+                <span class="badge rounded-pill text-bg-primary"><%= displayRoleLabel %></span>
+              </div>
+              <div class="profile-dropdown-section">
+                <span class="profile-dropdown-label">Connection</span>
+                <span
+                  class="badge rounded-pill text-bg-<%= connection.status === 'success' ? 'success' : connection.status === 'error' ? 'danger' : 'secondary' %>"
+                >
+                  <%= connection.status %>
+                </span>
+              </div>
+              <div class="profile-dropdown-section">
+                <span class="profile-dropdown-label">Configuration</span>
+                <div class="profile-dropdown-links">
+                  <% if (canAccess && canAccess('GET', '/setup')) { %>
+                    <a class="dropdown-item <%= currentPath.startsWith('/setup') ? 'active' : '' %>" href="/setup">Setup</a>
+                  <% } %>
+                  <% if (canAccess && canAccess('GET', '/settings')) { %>
+                    <a class="dropdown-item <%= currentPath.startsWith('/settings') ? 'active' : '' %>" href="/settings">Settings</a>
+                  <% } %>
+                  <% if (canAccess && canAccess('GET', '/settings/access')) { %>
+                    <a class="dropdown-item <%= currentPath.startsWith('/settings/access') ? 'active' : '' %>" href="/settings/access">Access Control</a>
+                  <% } %>
+                </div>
+              </div>
+              <div class="dropdown-divider"></div>
+              <div class="profile-dropdown-section">
+                <form method="post" action="/logout" data-disable-submit="true">
+                  <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+                  <button type="submit" class="btn btn-sm btn-outline-danger w-100">Sign Out</button>
+                </form>
+              </div>
+            </div>
+          </div>
+        </div>
+      <% } %>
+    </div>
+  </div>
+</nav>
+
+<% if (locals.isImpersonating && locals.impersonatedBy) { %>
+<div style="background:#d97706;color:#fff;text-align:center;padding:0.5rem 1rem;font-size:0.85rem;display:flex;align-items:center;justify-content:center;gap:0.75rem;flex-wrap:wrap">
+  <span>🔍 You are previewing as <strong><%= profileDisplayName %></strong> (administrator preview)</span>
+  <a href="/auth/return-to-admin" style="color:#fff;font-weight:700;text-decoration:underline;white-space:nowrap">↩ Return to admin</a>
+</div>
+<% } %>

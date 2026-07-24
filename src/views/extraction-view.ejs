@@ -1,0 +1,218 @@
+<%- include('partials/head') %>
+<%- include('partials/header') %>
+
+<%
+  const result = model.result;
+  const payload = result ? result.resultJson : null;
+  const signature = model.signature;
+  const statusClass = (value) => {
+    if (value === 'sent_to_odoo') return 'success';
+    if (value === 'failed' || value === 'odoo_update_failed') return 'danger';
+    if (value === 'signature_unchanged_skipped') return 'warning';
+    if (value === 'parsed' || value === 'parsed_empty') return 'warning';
+    return 'secondary';
+  };
+  const signatureBadge = (value) => {
+    if (value === 'match') return 'warning';
+    if (value === 'different') return 'success';
+    if (value === 'missing') return 'secondary';
+    return 'danger';
+  };
+%>
+
+<main class="container py-4 py-lg-5">
+  <section class="hero-panel mb-4">
+    <div>
+      <p class="eyebrow">Extraction View</p>
+      <h1 class="display-6 mb-2"><%= model.history.orderName %></h1>
+      <p class="lead text-secondary mb-0">
+        Review the extracted Job Summary payload, parser logs, and write the structured result back into Odoo.
+      </p>
+    </div>
+    <div class="hero-actions">
+      <form method="post" action="/extractions/<%= model.history.id %>/compare-signature">
+        <button
+          type="submit"
+          class="btn btn-outline-secondary"
+          <%= result ? '' : 'disabled' %>
+        >
+          Compare Signature
+        </button>
+      </form>
+      <form method="post" action="/extractions/<%= model.history.id %>/send-to-odoo">
+        <button
+          type="submit"
+          class="btn btn-primary"
+          data-confirm="Send the extracted JSON to the configured Odoo custom fields?"
+          <%= result ? '' : 'disabled' %>
+        >
+          Send to Odoo
+        </button>
+      </form>
+      <% if (signature.canForceSend) { %>
+        <form method="post" action="/extractions/<%= model.history.id %>/send-to-odoo">
+          <input type="hidden" name="forceSend" value="true" />
+          <button
+            type="submit"
+            class="btn btn-outline-warning"
+            data-confirm="The signature matches Odoo. Force send anyway?"
+          >
+            Force Send Anyway
+          </button>
+        </form>
+      <% } %>
+      <a href="/sales-orders/<%= model.history.orderId %>" class="btn btn-outline-secondary">Back to Order</a>
+    </div>
+  </section>
+
+  <%- include('partials/alerts', { status, validationErrors: [] }) %>
+
+  <div class="row g-4 mb-4">
+    <div class="col-md-6 col-xl-3">
+      <div class="stat-card">
+        <span class="stat-label">History ID</span>
+        <strong class="stat-value stat-compact"><%= model.history.id %></strong>
+        <span class="stat-note"><%= formatDateTime(model.history.updatedAt) %></span>
+      </div>
+    </div>
+    <div class="col-md-6 col-xl-3">
+      <div class="stat-card">
+        <span class="stat-label">Attachment</span>
+        <strong class="stat-value"><%= model.history.attachmentName %></strong>
+        <span class="stat-note">Attachment ID <%= model.history.attachmentId %></span>
+      </div>
+    </div>
+    <div class="col-md-6 col-xl-3">
+      <div class="stat-card">
+        <span class="stat-label">Status</span>
+        <strong class="stat-value">
+          <span class="badge text-bg-<%= statusClass(model.history.status) %>"><%= model.history.status %></span>
+        </strong>
+        <span class="stat-note"><%= model.history.summary || '—' %></span>
+      </div>
+    </div>
+    <div class="col-md-6 col-xl-3">
+      <div class="stat-card">
+        <span class="stat-label">Items Extracted</span>
+        <strong class="stat-value"><%= payload ? payload.items.length : 0 %></strong>
+        <span class="stat-note"><%= payload && payload.sectionFound ? 'Edging section found' : 'Section not found' %></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="card shadow-sm border-0 app-card mb-4">
+    <div class="card-body p-4">
+      <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
+        <div>
+          <h2 class="h4 mb-1">Signature Check</h2>
+          <p class="text-secondary small mb-0">
+            <% if (signature.signatureField) { %>
+              Odoo field <code><%= signature.signatureField %></code> [<%= signature.signatureFieldType || 'unknown' %>]
+            <% } else { %>
+              Signature field is not configured or not accessible in Odoo.
+            <% } %>
+          </p>
+        </div>
+        <span class="badge text-bg-<%= signatureBadge(signature.comparisonResult) %>"><%= signature.comparisonLabel %></span>
+      </div>
+      <% if (signature.warningMessage) { %>
+        <div class="alert alert-<%= signature.canForceSend ? 'warning' : 'secondary' %> mb-3" role="alert">
+          <%= signature.warningMessage %>
+        </div>
+      <% } %>
+      <div class="row g-3">
+        <div class="col-md-6">
+          <label class="form-label small text-secondary">Current Computed Signature</label>
+          <pre class="json-block mb-0"><%= signature.computedSignature || 'Not computed yet.' %></pre>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label small text-secondary">Stored Odoo Signature</label>
+          <pre class="json-block mb-0"><%= signature.storedSignature || 'No signature stored in Odoo.' %></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="row g-4">
+    <div class="col-xl-7">
+      <div class="card shadow-sm border-0 app-card mb-4">
+        <div class="card-body p-4">
+          <div class="d-flex justify-content-between align-items-center mb-3">
+            <h2 class="h4 mb-0">Parsed Items</h2>
+            <% if (payload) { %>
+              <button type="button" class="btn btn-sm btn-outline-secondary" data-copy-target="jsonPayload">Copy JSON</button>
+            <% } %>
+          </div>
+          <div class="table-responsive">
+            <table class="table align-middle mb-0">
+              <thead>
+                <tr>
+                  <th>Color</th>
+                  <th>Thickness (mm)</th>
+                  <th>Length (mm)</th>
+                  <th>Roll Length (mm)</th>
+                </tr>
+              </thead>
+              <tbody>
+                <% if (!payload || payload.items.length === 0) { %>
+                  <tr>
+                    <td colspan="4" class="text-center text-secondary py-4">No edging items were parsed from this attachment.</td>
+                  </tr>
+                <% } %>
+                <% if (payload) { %>
+                  <% payload.items.forEach((item) => { %>
+                    <tr>
+                      <td><strong><%= item.color %></strong></td>
+                      <td><%= item.thickness_mm ?? '—' %></td>
+                      <td><%= item.length_mm ?? '—' %></td>
+                      <td><%= item.roll_length_mm ?? '—' %></td>
+                    </tr>
+                  <% }) %>
+                <% } %>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="card shadow-sm border-0 app-card">
+        <div class="card-body p-4">
+          <h2 class="h4 mb-3">Structured JSON</h2>
+          <pre id="jsonPayload" class="json-block mb-0"><%= payload ? stringify(payload) : '{\n  "items": []\n}' %></pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-xl-5">
+      <div class="card shadow-sm border-0 app-card mb-4">
+        <div class="card-body p-4">
+          <h2 class="h4 mb-3">Parser Logs</h2>
+          <div class="log-stack">
+            <% if (model.logs.length === 0) { %>
+              <p class="text-secondary mb-0">No logs recorded for this extraction.</p>
+            <% } %>
+            <% model.logs.forEach((entry) => { %>
+              <article class="log-entry">
+                <div class="d-flex justify-content-between gap-2">
+                  <strong class="text-capitalize"><%= entry.level %></strong>
+                  <span class="small text-secondary"><%= formatDateTime(entry.createdAt) %></span>
+                </div>
+                <p class="mb-1"><%= entry.message %></p>
+                <pre class="log-context mb-0"><%= stringify(entry.context) %></pre>
+              </article>
+            <% }) %>
+          </div>
+        </div>
+      </div>
+
+      <div class="card shadow-sm border-0 app-card">
+        <div class="card-body p-4">
+          <h2 class="h4 mb-3">Section Preview</h2>
+          <pre class="json-block mb-0"><%= payload ? (payload.sectionText || 'No section snippet captured.') : 'No parsed content available.' %></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<%- include('partials/footer') %>

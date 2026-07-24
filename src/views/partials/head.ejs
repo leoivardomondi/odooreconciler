@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="csrf-token" content="<%= csrfToken || '' %>" />
+    <meta name="theme-color" content="#22213f" />
+    <meta name="msapplication-TileColor" content="#22213f" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Urban Vibe Reconcile" />
+    <meta name="application-name" content="Urban Vibe Reconcile" />
+    <title><%= pageTitle %> | <%= appName %></title>
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/public/icons/urban-vibe-favicon.png" type="image/png" />
+    <link rel="icon" href="/public/icons/urban-vibe-pwa-dark.png" type="image/png" sizes="512x512" />
+    <link rel="apple-touch-icon" href="/public/icons/urban-vibe-pwa-dark.png" />
+    <link href="/public/vendor/bootstrap/bootstrap.min.css" rel="stylesheet" />
+    <link href="/public/css/app.css" rel="stylesheet" />
+  </head>
+  <body>
+    <script>
+      (() => {
+        document.documentElement.setAttribute('data-theme', 'light');
+        try {
+          localStorage.removeItem('app-theme');
+        } catch (_error) {
+          // Light theme is enforced even when storage is unavailable.
+        }
+      })();
+    </script>

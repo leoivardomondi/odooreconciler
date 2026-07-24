@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Build & Dist Outputs
+dist/
+dist.zip
+output/
+cpanel-upload-*/
+
+# Environment & Secrets
+.env
+.env.local
+*.pem
+
+# Temporary Files, Logs & AI Test Scripts
+tmp/
+tmp_xlsx_read/
+*.log
+stderr.log
+server3102*
+~$*
+
+# Database exports & large binary assets
+mpesa_tables_export.sql
+eng.traineddata
+storage/*.sqlite
+storage/*.db
+
+# IDE & Operating System Files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,3 @@
+employee_name,phone,amount,mpesa_receipt,status,transaction_date
+Jane Example,254700000001,5000,QEX123456A,Completed,2026-05-15
+John Example,0700000002,2500,QEX123456B,Completed,2026-05-16

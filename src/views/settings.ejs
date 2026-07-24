@@ -1,0 +1,983 @@
+<%- include('partials/head') %>
+<%- include('partials/header') %>
+
+<main class="container py-4 py-lg-5">
+  <%
+    const fieldTypeBadge = (value) => {
+      if (value === 'boolean') return 'success';
+      if (value === 'datetime') return 'info';
+      if (value === 'text' || value === 'html') return 'secondary';
+      if (value === 'integer' || value === 'float' || value === 'monetary') return 'warning';
+      return 'dark';
+    };
+    const diagnosticBadge = (value) => {
+      if (value === 'matched') return 'success';
+      if (value === 'missing') return 'warning';
+      return 'danger';
+    };
+  %>
+  <section class="hero-panel mb-4">
+    <div>
+      <p class="eyebrow">Settings</p>
+      <h1 class="display-6 mb-2">Control field mappings and parser behavior</h1>
+      <p class="lead text-secondary mb-0">
+        Every Odoo target field and parser rule stays configurable here so the app can adapt to each deployment.
+      </p>
+    </div>
+    <div class="meta-card">
+      <span class="meta-label">Active Company</span>
+      <strong><%= activeOdooCompanyName %></strong>
+      <div class="small text-secondary mt-2">
+        Sales Orders, stock reconciliation, and scheduler actions are restricted to this company.
+      </div>
+    </div>
+  </section>
+
+  <%- include('partials/alerts', { status, validationErrors }) %>
+
+  <form method="post" action="/settings/clear-cache" class="mb-4">
+    <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+    <button
+      type="submit"
+      class="btn btn-outline-danger"
+      data-confirm="Clear cached Odoo field lists and browser asset cache?"
+    >
+      Clear Cache
+    </button>
+    <span class="text-secondary small ms-2">Clears cached field lists and asks the browser to refresh cached assets.</span>
+  </form>
+
+  <form method="post" action="/settings/payroll-bridge" class="mb-4">
+    <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+    <div class="card shadow-sm border-0 app-card">
+      <div class="card-body p-4">
+        <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3">
+          <div>
+            <h2 class="h4 mb-1">Payroll Bridge</h2>
+            <p class="text-secondary small mb-0">Admin-managed token and pay-run automation settings for the Python payroll service.</p>
+          </div>
+          <div class="d-flex flex-wrap gap-2">
+            <button
+              type="submit"
+              formaction="/settings/test-payroll-bridge"
+              formmethod="post"
+              formnovalidate
+              class="btn btn-outline-secondary"
+            >
+              Test Bridge
+            </button>
+            <button type="submit" class="btn btn-primary">Save Payroll Bridge</button>
+          </div>
+        </div>
+
+        <div class="row g-3">
+          <div class="col-lg-7">
+            <label class="form-label">Bridge URL</label>
+            <input
+              type="url"
+              class="form-control font-monospace"
+              name="payrollBridgeUrl"
+              value="<%= form.payrollBridgeUrl %>"
+              placeholder="https://app.urbanvibeinteriordesign.co.ke/odoo-payroll"
+            />
+          </div>
+          <div class="col-lg-5">
+            <label class="form-label">Bridge Token</label>
+            <input
+              type="password"
+              class="form-control"
+              name="payrollBridgeToken"
+              autocomplete="new-password"
+              placeholder="<%= form.hasPayrollBridgeToken ? 'Keep stored token' : 'Paste bridge token' %>"
+            />
+            <% if (form.hasPayrollBridgeToken) { %>
+              <div class="form-check mt-2">
+                <input class="form-check-input" type="checkbox" name="clearPayrollBridgeToken" id="clearPayrollBridgeToken" />
+                <label class="form-check-label small" for="clearPayrollBridgeToken">Clear saved token</label>
+              </div>
+            <% } %>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">Advance Source</label>
+            <input type="text" class="form-control" name="payrollAdvanceSource" value="<%= form.payrollAdvanceSource %>" />
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">Salary Structure</label>
+            <input type="text" class="form-control" name="payrollSalaryStructure" value="<%= form.payrollSalaryStructure %>" placeholder="All" />
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">Pay Run Name Template</label>
+            <input type="text" class="form-control font-monospace" name="payrollPayRunNameTemplate" value="<%= form.payrollPayRunNameTemplate %>" placeholder="{monthName} {year}" />
+          </div>
+          <div class="col-12">
+            <div class="form-check">
+              <input class="form-check-input" type="checkbox" name="payrollAutoCreatePayRun" id="payrollAutoCreatePayRun" <%= form.payrollAutoCreatePayRun ? 'checked' : '' %> />
+              <label class="form-check-label" for="payrollAutoCreatePayRun">
+                Automatically create Odoo pay run after sharing monthly salary advances
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </form>
+
+  <% if (saleOrderFieldState.errorMessage) { %>
+    <div class="alert alert-<%= saleOrderFieldState.fields.length ? 'warning' : 'danger' %> shadow-sm" role="alert">
+      <%= saleOrderFieldState.fields.length ? 'Using cached sale.order fields. ' : '' %><%= saleOrderFieldState.errorMessage %>
+    </div>
+  <% } %>
+
+  <% if (missingMappings && missingMappings.length) { %>
+    <div class="alert alert-warning shadow-sm" role="alert">
+      Some field mappings still need attention: <%= missingMappings.join(', ') %>. The app will skip any unmapped values until you choose valid Odoo fields.
+    </div>
+  <% } %>
+
+  <form method="post" action="/settings/mail" class="mb-4">
+    <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+    <div class="card shadow-sm border-0 app-card">
+      <div class="card-body p-4">
+        <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3">
+          <div>
+            <h2 class="h4 mb-1">Outgoing Mail</h2>
+            <p class="text-secondary small mb-0">Admin-managed SMTP for scheduled notifications and mail testing.</p>
+          </div>
+          <div class="d-flex flex-wrap gap-2">
+            <button
+              type="submit"
+              formaction="/settings/test-mail"
+              formmethod="post"
+              formnovalidate
+              class="btn btn-outline-secondary"
+            >
+              Send Test
+            </button>
+            <button type="submit" class="btn btn-primary">Save Mail Settings</button>
+          </div>
+        </div>
+
+        <div class="row g-3">
+          <input type="hidden" name="mailTransport" value="smtp" />
+          <input type="hidden" name="mailFallbackTransport" value="none" />
+          <div class="col-md-4">
+            <label class="form-label">Provider Preset</label>
+            <select class="form-select" name="mailPreset">
+              <option value="zoho-587" <%= form.mailPreset === 'zoho-587' ? 'selected' : '' %>>Zoho SMTP - 587 STARTTLS</option>
+              <option value="zoho-465" <%= form.mailPreset === 'zoho-465' ? 'selected' : '' %>>Zoho SMTP - 465 SSL/TLS</option>
+              <option value="cpanel-465" <%= form.mailPreset === 'cpanel-465' ? 'selected' : '' %>>cPanel SMTP - 465 SSL/TLS</option>
+              <option value="custom" <%= form.mailPreset === 'custom' ? 'selected' : '' %>>Custom SMTP</option>
+            </select>
+          </div>
+          <div class="col-md-5">
+            <label class="form-label">SMTP Host</label>
+            <input type="text" class="form-control font-monospace" name="mailHost" value="<%= form.mailHost %>" placeholder="smtp.zoho.com" />
+          </div>
+          <div class="col-md-2">
+            <label class="form-label">Port</label>
+            <input type="number" min="1" max="65535" class="form-control" name="mailPort" value="<%= form.mailPort %>" />
+          </div>
+          <div class="col-12">
+            <div class="d-flex flex-wrap gap-4">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="mailSecure" id="mailSecure" <%= form.mailSecure ? 'checked' : '' %> />
+                <label class="form-check-label" for="mailSecure">SSL/TLS</label>
+              </div>
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="mailRequireTls" id="mailRequireTls" <%= form.mailRequireTls ? 'checked' : '' %> />
+                <label class="form-check-label" for="mailRequireTls">Require STARTTLS</label>
+              </div>
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="mailIgnoreTls" id="mailIgnoreTls" <%= form.mailIgnoreTls ? 'checked' : '' %> />
+                <label class="form-check-label" for="mailIgnoreTls">Ignore TLS</label>
+              </div>
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="mailTlsRejectUnauthorized" id="mailTlsRejectUnauthorized" <%= form.mailTlsRejectUnauthorized ? 'checked' : '' %> />
+                <label class="form-check-label" for="mailTlsRejectUnauthorized">Verify TLS certificate</label>
+              </div>
+            </div>
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">Connection Timeout (ms)</label>
+            <input type="number" min="1000" class="form-control" name="mailConnectionTimeoutMs" value="<%= form.mailConnectionTimeoutMs %>" />
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">Greeting Timeout (ms)</label>
+            <input type="number" min="1000" class="form-control" name="mailGreetingTimeoutMs" value="<%= form.mailGreetingTimeoutMs %>" />
+          </div>
+          <div class="col-md-4">
+            <label class="form-label">Socket Timeout (ms)</label>
+            <input type="number" min="1000" class="form-control" name="mailSocketTimeoutMs" value="<%= form.mailSocketTimeoutMs %>" />
+          </div>
+          <div class="col-12">
+            <label class="form-label">Test Recipient</label>
+            <input type="email" class="form-control" name="mailTestRecipient" value="<%= form.mailTestRecipient %>" placeholder="dbadmin@urbanvibeinteriordesign.co.ke" />
+          </div>
+        </div>
+
+        <hr class="my-4" />
+
+        <div class="table-responsive">
+          <table class="table align-middle mb-0">
+            <thead>
+              <tr>
+                <th style="width: 80px;">Active</th>
+                <th>Label</th>
+                <th>Username</th>
+                <th>Password</th>
+                <th>From Email</th>
+                <th>From Name</th>
+              </tr>
+            </thead>
+            <tbody>
+              <% form.mailAccounts.forEach((account) => { %>
+                <tr>
+                  <td>
+                    <div class="form-check">
+                      <input
+                        class="form-check-input"
+                        type="checkbox"
+                        name="mailAccount<%= account.index %>Enabled"
+                        id="mailAccount<%= account.index %>Enabled"
+                        <%= account.enabled ? 'checked' : '' %>
+                      />
+                    </div>
+                  </td>
+                  <td>
+                    <input type="text" class="form-control" name="mailAccount<%= account.index %>Label" value="<%= account.label %>" />
+                  </td>
+                  <td>
+                    <input type="email" class="form-control" name="mailAccount<%= account.index %>Username" value="<%= account.username %>" placeholder="user@example.com" />
+                  </td>
+                  <td>
+                    <input
+                      type="password"
+                      class="form-control"
+                      name="mailAccount<%= account.index %>Password"
+                      autocomplete="new-password"
+                      placeholder="<%= account.hasPassword ? 'Keep stored password' : 'SMTP password' %>"
+                    />
+                    <% if (account.hasPassword) { %>
+                      <div class="form-check mt-2">
+                        <input class="form-check-input" type="checkbox" name="mailAccount<%= account.index %>ClearPassword" id="mailAccount<%= account.index %>ClearPassword" />
+                        <label class="form-check-label small" for="mailAccount<%= account.index %>ClearPassword">Clear saved password</label>
+                      </div>
+                    <% } %>
+                  </td>
+                  <td>
+                    <input type="email" class="form-control" name="mailAccount<%= account.index %>FromEmail" value="<%= account.fromEmail %>" placeholder="user@example.com" />
+                  </td>
+                  <td>
+                    <input type="text" class="form-control" name="mailAccount<%= account.index %>FromName" value="<%= account.fromName %>" placeholder="Odoo Reconciler" />
+                  </td>
+                </tr>
+              <% }) %>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </form>
+
+  <form method="post" action="/settings" class="row g-4" autocomplete="off">
+    <div class="col-xl-6">
+      <div class="card shadow-sm border-0 app-card h-100">
+        <div class="card-body p-4">
+          <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+            <h2 class="h4 mb-0">Odoo Credentials</h2>
+            <button type="submit" name="settingsSection" value="odoo" class="btn btn-sm btn-primary">
+              Save Odoo
+            </button>
+          </div>
+          <div class="row g-3">
+            <div class="col-12">
+              <label class="form-label">Odoo Base URL</label>
+              <input type="url" class="form-control" name="baseUrl" value="<%= form.baseUrl %>" required />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Database</label>
+              <input type="text" class="form-control" name="database" value="<%= form.database %>" />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Username</label>
+              <input type="text" class="form-control" name="username" value="<%= form.username %>" required />
+            </div>
+            <div class="col-12">
+              <label class="form-label">API Key</label>
+              <input
+                type="password"
+                class="form-control"
+                name="apiKey"
+                data-clear-sensitive-field="true"
+                autocomplete="new-password"
+                autocapitalize="off"
+                spellcheck="false"
+                placeholder="<%= form.hasStoredApiKey ? 'Leave blank to keep the stored API key' : 'Paste a new Odoo API key' %>"
+              />
+              <div class="form-check mt-2">
+                <input class="form-check-input" type="checkbox" name="clearStoredApiKey" id="clearStoredApiKey" <%= form.clearStoredApiKey ? 'checked' : '' %> />
+                <label class="form-check-label" for="clearStoredApiKey">
+                  Clear stored API key
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <hr class="my-4" />
+
+          <div class="d-flex justify-content-between align-items-center mb-3">
+            <h2 class="h4 mb-0">Connection Snapshot</h2>
+            <div class="d-flex flex-wrap gap-2">
+              <button
+                type="submit"
+                formaction="/settings/test-connection"
+                formmethod="post"
+                class="btn btn-sm btn-outline-secondary"
+              >
+                Test Connection
+              </button>
+            </div>
+          </div>
+          <dl class="row small mb-0">
+            <dt class="col-4 text-secondary">Status</dt>
+            <dd class="col-8"><span class="badge text-bg-<%= connection.status === 'success' ? 'success' : connection.status === 'error' ? 'danger' : 'secondary' %>"><%= connection.status %></span></dd>
+            <dt class="col-4 text-secondary">Checked</dt>
+            <dd class="col-8"><%= formatDateTime(connection.checkedAt) %></dd>
+            <dt class="col-4 text-secondary">Version</dt>
+            <dd class="col-8"><%= connection.version || '—' %></dd>
+            <dt class="col-4 text-secondary">Message</dt>
+            <dd class="col-8"><%= connection.message || '—' %></dd>
+          </dl>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-xl-6">
+      <div class="card shadow-sm border-0 app-card h-100">
+        <div class="card-body p-4">
+          <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
+            <div>
+              <h2 class="h4 mb-1">Field Mappings</h2>
+              <p class="text-secondary small mb-0">
+                Source: <strong><%= saleOrderFieldState.source %></strong>
+                <% if (saleOrderFieldState.fetchedAt) { %>
+                  • Updated <%= formatDateTime(saleOrderFieldState.fetchedAt) %>
+                <% } %>
+              </p>
+            </div>
+            <div class="d-flex flex-wrap gap-2">
+              <button type="submit" name="settingsSection" value="mappings" class="btn btn-sm btn-primary">
+                Save Mappings
+              </button>
+              <button
+                type="submit"
+                formaction="/settings/refresh-fields"
+                formmethod="post"
+                class="btn btn-sm btn-outline-secondary"
+              >
+                Refresh Fields
+              </button>
+            </div>
+          </div>
+
+          <div class="alert alert-light border small" role="alert">
+            Only live `sale.order` fields are selectable here. Default mappings are auto-selected when those fields exist in Odoo.
+          </div>
+
+          <div class="row g-3">
+            <div class="col-12">
+              <label class="form-label">Edge JSON Field</label>
+              <select class="form-select" name="edgeJsonField">
+                <option value="">Skip this value</option>
+                <% saleOrderFields.forEach((field) => { %>
+                  <option value="<%= field.name %>" <%= field.name === form.edgeJsonField ? 'selected' : '' %>>
+                    <%= field.label %> (<%= field.name %>) [<%= field.type %>]
+                  </option>
+                <% }) %>
+              </select>
+            </div>
+            <div class="col-12">
+              <label class="form-label">Processed Field</label>
+              <select class="form-select" name="processedField">
+                <option value="">Skip this value</option>
+                <% saleOrderFields.forEach((field) => { %>
+                  <option value="<%= field.name %>" <%= field.name === form.processedField ? 'selected' : '' %>>
+                    <%= field.label %> (<%= field.name %>) [<%= field.type %>]
+                  </option>
+                <% }) %>
+              </select>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Processed Date Field</label>
+              <select class="form-select" name="processedAtField">
+                <option value="">Skip this value</option>
+                <% saleOrderFields.forEach((field) => { %>
+                  <option value="<%= field.name %>" <%= field.name === form.processedAtField ? 'selected' : '' %>>
+                    <%= field.label %> (<%= field.name %>) [<%= field.type %>]
+                  </option>
+                <% }) %>
+              </select>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Log Field</label>
+              <select class="form-select" name="logField">
+                <option value="">Skip this value</option>
+                <% saleOrderFields.forEach((field) => { %>
+                  <option value="<%= field.name %>" <%= field.name === form.logField ? 'selected' : '' %>>
+                    <%= field.label %> (<%= field.name %>) [<%= field.type %>]
+                  </option>
+                <% }) %>
+              </select>
+            </div>
+            <div class="col-12">
+              <label class="form-label">Attachment Name Field</label>
+              <select class="form-select" name="attachmentNameField">
+                <option value="">Skip this value</option>
+                <% saleOrderFields.forEach((field) => { %>
+                  <option value="<%= field.name %>" <%= field.name === form.attachmentNameField ? 'selected' : '' %>>
+                    <%= field.label %> (<%= field.name %>) [<%= field.type %>]
+                  </option>
+                <% }) %>
+              </select>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Attachment ID Field</label>
+              <select class="form-select" name="attachmentIdField">
+                <option value="">Skip this value</option>
+                <% saleOrderFields.forEach((field) => { %>
+                  <option value="<%= field.name %>" <%= field.name === form.attachmentIdField ? 'selected' : '' %>>
+                    <%= field.label %> (<%= field.name %>) [<%= field.type %>]
+                  </option>
+                <% }) %>
+              </select>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Previous JSON Field</label>
+              <select class="form-select" name="previousJsonField">
+                <option value="">Skip this value</option>
+                <% saleOrderFields.forEach((field) => { %>
+                  <option value="<%= field.name %>" <%= field.name === form.previousJsonField ? 'selected' : '' %>>
+                    <%= field.label %> (<%= field.name %>) [<%= field.type %>]
+                  </option>
+                <% }) %>
+              </select>
+            </div>
+            <div class="col-12">
+              <label class="form-label">Signature Field</label>
+              <select class="form-select" name="signatureField">
+                <option value="">Skip this value</option>
+                <% saleOrderFields.forEach((field) => { %>
+                  <option value="<%= field.name %>" <%= field.name === form.signatureField ? 'selected' : '' %>>
+                    <%= field.label %> (<%= field.name %>) [<%= field.type %>]
+                  </option>
+                <% }) %>
+              </select>
+            </div>
+            <div class="col-12">
+              <label class="form-label">Stock Adjustment Input JSON Field</label>
+              <select class="form-select" name="deltaJsonField">
+                <option value="">Skip this value</option>
+                <% saleOrderFields.forEach((field) => { %>
+                  <option value="<%= field.name %>" <%= field.name === form.deltaJsonField ? 'selected' : '' %>>
+                    <%= field.label %> (<%= field.name %>) [<%= field.type %>]
+                  </option>
+                <% }) %>
+              </select>
+              <div class="form-text">
+                If you use <code>x_studio_job_summary_delta_json</code>, treat it as extracted Job Summary input for stock reconciliation, not a PDF delta.
+              </div>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Stock Processed Field</label>
+              <select class="form-select" name="stockProcessedField">
+                <option value="">Skip this value</option>
+                <% saleOrderFields.forEach((field) => { %>
+                  <option value="<%= field.name %>" <%= field.name === form.stockProcessedField ? 'selected' : '' %>>
+                    <%= field.label %> (<%= field.name %>) [<%= field.type %>]
+                  </option>
+                <% }) %>
+              </select>
+              <div class="form-text">
+                Stores whether stock reconciliation has already been completed for this Sales Order.
+              </div>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Stock Signature Field</label>
+              <select class="form-select" name="stockSignatureField">
+                <option value="">Skip this value</option>
+                <% saleOrderFields.forEach((field) => { %>
+                  <option value="<%= field.name %>" <%= field.name === form.stockSignatureField ? 'selected' : '' %>>
+                    <%= field.label %> (<%= field.name %>) [<%= field.type %>]
+                  </option>
+                <% }) %>
+              </select>
+              <div class="form-text">
+                Stores the Job Summary signature used to keep stock reconciliation idempotent.
+              </div>
+            </div>
+          </div>
+
+          <% if (saleOrderFields.length) { %>
+            <div class="mt-4">
+              <h3 class="h6 text-uppercase text-secondary mb-2">Live Sale Order Fields</h3>
+              <div class="d-flex flex-wrap gap-2">
+                <% saleOrderFields.slice(0, 24).forEach((field) => { %>
+                  <span class="badge rounded-pill text-bg-<%= fieldTypeBadge(field.type) %>">
+                    <%= field.label %> • <%= field.type %>
+                  </span>
+                <% }) %>
+              </div>
+              <% if (saleOrderFields.length > 24) { %>
+                <p class="small text-secondary mt-2 mb-0">
+                  <%= saleOrderFields.length %> fields available in total. All of them are included in the dropdowns above.
+                </p>
+              <% } %>
+            </div>
+          <% } %>
+
+          <div class="mt-4">
+            <h3 class="h6 text-uppercase text-secondary mb-2">Mapping Diagnostics</h3>
+            <div class="table-responsive">
+              <table class="table table-sm align-middle mb-0">
+                <thead>
+                  <tr>
+                    <th>Mapping</th>
+                    <th>Status</th>
+                    <th>Selected Field</th>
+                    <th>Odoo Label</th>
+                    <th>Raw Type</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <% mappingDiagnostics.forEach((item) => { %>
+                    <tr>
+                      <td><strong><%= item.label %></strong></td>
+                      <td>
+                        <span class="badge text-bg-<%= diagnosticBadge(item.status) %>"><%= item.status %></span>
+                      </td>
+                      <td><code><%= item.selectedField || 'not selected' %></code></td>
+                      <td><%= item.fieldLabel || '—' %></td>
+                      <td><code><%= item.fieldType || '—' %></code></td>
+                    </tr>
+                  <% }) %>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-12">
+      <div class="card shadow-sm border-0 app-card">
+        <div class="card-body p-4">
+          <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+            <h2 class="h4 mb-0">Parser Configuration</h2>
+            <button type="submit" name="settingsSection" value="parser" class="btn btn-sm btn-primary">
+              Save Parser
+            </button>
+          </div>
+          <div class="row g-3">
+            <div class="col-md-6">
+              <label class="form-label">Job Summary Filename Keyword</label>
+              <input type="text" class="form-control" name="filenameKeyword" value="<%= form.filenameKeyword %>" required />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Section Header</label>
+              <input type="text" class="form-control" name="sectionHeader" value="<%= form.sectionHeader %>" required />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Product Line Regex</label>
+              <input type="text" class="form-control font-monospace" name="productLinePattern" value="<%= form.productLinePattern %>" required />
+              <div class="form-text">Default matches lines like <code>Petrol Blue 1mm</code>.</div>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Stop Headers (comma-separated)</label>
+              <input type="text" class="form-control" name="stopHeadersCsv" value="<%= form.stopHeadersCsv %>" placeholder="Optional section headers that end parsing" />
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Thickness Label</label>
+              <input type="text" class="form-control" name="thicknessLabel" value="<%= form.thicknessLabel %>" required />
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Length Label</label>
+              <input type="text" class="form-control" name="lengthLabel" value="<%= form.lengthLabel %>" required />
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Roll Length Label</label>
+              <input type="text" class="form-control" name="rollLengthLabel" value="<%= form.rollLengthLabel %>" required />
+            </div>
+            <div class="col-12">
+              <label class="form-label">Chatter Template</label>
+              <textarea class="form-control" rows="3" name="chatterTemplate"><%= form.chatterTemplate %></textarea>
+              <div class="form-text">Supports <code>{{attachmentName}}</code>, <code>{{processedAt}}</code>, <code>{{itemCount}}</code>, and <code>{{orderName}}</code>.</div>
+            </div>
+            <div class="col-12">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="postChatterOnSuccess" id="postChatterOnSuccess" <%= form.postChatterOnSuccess ? 'checked' : '' %> />
+                <label class="form-check-label" for="postChatterOnSuccess">
+                  Post a chatter note after writing extracted data back to Odoo
+                </label>
+              </div>
+            </div>
+          </div>
+          <hr class="my-4" />
+
+          <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+            <h2 class="h4 mb-0">AI Invoice Extraction</h2>
+            <button type="submit" name="settingsSection" value="ai" class="btn btn-sm btn-primary">
+              Save AI
+            </button>
+          </div>
+          <div class="alert alert-light border small" role="alert">
+            Recommended pipeline: NVIDIA Nemotron OCR reads scanned PDF pages first, then the selected invoice AI model reads the OCR/PDF text, then PO matching gates decide whether a bill can be created.
+          </div>
+          <div class="row g-3">
+            <div class="col-12">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="aiEnabled" id="aiEnabled" <%= form.aiEnabled ? 'checked' : '' %> />
+                <label class="form-check-label" for="aiEnabled">
+                  Use AI to improve scanned supplier invoice reading when OCR confidence is low
+                </label>
+                <div class="form-text">Choosing a provider below also enables AI, even if this box is left unchecked.</div>
+              </div>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">AI Provider</label>
+              <select class="form-select" name="aiProvider">
+                <option value="disabled" <%= form.aiProvider === 'disabled' ? 'selected' : '' %>>Disabled</option>
+                <option value="nvidia" <%= form.aiProvider === 'nvidia' ? 'selected' : '' %>>NVIDIA NIM</option>
+                <option value="openai" <%= form.aiProvider === 'openai' ? 'selected' : '' %>>OpenAI</option>
+                <option value="gemini" <%= form.aiProvider === 'gemini' ? 'selected' : '' %>>Google Gemini</option>
+                <option value="anthropic" <%= form.aiProvider === 'anthropic' ? 'selected' : '' %>>Anthropic Claude</option>
+                <option value="openrouter" <%= form.aiProvider === 'openrouter' ? 'selected' : '' %>>OpenRouter</option>
+              </select>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Model</label>
+              <select class="form-select" name="aiModelPreset">
+                <option value="openai/gpt-oss-20b" <%= form.aiModel === 'openai/gpt-oss-20b' ? 'selected' : '' %>>
+                  NVIDIA OpenAI GPT-OSS 20B
+                </option>
+                <option value="openai/gpt-oss-120b" <%= form.aiModel === 'openai/gpt-oss-120b' ? 'selected' : '' %>>
+                  NVIDIA OpenAI GPT-OSS 120B
+                </option>
+                <option value="nvidia/llama-3.1-nemotron-nano-vl-8b-v1" <%= form.aiModel === 'nvidia/llama-3.1-nemotron-nano-vl-8b-v1' || !form.aiModel ? 'selected' : '' %>>
+                  NVIDIA Nemotron Nano VL 8B
+                </option>
+                <option value="meta/llama-3.2-90b-vision-instruct" <%= form.aiModel === 'meta/llama-3.2-90b-vision-instruct' ? 'selected' : '' %>>
+                  Llama 3.2 90B Vision
+                </option>
+                <option value="meta/llama-3.2-11b-vision-instruct" <%= form.aiModel === 'meta/llama-3.2-11b-vision-instruct' ? 'selected' : '' %>>
+                  Llama 3.2 11B Vision
+                </option>
+                <option value="gemini-flash-latest" <%= form.aiModel === 'gemini-flash-latest' ? 'selected' : '' %>>
+                  Google Gemini Flash Latest
+                </option>
+                <option value="gemini-2.5-pro" <%= form.aiModel === 'gemini-2.5-pro' ? 'selected' : '' %>>
+                  Google Gemini 2.5 Pro
+                </option>
+                <option value="gemini-2.5-flash" <%= form.aiModel === 'gemini-2.5-flash' ? 'selected' : '' %>>
+                  Google Gemini 2.5 Flash
+                </option>
+                <option value="gemini-1.5-pro" <%= form.aiModel === 'gemini-1.5-pro' ? 'selected' : '' %>>
+                  Google Gemini 1.5 Pro
+                </option>
+                <option value="gpt-4.1" <%= form.aiModel === 'gpt-4.1' ? 'selected' : '' %>>
+                  OpenAI GPT-4.1
+                </option>
+                <option value="custom" <%= form.aiModel && !['openai/gpt-oss-20b', 'openai/gpt-oss-120b', 'nvidia/llama-3.1-nemotron-nano-vl-8b-v1', 'meta/llama-3.2-90b-vision-instruct', 'meta/llama-3.2-11b-vision-instruct', 'gemini-flash-latest', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-1.5-pro', 'gpt-4.1'].includes(form.aiModel) ? 'selected' : '' %>>
+                  Custom model
+                </option>
+              </select>
+              <input type="text" class="form-control font-monospace mt-2" name="aiModel" value="<%= form.aiModel %>" placeholder="Custom model ID" />
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Max Images</label>
+              <input type="number" min="1" max="10" class="form-control" name="aiMaxImages" value="<%= form.aiMaxImages %>" />
+              <div class="form-text">Invoice AI reads every rendered PDF page; this value remains a lower bound for older single-page settings.</div>
+            </div>
+            <div class="col-md-8">
+              <label class="form-label">Custom Base URL</label>
+              <input type="url" class="form-control font-monospace" name="aiBaseUrl" value="<%= form.aiBaseUrl %>" placeholder="Optional for self-hosted or proxy endpoints" />
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Confidence Threshold</label>
+              <input type="number" min="0" max="1" step="0.01" class="form-control" name="aiConfidenceThreshold" value="<%= form.aiConfidenceThreshold %>" />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">NVIDIA API Key</label>
+              <input type="password" class="form-control" name="nvidiaApiKey" placeholder="<%= form.hasNvidiaApiKey ? 'Leave blank to keep stored NVIDIA key' : 'Paste NVIDIA API key' %>" />
+              <div class="form-check mt-2">
+                <input class="form-check-input" type="checkbox" name="clearNvidiaApiKey" id="clearNvidiaApiKey" />
+                <label class="form-check-label small" for="clearNvidiaApiKey">Clear saved NVIDIA key</label>
+              </div>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">OpenAI API Key</label>
+              <input type="password" class="form-control" name="openaiApiKey" placeholder="<%= form.hasOpenaiApiKey ? 'Leave blank to keep stored OpenAI key' : 'Paste OpenAI API key' %>" />
+              <div class="form-check mt-2">
+                <input class="form-check-input" type="checkbox" name="clearOpenaiApiKey" id="clearOpenaiApiKey" />
+                <label class="form-check-label small" for="clearOpenaiApiKey">Clear saved OpenAI key</label>
+              </div>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Google Gemini API Key</label>
+              <input type="password" class="form-control" name="geminiApiKey" placeholder="<%= form.hasGeminiApiKey ? 'Keep stored Google key' : 'Paste Google AI Studio key' %>" />
+              <div class="form-check mt-2">
+                <input class="form-check-input" type="checkbox" name="clearGeminiApiKey" id="clearGeminiApiKey" />
+                <label class="form-check-label small" for="clearGeminiApiKey">Clear saved Gemini key</label>
+              </div>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Anthropic API Key</label>
+              <input type="password" class="form-control" name="anthropicApiKey" placeholder="<%= form.hasAnthropicApiKey ? 'Keep stored key' : 'Paste key' %>" />
+              <div class="form-check mt-2">
+                <input class="form-check-input" type="checkbox" name="clearAnthropicApiKey" id="clearAnthropicApiKey" />
+                <label class="form-check-label small" for="clearAnthropicApiKey">Clear saved Anthropic key</label>
+              </div>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">OpenRouter API Key</label>
+              <input type="password" class="form-control" name="openrouterApiKey" placeholder="<%= form.hasOpenrouterApiKey ? 'Keep stored key' : 'Paste key' %>" />
+              <div class="form-check mt-2">
+                <input class="form-check-input" type="checkbox" name="clearOpenrouterApiKey" id="clearOpenrouterApiKey" />
+                <label class="form-check-label small" for="clearOpenrouterApiKey">Clear saved OpenRouter key</label>
+              </div>
+            </div>
+          </div>
+
+          <hr class="my-4" />
+
+          <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+            <h2 class="h4 mb-0">OCR Provider</h2>
+            <button type="submit" name="settingsSection" value="ocr" class="btn btn-sm btn-primary">
+              Save OCR
+            </button>
+          </div>
+          <div class="row g-3">
+            <div class="col-12">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="ocrEnabled" id="ocrEnabled" <%= form.ocrEnabled ? 'checked' : '' %> />
+                <label class="form-check-label" for="ocrEnabled">
+                  Use NVIDIA Nemotron OCR for scanned invoice text extraction
+                </label>
+              </div>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">OCR Provider</label>
+              <select class="form-select" name="ocrProvider">
+                <option value="disabled" <%= form.ocrProvider === 'disabled' ? 'selected' : '' %>>Disabled</option>
+                <option value="nvidia_nemoretriever" <%= form.ocrProvider === 'nvidia_nemoretriever' ? 'selected' : '' %>>NVIDIA Nemotron OCR</option>
+              </select>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">OCR Model</label>
+              <input type="text" class="form-control font-monospace" name="ocrModel" value="<%= form.ocrModel %>" />
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">NVIDIA OCR API Key</label>
+              <input type="password" class="form-control" name="ocrApiKey" placeholder="<%= form.hasOcrApiKey ? 'Keep stored OCR key' : 'Paste NVIDIA OCR key' %>" />
+              <div class="form-check mt-2">
+                <input class="form-check-input" type="checkbox" name="clearOcrApiKey" id="clearOcrApiKey" />
+                <label class="form-check-label small" for="clearOcrApiKey">Clear saved OCR key</label>
+              </div>
+            </div>
+            <div class="col-12">
+              <label class="form-label">OCR Endpoint</label>
+              <input type="url" class="form-control font-monospace" name="ocrEndpoint" value="<%= form.ocrEndpoint %>" />
+              <div class="form-text">This is separate from invoice AI. Use <code>https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr-v1</code>.</div>
+            </div>
+          </div>
+
+          <hr class="my-4" />
+
+          <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+            <h2 class="h4 mb-0">Background Scheduler</h2>
+            <button type="submit" name="settingsSection" value="scheduler" class="btn btn-sm btn-primary">
+              Save Scheduler
+            </button>
+          </div>
+          <div class="row g-3">
+            <div class="col-12">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="schedulerEnabled" id="schedulerEnabled" <%= form.schedulerEnabled ? 'checked' : '' %> />
+                <label class="form-check-label" for="schedulerEnabled">
+                  Enable automatic processing for confirmed Sales Orders from April 8, 2026 onward
+                </label>
+              </div>
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Interval Minutes</label>
+              <input type="number" min="1" class="form-control" name="schedulerIntervalMinutes" value="<%= form.schedulerIntervalMinutes %>" />
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Batch Size</label>
+              <input type="number" min="1" class="form-control" name="schedulerBatchSize" value="<%= form.schedulerBatchSize %>" />
+            </div>
+            <div class="col-md-4">
+              <label class="form-label">Confirmed From Date</label>
+              <input type="text" class="form-control font-monospace" name="schedulerConfirmedFromDate" value="<%= form.schedulerConfirmedFromDate %>" />
+              <div class="form-text">Uses Odoo datetime format. Default cutoff is <code>2026-04-08 00:00:00</code>.</div>
+            </div>
+            <div class="col-md-8">
+              <label class="form-label">Cron Token</label>
+              <input type="text" class="form-control font-monospace" name="schedulerCronToken" value="<%= form.schedulerCronToken %>" />
+              <div class="form-text">Use this token from cPanel cron when calling the scheduler endpoint.</div>
+            </div>
+            <div class="col-md-4">
+              <div class="form-check mt-md-4 pt-md-2">
+                <input class="form-check-input" type="checkbox" name="schedulerUseInProcessInterval" id="schedulerUseInProcessInterval" <%= form.schedulerUseInProcessInterval ? 'checked' : '' %> />
+                <label class="form-check-label" for="schedulerUseInProcessInterval">
+                  Also run in-process interval scheduler
+                </label>
+              </div>
+            </div>
+            <div class="col-12">
+              <div class="alert alert-light border small mb-0" role="alert">
+                Recommended setup: use <strong>cron only</strong> on cPanel and leave in-process interval off. The scheduler now keeps a persistent run lock and a rolling checkpoint with a 24-hour lookback window to reduce duplicate rescans while still retrying recent work safely.
+              </div>
+            </div>
+          </div>
+
+          <hr class="my-4" />
+
+          <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+            <h2 class="h4 mb-0">PO Bill Background Scheduler</h2>
+            <button type="submit" name="settingsSection" value="poBillScheduler" class="btn btn-sm btn-primary">
+              Save PO Scheduler
+            </button>
+          </div>
+          <div class="row g-3">
+            <div class="col-12">
+              <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="poBillSchedulerEnabled" id="poBillSchedulerEnabled" <%= form.poBillSchedulerEnabled ? 'checked' : '' %> />
+                <label class="form-check-label" for="poBillSchedulerEnabled">
+                  Enable automatic PO bill matching for Finance folder PDFs
+                </label>
+              </div>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Interval Minutes</label>
+              <input type="number" min="1" class="form-control" name="poBillSchedulerIntervalMinutes" value="<%= form.poBillSchedulerIntervalMinutes %>" />
+            </div>
+            <div class="col-md-3">
+              <label class="form-label">Batch Size</label>
+              <input type="number" min="1" max="1" class="form-control" name="poBillSchedulerBatchSize" value="1" readonly />
+              <div class="form-text">Runs 1 Finance PDF per cycle.</div>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Match POs From Date</label>
+              <input type="text" class="form-control font-monospace" name="poBillSchedulerFromDate" value="<%= form.poBillSchedulerFromDate %>" />
+              <div class="form-text">Use <code>2026-01-01 00:00:00</code> to match unbilled POs from January 1, 2026 onward.</div>
+            </div>
+            <div class="col-md-8">
+              <label class="form-label">PO Bill Cron Token</label>
+              <input type="text" class="form-control font-monospace" name="poBillSchedulerCronToken" value="<%= form.poBillSchedulerCronToken %>" />
+              <div class="form-text">Optional. If blank, the PO bill cron endpoint accepts the main scheduler token.</div>
+            </div>
+            <div class="col-md-4">
+              <div class="form-check mt-md-4 pt-md-2">
+                <input class="form-check-input" type="checkbox" name="poBillSchedulerUseInProcessInterval" id="poBillSchedulerUseInProcessInterval" <%= form.poBillSchedulerUseInProcessInterval ? 'checked' : '' %> />
+                <label class="form-check-label" for="poBillSchedulerUseInProcessInterval">
+                  Also run PO bill in-process interval
+                </label>
+              </div>
+            </div>
+            <div class="col-12">
+              <div class="alert alert-light border small mb-0" role="alert">
+                Cron URL: <code><%= `${appBaseUrl}/jobs/run-po-bill-scheduler?token=${form.poBillSchedulerCronToken || form.schedulerCronToken || 'set-a-token-in-settings'}` %></code>
+              </div>
+            </div>
+          </div>
+
+          <hr class="my-4" />
+
+          <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+            <h2 class="h4 mb-0">Stock Reconciliation Configuration</h2>
+            <button type="submit" name="settingsSection" value="stock" class="btn btn-sm btn-primary">
+              Save Stock
+            </button>
+          </div>
+          <div class="row g-3">
+            <div class="col-md-6">
+              <label class="form-label">Stock Location ID</label>
+              <input
+                type="text"
+                class="form-control font-monospace"
+                name="stockLocationId"
+                value="<%= form.stockLocationId %>"
+                placeholder="Preferred when known"
+              />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Stock Location Fallback Name</label>
+              <input
+                type="text"
+                class="form-control"
+                name="stockLocationName"
+                value="<%= form.stockLocationName %>"
+                placeholder="Used when Location ID is blank"
+              />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Warehouse ID (optional)</label>
+              <input
+                type="text"
+                class="form-control font-monospace"
+                name="stockWarehouseId"
+                value="<%= form.stockWarehouseId %>"
+              />
+            </div>
+            <div class="col-md-6">
+              <label class="form-label">Picking Type ID (optional)</label>
+              <input
+                type="text"
+                class="form-control font-monospace"
+                name="stockPickingTypeId"
+                value="<%= form.stockPickingTypeId %>"
+              />
+            </div>
+            <div class="col-12">
+              <label class="form-label">Missing Sales Order Items Alert User (optional)</label>
+              <input
+                type="text"
+                class="form-control"
+                name="stockMissingSoAlertUserLogin"
+                value="<%= form.stockMissingSoAlertUserLogin %>"
+                placeholder="user@example.com"
+              />
+              <div class="form-text">
+                When set, chatter for extracted edging items missing from the Sales Order will prepend a mention-style name and address the alert to this Odoo user.
+              </div>
+            </div>
+            <div class="col-12">
+              <label class="form-label">Missing BOM Component Alert User (optional)</label>
+              <input
+                type="text"
+                class="form-control"
+                name="stockMissingComponentAlertUserLogin"
+                value="<%= form.stockMissingComponentAlertUserLogin %>"
+                placeholder="user@example.com"
+              />
+              <div class="form-text">
+                When set, chatter for missing BOM components will prepend a mention-style name and address the alert to this Odoo user.
+              </div>
+            </div>
+          </div>
+
+          <div class="alert alert-light border small mt-3 mb-0" role="alert">
+            cPanel recommendation: leave in-process interval off and trigger the scheduler from cron using a protected URL. This is more reliable when Passenger sleeps idle apps.
+          </div>
+
+          <div class="mt-4 d-flex flex-wrap gap-2">
+            <button type="submit" class="btn btn-primary px-4">Save All Settings</button>
+            <a href="/dashboard" class="btn btn-link text-decoration-none">Back to Dashboard</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </form>
+</main>
+
+<%- include('partials/footer') %>

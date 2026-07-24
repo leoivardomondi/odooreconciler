@@ -1,0 +1,200 @@
+<%- include('partials/head') %>
+<%- include('partials/header') %>
+
+<main class="container-fluid px-4 px-lg-5 py-5 operators-page" style="max-width:1400px">
+  <% if (locals.message) { %>
+    <div class="alert alert-success alert-dismissible fade show rounded-3 mb-4" role="alert">
+      <%= message %>
+      <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+  <% } %>
+  <% if (locals.error) { %>
+    <div class="alert alert-danger alert-dismissible fade show rounded-3 mb-4" role="alert">
+      <%= error %>
+      <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+  <% } %>
+
+  <!-- Page Header -->
+  <div class="operators-page__header app-card mb-4">
+    <div class="operators-page__header-copy">
+      <p class="operators-page__eyebrow text-uppercase small fw-semibold text-muted mb-0">Shop Floor</p>
+      <div class="operators-page__title-row">
+        <h1 class="h2 fw-bold mb-0">Operators</h1>
+        <span class="operators-page__status-pill">Synced from Odoo</span>
+      </div>
+      <p class="operators-page__subtitle text-muted mb-0">
+        Synced from Odoo &mdash; <strong><%= departments.join(', ') %></strong>
+      </p>
+    </div>
+
+    <div class="operators-page__panel">
+      <div class="operators-page__panel-label">Attendance summary</div>
+      <div class="operators-page__stats">
+        <div class="operators-page__stat operators-page__stat--total app-card">
+          <div class="operators-page__stat-label">Total</div>
+          <div class="operators-page__stat-value"><%= total %></div>
+        </div>
+        <div class="operators-page__stat operators-page__stat--present app-card">
+          <div class="operators-page__stat-label text-success">Present</div>
+          <div class="operators-page__stat-value text-success"><%= checkedInCount %></div>
+        </div>
+        <div class="operators-page__stat operators-page__stat--absent app-card">
+          <div class="operators-page__stat-label text-danger">Absent</div>
+          <div class="operators-page__stat-value text-danger"><%= total - checkedInCount %></div>
+        </div>
+      </div>
+
+      <div class="operators-page__actions">
+        <a href="/settings/staff-onboarding" class="btn operators-page__secondary-action rounded-pill">Onboarding Approvals</a>
+        <a href="/shop-floor/operators/weekly-report.pdf" class="btn operators-page__secondary-action operators-page__download-action rounded-pill">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:6px;vertical-align:-2px"><path d="M6 2h9l5 5v15H6z"/><path d="M14 2v6h6M9 14h6m-6 4h6"/></svg>
+          Download Weekly PDF
+        </a>
+        <form method="post" action="/shop-floor/operators/send-weekly-report" data-confirm="Send the Wednesday accountability PDF now?" class="d-flex flex-wrap align-items-center gap-2">
+          <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+          <input type="hidden" name="sendMode" value="all" class="report-send-mode" />
+          <input type="email" name="recipientEmail" class="form-control rounded-pill" placeholder="Recipient email" aria-label="Report recipient email" style="min-width:230px;max-width:290px" />
+          <button type="submit" class="btn operators-page__secondary-action rounded-pill" onclick="this.form.querySelector('.report-send-mode').value='entered'">Send to This Email</button>
+          <button type="submit" class="btn operators-page__secondary-action rounded-pill" onclick="this.form.querySelector('.report-send-mode').value='all'">Send Report to All</button>
+        </form>
+        <form method="post" action="/shop-floor/operators/send-invite" id="sendInviteForm" data-confirm="Send welcome emails to selected operators with login instructions?">
+          <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+          <input type="hidden" name="ids" id="selectedOperatorIds" value="" />
+          <button type="submit" class="btn btn-primary rounded-pill operators-page__primary-action" onclick="prepareInviteIds()">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:6px;vertical-align:-2px"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
+            Send Invite
+          </button>
+        </form>
+        <form method="post" action="/shop-floor/operators/sync-access">
+          <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+          <button type="submit" class="btn operators-page__secondary-action rounded-pill">
+            Sync to Access
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- Operators Grid -->
+  <div class="row g-4">
+    <% if (!operators.length) { %>
+      <div class="col-12">
+        <div class="text-center py-5">
+          <div class="display-1 mb-3 text-muted">🔧</div>
+          <h3 class="fw-bold">No operators found</h3>
+          <p class="text-muted">No employees found in Operations or Production departments in Odoo.</p>
+        </div>
+      </div>
+    <% } %>
+    <% operators.forEach((op) => { %>
+      <div class="col-xl-3 col-lg-4 col-md-6">
+        <div class="card operator-card h-100 border-0" style="border-radius:14px;box-shadow:0 1px 3px rgba(0,0,0,0.06),0 1px 2px rgba(0,0,0,0.04)">
+          <div class="card-body d-flex flex-column" style="padding:1.5rem">
+            <!-- Top Row: Avatar + Name + Checkbox -->
+            <div class="operators-card__top d-flex flex-row align-items-center gap-3 mb-3">
+              <div style="position:relative;flex-shrink:0">
+                <div class="rounded-circle d-flex align-items-center justify-content-center text-white fw-bold" style="width:3rem;height:3rem;background:linear-gradient(135deg, <%= op.checkedIn ? '#059669' : '#64748b' %>, <%= op.checkedIn ? '#10b981' : '#94a3b8' %>);font-size:1.1rem">
+                  <%= op.name.charAt(0).toUpperCase() %>
+                </div>
+                <span style="position:absolute;bottom:-1px;right:-1px;width:13px;height:13px;border-radius:50%;border:2.5px solid #fff;background:<%= op.checkedIn ? '#22c55e' : op.checkedOut ? '#94a3b8' : '#ef4444' %>"></span>
+              </div>
+              <div class="min-w-0 flex-grow-1">
+                <h3 class="fw-semibold mb-0 text-truncate" style="font-size:0.92rem;line-height:1.3"><%= op.name %></h3>
+                <p class="text-muted mb-0 text-truncate" style="font-size:0.78rem"><%= op.jobTitle || 'Operator' %></p>
+              </div>
+              <div class="flex-shrink-0">
+                <input type="checkbox" class="form-check-input operator-select" value="<%= op.id %>" style="width:1.15rem;height:1.15rem;border-radius:4px;cursor:pointer;border-color:#d1d5db">
+              </div>
+            </div>
+
+            <!-- Department Badge -->
+            <span class="badge rounded-pill mb-3 align-self-start" style="background:#f1f5f9;color:#475569;font-weight:500;font-size:0.75rem;padding:0.35rem 0.75rem;border:1px solid #e2e8f0"><%= op.department || '-' %></span>
+
+            <!-- Contact Info -->
+            <div class="mb-3" style="font-size:0.82rem">
+              <% if (op.workEmail) { %>
+                <div class="text-truncate text-muted mb-1">
+                  <span style="color:#94a3b8;margin-right:4px">✉</span><%= op.workEmail %>
+                </div>
+              <% } %>
+              <% if (op.mobilePhone) { %>
+                <div class="text-muted">
+                  <span style="color:#94a3b8;margin-right:4px">☎</span><%= op.mobilePhone %>
+                </div>
+              <% } %>
+            </div>
+
+            <!-- Divider -->
+            <div class="border-top mt-auto mb-3" style="border-color:#f1f5f9 !important"></div>
+
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <div>
+                <% if (op.checkedIn) { %>
+                  <span class="badge rounded-pill" style="background:#dcfce7;color:#166534;font-weight:500;font-size:0.75rem;padding:0.3rem 0.7rem">In</span>
+                <% } else if (op.checkedOut) { %>
+                  <span class="badge rounded-pill" style="background:#f1f5f9;color:#475569;font-weight:500;font-size:0.75rem;padding:0.3rem 0.7rem">Out</span>
+                <% } else { %>
+                  <span class="badge rounded-pill" style="background:#fef2f2;color:#991b1b;font-weight:500;font-size:0.75rem;padding:0.3rem 0.7rem">Absent</span>
+                <% } %>
+              </div>
+              <span class="text-muted" style="font-size:0.75rem"><%= op.checkInTime ? op.checkInTime.slice(11,16) : '' %></span>
+            </div>
+
+            <!-- Assigned Items -->
+            <% if (op.assignedItems && op.assignedItems.length) { %>
+              <div class="operators-card__assigned gap-1 mb-2">
+                <% op.assignedItems.forEach(function(item) { %>
+                  <span class="badge rounded-pill" style="background:#f0f9ff;color:#0369a1;border:1px solid #bae6fd;font-size:0.68rem;font-weight:500;padding:0.2rem 0.55rem">
+                    <%= item.itemName %> × <%= item.quantity %>
+                    <small class="ms-1 opacity-60"><%= item.assignedDate %></small>
+                  </span>
+                <% }) %>
+              </div>
+            <% } %>
+
+            <!-- Login As Button -->
+            <% if (op.workEmail) { %>
+              <div class="operators-card__actions">
+              <form method="post" action="/settings/access/login-as">
+                <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+                <input type="hidden" name="email" value="<%= op.workEmail %>" />
+                <input type="hidden" name="role" value="operator" />
+                <button type="submit" class="btn w-100 rounded-pill" style="background:#f8fafc;color:#334155;border:1px solid #e2e8f0;font-size:0.82rem;font-weight:500;padding:0.45rem 0;transition:all 0.15s">
+                  Login As
+                </button>
+              </form>
+              <button class="btn w-100 rounded-pill mt-1" style="background:#f0f9ff;color:#0369a1;border:1px solid #bae6fd;font-size:0.75rem;font-weight:500;padding:0.35rem 0" data-bs-toggle="collapse" data-bs-target="#assignItem<%= op.workEmail.replace(/[^a-zA-Z0-9]/g,'_') %>">+ Item</button>
+              <div class="collapse mt-2" id="assignItem<%= op.workEmail.replace(/[^a-zA-Z0-9]/g,'_') %>">
+                <form method="post" action="/shop-floor/assign-item" class="p-2 rounded-3" style="background:#f8fafc">
+                  <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+                  <input type="hidden" name="email" value="<%= op.workEmail %>" />
+                  <select name="itemName" class="form-select form-select-sm mb-1" style="font-size:0.72rem" required>
+                    <option value="">-- Item --</option>
+                    <option>Gloves</option><option>Overalls</option><option>T-shirt</option>
+                    <option>Pens</option><option>Shoes</option><option>Measuring Tape</option>
+                  </select>
+                  <input type="date" name="assignedDate" class="form-control form-control-sm mb-1" style="font-size:0.72rem" value="<%= new Date().toISOString().slice(0,10) %>" />
+                  <input type="number" name="quantity" min="1" step="1" class="form-control form-control-sm mb-1" style="font-size:0.72rem" value="1" placeholder="Quantity" />
+                  <input type="text" name="notes" class="form-control form-control-sm mb-1" style="font-size:0.72rem" placeholder="Optional notes" />
+                  <button type="submit" class="btn btn-sm rounded-pill w-100" style="background:#0284c7;color:#fff;font-size:0.72rem;padding:0.3rem 0">Assign</button>
+                </form>
+              </div>
+              </div>
+            <% } %>
+          </div>
+        </div>
+      </div>
+    <% }) %>
+  </div>
+</main>
+
+<script>
+function prepareInviteIds() {
+  var checks = document.querySelectorAll('.operator-select:checked');
+  var ids = Array.from(checks).map(function(cb) { return cb.value; });
+  document.getElementById('selectedOperatorIds').value = ids.join(',');
+}
+</script>
+
+<%- include('partials/footer') %>

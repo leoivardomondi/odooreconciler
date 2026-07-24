@@ -1,0 +1,60 @@
+<%- include('partials/head') %>
+<%- include('partials/header') %>
+<main class="container py-4" style="max-width:1100px">
+  <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+    <div><h1 class="h3 fw-bold mb-1">Deliveries</h1><p class="text-muted mb-0">Review and validate outgoing customer deliveries in Odoo.</p></div>
+    <a class="btn btn-outline-secondary" href="/shop-floor">Back to Apps</a>
+  </div>
+  <% if (message) { %><div class="alert alert-success"><%= message %></div><% } %>
+  <% if (error) { %><div class="alert alert-danger"><%= error %></div><% } %>
+  <% if (!deliveries.length) { %><div class="app-card p-5 text-center text-muted">No outgoing deliveries need validation.</div><% } %>
+  <div class="d-grid gap-3">
+    <% deliveries.forEach((delivery) => { %>
+      <%
+        const deliveryStates = {
+          assigned: {
+            label: 'Ready to deliver',
+            badgeClass: 'bg-success-subtle text-success border-success-subtle',
+            note: 'All required stock is available. This delivery can now be validated.',
+          },
+          waiting: {
+            label: 'Waiting for another operation',
+            badgeClass: 'bg-warning-subtle text-warning-emphasis border-warning-subtle',
+            note: 'This delivery is waiting for an earlier inventory or manufacturing operation to be completed.',
+          },
+          confirmed: {
+            label: 'Waiting for stock',
+            badgeClass: 'bg-secondary-subtle text-secondary border-secondary-subtle',
+            note: 'The delivery is confirmed, but the required stock has not been reserved yet.',
+          },
+        };
+        const deliveryStatus = deliveryStates[delivery.state] || {
+          label: String(delivery.state || 'Unknown'),
+          badgeClass: 'bg-light text-dark border-secondary-subtle',
+          note: 'Check this transfer in Odoo for its current status.',
+        };
+        const isReadyToDeliver = delivery.state === 'assigned';
+      %>
+      <article class="app-card p-4">
+        <div class="d-flex flex-wrap justify-content-between gap-3">
+          <div>
+            <div class="d-flex flex-wrap align-items-center gap-2 mb-1">
+              <h2 class="h6 fw-bold mb-0"><%= delivery.name %></h2>
+              <span class="badge rounded-pill border <%= deliveryStatus.badgeClass %>"><%= deliveryStatus.label %></span>
+            </div>
+            <div class="small text-muted"><%= delivery.origin || 'No sales reference' %> &middot; <%= Array.isArray(delivery.partner_id) ? delivery.partner_id[1] : 'Customer' %> &middot; <%= String(delivery.scheduled_date || '').slice(0,10) %></div>
+            <div class="small mt-2 <%= isReadyToDeliver ? 'text-success' : 'text-muted' %>"><i class="bi <%= isReadyToDeliver ? 'bi-check-circle-fill' : 'bi-info-circle' %> me-1" aria-hidden="true"></i><%= deliveryStatus.note %></div>
+          </div>
+          <form method="post" action="/shop-floor/deliveries/<%= delivery.id %>/validate" data-confirm="Validate this delivery in Odoo?">
+            <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+            <button class="btn <%= isReadyToDeliver ? 'btn-primary' : 'btn-outline-secondary' %>" type="submit" <%= isReadyToDeliver ? '' : 'disabled' %> title="<%= isReadyToDeliver ? 'Validate this delivery in Odoo' : deliveryStatus.label %>"><%= isReadyToDeliver ? 'Validate Delivery' : 'Not Ready' %></button>
+          </form>
+        </div>
+        <div class="table-responsive mt-3">
+          <table class="table table-sm mb-0"><thead><tr><th>Item</th><th>Ordered</th><th>Delivered</th></tr></thead><tbody><% delivery.items.forEach((item) => { %><tr><td><%= item.name %></td><td><%= item.ordered %></td><td><%= item.delivered %></td></tr><% }) %></tbody></table>
+        </div>
+      </article>
+    <% }) %>
+  </div>
+</main>
+<%- include('partials/footer') %>

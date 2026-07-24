@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Urban Vibe Reconcile">
+  <rect width="512" height="512" rx="112" fill="#087236"/>
+  <path d="M96 146c0-22 18-40 40-40h240c22 0 40 18 40 40v220c0 22-18 40-40 40H136c-22 0-40-18-40-40V146Z" fill="#fff"/>
+  <path d="M142 166h228v46H142v-46Z" fill="#0b8f43"/>
+  <path d="M142 248h228" stroke="#087236" stroke-width="18" stroke-linecap="round"/>
+  <path d="M142 304h154" stroke="#087236" stroke-width="18" stroke-linecap="round"/>
+  <path d="M142 360h112" stroke="#087236" stroke-width="18" stroke-linecap="round"/>
+  <circle cx="360" cy="336" r="46" fill="#1d4ed8"/>
+  <path d="m338 337 16 16 32-38" fill="none" stroke="#fff" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="256" y="203" text-anchor="middle" font-family="Arial, sans-serif" font-size="44" font-weight="800" fill="#fff">UV</text>
+</svg>

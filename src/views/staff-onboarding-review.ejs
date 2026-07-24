@@ -1,0 +1,94 @@
+<%- include('partials/head') %>
+<%- include('partials/header') %>
+<% const pendingCount = applications.filter((item) => item.status === 'pending' || item.status === 'approval_failed').length; %>
+<% const syncFailedCount = applications.filter((item) => item.status === 'sync_failed').length; %>
+<% const approvedCount = applications.filter((item) => item.status === 'approved').length; %>
+
+<style>
+  .onboarding-review { max-width: 1180px; }
+  .onboarding-review__summary { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem; }
+  .onboarding-review__metric { padding:1.15rem 1.25rem;border:1px solid #e2e8f0;border-radius:16px;background:#fff; }
+  .onboarding-review__metric strong { display:block;font-size:1.65rem;color:#22213f;line-height:1.1; }
+  .onboarding-review__metric span { color:#64748b;font-size:.82rem;font-weight:700; }
+  .onboarding-review__row { border:1px solid #e2e8f0;border-radius:18px;background:#fff;overflow:hidden; }
+  .onboarding-review__head { display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;padding:1.25rem; }
+  .onboarding-review__name { font-size:1.05rem;font-weight:800;color:#22213f; }
+  .onboarding-review__meta { color:#64748b;font-size:.86rem;overflow-wrap:anywhere; }
+  .onboarding-review__status { white-space:nowrap;border-radius:999px;padding:.42rem .7rem;font-size:.72rem;font-weight:800; }
+  .status-pending { background:#fff7ed;color:#c2410c; }.status-approved { background:#ecfdf5;color:#047857; }
+  .status-failed { background:#fef2f2;color:#b91c1c; }.status-processing { background:#eff6ff;color:#1d4ed8; }
+  .onboarding-review__details { border-top:1px solid #eef2f7;padding:1.25rem; }
+  .onboarding-review__grid { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1rem 1.5rem; }
+  .onboarding-review__field span { display:block;color:#64748b;font-size:.72rem;font-weight:800;text-transform:uppercase;letter-spacing:.04em;margin-bottom:.2rem; }
+  .onboarding-review__field strong { color:#334155;font-size:.9rem;overflow-wrap:anywhere; }
+  .onboarding-review__actions { display:flex;flex-wrap:wrap;align-items:center;gap:.75rem;margin-top:1.25rem;padding-top:1.1rem;border-top:1px solid #eef2f7; }
+  @media(max-width:767px){.onboarding-review__summary,.onboarding-review__grid{grid-template-columns:1fr}.onboarding-review__head{flex-direction:column}.onboarding-review__status{white-space:normal}}
+</style>
+
+<main class="container onboarding-review py-5">
+  <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-end gap-3 mb-4">
+    <div>
+      <h1 class="h2 fw-bold mb-1">Staff onboarding approvals</h1>
+      <p class="text-muted mb-0">Review locally retained applications before creating employee records in Odoo.</p>
+    </div>
+    <div class="d-flex flex-wrap gap-2">
+      <form method="post" action="/settings/staff-onboarding/import" data-disable-submit="true" data-loading-message="Importing existing applications from Odoo...">
+        <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>"><button class="btn btn-outline-primary rounded-pill px-4">Import existing applications</button>
+      </form>
+      <a class="btn btn-outline-secondary rounded-pill px-4" href="/staff-onboarding" target="_blank" rel="noopener">Open public form</a>
+    </div>
+  </div>
+
+  <% if (message) { %><div class="alert alert-success rounded-3"><%= message %></div><% } %>
+  <% if (error) { %><div class="alert alert-danger rounded-3"><%= error %></div><% } %>
+
+  <section class="onboarding-review__summary mb-4" aria-label="Onboarding application summary">
+    <div class="onboarding-review__metric"><strong><%= pendingCount %></strong><span>Waiting for approval</span></div>
+    <div class="onboarding-review__metric"><strong><%= syncFailedCount %></strong><span>Need Odoo synchronization</span></div>
+    <div class="onboarding-review__metric"><strong><%= approvedCount %></strong><span>Approved</span></div>
+  </section>
+
+  <div class="vstack gap-3">
+    <% applications.forEach((item) => { const p = item.payload || {}; const failed = item.status === 'sync_failed' || item.status === 'approval_failed'; const processing = item.status === 'syncing' || item.status === 'approving'; %>
+      <article class="onboarding-review__row">
+        <div class="onboarding-review__head">
+          <div>
+            <div class="onboarding-review__name"><%= item.fullName %></div>
+            <div class="onboarding-review__meta"><%= item.personalEmail %> · <%= item.mobilePhone %></div>
+            <div class="onboarding-review__meta mt-1">Submitted <%= formatDateTime(item.submittedAt) %></div>
+          </div>
+          <span class="onboarding-review__status <%= item.status === 'approved' ? 'status-approved' : failed ? 'status-failed' : processing ? 'status-processing' : 'status-pending' %>"><%= item.status.replaceAll('_', ' ') %></span>
+        </div>
+        <details class="onboarding-review__details" <%= item.status !== 'approved' ? 'open' : '' %>>
+          <summary class="fw-bold" style="cursor:pointer;color:#334155">Review supplied details</summary>
+          <div class="onboarding-review__grid mt-3">
+            <div class="onboarding-review__field"><span>National ID</span><strong><%= p.identificationId || '—' %></strong></div>
+            <div class="onboarding-review__field"><span>Date of birth</span><strong><%= p.birthday || '—' %></strong></div>
+            <div class="onboarding-review__field"><span>Gender</span><strong><%= p.gender || '—' %></strong></div>
+            <div class="onboarding-review__field"><span>Address</span><strong><%= [p.street,p.city,p.county].filter(Boolean).join(', ') || '—' %></strong></div>
+            <div class="onboarding-review__field"><span>KRA / NSSF / SHA</span><strong><%= [p.kraPin,p.nssfNumber,p.shaNumber || p.shifNumber].filter(Boolean).join(' · ') || '—' %></strong></div>
+            <div class="onboarding-review__field"><span>Bank</span><strong><%= [p.bankName,p.bankAccount].filter(Boolean).join(' · ') || '—' %></strong></div>
+            <div class="onboarding-review__field"><span>Emergency contact</span><strong><%= [p.emergencyContact,p.emergencyPhone].filter(Boolean).join(' · ') || '—' %></strong></div>
+            <div class="onboarding-review__field"><span>Odoo applicant</span><strong><%= item.odooApplicantId || 'Not synchronized' %></strong></div>
+            <div class="onboarding-review__field"><span>Employee created</span><strong><%= item.odooEmployeeId || '—' %></strong></div>
+          </div>
+          <% if (item.errorMessage) { %><div class="alert alert-danger mt-3 mb-0"><strong>Last error:</strong> <%= item.errorMessage %></div><% } %>
+          <div class="onboarding-review__actions">
+            <% if (!item.odooApplicantId && item.status !== 'approved') { %>
+              <form method="post" action="/settings/staff-onboarding/<%= item.id %>/sync" data-disable-submit="true" data-loading-message="Synchronizing application with Odoo...">
+                <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>"><button class="btn btn-outline-primary rounded-pill px-4">Retry Odoo sync</button>
+              </form>
+            <% } else if (item.status === 'pending' || item.status === 'approval_failed') { %>
+              <form method="post" action="/settings/staff-onboarding/<%= item.id %>/approve" data-disable-submit="true" data-loading-message="Creating employee records in Odoo..." data-confirm="Approve <%= item.fullName %> and create their Odoo employee record?">
+                <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>"><button class="btn btn-primary rounded-pill px-4">Approve and create employee</button>
+              </form>
+            <% } %>
+            <% if (item.status === 'approved') { %><span class="text-success fw-semibold">Approved by <%= item.reviewedBy || 'administrator' %><% if (item.reviewedAt) { %> on <%= formatDateTime(item.reviewedAt) %><% } %></span><% } %>
+          </div>
+        </details>
+      </article>
+    <% }) %>
+    <% if (!applications.length) { %><div class="text-center text-muted py-5 border rounded-4 bg-white">No locally submitted onboarding applications yet.</div><% } %>
+  </div>
+</main>
+<%- include('partials/footer') %>

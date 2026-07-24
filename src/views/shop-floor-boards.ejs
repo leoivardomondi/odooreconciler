@@ -1,0 +1,947 @@
+<%- include('partials/head') %>
+<%- include('partials/header') %>
+
+<style>
+  /* Premium Searchable Combobox Custom Styling */
+  .combobox-dropdown {
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1) !important;
+    border: 1px solid #e2e8f0 !important;
+    border-radius: 0.75rem !important;
+    background: #ffffff;
+    z-index: 1050;
+    max-height: 280px; /* Taller for easier scrolling on mobile */
+    overflow-y: auto;
+    width: 100%;
+    margin-top: 4px;
+    transition: opacity 0.15s ease, transform 0.15s ease;
+  }
+  
+  .combobox-item {
+    font-size: 0.95rem; /* Larger font size for better readability on mobile */
+    color: #334155;
+    border: none !important;
+    background: transparent;
+    transition: background 0.15s ease, color 0.15s ease;
+    width: 100%;
+    text-align: left;
+    outline: none;
+    padding: 0.75rem 1rem !important; /* Larger touch targets for mobile */
+  }
+  
+  .combobox-item:hover, .combobox-item.keyboard-hover {
+    background-color: #f1f5f9 !important;
+    color: #0f172a !important;
+  }
+  
+  .combobox-item.selected {
+    background-color: #ecfdf5 !important;
+    color: #065f46 !important;
+    font-weight: 600;
+  }
+
+  /* Custom scrollbar for combobox dropdown list */
+  .combobox-dropdown::-webkit-scrollbar {
+    width: 6px;
+  }
+  .combobox-dropdown::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .combobox-dropdown::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 3px;
+  }
+  .combobox-dropdown::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8;
+  }
+
+  .input-group:focus-within {
+    border-color: #10b981 !important;
+    box-shadow: 0 0 0 0.25rem rgba(16, 185, 129, 0.18) !important;
+  }
+
+  .input-group:focus-within .input-group-text,
+  .input-group:focus-within .form-control {
+    border-color: transparent !important;
+  }
+
+  /* Dynamic validation feedback styling */
+  .custom-invalid-feedback {
+    display: none;
+    width: 100%;
+    margin-top: 0.25rem;
+    font-size: 0.875em;
+    color: #dc2626;
+  }
+
+  .was-validated .is-invalid ~ .custom-invalid-feedback,
+  .is-invalid ~ .custom-invalid-feedback {
+    display: block;
+  }
+</style>
+
+<main class="container my-4">
+  <!-- Header Title Section -->
+  <div class="d-flex flex-column flex-md-row justify-content-between align-items-start align-items-md-center mb-4 gap-3">
+    <div>
+      <h1 class="h3 fw-bold mb-1" style="color: #1e293b;">Board Intake & Auto-Reserve</h1>
+      <p class="text-muted small mb-0">Log boards brought in by clients and automatically reserve them on pending manufacturing orders</p>
+    </div>
+    <div class="d-flex align-items-center gap-2 flex-wrap">
+      <span class="badge rounded-pill <%= stockMirror.isFresh ? 'bg-success-subtle text-success' : 'bg-warning-subtle text-warning-emphasis' %> border px-3 py-2">
+        <%= stockMirror.isFresh ? 'Stock current' : (stockMirror.isRefreshing ? 'Stock refreshing' : 'Cached stock') %>
+        <% if (stockMirror.syncedAt) { %> · <%= formatDateTime(stockMirror.syncedAt) %><% } %>
+      </span>
+      <a href="/shop-floor/boards?refresh=true" class="btn btn-outline-primary btn-sm rounded-pill px-3" data-loading-message="Checking Odoo stock...">Refresh stock</a>
+      <a href="/shop-floor" class="btn btn-outline-secondary btn-sm rounded-pill px-3 d-inline-flex align-items-center gap-1">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        Back to Shop Floor
+      </a>
+    </div>
+  </div>
+
+  <!-- Messages Alert -->
+  <% if (message) { %>
+    <div class="alert alert-success alert-dismissible fade show rounded-4 border-0 mb-4 px-4 py-3" role="alert" style="background-color: #f0fdf4; color: #15803d; box-shadow: 0 4px 12px rgba(22,163,74,0.08);">
+      <div class="d-flex align-items-start gap-2">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5" class="flex-shrink-0 mt-1"><polyline points="20 6 9 17 4 12"/></svg>
+        <span class="fw-semibold small" style="white-space: pre-line;"><%= message %></span>
+      </div>
+      <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+    </div>
+  <% } %>
+
+  <% if (error) { %>
+    <div class="alert alert-danger alert-dismissible fade show rounded-4 border-0 mb-4 px-4 py-3" role="alert" style="background-color: #fef2f2; color: #b91c1c; box-shadow: 0 4px 12px rgba(220,38,38,0.08);">
+      <div class="d-flex align-items-center gap-2">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        <span class="fw-semibold small"><%= error %></span>
+      </div>
+      <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+    </div>
+  <% } %>
+
+  <!-- Main Content Layout Split: Form on Top, Guide on Bottom for Mobile Stack -->
+  <div class="row g-4">
+    <!-- Left Column (Top on mobile): Board Intake Form -->
+    <div class="col-12 col-xl-5">
+      <div class="card border-0 rounded-4" style="background: #ffffff; border: 1px solid #e2e8f0 !important; box-shadow: 0 4px 12px rgba(0,0,0,0.02);">
+        <div class="px-4 py-3 border-bottom" style="background: #fafafb;">
+          <h2 class="h6 mb-0 fw-bold" style="color: #1e293b; font-size: 1.05rem;">Log Board Intake</h2>
+          <span class="text-muted small" style="font-size: 0.78rem;">Record boards brought in by a client</span>
+        </div>
+
+        <% if (stockAlerts && stockAlerts.length) {
+          const alertsByClient = {};
+          stockAlerts.forEach((alert) => {
+            const key = alert.client || 'No Client';
+            if (!alertsByClient[key]) alertsByClient[key] = [];
+            alertsByClient[key].push(alert);
+          });
+        %>
+          <section class="border-bottom overflow-hidden" style="background:#fff7ed;border-color:#fed7aa !important" aria-labelledby="stockNeededHeading">
+            <div class="px-4 py-3 d-flex justify-content-between align-items-center gap-2" style="background:#ffedd5;border-bottom:1px solid #fed7aa">
+              <h3 id="stockNeededHeading" class="h6 mb-0 fw-bold" style="color:#9a3412">Stock Needed — No Purchase Orders</h3>
+              <span class="badge rounded-pill flex-shrink-0" style="background:#fff7ed;color:#c2410c;border:1px solid #fed7aa;font-weight:700"><%= stockAlerts.length %> item(s)</span>
+            </div>
+            <% Object.entries(alertsByClient).forEach(([client, items]) => { %>
+              <div class="px-4 py-3 border-bottom" style="border-color:#fed7aa !important">
+                <div class="fw-bold mb-2" style="font-size:.85rem;color:#431407">Client: <%= client %></div>
+                <% items.forEach((item, index) => { %>
+                  <div class="mb-2 pb-2" style="<%= index < items.length - 1 ? 'border-bottom:1px dashed rgba(194,65,12,.15);' : '' %>font-size:.82rem">
+                    <div class="d-flex justify-content-between align-items-baseline gap-2"><span class="fw-bold" style="color:#c2410c"><%= item.component %></span><span class="badge bg-danger-subtle text-danger border border-danger-subtle rounded-pill">Need: <%= item.qtyNeeded %></span></div>
+                    <div class="text-muted mt-1" style="font-size:.72rem"><%= item.moName %> · <%= item.product %> · <% if ((item.overdueDays || 0) > 0) { %><span class="text-danger fw-semibold">Overdue: <%= item.overdueDays %> day<%= item.overdueDays === 1 ? '' : 's' %></span><% } else { %><span class="text-warning fw-semibold">Due today</span><% } %></div>
+                  </div>
+                <% }) %>
+              </div>
+            <% }) %>
+          </section>
+        <% } %>
+
+        <div class="card-body p-4">
+          <form method="post" action="/shop-floor/board-intake" id="intakeForm" class="needs-validation" novalidate>
+            <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+
+            <!-- Select Client -->
+            <div class="mb-3 position-relative" id="partnerCombobox">
+              <label for="partnerSearch" class="form-label fw-semibold" style="font-size: 0.92rem; color: #334155;">
+                Client Who Brought Boards <span class="text-danger">*</span>
+              </label>
+              <div class="input-group rounded-3 border overflow-hidden" style="border-color: #cbd5e1 !important;">
+                <span class="input-group-text bg-white border-0 pe-1" style="color: #94a3b8; font-size: 1.1rem; padding: 0.65rem 0.75rem;">🔍</span>
+                <input type="text" id="partnerSearch" class="form-control border-0 ps-2" placeholder="Type to search clients..." style="font-size: 1rem; padding: 0.65rem 0.75rem; outline: none; box-shadow: none;" autocomplete="off" required>
+              </div>
+              <input type="hidden" name="partner_id" id="partnerSelect" required>
+              <input type="hidden" name="partner_name" id="partnerName">
+              <div class="custom-invalid-feedback" id="partnerFeedback">Please choose a client from the dropdown list.</div>
+              
+              <!-- Dropdown menu -->
+              <div class="combobox-dropdown d-none shadow border position-absolute" style="top: 100%; left: 0; max-height: 280px; overflow-y: auto;">
+                <div class="list-group list-group-flush" id="partnerList">
+                  <% customers.forEach(c => { %>
+                    <button type="button" class="list-group-item list-group-item-action text-start py-2.5 px-3 combobox-item" data-id="<%= c.id %>" style="border: none;">
+                      <%= c.name %>
+                    </button>
+                  <% }) %>
+                </div>
+                <div class="text-muted text-center py-3 d-none no-results" style="font-size: 0.85rem;">No customers found</div>
+              </div>
+            </div>
+
+            <!-- Active Customer Requirements -->
+            <div id="customerRequirementsContainer" class="mb-3 d-none">
+              <div class="card border-0 p-3 rounded-3" style="background-color: #f8fafc; border: 1px dashed #cbd5e1 !important;">
+                <div class="fw-bold small mb-2 text-indigo d-flex align-items-center gap-1.5" style="color: #4f46e5; font-size: 0.85rem;">
+                  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+                  Pending Active MO Requirements
+                </div>
+                <div id="customerRequirementsList" class="d-flex flex-column gap-2">
+                  <!-- JS will dynamically populate requirements here -->
+                </div>
+              </div>
+            </div>
+
+            <!-- Select Board Variant -->
+            <div class="mb-3 position-relative" id="productCombobox">
+              <label for="productSearch" class="form-label fw-semibold" style="font-size: 0.92rem; color: #334155;">
+                Board Type <span class="text-danger">*</span>
+              </label>
+              <div class="input-group rounded-3 border overflow-hidden" style="border-color: #cbd5e1 !important;">
+                <span class="input-group-text bg-white border-0 pe-1" style="color: #94a3b8; font-size: 1.1rem; padding: 0.65rem 0.75rem;">🔍</span>
+                <input type="text" id="productSearch" class="form-control border-0 ps-2" placeholder="Type to search boards..." style="font-size: 1rem; padding: 0.65rem 0.75rem; outline: none; box-shadow: none;" autocomplete="off" required>
+              </div>
+              <input type="hidden" name="product_id" id="productSelect" required>
+              <input type="hidden" name="product_name" id="productName">
+              <div class="custom-invalid-feedback" id="productFeedback">Please choose a board product from the dropdown list.</div>
+              
+              <!-- Dropdown menu -->
+              <div class="combobox-dropdown d-none shadow border position-absolute" style="top: 100%; left: 0; max-height: 280px; overflow-y: auto;">
+                <div class="list-group list-group-flush" id="productList">
+                  <% products.forEach(p => { %>
+                    <button type="button" class="list-group-item list-group-item-action text-start py-3 px-3 combobox-item d-flex justify-content-between align-items-center" data-id="<%= p.id %>" data-qty="<%= p.free_qty %>" style="border: none;">
+                      <span class="product-name fw-medium" style="color: #1e293b;"><%= p.name %></span>
+                      <span class="badge <%= p.stock_availability === 'available' ? 'bg-success-subtle text-success' : p.stock_availability === 'incoming' ? 'bg-warning-subtle text-warning-emphasis' : 'bg-danger-subtle text-danger' %> border px-2 py-1" style="font-size: 0.72rem; font-weight: 600;">
+                        <%= p.stock_availability === 'available' ? `Available: ${p.free_qty}` : p.stock_availability === 'incoming' ? `Incoming: ${p.incoming_qty}` : 'Missing' %>
+                      </span>
+                    </button>
+                  <% }) %>
+                </div>
+                <div class="text-muted text-center py-3 d-none no-results" style="font-size: 0.85rem;">No board types found</div>
+              </div>
+            </div>
+
+            <!-- Quantity -->
+            <div class="mb-4">
+              <label for="intakeQty" class="form-label fw-semibold" style="font-size: 0.92rem; color: #334155;">
+                Number of Boards <span class="text-danger">*</span>
+              </label>
+              <input type="number" name="quantity" id="intakeQty" class="form-control" placeholder="How many boards were brought in..." min="1" required style="font-size: 1rem; padding: 0.65rem 0.75rem;">
+              <div class="invalid-feedback" id="qtyFeedback">Please enter a valid quantity of 1 or more.</div>
+              <div class="text-muted mt-1" id="qtyCurrentStock" style="font-size: 0.75rem; display: none;"></div>
+            </div>
+
+            <!-- Submit Button -->
+            <button type="submit" class="btn w-100 py-3 fw-bold text-white rounded-pill d-flex align-items-center justify-content-center gap-2" id="submitBtn" style="background: linear-gradient(135deg, #059669, #10b981); border: none; font-size: 1rem; transition: all 0.2s ease; box-shadow: 0 4px 14px rgba(5,150,105,0.25);">
+              <span class="submit-text">Log Boards & Reserve on MOs</span>
+              <span class="submit-spinner d-none spinner-border spinner-border-sm"></span>
+            </button>
+
+            <div class="text-center mt-3">
+              <span class="text-muted small" style="font-size: 0.75rem;">Boards are added to stock immediately. MO reservation happens automatically.</span>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right Column (Bottom on mobile): How It Works + Guide -->
+    <div class="col-12 col-xl-7">
+      <div class="card border-0 rounded-4 h-100" style="background: #ffffff; border: 1px solid #e2e8f0 !important; box-shadow: 0 4px 12px rgba(0,0,0,0.02); overflow: hidden;">
+        <div class="px-4 py-3 border-bottom" style="background: #fafafb;">
+          <h2 class="h6 mb-0 fw-bold" style="color: #1e293b;">How Board Intake Works</h2>
+          <span class="text-muted small" style="font-size: 0.75rem;">Automated workflow in 3 steps</span>
+        </div>
+
+        <div class="card-body p-4">
+          <!-- Step 1 -->
+          <div class="d-flex gap-3 mb-4">
+            <div class="flex-shrink-0 d-flex align-items-center justify-content-center rounded-circle fw-bold" style="width: 2.5rem; height: 2.5rem; background: linear-gradient(135deg, #059669, #10b981); color: #fff; font-size: 0.85rem;">1</div>
+            <div>
+              <h3 class="h6 fw-bold mb-1" style="color: #1e293b;">Boards Added to Stock</h3>
+              <p class="text-muted small mb-0">When you submit the form, the system creates an <strong>inventory adjustment</strong> in Odoo that increases the stock quantity for the selected board type at the main warehouse location.</p>
+            </div>
+          </div>
+
+          <!-- Step 2 -->
+          <div class="d-flex gap-3 mb-4">
+            <div class="flex-shrink-0 d-flex align-items-center justify-content-center rounded-circle fw-bold" style="width: 2.5rem; height: 2.5rem; background: linear-gradient(135deg, #2563eb, #3b82f6); color: #fff; font-size: 0.85rem;">2</div>
+            <div>
+              <h3 class="h6 fw-bold mb-1" style="color: #1e293b;">Matching MOs Found</h3>
+              <p class="text-muted small mb-0">The system then searches for <strong>active manufacturing orders</strong> belonging to the same client that need this board type as a raw material component — but only where <strong>no purchase order</strong> already covers that board. This means the client is supplying their own boards.</p>
+            </div>
+          </div>
+
+          <!-- Step 3 -->
+          <div class="d-flex gap-3 mb-4">
+            <div class="flex-shrink-0 d-flex align-items-center justify-content-center rounded-circle fw-bold" style="width: 2.5rem; height: 2.5rem; background: linear-gradient(135deg, #7c3aed, #8b5cf6); color: #fff; font-size: 0.85rem;">3</div>
+            <div>
+              <h3 class="h6 fw-bold mb-1" style="color: #1e293b;">Stock Auto-Reserved on MOs</h3>
+              <p class="text-muted small mb-0">For each matching MO, the system calls <strong>Check Availability</strong> in Odoo, which reserves the newly available stock against the MO's raw material requirements. Most recently created MOs are processed first.</p>
+            </div>
+          </div>
+
+          <hr style="border-color: #e2e8f0;">
+
+          <!-- Info callouts -->
+          <div class="rounded-3 p-3 mb-3" style="background: #eff6ff; border: 1px solid #bfdbfe;">
+            <div class="d-flex align-items-start gap-2">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#2563eb" stroke-width="2" class="flex-shrink-0 mt-1"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+              <div>
+                <div class="fw-bold small" style="color: #1e40af;">When No MOs Match</div>
+                <div class="text-muted small">The boards still get added to stock. They'll sit in the warehouse until an MO is created that needs them — at which point the standard Odoo reservation process will find them.</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="rounded-3 p-3" style="background: #fefce8; border: 1px solid #fde68a;">
+            <div class="d-flex align-items-start gap-2">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#ca8a04" stroke-width="2" class="flex-shrink-0 mt-1"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              <div>
+                <div class="fw-bold small" style="color: #854d0e;">PO-Covered Boards Are Excluded</div>
+                <div class="text-muted small">If the client's sales order already has a purchase order that includes this board product, those MOs will not be auto-reserved. This prevents double-counting boards the company is buying separately.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <% if (recentIntakes && recentIntakes.length) { %>
+    <section class="card border-0 rounded-4 mt-4" style="border:1px solid #e2e8f0!important">
+      <div class="card-body p-4">
+        <h2 class="h6 fw-bold mb-3">Recent board logs</h2>
+        <div class="vstack gap-2">
+          <% recentIntakes.forEach((item) => { %>
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 border rounded-3 px-3 py-2">
+              <div><strong><%= item.quantity %> × <%= item.product_name %></strong><div class="small text-muted"><%= item.customer_name %> · <%= formatDateTime(item.created_at) %></div></div>
+              <span class="badge rounded-pill <%= item.status === 'synced' ? 'bg-success-subtle text-success' : item.status === 'failed' ? 'bg-danger-subtle text-danger' : 'bg-warning-subtle text-warning-emphasis' %>" title="<%= item.error_message || '' %>"><%= item.status === 'synced' ? 'Synced to Odoo' : item.status === 'failed' ? 'Sync failed' : 'Syncing' %></span>
+            </div>
+          <% }) %>
+        </div>
+      </div>
+    </section>
+  <% } %>
+</main>
+
+<script>
+  (function() {
+    // Reusable Custom searchable Combobox setup
+    function setupCombobox(containerId, inputId, hiddenId, listId, onSelectCallback) {
+      var container = document.getElementById(containerId);
+      var input = document.getElementById(inputId);
+      var hidden = document.getElementById(hiddenId);
+      var dropdown = container.querySelector('.combobox-dropdown');
+      var list = document.getElementById(listId);
+      var items = list.querySelectorAll('.combobox-item');
+      var noResults = container.querySelector('.no-results');
+      var activeIndex = -1;
+
+      function openDropdown() {
+        dropdown.classList.remove('d-none');
+        filterItems();
+      }
+
+      function closeDropdown() {
+        dropdown.classList.add('d-none');
+        clearKeyboardHover();
+      }
+
+      function clearKeyboardHover() {
+        items.forEach(function(item) {
+          item.classList.remove('keyboard-hover');
+        });
+        activeIndex = -1;
+      }
+
+      function filterItems() {
+        var query = input.value.toLowerCase().trim();
+        var matchCount = 0;
+
+        items.forEach(function(item) {
+          var text = "";
+          var nameSpan = item.querySelector('.product-name');
+          if (nameSpan) {
+            text = nameSpan.textContent.toLowerCase();
+          } else {
+            text = item.textContent.toLowerCase();
+          }
+
+          if (text.indexOf(query) !== -1) {
+            item.classList.remove('d-none');
+            matchCount++;
+          } else {
+            item.classList.add('d-none');
+          }
+        });
+
+        if (matchCount === 0) {
+          noResults.classList.remove('d-none');
+        } else {
+          noResults.classList.add('d-none');
+        }
+        clearKeyboardHover();
+      }
+
+      // Input event listeners
+      input.addEventListener('click', function(e) {
+        e.stopPropagation();
+        openDropdown();
+        input.select();
+      });
+
+      input.addEventListener('focus', function() {
+        openDropdown();
+        input.select();
+      });
+
+      input.addEventListener('input', function() {
+        openDropdown();
+        
+        var currentText = input.value.trim();
+        var matchingItem = Array.from(items).find(function(item) {
+          var nameSpan = item.querySelector('.product-name');
+          var text = nameSpan ? nameSpan.textContent.trim() : item.textContent.trim();
+          return text.toLowerCase() === currentText.toLowerCase();
+        });
+
+        if (matchingItem) {
+          hidden.value = matchingItem.getAttribute('data-id');
+          input.classList.remove('is-invalid');
+          if (onSelectCallback) onSelectCallback(matchingItem);
+        } else {
+          hidden.value = "";
+          if (onSelectCallback) onSelectCallback(null);
+        }
+      });
+
+      // Keyboard navigation
+      input.addEventListener('keydown', function(e) {
+        var visibleItems = Array.from(items).filter(function(item) {
+          return !item.classList.contains('d-none');
+        });
+
+        if (dropdown.classList.contains('d-none')) {
+          if (e.key === 'ArrowDown' || e.key === 'Enter') {
+            openDropdown();
+            e.preventDefault();
+            return;
+          }
+        }
+
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          if (visibleItems.length > 0) {
+            clearKeyboardHover();
+            activeIndex = (activeIndex + 1) % visibleItems.length;
+            visibleItems[activeIndex].classList.add('keyboard-hover');
+            visibleItems[activeIndex].scrollIntoView({ block: 'nearest' });
+          }
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          if (visibleItems.length > 0) {
+            clearKeyboardHover();
+            activeIndex = (activeIndex - 1 + visibleItems.length) % visibleItems.length;
+            visibleItems[activeIndex].classList.add('keyboard-hover');
+            visibleItems[activeIndex].scrollIntoView({ block: 'nearest' });
+          }
+        } else if (e.key === 'Enter') {
+          e.preventDefault();
+          if (activeIndex >= 0 && activeIndex < visibleItems.length) {
+            selectItem(visibleItems[activeIndex]);
+          }
+        } else if (e.key === 'Escape') {
+          closeDropdown();
+        }
+      });
+
+      // Click to select
+      list.addEventListener('click', function(e) {
+        var itemButton = e.target.closest('.combobox-item');
+        if (itemButton) {
+          e.stopPropagation();
+          selectItem(itemButton);
+        }
+      });
+
+      function selectItem(item) {
+        var id = item.getAttribute('data-id');
+        var nameSpan = item.querySelector('.product-name');
+        var text = nameSpan ? nameSpan.textContent.trim() : item.textContent.trim();
+
+        hidden.value = id;
+        input.value = text;
+        input.classList.remove('is-invalid');
+
+        items.forEach(function(i) {
+          i.classList.remove('selected');
+        });
+        item.classList.add('selected');
+
+        closeDropdown();
+
+        if (onSelectCallback) {
+          onSelectCallback(item);
+        }
+      }
+
+      // Close when clicking outside
+      document.addEventListener('click', function(e) {
+        if (!container.contains(e.target)) {
+          closeDropdown();
+          
+          var currentText = input.value.trim();
+          var matchingItem = Array.from(items).find(function(item) {
+            var nameSpan = item.querySelector('.product-name');
+            var text = nameSpan ? nameSpan.textContent.trim() : item.textContent.trim();
+            return text.toLowerCase() === currentText.toLowerCase();
+          });
+
+          if (matchingItem) {
+            selectItem(matchingItem);
+          } else {
+            if (hidden.value === "") {
+              input.value = "";
+            } else {
+              var activeItem = Array.from(items).find(function(i) {
+                return i.getAttribute('data-id') === hidden.value;
+              });
+              if (activeItem) {
+                var nameSpan = activeItem.querySelector('.product-name');
+                input.value = nameSpan ? nameSpan.textContent.trim() : activeItem.textContent.trim();
+              } else {
+                input.value = "";
+                hidden.value = "";
+              }
+            }
+          }
+        }
+      });
+    }
+
+    function setupRemotePartnerSearch(containerId, inputId, hiddenId, listId, onSelectCallback) {
+      var container = document.getElementById(containerId);
+      var input = document.getElementById(inputId);
+      var hidden = document.getElementById(hiddenId);
+      var dropdown = container.querySelector('.combobox-dropdown');
+      var list = document.getElementById(listId);
+      var noResults = container.querySelector('.no-results');
+      var loadingRow = document.createElement('div');
+      var items = [];
+      var activeIndex = -1;
+      var requestSeq = 0;
+      var pendingTimer = null;
+
+      loadingRow.className = 'text-muted text-center py-3 d-none partner-loading';
+      loadingRow.style.fontSize = '0.85rem';
+      loadingRow.textContent = 'Searching Odoo clients...';
+      list.parentElement.insertBefore(loadingRow, list.nextSibling);
+
+      function refreshItems() {
+        items = Array.from(list.querySelectorAll('.combobox-item'));
+      }
+
+      function clearKeyboardHover() {
+        items.forEach(function(item) {
+          item.classList.remove('keyboard-hover');
+        });
+        activeIndex = -1;
+      }
+
+      function openDropdown() {
+        dropdown.classList.remove('d-none');
+        dropdown.style.display = 'block';
+      }
+
+      function closeDropdown() {
+        dropdown.classList.add('d-none');
+        dropdown.style.display = '';
+        clearKeyboardHover();
+      }
+
+      function showNoResults(show) {
+        if (noResults) {
+          noResults.classList.toggle('d-none', !show);
+        }
+      }
+
+      function setLoading(loading) {
+        loadingRow.classList.toggle('d-none', !loading);
+      }
+
+      function selectItem(item) {
+        hidden.value = item.getAttribute('data-id') || '';
+        input.value = item.getAttribute('data-name') || item.textContent.trim();
+        input.classList.remove('is-invalid');
+        items.forEach(function(i) {
+          i.classList.remove('selected');
+        });
+        item.classList.add('selected');
+        closeDropdown();
+        if (onSelectCallback) {
+          onSelectCallback(item);
+        }
+      }
+
+      function renderItems(results) {
+        list.innerHTML = '';
+        if (!results || !results.length) {
+          showNoResults(true);
+          refreshItems();
+          return;
+        }
+
+        showNoResults(false);
+        results.forEach(function(partner) {
+          var button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'list-group-item list-group-item-action text-start py-2 px-3 combobox-item';
+          button.setAttribute('data-id', partner.id);
+          button.setAttribute('data-name', partner.name || '');
+          button.style.border = 'none';
+          button.style.whiteSpace = 'normal';
+
+          var title = document.createElement('div');
+          title.className = 'product-name fw-medium';
+          title.style.color = '#1e293b';
+          title.textContent = partner.name || 'Unnamed client';
+
+          var meta = document.createElement('div');
+          meta.className = 'small text-muted';
+          meta.style.fontSize = '0.74rem';
+
+          var metaParts = [];
+          if (partner.ref) metaParts.push('Ref: ' + partner.ref);
+          if (partner.mobile) metaParts.push('Mobile: ' + partner.mobile);
+          if (partner.phone) metaParts.push('Phone: ' + partner.phone);
+          if (partner.email) metaParts.push('Email: ' + partner.email);
+          meta.textContent = metaParts.length ? metaParts.join(' • ') : 'Odoo partner record';
+
+          button.appendChild(title);
+          button.appendChild(meta);
+          button.addEventListener('click', function(e) {
+            e.stopPropagation();
+            selectItem(button);
+          });
+          list.appendChild(button);
+        });
+
+        refreshItems();
+        clearKeyboardHover();
+      }
+
+      function filterCurrentItems(query) {
+        var normalizedQuery = String(query || '').toLowerCase().trim();
+        var matchCount = 0;
+
+        items.forEach(function(item) {
+          var text = (item.getAttribute('data-name') || item.textContent || '').toLowerCase();
+          var visible = !normalizedQuery || text.indexOf(normalizedQuery) !== -1;
+          item.classList.toggle('d-none', !visible);
+          if (visible) {
+            matchCount++;
+          }
+        });
+
+        showNoResults(matchCount === 0);
+        clearKeyboardHover();
+      }
+
+      async function loadResults(query) {
+        var currentSeq = ++requestSeq;
+        setLoading(true);
+        try {
+          var response = await fetch('/shop-floor/partners/search?q=' + encodeURIComponent(query || ''), {
+            headers: { Accept: 'application/json' },
+            credentials: 'same-origin',
+            cache: 'no-store',
+          });
+          if (!response.ok || currentSeq !== requestSeq) {
+            return;
+          }
+          var payload = await response.json();
+          if (currentSeq !== requestSeq) {
+            return;
+          }
+          renderItems(Array.isArray(payload && payload.results) ? payload.results : []);
+        } catch (_error) {
+          if (currentSeq === requestSeq) {
+            renderItems([]);
+          }
+        } finally {
+          if (currentSeq === requestSeq) {
+            setLoading(false);
+          }
+        }
+      }
+
+      input.addEventListener('click', function(e) {
+        e.stopPropagation();
+        openDropdown();
+        input.select();
+      });
+
+      input.addEventListener('focus', function() {
+        openDropdown();
+        filterCurrentItems(input.value.trim());
+        if (!items.length) {
+          loadResults(input.value.trim());
+        }
+      });
+
+      input.addEventListener('input', function() {
+        openDropdown();
+        clearTimeout(pendingTimer);
+        hidden.value = '';
+        if (onSelectCallback) {
+          onSelectCallback(null);
+        }
+        filterCurrentItems(input.value.trim());
+        pendingTimer = window.setTimeout(function() {
+          loadResults(input.value.trim());
+        }, 180);
+      });
+
+      input.addEventListener('keydown', function(e) {
+        var visibleItems = items.filter(function(item) {
+          return !item.classList.contains('d-none');
+        });
+
+        if (dropdown.classList.contains('d-none')) {
+          if (e.key === 'ArrowDown' || e.key === 'Enter') {
+            openDropdown();
+            e.preventDefault();
+            return;
+          }
+        }
+
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          if (visibleItems.length > 0) {
+            clearKeyboardHover();
+            activeIndex = (activeIndex + 1) % visibleItems.length;
+            visibleItems[activeIndex].classList.add('keyboard-hover');
+            visibleItems[activeIndex].scrollIntoView({ block: 'nearest' });
+          }
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          if (visibleItems.length > 0) {
+            clearKeyboardHover();
+            activeIndex = (activeIndex - 1 + visibleItems.length) % visibleItems.length;
+            visibleItems[activeIndex].classList.add('keyboard-hover');
+            visibleItems[activeIndex].scrollIntoView({ block: 'nearest' });
+          }
+        } else if (e.key === 'Enter') {
+          e.preventDefault();
+          if (activeIndex >= 0 && activeIndex < visibleItems.length) {
+            selectItem(visibleItems[activeIndex]);
+          }
+        } else if (e.key === 'Escape') {
+          closeDropdown();
+        }
+      });
+
+      document.addEventListener('click', function(e) {
+        if (!container.contains(e.target)) {
+          closeDropdown();
+        }
+      });
+
+      refreshItems();
+      filterCurrentItems(input.value.trim());
+    }
+
+    // Initialize custom comboboxes
+    setupRemotePartnerSearch('partnerCombobox', 'partnerSearch', 'partnerSelect', 'partnerList', function(selectedItem) {
+      var partnerName = document.getElementById('partnerName');
+      if (partnerName) partnerName.value = selectedItem ? (selectedItem.getAttribute('data-name') || selectedItem.textContent.trim()) : '';
+      if (selectedItem) {
+        var partnerId = selectedItem.getAttribute('data-id');
+        fetchRequirements(partnerId);
+      } else {
+        clearRequirements();
+      }
+    });
+    
+    var qtyInput = document.getElementById('intakeQty');
+    var stockHelp = document.getElementById('qtyCurrentStock');
+    
+    setupCombobox('productCombobox', 'productSearch', 'productSelect', 'productList', function(selectedItem) {
+      var productName = document.getElementById('productName');
+      if (productName) productName.value = selectedItem ? (selectedItem.querySelector('.product-name')?.textContent.trim() || selectedItem.textContent.trim()) : '';
+      if (selectedItem && qtyInput && stockHelp) {
+        var available = parseFloat(selectedItem.getAttribute('data-qty') || '0');
+        stockHelp.innerHTML = '<strong>Current stock in Odoo:</strong> ' + available + ' units. Your intake will add to this.';
+        stockHelp.style.color = '#475569';
+        stockHelp.style.display = 'block';
+      } else {
+        if (stockHelp) stockHelp.style.display = 'none';
+      }
+    });
+
+    var requirementsContainer = document.getElementById('customerRequirementsContainer');
+    var requirementsList = document.getElementById('customerRequirementsList');
+
+    function clearRequirements() {
+      if (requirementsContainer) {
+        requirementsContainer.classList.add('d-none');
+      }
+      if (requirementsList) {
+        requirementsList.innerHTML = '';
+      }
+    }
+
+    function fetchRequirements(partnerId) {
+      clearRequirements();
+      
+      fetch('/shop-floor/boards/requirements?partner_id=' + partnerId)
+        .then(function(res) {
+          if (!res.ok) throw new Error('Failed to fetch');
+          return res.json();
+        })
+        .then(function(data) {
+          if (data && data.length > 0) {
+            requirementsContainer.classList.remove('d-none');
+            data.forEach(function(req) {
+              var btn = document.createElement('button');
+              btn.type = 'button';
+              btn.className = 'btn btn-white border text-start p-2 rounded-3 w-100 requirement-btn';
+              btn.style.fontSize = '0.82rem';
+              btn.style.transition = 'all 0.2s';
+              btn.style.backgroundColor = '#ffffff';
+              btn.style.borderColor = '#cbd5e1';
+              btn.style.boxShadow = '0 1px 2px rgba(0,0,0,0.05)';
+              
+              btn.setAttribute('data-product-id', req.productId);
+              btn.setAttribute('data-product-name', req.productName);
+              btn.setAttribute('data-qty', req.qtyMissing);
+
+              btn.innerHTML = `
+                <div class="d-flex justify-content-between align-items-center mb-1">
+                  <span class="fw-bold text-dark" style="font-size: 0.8rem;">${req.moName}</span>
+                  <span class="badge rounded-pill px-2 py-1" style="background-color: #e0e7ff; color: #4f46e5; font-size: 0.68rem; font-weight: 600;">
+                    Needs ${req.qtyMissing} units
+                  </span>
+                </div>
+                <div class="text-muted small mb-1" style="font-size: 0.78rem;">
+                  <strong>Required Board:</strong> ${req.productName}
+                </div>
+                <div class="text-indigo fw-semibold mt-1 d-flex align-items-center gap-1" style="font-size: 0.74rem; text-decoration: underline; color: #4f46e5;">
+                  <span>⚡</span> Click to auto-fill this Board Type & Qty
+                </div>
+              `;
+
+              btn.addEventListener('click', function() {
+                // Populate product select combobox
+                var productList = document.getElementById('productList');
+                var productItem = Array.from(productList.querySelectorAll('.combobox-item')).find(function(item) {
+                  return item.getAttribute('data-id') === String(req.productId);
+                });
+
+                if (productItem) {
+                  var productInput = document.getElementById('productSearch');
+                  var productHidden = document.getElementById('productSelect');
+                  
+                  productHidden.value = req.productId;
+                  productInput.value = req.productName;
+                  productInput.classList.remove('is-invalid');
+                  
+                  productList.querySelectorAll('.combobox-item').forEach(function(i) {
+                    i.classList.remove('selected');
+                  });
+                  productItem.classList.add('selected');
+
+                  // Populate quantity
+                  var qtyInput = document.getElementById('intakeQty');
+                  if (qtyInput) {
+                    qtyInput.value = req.qtyMissing;
+                    qtyInput.classList.remove('is-invalid');
+                  }
+
+                  // Update stock display helper
+                  var available = parseFloat(productItem.getAttribute('data-qty') || '0');
+                  var stockHelp = document.getElementById('qtyCurrentStock');
+                  if (stockHelp) {
+                    stockHelp.innerHTML = '<strong>Current stock in Odoo:</strong> ' + available + ' units. Your intake will add to this.';
+                    stockHelp.style.color = '#475569';
+                    stockHelp.style.display = 'block';
+                  }
+                } else {
+                  // Fallback: If not in categories, populate search input and hidden value anyway
+                  var productInput = document.getElementById('productSearch');
+                  var productHidden = document.getElementById('productSelect');
+                  
+                  productHidden.value = req.productId;
+                  productInput.value = req.productName;
+                  productInput.classList.remove('is-invalid');
+
+                  var qtyInput = document.getElementById('intakeQty');
+                  if (qtyInput) {
+                    qtyInput.value = req.qtyMissing;
+                    qtyInput.classList.remove('is-invalid');
+                  }
+                }
+              });
+
+              requirementsList.appendChild(btn);
+            });
+          }
+        })
+        .catch(function(err) {
+          console.error('Failed to load board requirements:', err);
+        });
+    }
+
+    // Form submission spinner state & validation overrides
+    var form = document.getElementById('intakeForm');
+    var submitBtn = document.getElementById('submitBtn');
+    if (form && submitBtn) {
+      form.addEventListener('submit', function(e) {
+        var partnerVal = document.getElementById('partnerSelect').value;
+        var productVal = document.getElementById('productSelect').value;
+        var isValid = true;
+
+        if (!partnerVal) {
+          document.getElementById('partnerSearch').classList.add('is-invalid');
+          isValid = false;
+        } else {
+          document.getElementById('partnerSearch').classList.remove('is-invalid');
+        }
+
+        if (!productVal) {
+          document.getElementById('productSearch').classList.add('is-invalid');
+          isValid = false;
+        } else {
+          document.getElementById('productSearch').classList.remove('is-invalid');
+        }
+
+        if (!form.checkValidity() || !isValid) {
+          e.preventDefault();
+          e.stopPropagation();
+          form.classList.add('was-validated');
+          return;
+        }
+
+        var text = submitBtn.querySelector('.submit-text');
+        var spinner = submitBtn.querySelector('.submit-spinner');
+        if (text && spinner) {
+          text.textContent = 'Adding to stock & reserving...';
+          spinner.classList.remove('d-none');
+          submitBtn.setAttribute('disabled', 'disabled');
+          submitBtn.style.opacity = '0.7';
+        }
+      });
+    }
+  })();
+</script>
+
+<%- include('partials/footer') %>

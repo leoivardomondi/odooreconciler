@@ -1,0 +1,5 @@
+# cPanel screenshot shows Python 3.7.17. These versions still support Python 3.7.
+fastapi==0.95.2
+pydantic==1.10.15
+starlette==0.27.0
+a2wsgi==1.7.0

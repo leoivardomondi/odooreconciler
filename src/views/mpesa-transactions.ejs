@@ -1,0 +1,356 @@
+<%- include('partials/head') %>
+<%- include('partials/header') %>
+
+<main class="container-fluid px-3 px-lg-4 py-4 mpesa-workspace mpesa-admin-workspace">
+  <section class="mpesa-statement-titlebar mb-3">
+    <div>
+      <p class="eyebrow">Admin</p>
+      <h1 class="display-6 mb-0">M-Pesa Transactions</h1>
+    </div>
+    <div class="hero-actions">
+      <span class="meta-card">
+        <span class="meta-label">Rows</span>
+        <strong><%= transactions.length %></strong>
+      </span>
+      <span class="meta-card">
+        <span class="meta-label">Net</span>
+        <strong><%= Number(totals.net || 0).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) %></strong>
+      </span>
+      <button
+        type="button"
+        class="btn btn-outline-primary btn-sm align-self-center"
+        id="aiCategorizeBtn"
+        onclick="runAiCategorization()"
+        title="Use AI to read transaction notes and auto-assign categories based on keywords like tuktuk, transport, carrying boards, paying boda boda, etc."
+      >
+        🤖 AI Categorize
+      </button>
+      <a href="/mpesa-reconciliation" class="btn btn-light btn-sm align-self-center">Statement Import</a>
+    </div>
+  </section>
+
+  <%- include('partials/alerts', { status, validationErrors: [] }) %>
+
+  <%
+    const money = (value) =>
+      value === null || value === undefined
+        ? '-'
+        : Number(value).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const cleanDateTimeText = (value) => String(value || '').replace(/\s+GMT[+-]\d{4}\s+\([^)]+\)$/i, '');
+    const displayTransactionDate = (value) => {
+      const raw = cleanDateTimeText(value);
+      if (!raw) return '-';
+      const isoDate = raw.match(/^(\d{4}-\d{1,2}-\d{1,2})/)?.[1] || null;
+      const date = isoDate ? new Date(`${isoDate}T00:00:00`) : new Date(raw);
+      if (Number.isNaN(date.getTime())) return value;
+      return date.toLocaleDateString('en-KE', { day: '2-digit', month: 'short', year: 'numeric' });
+    };
+    const monthLabel = (value) => {
+      const match = String(value || '').match(/^(\d{4})-(\d{2})$/);
+      if (!match) return value || 'All months';
+      return new Date(`${value}-01T00:00:00`).toLocaleDateString('en-KE', { month: 'long', year: 'numeric' });
+    };
+    const statusClassForReview = (value) =>
+      value === 'reviewed' || value === 'verified' ? 'success' : value === 'ignored' ? 'secondary' : value === 'needs_followup' ? 'warning' : 'info';
+    const categoryLabelPairs = categoryOptions || [];
+    const categoryLabelMap = new Map(categoryLabelPairs.map(([value, label]) => [value, label]));
+    const categoryLabel = (value) => categoryLabelMap.get(value) || String(value || 'Unknown').replace(/_/g, ' ');
+    const categoryValues = Array.from(new Set([
+      ...categoryLabelPairs.map(([value]) => value),
+      ...((filterOptions && filterOptions.categories) || []),
+      filters.category,
+    ].filter(Boolean)));
+    const directionLabel = (transaction) => {
+      if (transaction.direction === 'in' || Number(transaction.paidIn || 0) > 0) return 'Sender';
+      if (transaction.direction === 'out' || Number(transaction.withdrawn || 0) > 0) return 'Receiver';
+      return 'Party';
+    };
+    const partyText = (transaction) =>
+      transaction.userSupplier || transaction.counterparty || transaction.details || transaction.phoneNumber || '-';
+    const reviewValues = reviewStatuses || ['new', 'reviewed', 'verified', 'ignored', 'needs_followup'];
+  %>
+
+  <form method="get" action="/mpesa-reconciliation/transactions" class="mpesa-admin-filters mb-3">
+    <div>
+      <label class="form-label" for="filterName">Search all fields</label>
+      <input
+        class="form-control"
+        type="search"
+        id="filterName"
+        name="name"
+        value="<%= filters.name %>"
+        placeholder="Receipt, name, phone, amount, notes..."
+      />
+    </div>
+    <div>
+      <label class="form-label" for="filterRole">Role</label>
+      <select class="form-select" id="filterRole" name="partyRole">
+        <option value="any" <%= filters.partyRole === 'any' ? 'selected' : '' %>>Any party</option>
+        <option value="sender" <%= filters.partyRole === 'sender' ? 'selected' : '' %>>Sender</option>
+        <option value="receiver" <%= filters.partyRole === 'receiver' ? 'selected' : '' %>>Receiver</option>
+      </select>
+    </div>
+    <div>
+      <label class="form-label" for="filterCategory">Category</label>
+      <select class="form-select" id="filterCategory" name="category">
+        <option value="">All categories</option>
+        <% categoryValues.forEach((value) => { %>
+          <option value="<%= value %>" <%= filters.category === value ? 'selected' : '' %>><%= categoryLabel(value) %></option>
+        <% }) %>
+      </select>
+    </div>
+    <div>
+      <label class="form-label" for="filterMonth">Month</label>
+      <select class="form-select" id="filterMonth" name="month">
+        <option value="">All months</option>
+        <% ((filterOptions && filterOptions.months) || []).forEach((month) => { %>
+          <option value="<%= month %>" <%= filters.month === month ? 'selected' : '' %>><%= monthLabel(month) %></option>
+        <% }) %>
+        <% if (filters.month && !((filterOptions && filterOptions.months) || []).includes(filters.month)) { %>
+          <option value="<%= filters.month %>" selected><%= monthLabel(filters.month) %></option>
+        <% } %>
+      </select>
+    </div>
+    <div>
+      <label class="form-label" for="filterStatus">Review</label>
+      <select class="form-select" id="filterStatus" name="status">
+        <option value="">All reviews</option>
+        <% reviewValues.forEach((value) => { %>
+          <option value="<%= value %>" <%= filters.reviewStatus === value ? 'selected' : '' %>><%= value %></option>
+        <% }) %>
+      </select>
+    </div>
+    <div>
+      <label class="form-label" for="filterStatement">Statement</label>
+      <select class="form-select" id="filterStatement" name="statement">
+        <option value="">All statements</option>
+        <% ((filterOptions && filterOptions.statements) || []).forEach((statement) => { %>
+          <option value="<%= statement.id %>" <%= filters.statementId === statement.id ? 'selected' : '' %>>
+            <%= statement.originalFilename %> (<%= statement.transactionCount %>)
+          </option>
+        <% }) %>
+      </select>
+    </div>
+    <div class="mpesa-admin-filter-actions">
+      <button type="submit" class="btn btn-primary">Apply</button>
+      <a href="/mpesa-reconciliation/transactions" class="btn btn-outline-secondary">Clear</a>
+    </div>
+  </form>
+
+  <form method="post" action="/mpesa-reconciliation/transactions<%= filterQueryString %>" class="mpesa-grid-form">
+    <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+    <div class="mpesa-grid-shell">
+      <div class="mpesa-admin-summary">
+        <span><strong><%= transactions.length %></strong> rows</span>
+        <span>Paid in <strong><%= money(totals.paidIn) %></strong></span>
+        <span>Withdrawn <strong><%= money(totals.withdrawn) %></strong></span>
+        <span>Net <strong><%= money(totals.net) %></strong></span>
+      </div>
+
+      <div class="table-responsive mpesa-grid-wrap mpesa-admin-grid-wrap">
+        <table id="mpesa-admin-transactions-grid" class="table table-sm align-middle mb-0 mpesa-grid mpesa-admin-grid" data-mpesa-grid>
+          <colgroup>
+            <col class="mpesa-col-check" />
+            <col class="mpesa-col-rownum" />
+            <col class="mpesa-col-time" />
+            <col class="mpesa-col-party" />
+            <col class="mpesa-col-receipt" />
+            <col class="mpesa-col-money" />
+            <col class="mpesa-col-money" />
+            <col class="mpesa-col-category" />
+            <col class="mpesa-col-review" />
+            <col class="mpesa-col-notes" />
+            <col class="mpesa-col-notes" />
+            <col class="mpesa-col-statement" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th><input type="checkbox" id="mpesa-select-all" title="Select all" onchange="document.querySelectorAll('input.mpesa-tx-check').forEach(cb => cb.checked = this.checked)" /></th>
+              <th>#</th>
+              <th>Date</th>
+              <th>Sender / Receiver</th>
+              <th>Receipt</th>
+              <th>Paid In</th>
+              <th>Withdrawn</th>
+              <th>Category</th>
+              <th>Review</th>
+              <th>Notes</th>
+              <th>AI Notes</th>
+              <th>Statement PDF</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% if (!transactions.length) { %>
+              <tr>
+                <td colspan="12" class="text-secondary py-4 text-center">No M-Pesa transactions match these filters.</td>
+              </tr>
+            <% } %>
+            <% transactions.forEach((transaction, index) => { %>
+              <tr>
+                <td><input type="checkbox" class="mpesa-tx-check" name="id" value="<%= transaction.id %>" /></td>
+                <td class="mpesa-rownum">
+                  <%= index + 1 %>
+                  <input type="hidden" name="transactionId[]" value="<%= transaction.id %>" />
+                  <input type="hidden" name="batchId[]" value="<%= transaction.batchId %>" />
+                </td>
+                <td class="mpesa-date-cell">
+                  <strong><%= displayTransactionDate(transaction.transactionDate) %></strong>
+                  <div><%= cleanDateTimeText(transaction.completionTime) %></div>
+                </td>
+                <td>
+                  <div class="mpesa-match-kind"><%= directionLabel(transaction) %></div>
+                  <strong><%= partyText(transaction) %></strong>
+                  <% if (transaction.phoneNumber) { %>
+                    <div class="small text-secondary"><%= transaction.phoneNumber %></div>
+                  <% } %>
+                  <% if (transaction.details && transaction.details !== partyText(transaction)) { %>
+                    <div class="small text-secondary"><%= transaction.details %></div>
+                  <% } %>
+                </td>
+                <td class="mpesa-receipt-cell"><%= transaction.receiptNumber || '-' %></td>
+                <td class="text-end"><%= money(transaction.paidIn) %></td>
+                <td class="text-end"><%= money(transaction.withdrawn) %></td>
+                <td>
+                  <select class="form-select form-select-sm" name="userCategory[]">
+                    <option value="" <%= !transaction.userCategory ? 'selected' : '' %>>
+                      Detected: <%= categoryLabel(transaction.transactionType) %>
+                    </option>
+                    <% categoryValues.forEach((value) => { %>
+                      <option value="<%= value %>" <%= transaction.userCategory === value ? 'selected' : '' %>><%= categoryLabel(value) %></option>
+                    <% }) %>
+                    <% if (transaction.userCategory && !categoryValues.includes(transaction.userCategory)) { %>
+                      <option value="<%= transaction.userCategory %>" selected><%= categoryLabel(transaction.userCategory) %></option>
+                    <% } %>
+                  </select>
+                </td>
+                <td>
+                  <select class="form-select form-select-sm mpesa-review-select mpesa-review-<%= transaction.reviewStatus %>" name="reviewStatus[]">
+                    <% reviewValues.forEach((value) => { %>
+                      <option value="<%= value %>" <%= transaction.reviewStatus === value ? 'selected' : '' %>><%= value %></option>
+                    <% }) %>
+                  </select>
+                  <span class="badge text-bg-<%= statusClassForReview(transaction.reviewStatus) %> mt-1"><%= transaction.reviewStatus %></span>
+                </td>
+                <td>
+                  <input class="form-control form-control-sm mpesa-sheet-input" type="text" name="notes[]" value="<%= transaction.notes || '' %>" />
+                </td>
+                <td>
+                  <% if (transaction.aiNotes) { %>
+                    <div class="small text-secondary d-flex align-items-start gap-1" style="max-width:250px; line-height:1.2">
+                      <span class="fs-6">🤖</span>
+                      <span><%= transaction.aiNotes %></span>
+                    </div>
+                  <% } else { %>
+                    <span class="text-muted small">—</span>
+                  <% } %>
+                </td>
+                <td>
+                  <a href="/mpesa-reconciliation?batch=<%= encodeURIComponent(transaction.batchId) %>">
+                    <%= transaction.batchOriginalFilename %>
+                  </a>
+                  <div class="small text-secondary"><%= formatDateTime(transaction.batchCreatedAt) %></div>
+                </td>
+              </tr>
+            <% }) %>
+          </tbody>
+          <tfoot>
+            <tr>
+              <th colspan="4" class="text-end">Total</th>
+              <th class="text-end"><%= money(totals.paidIn) %></th>
+              <th class="text-end"><%= money(totals.withdrawn) %></th>
+              <th colspan="4">Net <%= money(totals.net) %></th>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+
+      <div class="mpesa-grid-toolbar border-top">
+        <div class="text-secondary small">
+          Total: <strong><%= money(totals.net) %></strong>
+        </div>
+        <div class="mpesa-grid-actions">
+          <button type="submit" class="btn btn-primary" <%= transactions.length ? '' : 'disabled' %>>Save Filtered Rows</button>
+        </div>
+      </div>
+    </div>
+  </form>
+</main>
+
+<script>
+  async function runAiCategorization() {
+    const btn = document.getElementById('aiCategorizeBtn');
+    if (!btn) return;
+    const originalText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '🤖 Analyzing...';
+
+    try {
+      // Gather all currently displayed transaction IDs from the form checkboxes
+      const checkboxes = document.querySelectorAll('input.mpesa-tx-check:checked');
+      const transactionIds = Array.from(checkboxes).map(cb => cb.value).filter(Boolean);
+
+      const body = {};
+      if (transactionIds.length > 0) {
+        body.transactionIds = transactionIds;
+        btn.innerHTML = '🤖 Categorizing ' + transactionIds.length + ' selected...';
+      } else {
+        // No selection: grab ALL visible transaction IDs
+        const allCheckboxes = document.querySelectorAll('input.mpesa-tx-check');
+        const allIds = Array.from(allCheckboxes).map(cb => cb.value).filter(Boolean);
+        if (allIds.length > 0) {
+          body.transactionIds = allIds;
+          btn.innerHTML = '🤖 Categorizing all ' + allIds.length + ' transactions...';
+        } else {
+          alert('No transactions found on this page.');
+          btn.disabled = false;
+          btn.innerHTML = originalText;
+          return;
+        }
+      }
+
+      const csrfMeta = document.querySelector('meta[name="csrf-token"]');
+      const csrfToken = csrfMeta ? csrfMeta.getAttribute('content') : '';
+
+      const response = await fetch('/mpesa-reconciliation/ai-categorize', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': csrfToken || '',
+        },
+        body: JSON.stringify(body),
+      });
+
+      const result = await response.json();
+
+      if (result.ok) {
+        const transportCount = result.summary?.transportCount || 0;
+        const totalCount = result.summary?.total || 0;
+        let msg = 'AI categorization complete! ' + totalCount + ' transactions analyzed.';
+        if (transportCount > 0) {
+          msg += ' ' + transportCount + ' identified as Transport.';
+        }
+        if (result.summary?.categories) {
+          const cats = Object.entries(result.summary.categories)
+            .filter(([key]) => key !== 'unknown' && key !== 'outgoing_payment')
+            .map(([key, count]) => key.replace(/_/g, ' ') + ': ' + count)
+            .join(', ');
+          if (cats) {
+            msg += '\\nCategories: ' + cats;
+          }
+        }
+        alert(msg);
+        // Reload to show updated categories
+        window.location.reload();
+      } else {
+        alert('AI categorization failed: ' + (result.error || 'Unknown error'));
+      }
+    } catch (err) {
+      alert('AI categorization request failed: ' + (err.message || 'Network error'));
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = originalText;
+    }
+  }
+</script>
+
+<%- include('partials/footer') %>

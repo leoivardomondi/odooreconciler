@@ -1,0 +1,61 @@
+{
+  "models": {
+    "payrun": "hr.payslip.run",
+    "payslip": "hr.payslip",
+    "payslip_line": "hr.payslip.line",
+    "payslip_input": "hr.payslip.input",
+    "payslip_input_type": "hr.payslip.input.type",
+    "salary_structure": "hr.payroll.structure",
+    "create_payslips_wizard": "hr.payslip.employees",
+    "employee": "hr.employee"
+  },
+  "payrun_creation": {
+    "salary_structure_name": "All",
+    "employee_domain": [["active", "=", true]],
+    "employee_match_fields": ["name", "identification_id", "work_email", "mobile_phone", "work_phone"],
+    "wizard_methods": ["compute_sheet", "action_generate_payslips"]
+  },
+  "salary_advance": {
+    "input_type_name": "Salary Advance",
+    "input_type_code": "SALARY_ADVANCE",
+    "csv_employee_columns": [
+      "employee",
+      "employee_name",
+      "name",
+      "staff_name",
+      "employee_id",
+      "identification_id",
+      "phone",
+      "mobile",
+      "email"
+    ],
+    "csv_amount_columns": ["amount", "paid_amount", "advance_amount", "mpesa_amount", "debit", "value"],
+    "csv_reference_columns": ["mpesa_receipt", "receipt_no", "transaction_id", "trans_id", "reference"],
+    "csv_status_columns": ["status", "transaction_status"],
+    "paid_status_values": ["paid", "success", "successful", "completed"],
+    "combine_multiple_rows": true,
+    "require_positive_amount": true
+  },
+  "validations": {
+    "require_payslips": true,
+    "block_cancelled_slips": true,
+    "allowed_slip_states": ["draft", "verify", "done", "paid"],
+    "require_unique_employee": true,
+    "require_same_period_as_run": true,
+    "require_contract": true,
+    "require_bank_account": true,
+    "employee_bank_account_fields": ["bank_account_id"],
+    "required_salary_rule_codes": ["NET"],
+    "min_net_wage": 0
+  },
+  "actions": {
+    "compute_draft_slips": true,
+    "validate_slips": true,
+    "validate_run": true,
+    "compute_states": ["draft", "verify"],
+    "skip_validate_states": ["done", "paid", "cancel"],
+    "compute_slip_methods": ["compute_sheet"],
+    "validate_slip_methods": ["action_payslip_done"],
+    "validate_run_methods": ["action_validate", "close_payslip_run"]
+  }
+}

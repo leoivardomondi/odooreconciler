@@ -1,0 +1,370 @@
+<%- include('partials/head') %>
+<%- include('partials/header') %>
+
+<main class="container py-4 py-lg-5">
+  <section class="hero-panel mb-4">
+    <div>
+      <p class="eyebrow">Purchase Orders</p>
+      <h1 class="display-6 mb-2">PO Bill Automation</h1>
+      <p class="lead text-secondary mb-0">
+        Pick one vendor invoice PDF or scanned image from Odoo Documents, extract it with OCR, then find the best matching Purchase Order.
+      </p>
+    </div>
+    <div class="hero-actions">
+      <span class="meta-card">
+        <span class="meta-label">Mode</span>
+        <strong><%= form.mode === 'auto' ? 'Auto' : 'Review' %></strong>
+      </span>
+    </div>
+  </section>
+
+  <%- include('partials/alerts', { status, validationErrors: [] }) %>
+
+  <div class="row g-4">
+    <div class="col-lg-5">
+      <div class="card shadow-sm border-0 app-card">
+        <div class="card-body p-4">
+          <form method="post" action="/po-bill-automation/run" class="vstack gap-3" data-disable-submit="true" data-loading-message="Running PO bill check...">
+            <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+
+            <div>
+              <label class="form-label">Odoo Document Attachment ID</label>
+              <input
+                id="poBillAttachmentId"
+                type="number"
+                min="1"
+                class="form-control"
+                name="attachmentId"
+                value="<%= form.attachmentId %>"
+                placeholder="Example: 127505"
+                required
+              />
+              <input type="hidden" name="pdfPage" value="<%= form.pdfPage || recentPdfsPage.page || 1 %>" />
+              <% if (recentPdfsLoaded) { %>
+                <input type="hidden" name="loadPdfs" value="1" />
+              <% } %>
+            </div>
+
+            <div>
+              <label class="form-label">Purchase Order Override</label>
+              <input
+                type="text"
+                class="form-control"
+                name="purchaseOrderSearch"
+                value="<%= form.purchaseOrderSearch %>"
+                placeholder="Optional, example: P00482"
+              />
+              <div class="form-text">Leave blank to let the app match by vendor, invoice date, and total amount.</div>
+            </div>
+
+            <div>
+              <label class="form-label">Processing Mode</label>
+              <div class="btn-group w-100" role="group" aria-label="Processing mode">
+                <input type="radio" class="btn-check" name="mode" id="modeReview" value="review" <%= form.mode !== 'auto' ? 'checked' : '' %> />
+                <label class="btn btn-outline-primary" for="modeReview">Review</label>
+                <input type="radio" class="btn-check" name="mode" id="modeAuto" value="auto" <%= form.mode === 'auto' ? 'checked' : '' %> />
+                <label class="btn btn-outline-primary" for="modeAuto">Auto</label>
+              </div>
+            </div>
+
+            <button type="submit" class="btn btn-primary">Run Check</button>
+          </form>
+          <hr class="my-4" />
+          <form method="post" action="/po-bill-automation/run-scheduler" class="vstack gap-2" data-disable-submit="true" data-loading-message="Running PO matching scheduler...">
+            <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+            <input type="hidden" name="pdfPage" value="<%= form.pdfPage || recentPdfsPage.page || 1 %>" />
+            <% if (recentPdfsLoaded) { %>
+              <input type="hidden" name="loadPdfs" value="1" />
+            <% } %>
+            <button type="submit" class="btn btn-outline-primary">Run PO Matching Scheduler</button>
+            <div class="form-text">Scans new Finance PDFs and images one at a time, matches unbilled POs from 2026-01-01 to today, and skips documents that are not bills.</div>
+          </form>
+        </div>
+      </div>
+
+      <div class="card shadow-sm border-0 app-card mt-4">
+        <div class="card-body p-4">
+          <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3">
+            <div>
+              <h2 class="h5 mb-1">Recent Finance Documents</h2>
+              <p class="text-secondary small mb-0">
+                <% if (recentPdfsLoaded) { %>
+                  Showing <%= recentPdfsPage.from %>-<%= recentPdfsPage.to %> of <%= recentPdfsPage.total %> supported documents from 2026-01-01 in the Documents app Finance folder for Urban Vibe only.
+                <% } else { %>
+                  Recent PDFs and images are loaded only when needed so this page opens quickly.
+                <% } %>
+              </p>
+            </div>
+            <div class="btn-group" role="group" aria-label="Finance document pages">
+              <% const previousPdfPage = Math.max((recentPdfsPage.page || 1) - 1, 1); %>
+              <% const nextPdfPage = Math.min((recentPdfsPage.page || 1) + 1, recentPdfsPage.totalPages || 1); %>
+              <a
+                class="btn btn-sm btn-outline-primary"
+                href="/po-bill-automation?loadPdfs=1&pdfPage=<%= recentPdfsPage.page || 1 %>&attachmentId=<%= encodeURIComponent(form.attachmentId || '') %>"
+                data-loading-message="Loading recent documents..."
+              >
+                <%= recentPdfsLoaded ? 'Refresh Documents' : 'Load Documents' %>
+              </a>
+              <a
+                class="btn btn-sm btn-outline-secondary <%= recentPdfsPage.page <= 1 ? 'disabled' : '' %>"
+                href="/po-bill-automation?loadPdfs=1&pdfPage=<%= previousPdfPage %>&attachmentId=<%= encodeURIComponent(form.attachmentId || '') %>"
+                aria-disabled="<%= recentPdfsPage.page <= 1 ? 'true' : 'false' %>"
+                data-loading-message="Loading recent documents..."
+              >
+                Prev
+              </a>
+              <span class="btn btn-sm btn-outline-secondary disabled">
+                <%= recentPdfsPage.page %> / <%= recentPdfsPage.totalPages %>
+              </span>
+              <a
+                class="btn btn-sm btn-outline-secondary <%= recentPdfsPage.page >= recentPdfsPage.totalPages ? 'disabled' : '' %>"
+                href="/po-bill-automation?loadPdfs=1&pdfPage=<%= nextPdfPage %>&attachmentId=<%= encodeURIComponent(form.attachmentId || '') %>"
+                aria-disabled="<%= recentPdfsPage.page >= recentPdfsPage.totalPages ? 'true' : 'false' %>"
+                data-loading-message="Loading recent documents..."
+              >
+                Next
+              </a>
+            </div>
+          </div>
+          <div class="table-responsive">
+            <table class="table table-sm align-middle mb-0">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Name</th>
+                  <th>Folder</th>
+                  <th>Status</th>
+                  <th>Updated</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <% if (recentPdfs.length === 0) { %>
+                  <tr>
+                    <td colspan="6" class="text-secondary py-3">
+                      <%= recentPdfsLoaded ? 'No recent supported Finance documents were returned.' : 'Click Load Documents to fetch recent Finance PDFs and images from Odoo.' %>
+                    </td>
+                  </tr>
+                <% } %>
+                <% recentPdfs.forEach((pdf) => { %>
+                  <tr>
+                    <td>
+                      <button
+                        type="button"
+                        class="btn btn-sm btn-link p-0 align-baseline po-bill-attachment-picker"
+                        data-attachment-id="<%= pdf.id %>"
+                      >
+                        <code><%= pdf.id %></code>
+                      </button>
+                    </td>
+                    <td><%= pdf.name %></td>
+                    <td><%= pdf.folderName || 'Finance' %></td>
+                    <td>
+                      <% if (pdf.poBillStatus === 'processed') { %>
+                        <span class="badge text-bg-success">Processed</span>
+                      <% } else if (pdf.poBillStatus === 'processed_with_warnings') { %>
+                        <span class="badge text-bg-warning">Processed with warnings</span>
+                      <% } else if (pdf.poBillStatus === 'skipped') { %>
+                        <span class="badge text-bg-info">Skipped</span>
+                      <% } else if (pdf.poBillStatus === 'failed') { %>
+                        <span class="badge text-bg-danger">Failed</span>
+                      <% } else { %>
+                        <span class="badge text-bg-secondary">New</span>
+                      <% } %>
+                      <% if (pdf.poBillPurchaseOrderName || pdf.poBillVendorBillName) { %>
+                        <div class="small text-secondary">
+                          <%= [pdf.poBillPurchaseOrderName, pdf.poBillVendorBillName].filter(Boolean).join(' / ') %>
+                        </div>
+                      <% } %>
+                    </td>
+                    <td><%= formatDateTime(pdf.write_date || pdf.create_date) %></td>
+                    <td class="text-end">
+                      <a
+                        class="btn btn-sm btn-outline-primary"
+                        href="/po-bill-automation/attachments/<%= pdf.id %>/preview"
+                        target="_blank"
+                        rel="noopener"
+                      >
+                        Preview
+                      </a>
+                    </td>
+                  </tr>
+                <% }) %>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-lg-7">
+      <% if (result) { %>
+        <div class="card shadow-sm border-0 app-card mb-4">
+          <div class="card-body p-4">
+            <div class="d-flex flex-wrap justify-content-between gap-3 mb-3">
+              <div>
+                <p class="eyebrow mb-1">Result</p>
+                <h2 class="h4 mb-0"><%= result.attachmentName %></h2>
+              </div>
+              <span class="badge text-bg-<%= result.canAutoProceed ? 'success' : 'warning' %> align-self-start">
+                <%= result.canAutoProceed ? 'Auto Gates Passed' : 'Needs Review' %>
+              </span>
+            </div>
+
+            <dl class="row mb-0">
+              <dt class="col-sm-4">PO</dt>
+              <dd class="col-sm-8">
+                <% const selectedPoNames = result.purchaseOrders && result.purchaseOrders.length ? result.purchaseOrders.map((po) => po.name).join(', ') : (result.purchaseOrder ? result.purchaseOrder.name : 'No match'); %>
+                <%= selectedPoNames %>
+                <% if (result.candidates && result.candidates.length > 0) { %>
+                  <span class="text-secondary small">Best score: <%= result.candidates[0].score %>/100</span>
+                <% } %>
+              </dd>
+              <dt class="col-sm-4">Vendor</dt>
+              <dd class="col-sm-8"><%= result.parsedInvoice.vendorName || 'Unreadable' %></dd>
+              <dt class="col-sm-4">Invoice Date</dt>
+              <dd class="col-sm-8"><%= result.parsedInvoice.invoiceDate || 'Unreadable' %></dd>
+              <dt class="col-sm-4">Invoice Number</dt>
+              <dd class="col-sm-8"><%= result.parsedInvoice.invoiceNumber || 'Unreadable' %></dd>
+              <dt class="col-sm-4">Tax PIN Note</dt>
+              <dd class="col-sm-8"><span class="badge text-bg-info"><%= result.parsedInvoice.pinNote %></span></dd>
+              <dt class="col-sm-4">Invoice Total</dt>
+              <dd class="col-sm-8"><%= result.parsedInvoice.grandTotal ?? 'Unreadable' %></dd>
+            </dl>
+          </div>
+        </div>
+
+        <div class="card shadow-sm border-0 app-card mb-4">
+          <div class="card-body p-4">
+            <h2 class="h5 mb-3">Extracted Invoice JSON</h2>
+            <pre class="bg-body-tertiary border rounded p-3 small mb-0" style="max-height: 420px; overflow: auto;"><code><%= JSON.stringify({
+              vendorName: result.parsedInvoice.vendorName,
+              invoiceDate: result.parsedInvoice.invoiceDate,
+              invoiceNumber: result.parsedInvoice.invoiceNumber,
+              orderNumber: result.parsedInvoice.orderNumber,
+              taxPin: result.parsedInvoice.taxPin,
+              pinNote: result.parsedInvoice.pinNote,
+              totals: {
+                untaxedTotal: result.parsedInvoice.untaxedTotal,
+                vatTotal: result.parsedInvoice.vatTotal,
+                grandTotal: result.parsedInvoice.grandTotal,
+              },
+              itemCount: result.parsedInvoice.itemCount,
+              items: result.parsedInvoice.items,
+              logs: result.parsedInvoice.logs,
+              rawTextPreview: result.parsedInvoice.rawText ? result.parsedInvoice.rawText.slice(0, 3000) : '',
+            }, null, 2) %></code></pre>
+          </div>
+        </div>
+
+        <div class="card shadow-sm border-0 app-card mb-4">
+          <div class="card-body p-4">
+            <h2 class="h5 mb-3">PO Match Candidates</h2>
+            <div class="table-responsive mb-4">
+              <table class="table table-sm align-middle mb-0">
+                <thead>
+                  <tr>
+                    <th>PO</th>
+                    <th>Vendor</th>
+                    <th>Date</th>
+                    <th>Total</th>
+                    <th>Score</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <% if (!result.candidates || result.candidates.length === 0) { %>
+                    <tr>
+                      <td colspan="5" class="text-secondary py-3">No scored PO candidates were found from the extracted invoice.</td>
+                    </tr>
+                  <% } %>
+                  <% const selectedPoIds = new Set((result.purchaseOrders && result.purchaseOrders.length ? result.purchaseOrders : (result.purchaseOrder ? [result.purchaseOrder] : [])).map((po) => po.id)); %>
+                  <% (result.candidates || []).forEach((candidate) => { %>
+                    <tr class="<%= selectedPoIds.has(candidate.purchaseOrder.id) ? 'table-active' : '' %>">
+                      <td>
+                        <strong><%= candidate.purchaseOrder.name %></strong>
+                        <div class="small text-secondary"><%= candidate.purchaseOrder.state || 'unknown' %></div>
+                      </td>
+                      <td><%= getRelationLabel(candidate.purchaseOrder.partner_id) %></td>
+                      <td><%= formatDateTime(candidate.purchaseOrder.date_order) %></td>
+                      <td><%= candidate.purchaseOrder.amount_total ?? '—' %></td>
+                      <td>
+                        <span class="badge text-bg-<%= candidate.score >= 90 ? 'success' : candidate.score >= 70 ? 'warning' : 'secondary' %>">
+                          <%= candidate.score %>/100
+                        </span>
+                        <div class="small text-secondary">
+                          V<%= candidate.vendorScore %> A<%= candidate.totalScore %> D<%= candidate.dateScore %> I<%= candidate.itemScore %>
+                        </div>
+                      </td>
+                    </tr>
+                    <tr class="<%= selectedPoIds.has(candidate.purchaseOrder.id) ? 'table-active' : '' %>">
+                      <td colspan="5" class="small text-secondary"><%= candidate.reasons.join(' ') %></td>
+                    </tr>
+                  <% }) %>
+                </tbody>
+              </table>
+            </div>
+
+            <h2 class="h5 mb-3">Checks</h2>
+            <div class="list-group list-group-flush">
+              <% result.checks.forEach((check) => { %>
+                <div class="list-group-item px-0 d-flex justify-content-between gap-3">
+                  <div>
+                    <strong><%= check.label %></strong>
+                    <div class="text-secondary small"><%= check.detail %></div>
+                  </div>
+                  <span class="badge text-bg-<%= check.status === 'pass' ? 'success' : check.status === 'fail' ? 'danger' : check.status === 'warn' ? 'warning' : 'secondary' %> align-self-start">
+                    <%= check.status %>
+                  </span>
+                </div>
+              <% }) %>
+            </div>
+          </div>
+        </div>
+
+        <div class="card shadow-sm border-0 app-card">
+          <div class="card-body p-4">
+            <h2 class="h5 mb-3">Actions</h2>
+            <% if (result.actionsTaken.length > 0) { %>
+              <h3 class="h6">Taken</h3>
+              <ul class="mb-3">
+                <% result.actionsTaken.forEach((action) => { %>
+                  <li><%= action %></li>
+                <% }) %>
+              </ul>
+            <% } %>
+            <% if (result.actionsPending.length > 0) { %>
+              <h3 class="h6">Pending</h3>
+              <ul class="mb-0">
+                <% result.actionsPending.forEach((action) => { %>
+                  <li><%= action %></li>
+                <% }) %>
+              </ul>
+            <% } %>
+          </div>
+        </div>
+      <% } else { %>
+        <div class="card shadow-sm border-0 app-card">
+          <div class="card-body p-4 text-secondary">
+            Run a check to see extracted invoice details, PO comparison gates, and actions.
+          </div>
+        </div>
+      <% } %>
+    </div>
+  </div>
+</main>
+
+<script>
+  document.querySelectorAll('.po-bill-attachment-picker').forEach((button) => {
+    button.addEventListener('click', () => {
+      const input = document.getElementById('poBillAttachmentId');
+      if (!input) {
+        return;
+      }
+
+      input.value = button.dataset.attachmentId || '';
+      input.focus();
+    });
+  });
+</script>
+
+<%- include('partials/footer') %>

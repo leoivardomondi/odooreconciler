@@ -1,0 +1,26 @@
+<%- include('partials/head') %>
+<%- include('partials/header') %>
+
+<main class="container py-5">
+  <div class="card shadow-sm border-0 app-card">
+    <div class="card-body p-5">
+      <p class="eyebrow">Error</p>
+      <h1 class="display-6 mb-3"><%= pageTitle %></h1>
+      <p class="lead text-secondary"><%= errorMessage %></p>
+
+      <% if (details && details.length) { %>
+        <div class="mt-4">
+          <h2 class="h5 mb-3">Details</h2>
+          <pre class="json-block mb-0"><%= details.join('\n') %></pre>
+        </div>
+      <% } %>
+
+      <div class="mt-4 d-flex gap-2 flex-wrap">
+        <a href="/dashboard" class="btn btn-primary">Go to Dashboard</a>
+        <a href="/setup" class="btn btn-outline-secondary">Open Setup</a>
+      </div>
+    </div>
+  </div>
+</main>
+
+<%- include('partials/footer') %>

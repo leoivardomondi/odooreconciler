@@ -1,0 +1,158 @@
+<%- include('partials/head') %>
+<%- include('partials/header') %>
+
+<main class="container py-4 py-lg-5">
+  <%
+    const buildPageHref = (pageNumber) => {
+      const params = ['load=1'];
+      if (query) params.push(`q=${encodeURIComponent(query)}`);
+      if (pageNumber > 1) params.push(`page=${pageNumber}`);
+      return `/sales-orders${params.length ? `?${params.join('&')}` : ''}`;
+    };
+    const buildOrderHref = (orderId) => {
+      const params = [];
+      if (query) params.push(`q=${encodeURIComponent(query)}`);
+      if (page > 1) params.push(`page=${page}`);
+      return `/sales-orders/${orderId}${params.length ? `?${params.join('&')}` : ''}`;
+    };
+  %>
+  <section class="hero-panel mb-4">
+    <div>
+      <p class="eyebrow">Sales Orders</p>
+      <h1 class="display-6 mb-2">Search and inspect Odoo Sales Orders</h1>
+      <p class="lead text-secondary mb-0">
+        Look up orders by number or client reference, then review attachments and trigger extraction.
+      </p>
+    </div>
+    <div class="hero-actions">
+      <span class="meta-card">
+        <span class="meta-label">Page</span>
+        <strong><%= page %></strong>
+      </span>
+      <div class="d-flex flex-wrap gap-2">
+        <a
+          href="<%= hasPreviousPage ? buildPageHref(page - 1) : '#' %>"
+          class="btn btn-outline-secondary <%= hasPreviousPage ? '' : 'disabled' %>"
+          <%= hasPreviousPage ? '' : 'aria-disabled="true"' %>
+          data-loading-message="Loading Sales Orders..."
+        >
+          Prev Page
+        </a>
+        <a
+          href="<%= hasNextPage ? buildPageHref(page + 1) : '#' %>"
+          class="btn btn-outline-secondary <%= hasNextPage ? '' : 'disabled' %>"
+          <%= hasNextPage ? '' : 'aria-disabled="true"' %>
+          data-loading-message="Loading Sales Orders..."
+        >
+          Next Page
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <%- include('partials/alerts', { status, validationErrors: [] }) %>
+
+  <div class="card shadow-sm border-0 app-card">
+    <div class="card-body p-4">
+      <form method="get" action="/sales-orders" class="row g-3 align-items-end mb-4" data-disable-submit="true" data-loading-message="Loading Sales Orders...">
+        <input type="hidden" name="load" value="1" />
+        <div class="col-lg-9">
+          <label class="form-label">Search</label>
+          <input
+            type="text"
+            class="form-control"
+            name="q"
+            value="<%= query %>"
+            placeholder="SO number, customer PO, or leave blank for latest orders"
+          />
+        </div>
+        <div class="col-lg-3 d-grid">
+          <button type="submit" class="btn btn-primary">Load Orders</button>
+        </div>
+      </form>
+
+      <div class="table-responsive">
+        <table class="table align-middle mb-0">
+          <thead>
+            <tr>
+              <th>Sales Order</th>
+              <th>Customer</th>
+              <th>Date</th>
+              <th>Odoo Status</th>
+              <th>App Status</th>
+              <th>Total</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            <% if (orders.length === 0) { %>
+              <tr>
+                <td colspan="7" class="text-center text-secondary py-4">
+                  <%= hasLoaded ? 'No Sales Orders were returned for this search.' : 'Use Load Orders to fetch Sales Orders from Odoo.' %>
+                </td>
+              </tr>
+            <% } %>
+            <% orders.forEach((order) => { %>
+              <tr>
+                <td>
+                  <strong><%= order.name %></strong>
+                  <div class="small text-secondary"><%= order.client_order_ref || 'No client reference' %></div>
+                </td>
+                <td><%= getRelationLabel(order.partner_id) %></td>
+                <td><%= formatDateTime(order.date_order) %></td>
+                <td><span class="badge text-bg-secondary"><%= order.state || '—' %></span></td>
+                <td>
+                  <div class="d-flex flex-wrap gap-1">
+                    <span class="badge text-bg-<%= order.appStatus.hasJobSummary ? 'success' : 'secondary' %>">
+                      <%= order.appStatus.hasJobSummary ? 'Has Job Summary' : 'No Job Summary' %>
+                    </span>
+                    <span class="badge text-bg-<%= order.appStatus.extracted ? 'warning' : 'secondary' %>">
+                      <%= order.appStatus.extracted ? 'Extracted' : 'Not Extracted' %>
+                    </span>
+                    <span class="badge text-bg-<%= order.appStatus.sentToOdoo ? 'success' : 'secondary' %>">
+                      <%= order.appStatus.sentToOdoo ? 'Sent to Odoo' : 'Not Sent' %>
+                    </span>
+                    <span class="badge text-bg-<%= order.appStatus.processedStock ? 'info' : 'secondary' %>">
+                      <%= order.appStatus.processedStock ? 'Reconciled' : 'Reconciliation Pending' %>
+                    </span>
+                    <span class="badge text-bg-<%= order.appStatus.addedStock ? 'success' : 'secondary' %>">
+                      <%= order.appStatus.addedStock ? 'Stock Returned' : 'No Stock Returned' %>
+                    </span>
+                  </div>
+                </td>
+                <td><%= order.amount_total ?? '—' %></td>
+                <td class="text-end">
+                  <a href="<%= buildOrderHref(order.id) %>" class="btn btn-sm btn-outline-primary" data-loading-message="Opening Sales Order...">View</a>
+                </td>
+              </tr>
+            <% }) %>
+          </tbody>
+        </table>
+      </div>
+
+      <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mt-4">
+        <span class="small text-secondary"><%= hasLoaded ? 'Showing page' : 'Ready to load page' %> <strong><%= page %></strong>.</span>
+        <div class="d-flex flex-wrap gap-2">
+          <a
+            href="<%= hasPreviousPage ? buildPageHref(page - 1) : '#' %>"
+            class="btn btn-sm btn-outline-secondary <%= hasPreviousPage ? '' : 'disabled' %>"
+            <%= hasPreviousPage ? '' : 'aria-disabled="true"' %>
+            data-loading-message="Loading Sales Orders..."
+          >
+            Prev Page
+          </a>
+          <a
+            href="<%= hasNextPage ? buildPageHref(page + 1) : '#' %>"
+            class="btn btn-sm btn-outline-secondary <%= hasNextPage ? '' : 'disabled' %>"
+            <%= hasNextPage ? '' : 'aria-disabled="true"' %>
+            data-loading-message="Loading Sales Orders..."
+          >
+            Next Page
+          </a>
+        </div>
+      </div>
+    </div>
+  </div>
+</main>
+
+<%- include('partials/footer') %>

@@ -1,0 +1,26 @@
+<%- include('partials/head') %>
+<%- include('partials/header') %>
+<main class="container py-4" style="max-width:1100px">
+  <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
+    <div><h1 class="h3 fw-bold mb-1">Board Receipts</h1><p class="text-muted mb-0">Validate purchased boards received in Odoo.</p></div>
+    <a class="btn btn-outline-secondary" href="/shop-floor">Back to Apps</a>
+  </div>
+  <% if (message) { %><div class="alert alert-success"><%= message %></div><% } %>
+  <% if (error) { %><div class="alert alert-danger"><%= error %></div><% } %>
+  <% if (!receipts.length) { %><div class="app-card p-5 text-center text-muted">No purchased-board receipts need validation.</div><% } %>
+  <div class="d-grid gap-3">
+    <% receipts.forEach((receipt) => { %>
+      <article class="app-card p-4">
+        <div class="d-flex flex-wrap justify-content-between gap-3">
+          <div><h2 class="h6 fw-bold mb-1"><%= receipt.name %></h2><div class="small text-muted"><%= receipt.origin || 'No purchase reference' %> &middot; <%= Array.isArray(receipt.partner_id) ? receipt.partner_id[1] : 'Supplier' %> &middot; <%= String(receipt.scheduled_date || '').slice(0,10) %></div></div>
+          <form method="post" action="/shop-floor/receipts/<%= receipt.id %>/validate" data-confirm="Validate this board receipt in Odoo?">
+            <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+            <button class="btn btn-success" type="submit">Validate Receipt</button>
+          </form>
+        </div>
+        <div class="table-responsive mt-3"><table class="table table-sm mb-0"><thead><tr><th>Board</th><th>Ordered</th><th>Received</th></tr></thead><tbody><% receipt.items.forEach((item) => { %><tr><td><%= item.name %></td><td><%= item.ordered %></td><td><%= item.received %></td></tr><% }) %></tbody></table></div>
+      </article>
+    <% }) %>
+  </div>
+</main>
+<%- include('partials/footer') %>

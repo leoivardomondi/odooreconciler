@@ -1,0 +1,32 @@
+<%- include('partials/head') %>
+<%- include('partials/header') %>
+
+<main class="container py-5">
+  <div class="card shadow-sm border-0 app-card">
+    <div class="card-body p-5">
+      <p class="eyebrow">Starting</p>
+      <h1 class="display-6 mb-3"><%= pageTitle %></h1>
+      <p class="lead text-secondary mb-3"><%= startupMessage %></p>
+      <div class="alert alert-light border mb-4" role="status">
+        Preparing <strong><%= appName %></strong>. This page will retry automatically in
+        <strong><%= retrySeconds %></strong> seconds.
+      </div>
+      <dl class="row small mb-0">
+        <dt class="col-sm-3 text-secondary">Current step</dt>
+        <dd class="col-sm-9"><%= startupStep %></dd>
+      </dl>
+      <div class="mt-4 d-flex gap-2 flex-wrap">
+        <a href="/settings" class="btn btn-primary">Retry Now</a>
+        <a href="/health" class="btn btn-outline-secondary">Check Health</a>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+  window.setTimeout(() => {
+    window.location.replace(window.location.pathname + window.location.search);
+  }, <%= Number(retrySeconds || 5) * 1000 %>);
+</script>
+
+<%- include('partials/footer') %>

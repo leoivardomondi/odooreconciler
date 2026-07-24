@@ -1,0 +1,56 @@
+{
+  "name": "Urban Vibe Reconcile",
+  "short_name": "UV Reconcile",
+  "description": "Urban Vibe reconciliation workspace for M-Pesa, purchase orders, vendor bills, and Odoo stock workflows.",
+  "id": "/dashboard",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone"],
+  "orientation": "any",
+  "background_color": "#ffffff",
+  "theme_color": "#22213f",
+  "categories": ["business", "finance", "productivity"],
+  "icons": [
+    {
+      "src": "/public/icons/urban-vibe-pwa-dark.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/public/icons/urban-vibe-pwa-dark.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ],
+  "screenshots": [
+    {
+      "src": "/public/icons/urban-vibe-logo-dark.png",
+      "sizes": "1600x900",
+      "type": "image/png",
+      "label": "Urban Vibe app cover"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "My Work",
+      "short_name": "My Work",
+      "url": "/shop-floor",
+      "icons": [{ "src": "/public/icons/urban-vibe-pwa-dark.png", "sizes": "512x512", "type": "image/png" }]
+    },
+    {
+      "name": "M-Pesa Reconciliation",
+      "short_name": "M-Pesa",
+      "url": "/mpesa-reconciliation",
+      "icons": [{ "src": "/public/icons/urban-vibe-pwa-dark.png", "sizes": "512x512", "type": "image/png" }]
+    },
+    {
+      "name": "PO Bills",
+      "short_name": "PO Bills",
+      "url": "/po-bill-automation",
+      "icons": [{ "src": "/public/icons/urban-vibe-pwa-dark.png", "sizes": "512x512", "type": "image/png" }]
+    }
+  ]
+}
