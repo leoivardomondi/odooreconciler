@@ -1121,10 +1121,10 @@ router.post('/settings', validators, async (req: Request, res: Response) => {
         ocr: {
           provider: req.body.ocrProvider?.trim() || 'disabled',
           enabled: req.body.ocrEnabled === 'on' || req.body.ocrProvider === 'nvidia_nemoretriever',
-          model: req.body.ocrModel?.trim() || 'nvidia/nemotron-ocr-v1',
+          model: req.body.ocrModel?.trim() || 'nvidia/nemotron-ocr-v2',
           endpoint:
             req.body.ocrEndpoint?.trim() ||
-            'https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr-v1',
+            'https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr-v2',
           apiKey: req.body.ocrApiKey?.trim() || '',
           clearApiKey: req.body.clearOcrApiKey === 'on',
         },

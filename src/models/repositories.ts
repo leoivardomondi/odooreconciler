@@ -385,11 +385,16 @@ export async function getSettings(): Promise<AppSettings> {
       enabled: Boolean(rawAiOcr.enabled),
       provider: rawAiOcr.provider || DEFAULT_AI_EXTRACTION_CONFIG.ocr.provider,
       model: String(rawAiOcr.model || DEFAULT_AI_EXTRACTION_CONFIG.ocr.model)
-        .replace('nvidia/nemoretriever-ocr-v1', 'nvidia/nemotron-ocr-v1'),
+        .replace('nvidia/nemoretriever-ocr-v1', 'nvidia/nemotron-ocr-v2')
+        .replace('nvidia/nemotron-ocr-v1', 'nvidia/nemotron-ocr-v2'),
       endpoint: String(rawAiOcr.endpoint || DEFAULT_AI_EXTRACTION_CONFIG.ocr.endpoint)
-        .replace('nvidia/nemoretriever-ocr-v1', 'nvidia/nemotron-ocr-v1')
+        .replace('nvidia/nemoretriever-ocr-v1', 'nvidia/nemotron-ocr-v2')
+        .replace('nvidia/nemotron-ocr-v1', 'nvidia/nemotron-ocr-v2')
         .replace(/\/v1\/infer$/, ''),
-      apiKey: aiOcrApiKey,
+      // The same NVIDIA API key can authorize both invoice AI and OCR.
+      // Keep the dedicated OCR key as an override, but do not require users
+      // to store an identical NVIDIA key twice.
+      apiKey: aiOcrApiKey || aiApiKeys.nvidia,
     },
   };
   const rawScheduler = safeJsonParse<Record<string, unknown>>(row.scheduler_config_json, {});

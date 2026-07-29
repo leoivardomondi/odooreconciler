@@ -74,8 +74,8 @@ exports.DEFAULT_AI_EXTRACTION_CONFIG = {
     ocr: {
         provider: 'disabled',
         enabled: false,
-        model: 'nvidia/nemotron-ocr-v1',
-        endpoint: 'https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr-v1',
+        model: 'nvidia/nemotron-ocr-v2',
+        endpoint: 'https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr-v2',
         apiKey: '',
     },
 };

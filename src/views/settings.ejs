@@ -903,7 +903,7 @@
               <label class="form-label">OCR Provider</label>
               <select class="form-select" name="ocrProvider">
                 <option value="disabled" <%= form.ocrProvider === 'disabled' ? 'selected' : '' %>>Disabled</option>
-                <option value="nvidia_nemoretriever" <%= form.ocrProvider === 'nvidia_nemoretriever' ? 'selected' : '' %>>NVIDIA Nemotron OCR</option>
+                <option value="nvidia_nemoretriever" <%= form.ocrProvider === 'nvidia_nemoretriever' ? 'selected' : '' %>>NVIDIA Nemotron OCR v2</option>
               </select>
             </div>
             <div class="col-md-4">
@@ -921,7 +921,7 @@
             <div class="col-12">
               <label class="form-label">OCR Endpoint</label>
               <input type="url" class="form-control font-monospace" name="ocrEndpoint" value="<%= form.ocrEndpoint %>" />
-              <div class="form-text">This is separate from invoice AI. Use <code>https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr-v1</code>.</div>
+              <div class="form-text">Recommended: <code>https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr-v2</code>. The app retries temporary NVIDIA errors and falls back to local Tesseract.</div>
             </div>
           </div>
 

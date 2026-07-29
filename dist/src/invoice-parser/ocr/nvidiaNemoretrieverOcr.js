@@ -39,7 +39,10 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.nvidiaNemoretrieverOcr = nvidiaNemoretrieverOcr;
 const promises_1 = __importDefault(require("fs/promises"));
 const path_1 = __importDefault(require("path"));
-const NVIDIA_DIRECT_UPLOAD_BASE64_LIMIT = 180_000;
+const NVIDIA_HIGH_QUALITY_BASE64_LIMIT = 900_000;
+const NVIDIA_COMPATIBILITY_BASE64_LIMIT = 180_000;
+const NVIDIA_MAX_ATTEMPTS = 2;
+const NVIDIA_REQUEST_TIMEOUT_MS = 30_000;
 function mimeTypeForImage(imagePath) {
     const ext = path_1.default.extname(imagePath).toLowerCase();
     if (ext === '.jpg' || ext === '.jpeg')
@@ -49,31 +52,38 @@ function mimeTypeForImage(imagePath) {
 function resolveOcrEndpoint(endpoint) {
     return endpoint.trim().replace(/\/+$/, '');
 }
-async function readNvidiaSizedImage(imagePath) {
+async function readNvidiaSizedImages(imagePath) {
     const original = await promises_1.default.readFile(imagePath);
-    let imageB64 = original.toString('base64');
-    let mediaType = mimeTypeForImage(imagePath);
-    if (imageB64.length <= NVIDIA_DIRECT_UPLOAD_BASE64_LIMIT) {
-        return { imageB64, mediaType, resized: false };
+    const candidates = [];
+    const originalB64 = original.toString('base64');
+    if (originalB64.length <= NVIDIA_HIGH_QUALITY_BASE64_LIMIT) {
+        candidates.push({ imageB64: originalB64, mediaType: mimeTypeForImage(imagePath), description: 'original' });
     }
     const canvasModule = await Promise.resolve().then(() => __importStar(require('@napi-rs/canvas')));
     const source = await canvasModule.loadImage(imagePath);
-    const maxWidths = [1400, 1100, 900, 700, 550];
-    for (const maxWidth of maxWidths) {
-        const scale = Math.min(1, maxWidth / source.width);
+    const profiles = [
+        { maxWidth: 1800, quality: 88, target: NVIDIA_HIGH_QUALITY_BASE64_LIMIT, description: 'high-resolution' },
+        { maxWidth: 1400, quality: 84, target: 500_000, description: 'balanced' },
+        { maxWidth: 1100, quality: 80, target: 300_000, description: 'compact' },
+        { maxWidth: 900, quality: 76, target: NVIDIA_COMPATIBILITY_BASE64_LIMIT, description: 'compatibility' },
+        { maxWidth: 700, quality: 72, target: NVIDIA_COMPATIBILITY_BASE64_LIMIT, description: 'small compatibility' },
+    ];
+    for (const profile of profiles) {
+        const scale = Math.min(1, profile.maxWidth / source.width);
         const width = Math.max(1, Math.round(source.width * scale));
         const height = Math.max(1, Math.round(source.height * scale));
         const canvas = canvasModule.createCanvas(width, height);
         const context = canvas.getContext('2d');
         context.drawImage(source, 0, 0, width, height);
-        const jpeg = await canvas.encode('jpeg', 78);
-        imageB64 = jpeg.toString('base64');
-        mediaType = 'image/jpeg';
-        if (imageB64.length <= NVIDIA_DIRECT_UPLOAD_BASE64_LIMIT) {
-            return { imageB64, mediaType, resized: true };
+        const imageB64 = (await canvas.encode('jpeg', profile.quality)).toString('base64');
+        if (imageB64.length <= profile.target) {
+            const duplicate = candidates.some((candidate) => candidate.imageB64.length === imageB64.length);
+            if (!duplicate) {
+                candidates.push({ imageB64, mediaType: 'image/jpeg', description: profile.description });
+            }
         }
     }
-    return { imageB64, mediaType, resized: true };
+    return candidates.sort((a, b) => b.imageB64.length - a.imageB64.length);
 }
 function collectTextDetections(value) {
     if (!value || typeof value !== 'object') {
@@ -91,11 +101,58 @@ function collectTextDetections(value) {
             return null;
         }
         const item = detection;
-        const text = typeof item.text === 'string' ? item.text : '';
-        const confidence = typeof item.confidence === 'number' ? item.confidence : null;
+        const prediction = item.text_prediction && typeof item.text_prediction === 'object'
+            ? item.text_prediction
+            : item;
+        const text = typeof prediction.text === 'string' ? prediction.text : '';
+        const confidence = typeof prediction.confidence === 'number' ? prediction.confidence : null;
         return text.trim() ? { text: text.trim(), confidence } : null;
     })
         .filter((entry) => Boolean(entry));
+}
+function retryDelayMs(response, attempt) {
+    const retryAfter = Number(response.headers.get('retry-after') || '');
+    return Number.isFinite(retryAfter) && retryAfter > 0
+        ? Math.min(30_000, retryAfter * 1000)
+        : Math.min(8_000, 750 * (2 ** attempt));
+}
+async function wait(ms) {
+    await new Promise((resolve) => setTimeout(resolve, ms));
+}
+async function postNvidiaOcr(endpoint, apiKey, imageB64, mediaType) {
+    let lastResponse = null;
+    let lastError = null;
+    for (let attempt = 0; attempt < NVIDIA_MAX_ATTEMPTS; attempt += 1) {
+        try {
+            const response = await fetch(endpoint, {
+                method: 'POST',
+                headers: {
+                    Accept: 'application/json',
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${apiKey}`,
+                },
+                body: JSON.stringify({
+                    input: [{ type: 'image_url', url: `data:${mediaType};base64,${imageB64}` }],
+                    merge_levels: ['word'],
+                }),
+                signal: AbortSignal.timeout(NVIDIA_REQUEST_TIMEOUT_MS),
+            });
+            lastResponse = response;
+            if (response.ok || response.status === 400 || response.status === 401 || response.status === 403 || response.status === 413 || response.status === 422) {
+                return response;
+            }
+            await wait(retryDelayMs(response, attempt));
+        }
+        catch (error) {
+            lastError = error;
+            if (attempt + 1 < NVIDIA_MAX_ATTEMPTS) {
+                await wait(Math.min(8_000, 750 * (2 ** attempt)));
+            }
+        }
+    }
+    if (lastResponse)
+        return lastResponse;
+    throw lastError instanceof Error ? lastError : new Error('NVIDIA OCR request failed before receiving a response.');
 }
 function collectTextFields(value, texts = []) {
     if (!value || typeof value !== 'object') {
@@ -159,40 +216,38 @@ async function nvidiaNemoretrieverOcr(images, config) {
         const pages = [];
         const warnings = [];
         for (const image of images) {
-            const { imageB64, mediaType, resized } = await readNvidiaSizedImage(image.imagePath);
-            if (imageB64.length > NVIDIA_DIRECT_UPLOAD_BASE64_LIMIT) {
-                warnings.push(`NVIDIA Nemotron OCR skipped page ${image.pageNumber} because the image still exceeds direct upload size after resizing.`);
+            const candidates = await readNvidiaSizedImages(image.imagePath);
+            if (!candidates.length) {
+                warnings.push(`NVIDIA Nemotron OCR skipped page ${image.pageNumber} because no compatible image could be prepared.`);
                 continue;
             }
-            if (resized) {
-                warnings.push(`NVIDIA Nemotron OCR resized page ${image.pageNumber} to fit direct upload size.`);
-            }
-            const response = await fetch(endpoint, {
-                method: 'POST',
-                headers: {
-                    Accept: 'application/json',
-                    'Content-Type': 'application/json',
-                    Authorization: `Bearer ${config.apiKey}`,
-                },
-                body: JSON.stringify({
-                    input: [
-                        {
-                            type: 'image_url',
-                            url: `data:${mediaType};base64,${imageB64}`,
-                        },
-                    ],
-                }),
-            });
-            const json = await response.json().catch(() => null);
-            if (!response.ok) {
+            let page = null;
+            let lastFailure = '';
+            for (const candidate of candidates) {
+                const response = await postNvidiaOcr(endpoint, config.apiKey, candidate.imageB64, candidate.mediaType);
+                const json = await response.json().catch(() => null);
+                if (response.ok) {
+                    page = parseNvidiaOcrPageResponse(json, image);
+                    if (page) {
+                        if (candidate.description !== 'original') {
+                            warnings.push(`NVIDIA Nemotron OCR used the ${candidate.description} image for page ${image.pageNumber}.`);
+                        }
+                        break;
+                    }
+                    lastFailure = 'no readable text returned';
+                    continue;
+                }
                 const message = (json && typeof json === 'object' && 'error' in json ? String(json.error) : '') ||
                     `HTTP ${response.status}`;
-                warnings.push(`NVIDIA Nemotron OCR failed on page ${image.pageNumber}: ${message}`);
-                continue;
+                lastFailure = message;
+                if (response.status !== 413 && response.status !== 422)
+                    break;
             }
-            const page = parseNvidiaOcrPageResponse(json, image);
             if (page) {
                 pages.push(page);
+            }
+            else {
+                warnings.push(`NVIDIA Nemotron OCR failed on page ${image.pageNumber}: ${lastFailure || 'no readable text returned'}`);
             }
         }
         return {
