@@ -12,7 +12,7 @@ import {
   touchSchedulerRunLock,
   updateSchedulerRun,
 } from '../models/repositories';
-import { AttachmentInfo, SalesOrderSummary, SchedulerRunEntry, SchedulerRunResult } from '../models/types';
+import { AttachmentInfo, PoBillSchedulerConfig, SalesOrderSummary, SchedulerRunEntry, SchedulerRunResult } from '../models/types';
 import { formatOdooDateTime, isJobSummaryAttachment, sortAttachmentsNewestFirst } from '../utils/helpers';
 import { env } from '../utils/env';
 import { extractAttachmentForOrder, sendExtractedResultToOdoo } from './extractionService';
@@ -227,7 +227,7 @@ function getPoBillAttemptCount(pdf: AttachmentInfo) {
   return Math.max(0, Number(pdf.poBillAttemptCount || 0) || 0);
 }
 
-function getPoBillRetryClass(pdf: AttachmentInfo): PoBillRetryClass {
+function getPoBillRetryClass(pdf: AttachmentInfo, policy: PoBillSchedulerConfig): PoBillRetryClass {
   const status = String(pdf.poBillStatus || '');
   const summary = String(pdf.poBillSummary || '').toLowerCase();
 
@@ -246,27 +246,33 @@ function getPoBillRetryClass(pdf: AttachmentInfo): PoBillRetryClass {
 
   // For changeable skips (e.g. "No safe PO bill match"), check if exhausted
   const attemptCount = getPoBillAttemptCount(pdf);
-  if (attemptCount >= MAX_PO_BILL_RETRY_ATTEMPTS) {
+  if (attemptCount >= Math.max(1, Number(policy.maxRetryAttempts || MAX_PO_BILL_RETRY_ATTEMPTS))) {
     return 'exhausted';
   }
 
   return 'changeable';
 }
 
-function getPoBillRetryCooldownHours(retryClass: PoBillRetryClass, attemptCount = 0): number {
+function getPoBillRetryCooldownHours(
+  retryClass: PoBillRetryClass,
+  attemptCount: number,
+  policy: PoBillSchedulerConfig,
+): number {
   switch (retryClass) {
     case 'fresh':
       return 0;
     case 'transient':
-      return PO_BILL_TRANSIENT_RETRY_COOLDOWN_HOURS;
+      return Math.max(1, Number(policy.transientRetryHours || PO_BILL_TRANSIENT_RETRY_COOLDOWN_HOURS));
     case 'changeable': {
       // Escalating cooldowns: 12h → 24h → 48h → 96h → 168h
-      const escalationSteps = [12, 24, 48, 96, 168];
+      const escalationSteps = policy.retryBackoffHours?.length
+        ? policy.retryBackoffHours
+        : [PO_BILL_RETRY_COOLDOWN_HOURS, 24, 48, 96, 168];
       const index = Math.min(attemptCount, escalationSteps.length - 1);
       return escalationSteps[index];
     }
     case 'stable_skip':
-      return PO_BILL_STABLE_SKIP_RETRY_COOLDOWN_HOURS;
+      return Math.max(1, Number(policy.stableSkipRetryDays || 14)) * 24;
     case 'exhausted':
     case 'processed':
     default:
@@ -278,8 +284,8 @@ function getPoBillAttemptedAt(pdf: AttachmentInfo) {
   return pdf.poBillProcessedAt ? Date.parse(pdf.poBillProcessedAt) || 0 : 0;
 }
 
-function isPoBillPdfDueForRetry(pdf: AttachmentInfo, nowMs: number) {
-  const retryClass = getPoBillRetryClass(pdf);
+function isPoBillPdfDueForRetry(pdf: AttachmentInfo, nowMs: number, policy: PoBillSchedulerConfig) {
+  const retryClass = getPoBillRetryClass(pdf, policy);
   if (retryClass === 'processed' || retryClass === 'exhausted') {
     return false;
   }
@@ -290,12 +296,12 @@ function isPoBillPdfDueForRetry(pdf: AttachmentInfo, nowMs: number) {
   }
 
   const attemptCount = getPoBillAttemptCount(pdf);
-  const cooldownMs = getPoBillRetryCooldownHours(retryClass, attemptCount) * 60 * 60 * 1000;
+  const cooldownMs = getPoBillRetryCooldownHours(retryClass, attemptCount, policy) * 60 * 60 * 1000;
   return nowMs - attemptedAt >= cooldownMs;
 }
 
-function getPoBillRetryPriority(pdf: AttachmentInfo) {
-  const retryClass = getPoBillRetryClass(pdf);
+function getPoBillRetryPriority(pdf: AttachmentInfo, policy: PoBillSchedulerConfig) {
+  const retryClass = getPoBillRetryClass(pdf, policy);
   switch (retryClass) {
     case 'fresh':
       return 0;
@@ -704,8 +710,8 @@ export async function runPoBillSchedulerCycle(
         continue;
       }
 
-      const retryClass = getPoBillRetryClass(pdf);
-      const dueForRetry = isPoBillPdfDueForRetry(pdf, nowMs);
+      const retryClass = getPoBillRetryClass(pdf, settings.poBillScheduler);
+      const dueForRetry = isPoBillPdfDueForRetry(pdf, nowMs, settings.poBillScheduler);
 
       if (retryClass === 'exhausted') {
         exhaustedCount += 1;
@@ -722,8 +728,8 @@ export async function runPoBillSchedulerCycle(
 
     const queue = queueCandidates
       .sort((left, right) => {
-        const leftPriority = getPoBillRetryPriority(left);
-        const rightPriority = getPoBillRetryPriority(right);
+        const leftPriority = getPoBillRetryPriority(left, settings.poBillScheduler);
+        const rightPriority = getPoBillRetryPriority(right, settings.poBillScheduler);
         if (leftPriority !== rightPriority) {
           return leftPriority - rightPriority;
         }
@@ -861,7 +867,7 @@ export async function runPoBillSchedulerCycle(
       processedCount,
       skippedCount,
       failedCount,
-      summary: `PO bill scheduler scanned ${scannedCount} Finance document(s), processed ${processedCount}, skipped ${skippedCount}, failed ${failedCount}${exhaustedCount > 0 ? `, ${exhaustedCount} exhausted (permanently skipped after ${MAX_PO_BILL_RETRY_ATTEMPTS} attempts)` : ''}${cooldownBlockedCount > 0 ? `, ${cooldownBlockedCount} in cooldown` : ''}.`,
+      summary: `PO bill scheduler scanned ${scannedCount} Finance document(s), processed ${processedCount}, skipped ${skippedCount}, failed ${failedCount}${exhaustedCount > 0 ? `, ${exhaustedCount} exhausted (permanently skipped after ${settings.poBillScheduler.maxRetryAttempts} attempts)` : ''}${cooldownBlockedCount > 0 ? `, ${cooldownBlockedCount} in cooldown` : ''}.`,
       context: {
         jobType: PO_BILL_SCHEDULER_JOB_TYPE,
         schedulerName: 'PO Bill Scheduler',

@@ -1,4 +1,4 @@
-import { AttachmentInfo, SchedulerRunEntry } from '../models/types';
+import { AttachmentInfo, PoBillSchedulerConfig, SchedulerRunEntry } from '../models/types';
 import { getRecentSchedulerRuns, getSettings } from '../models/repositories';
 
 const MAX_RETRY_ATTEMPTS = 5;
@@ -52,14 +52,23 @@ function reasonDetails(summaryValue: unknown) {
   return { category: 'Needs review', reason: summary };
 }
 
-function retryHours(pdf: AttachmentInfo, stable: boolean, transient: boolean) {
-  if (transient) return TRANSIENT_RETRY_HOURS;
-  if (stable) return STABLE_SKIP_RETRY_HOURS;
-  const steps = [12, 24, 48, 96, 168];
+function retryHours(
+  pdf: AttachmentInfo,
+  stable: boolean,
+  transient: boolean,
+  policy?: PoBillSchedulerConfig,
+) {
+  if (transient) return policy?.transientRetryHours || TRANSIENT_RETRY_HOURS;
+  if (stable) return (policy?.stableSkipRetryDays || 14) * 24;
+  const steps = policy?.retryBackoffHours?.length ? policy.retryBackoffHours : [12, 24, 48, 96, 168];
   return steps[Math.min(attemptCount(pdf), steps.length - 1)];
 }
 
-export function describePoBillQueueDocument(pdf: AttachmentInfo, now = Date.now()): PoBillQueueDiagnostic {
+export function describePoBillQueueDocument(
+  pdf: AttachmentInfo,
+  now = Date.now(),
+  policy?: PoBillSchedulerConfig,
+): PoBillQueueDiagnostic {
   const status = String(pdf.poBillStatus || '');
   const details = reasonDetails(pdf.poBillSummary);
   const attempts = attemptCount(pdf);
@@ -71,11 +80,11 @@ export function describePoBillQueueDocument(pdf: AttachmentInfo, now = Date.now(
   }
   const stable = details.category === 'Not a vendor bill';
   const transient = details.category === 'Temporary OCR/API failure';
-  if (!stable && !transient && attempts >= MAX_RETRY_ATTEMPTS) {
+  if (!stable && !transient && attempts >= (policy?.maxRetryAttempts || MAX_RETRY_ATTEMPTS)) {
     return { attachment: pdf, state: 'exhausted', label: 'Retry limit reached', reason: details.reason, reasonCategory: details.category, retryAt: null, attemptCount: attempts };
   }
   const attemptedAt = pdf.poBillProcessedAt ? Date.parse(pdf.poBillProcessedAt) : 0;
-  const retryAtMs = attemptedAt + retryHours(pdf, stable, transient) * 60 * 60 * 1000;
+  const retryAtMs = attemptedAt + retryHours(pdf, stable, transient, policy) * 60 * 60 * 1000;
   const retryAt = attemptedAt ? new Date(retryAtMs).toISOString() : null;
   if (!attemptedAt || retryAtMs <= now) {
     return {
@@ -180,7 +189,11 @@ export async function buildPoBillSchedulerDiagnostics(documents: AttachmentInfo[
   const detailedReasons = outcomeReasons(runs);
   const queue = documents.map((document) => {
     const detailedReason = detailedReasons.get(Number(document.id));
-    return describePoBillQueueDocument(detailedReason ? { ...document, poBillSummary: detailedReason } : document);
+    return describePoBillQueueDocument(
+      detailedReason ? { ...document, poBillSummary: detailedReason } : document,
+      Date.now(),
+      settings.poBillScheduler,
+    );
   });
   const attention = queue.filter((item) => item.state !== 'processed');
   const historical = historicalFailureAssessment(runs);
@@ -233,5 +246,11 @@ export async function buildPoBillSchedulerDiagnostics(documents: AttachmentInfo[
     p75DurationSeconds: Math.ceil(p75Seconds),
     suggestedIntervalMinutes,
     historical,
+    retryPolicy: {
+      maxRetryAttempts: settings.poBillScheduler.maxRetryAttempts,
+      transientRetryHours: settings.poBillScheduler.transientRetryHours,
+      retryBackoffHours: settings.poBillScheduler.retryBackoffHours,
+      stableSkipRetryDays: settings.poBillScheduler.stableSkipRetryDays,
+    },
   };
 }

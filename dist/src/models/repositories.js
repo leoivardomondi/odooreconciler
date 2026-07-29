@@ -447,6 +447,12 @@ async function getSettings() {
             batchSize: Number(poBillScheduler.batchSize || helpers_1.DEFAULT_PO_BILL_SCHEDULER_CONFIG.batchSize),
             fromDate: String(poBillScheduler.fromDate || helpers_1.DEFAULT_PO_BILL_SCHEDULER_CONFIG.fromDate),
             cronToken: String(poBillScheduler.cronToken || ''),
+            maxRetryAttempts: positiveNumberValue(poBillScheduler.maxRetryAttempts, helpers_1.DEFAULT_PO_BILL_SCHEDULER_CONFIG.maxRetryAttempts),
+            transientRetryHours: positiveNumberValue(poBillScheduler.transientRetryHours, helpers_1.DEFAULT_PO_BILL_SCHEDULER_CONFIG.transientRetryHours),
+            retryBackoffHours: Array.isArray(poBillScheduler.retryBackoffHours)
+                ? poBillScheduler.retryBackoffHours.map(Number).filter((value) => Number.isFinite(value) && value > 0)
+                : helpers_1.DEFAULT_PO_BILL_SCHEDULER_CONFIG.retryBackoffHours,
+            stableSkipRetryDays: positiveNumberValue(poBillScheduler.stableSkipRetryDays, helpers_1.DEFAULT_PO_BILL_SCHEDULER_CONFIG.stableSkipRetryDays),
         },
         stock: {
             locationId: String(stock.locationId || ''),

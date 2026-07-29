@@ -122,6 +122,10 @@ const schedulerValidators = [
   body('poBillSchedulerFromDate').optional({ values: 'falsy' }).trim(),
   body('poBillSchedulerCronToken').optional({ values: 'falsy' }).trim(),
   body('poBillSchedulerUseInProcessInterval').optional({ values: 'falsy' }).trim(),
+  body('poBillSchedulerMaxRetryAttempts').optional({ values: 'falsy' }).trim(),
+  body('poBillSchedulerTransientRetryHours').optional({ values: 'falsy' }).trim(),
+  body('poBillSchedulerRetryBackoffHours').optional({ values: 'falsy' }).trim(),
+  body('poBillSchedulerStableSkipRetryDays').optional({ values: 'falsy' }).trim(),
 ];
 
 const stockValidators = [
@@ -231,6 +235,15 @@ function boolFromSource(source: Record<string, string>, key: string, fallback: b
 function positiveNumberFromSource(source: Record<string, string>, key: string, fallback: number) {
   const parsed = Number(source[key] || '');
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseRetryBackoffHours(value: unknown) {
+  const parsed = String(value || '')
+    .split(',')
+    .map((item) => Number(item.trim()))
+    .filter((item) => Number.isFinite(item) && item > 0)
+    .slice(0, 10);
+  return parsed.length ? parsed : [12, 24, 48, 96, 168];
 }
 
 function applyMailPreset(mail: MailConfig, preset: string): MailConfig {
@@ -589,6 +602,14 @@ async function buildFormValues(
       source.poBillSchedulerUseInProcessInterval === 'on' ||
       (source.poBillSchedulerUseInProcessInterval === undefined &&
         resolvedExisting.poBillScheduler.useInProcessInterval),
+    poBillSchedulerMaxRetryAttempts:
+      source.poBillSchedulerMaxRetryAttempts ?? String(resolvedExisting.poBillScheduler.maxRetryAttempts),
+    poBillSchedulerTransientRetryHours:
+      source.poBillSchedulerTransientRetryHours ?? String(resolvedExisting.poBillScheduler.transientRetryHours),
+    poBillSchedulerRetryBackoffHours:
+      source.poBillSchedulerRetryBackoffHours ?? resolvedExisting.poBillScheduler.retryBackoffHours.join(', '),
+    poBillSchedulerStableSkipRetryDays:
+      source.poBillSchedulerStableSkipRetryDays ?? String(resolvedExisting.poBillScheduler.stableSkipRetryDays),
     stockLocationId: source.stockLocationId ?? resolvedExisting.stock.locationId,
     stockLocationName: source.stockLocationName ?? resolvedExisting.stock.locationName,
     stockWarehouseId: source.stockWarehouseId ?? resolvedExisting.stock.warehouseId,
@@ -1144,6 +1165,10 @@ router.post('/settings', validators, async (req: Request, res: Response) => {
         fromDate: req.body.poBillSchedulerFromDate?.trim() || '2026-01-01 00:00:00',
         cronToken: req.body.poBillSchedulerCronToken?.trim() || '',
         useInProcessInterval: req.body.poBillSchedulerUseInProcessInterval === 'on',
+        maxRetryAttempts: Math.max(1, Math.min(20, Number(req.body.poBillSchedulerMaxRetryAttempts || 5))),
+        transientRetryHours: Math.max(1, Math.min(168, Number(req.body.poBillSchedulerTransientRetryHours || 2))),
+        retryBackoffHours: parseRetryBackoffHours(req.body.poBillSchedulerRetryBackoffHours),
+        stableSkipRetryDays: Math.max(1, Math.min(365, Number(req.body.poBillSchedulerStableSkipRetryDays || 14))),
       },
       stock: {
         locationId: req.body.stockLocationId?.trim() || '',

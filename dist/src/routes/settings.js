@@ -95,6 +95,10 @@ const schedulerValidators = [
     (0, express_validator_1.body)('poBillSchedulerFromDate').optional({ values: 'falsy' }).trim(),
     (0, express_validator_1.body)('poBillSchedulerCronToken').optional({ values: 'falsy' }).trim(),
     (0, express_validator_1.body)('poBillSchedulerUseInProcessInterval').optional({ values: 'falsy' }).trim(),
+    (0, express_validator_1.body)('poBillSchedulerMaxRetryAttempts').optional({ values: 'falsy' }).trim(),
+    (0, express_validator_1.body)('poBillSchedulerTransientRetryHours').optional({ values: 'falsy' }).trim(),
+    (0, express_validator_1.body)('poBillSchedulerRetryBackoffHours').optional({ values: 'falsy' }).trim(),
+    (0, express_validator_1.body)('poBillSchedulerStableSkipRetryDays').optional({ values: 'falsy' }).trim(),
 ];
 const stockValidators = [
     (0, express_validator_1.body)('stockLocationId').optional({ values: 'falsy' }).trim(),
@@ -180,6 +184,14 @@ function boolFromSource(source, key, fallback, submitted) {
 function positiveNumberFromSource(source, key, fallback) {
     const parsed = Number(source[key] || '');
     return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+function parseRetryBackoffHours(value) {
+    const parsed = String(value || '')
+        .split(',')
+        .map((item) => Number(item.trim()))
+        .filter((item) => Number.isFinite(item) && item > 0)
+        .slice(0, 10);
+    return parsed.length ? parsed : [12, 24, 48, 96, 168];
 }
 function applyMailPreset(mail, preset) {
     if (preset === 'zoho-587') {
@@ -458,6 +470,10 @@ async function buildFormValues(source, existing, availableFields = []) {
         poBillSchedulerUseInProcessInterval: source.poBillSchedulerUseInProcessInterval === 'on' ||
             (source.poBillSchedulerUseInProcessInterval === undefined &&
                 resolvedExisting.poBillScheduler.useInProcessInterval),
+        poBillSchedulerMaxRetryAttempts: source.poBillSchedulerMaxRetryAttempts ?? String(resolvedExisting.poBillScheduler.maxRetryAttempts),
+        poBillSchedulerTransientRetryHours: source.poBillSchedulerTransientRetryHours ?? String(resolvedExisting.poBillScheduler.transientRetryHours),
+        poBillSchedulerRetryBackoffHours: source.poBillSchedulerRetryBackoffHours ?? resolvedExisting.poBillScheduler.retryBackoffHours.join(', '),
+        poBillSchedulerStableSkipRetryDays: source.poBillSchedulerStableSkipRetryDays ?? String(resolvedExisting.poBillScheduler.stableSkipRetryDays),
         stockLocationId: source.stockLocationId ?? resolvedExisting.stock.locationId,
         stockLocationName: source.stockLocationName ?? resolvedExisting.stock.locationName,
         stockWarehouseId: source.stockWarehouseId ?? resolvedExisting.stock.warehouseId,
@@ -940,6 +956,10 @@ router.post('/settings', validators, async (req, res) => {
                 fromDate: req.body.poBillSchedulerFromDate?.trim() || '2026-01-01 00:00:00',
                 cronToken: req.body.poBillSchedulerCronToken?.trim() || '',
                 useInProcessInterval: req.body.poBillSchedulerUseInProcessInterval === 'on',
+                maxRetryAttempts: Math.max(1, Math.min(20, Number(req.body.poBillSchedulerMaxRetryAttempts || 5))),
+                transientRetryHours: Math.max(1, Math.min(168, Number(req.body.poBillSchedulerTransientRetryHours || 2))),
+                retryBackoffHours: parseRetryBackoffHours(req.body.poBillSchedulerRetryBackoffHours),
+                stableSkipRetryDays: Math.max(1, Math.min(365, Number(req.body.poBillSchedulerStableSkipRetryDays || 14))),
             },
             stock: {
                 locationId: req.body.stockLocationId?.trim() || '',

@@ -82,6 +82,10 @@ export interface PoBillSchedulerConfig {
   fromDate: string;
   cronToken: string;
   useInProcessInterval: boolean;
+  maxRetryAttempts: number;
+  transientRetryHours: number;
+  retryBackoffHours: number[];
+  stableSkipRetryDays: number;
 }
 
 export interface StockConfig {

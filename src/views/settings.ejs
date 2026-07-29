@@ -1020,6 +1020,48 @@
               </div>
             </div>
             <div class="col-12">
+              <div class="rounded-4 border p-3 p-md-4" style="background:linear-gradient(135deg,#f8fafc,#eff6ff)">
+                <div class="d-flex flex-wrap justify-content-between align-items-start gap-2 mb-3">
+                  <div>
+                    <h3 class="h6 mb-1">Document failure retry policy</h3>
+                    <p class="small text-secondary mb-0">Controls when an unchanged failed document becomes eligible for another automatic check.</p>
+                  </div>
+                  <span class="badge rounded-pill text-bg-primary">Recommended defaults</span>
+                </div>
+                <div class="row g-3">
+                  <div class="col-md-3">
+                    <label class="form-label" for="poBillSchedulerMaxRetryAttempts">Maximum Attempts</label>
+                    <input id="poBillSchedulerMaxRetryAttempts" type="number" min="1" max="20" class="form-control" name="poBillSchedulerMaxRetryAttempts" value="<%= form.poBillSchedulerMaxRetryAttempts %>" />
+                    <div class="form-text">Stop automatic retries after this many attempts.</div>
+                  </div>
+                  <div class="col-md-3">
+                    <label class="form-label" for="poBillSchedulerTransientRetryHours">OCR/API Retry</label>
+                    <div class="input-group">
+                      <input id="poBillSchedulerTransientRetryHours" type="number" min="1" max="168" class="form-control" name="poBillSchedulerTransientRetryHours" value="<%= form.poBillSchedulerTransientRetryHours %>" />
+                      <span class="input-group-text">hours</span>
+                    </div>
+                    <div class="form-text">For timeouts, OCR, network and API errors.</div>
+                  </div>
+                  <div class="col-md-3">
+                    <label class="form-label" for="poBillSchedulerStableSkipRetryDays">Non-bill Recheck</label>
+                    <div class="input-group">
+                      <input id="poBillSchedulerStableSkipRetryDays" type="number" min="1" max="365" class="form-control" name="poBillSchedulerStableSkipRetryDays" value="<%= form.poBillSchedulerStableSkipRetryDays %>" />
+                      <span class="input-group-text">days</span>
+                    </div>
+                    <div class="form-text">For Job Summary or non-vendor documents.</div>
+                  </div>
+                  <div class="col-md-3">
+                    <label class="form-label" for="poBillSchedulerRetryBackoffHours">PO Match Backoff</label>
+                    <input id="poBillSchedulerRetryBackoffHours" type="text" class="form-control font-monospace" name="poBillSchedulerRetryBackoffHours" value="<%= form.poBillSchedulerRetryBackoffHours %>" placeholder="12, 24, 48, 96, 168" />
+                    <div class="form-text">Hours after consecutive failed match attempts.</div>
+                  </div>
+                </div>
+                <div class="alert alert-warning border-0 small mt-3 mb-0">
+                  Recommended: scheduler every <strong>7 minutes</strong>; OCR/API retry after <strong>2 hours</strong>; PO matching backoff <strong>12, 24, 48, 96, 168 hours</strong>; non-bills every <strong>14 days</strong>. Manual “Check now” can still run immediately.
+                </div>
+              </div>
+            </div>
+            <div class="col-12">
               <div class="alert alert-light border small mb-0" role="alert">
                 Cron URL: <code><%= `${appBaseUrl}/jobs/run-po-bill-scheduler?token=${form.poBillSchedulerCronToken || form.schedulerCronToken || 'set-a-token-in-settings'}` %></code>
               </div>
