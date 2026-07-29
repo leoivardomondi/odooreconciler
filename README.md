@@ -72,7 +72,7 @@ Production MySQL example:
 ```env
 PORT=3000
 NODE_ENV=production
-APP_BASE_URL=https://reconciler.flowcode.co.ke/
+APP_BASE_URL=
 DB_CLIENT=mysql
 DB_HOST=127.0.0.1
 DB_PORT=3306
@@ -132,7 +132,7 @@ ODOO_WEBHOOK_TOKEN=MY_SHARED_SECRET
 Use this Odoo webhook URL:
 
 ```text
-https://reconciler.flowcode.co.ke/jobs/attachment-uploaded?token=MY_SHARED_SECRET
+https://domain.com/jobs/attachment-uploaded?token=MY_SHARED_SECRET
 ```
 
 Odoo Automated Action setup:
@@ -140,7 +140,7 @@ Odoo Automated Action setup:
 - Model: `ir.attachment`
 - Trigger: On Creation
 - Action: Send Webhook Notification
-- URL: `https://reconciler.flowcode.co.ke/jobs/attachment-uploaded?token=MY_SHARED_SECRET`
+- URL: `https://domain.com/jobs/attachment-uploaded?token=MY_SHARED_SECRET`
 - Fields to include:
   - `id`
   - `res_id`
