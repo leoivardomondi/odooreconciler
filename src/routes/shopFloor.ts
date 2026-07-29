@@ -1,6 +1,6 @@
 import { Request, Response, Router } from 'express';
 import { randomUUID } from 'crypto';
-import { createBoardIntakeQueueEntry, getApprovedAuthUsers, getRecentBoardIntakeQueueEntries, getSettings, getShopFloorFeatureFlags, saveShopFloorFeatureFlags, updateBoardIntakeQueueEntry, upsertApprovedAuthUser } from '../models/repositories';
+import { createBoardIntakeQueueEntry, getApprovedAuthUsers, getRecentBoardIntakeQueueEntries, getSettings, getShopFloorFeatureFlags, saveShopFloorFeatureFlags, upsertApprovedAuthUser } from '../models/repositories';
 import { ShopFloorFeatureFlags, ShopFloorFeatureKey } from '../models/types';
 import { OdooClient } from '../services/odooClient';
 import { buildPayrollAdvanceRecords } from '../services/payrollBridgeService';
@@ -12,7 +12,8 @@ import { env } from '../utils/env';
 import { renderWeeklyShopFloorReportPdf, sendWeeklyShopFloorReport } from '../services/weeklyShopFloorReportService';
 import { getConfirmedMoQueueSchedule, getMoOverdueState } from '../services/moOverdueService';
 import { isBoardProductName } from '../services/boardProductClassifier';
-import { getStockMirrorForPage, recordExactStockQuantity, recordOptimisticStockAddition, refreshStockMirror } from '../services/stockMirrorService';
+import { getStockMirrorForPage, recordOptimisticStockAddition, refreshStockMirror } from '../services/stockMirrorService';
+import { syncBoardIntakeEntry } from '../services/boardIntakeSyncService';
 import { syncShopFloorOperatorAccess } from '../services/shopFloorOperatorAccessSyncService';
 import {
   getShopFloorIncidents,
@@ -1948,11 +1949,8 @@ router.post('/shop-floor/board-intake', async (req: Request, res: Response) => {
 
     void (async () => {
       try {
-        await updateBoardIntakeQueueEntry(optimisticId, { status: 'processing' });
+        const syncResult = await syncBoardIntakeEntry(optimisticId);
         const settings = await getSettings();
-        const client = new OdooClient(settings.odoo);
-        const stockResult = await client.addBoardsToStock({ productId, quantity: qty });
-        await recordExactStockQuantity(productId, productName, stockResult.newQty);
         const reportDate = new Intl.DateTimeFormat('en-CA', { timeZone: env.APP_TIMEZONE || 'Africa/Nairobi', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
         const safeCustomerName = escapeHtml(customerName);
         const safeProductName = escapeHtml(productName);
@@ -1963,26 +1961,15 @@ router.post('/shop-floor/board-intake', async (req: Request, res: Response) => {
           subject: `${subjectCustomerName} - Board Log - ${reportDate}`,
           html: `<p><strong>Board log completed</strong></p><p>Client: ${safeCustomerName}<br>Board: ${safeProductName}<br>Quantity: ${qty}<br>Date: ${reportDate}<br>Logged by: ${safeActorEmail}</p>`,
         }).catch((mailError) => logEvent('error', 'Board log email to Sharon failed', { customerName, productName, quantity: qty, actor: actorName, actorEmail: req.authUser?.email, error: mailError instanceof Error ? mailError.message : String(mailError) }));
-        const matchingMOs = await client.findMOsForBoardIntake({ productId, partnerId });
-        let reserveResult: { reserved: number[]; failed: number[] } = { reserved: [], failed: [] };
-        if (matchingMOs.length) {
-          await Promise.all(matchingMOs.map((mo) => client.postModelChatterMessage('mrp.production', mo.moId, `<p><strong>Boards logged in Shop Flow</strong><br/>User: ${safeActorEmail}<br/>Client: ${safeCustomerName}<br/>Board: ${safeProductName}<br/>Quantity: ${qty}<br/>Date: ${reportDate}</p>`).catch(() => null)));
-          reserveResult = await client.reserveStockOnMOs(matchingMOs.map((mo) => mo.moId));
-        }
         const optimisticIndex = optimisticBoardIntakes.findIndex((entry) => entry.id === optimisticId);
         if (optimisticIndex >= 0) optimisticBoardIntakes.splice(optimisticIndex, 1);
         shopFloorCache.clearPrefix('shop-floor-dashboard:');
-        void refreshStockMirror();
-        await updateBoardIntakeQueueEntry(optimisticId, { status: 'synced', stockQuantity: stockResult.newQty });
         await logEvent('info', 'Board intake background MO reservation completed', {
           productId, partnerId, quantity: qty,
-          matchingMoCount: matchingMOs.length,
-          reservedCount: reserveResult.reserved.length,
-          failedCount: reserveResult.failed.length,
+          matchingMoCount: syncResult.matchingMoCount || 0,
         });
       } catch (backgroundError) {
         const message = backgroundError instanceof Error ? backgroundError.message : String(backgroundError);
-        await updateBoardIntakeQueueEntry(optimisticId, { status: 'failed', errorMessage: message }).catch(() => undefined);
         await logEvent('error', 'Board intake background MO reservation failed', {
           productId, partnerId, quantity: qty,
           error: message,
@@ -2046,6 +2033,20 @@ router.get('/shop-floor/receipts', async (req: Request, res: Response) => {
     res.render('shop-floor-receipts', { pageTitle: 'Board Receipts', appName: env.APP_NAME, receipts, authUser: req.authUser, csrfToken: req.csrfToken || null, message: req.query.message || null, error: req.query.error || null });
   } catch (error) {
     res.status(500).render('error', { pageTitle: 'Board Receipts', errorMessage: error instanceof Error ? error.message : 'Could not load receipts.', details: [], csrfToken: req.csrfToken || null });
+  }
+});
+
+router.post('/shop-floor/board-intake/:id/retry', async (req: Request, res: Response) => {
+  if (!req.authUser) {
+    res.redirect('/login');
+    return;
+  }
+  try {
+    await syncBoardIntakeEntry(String(req.params.id || ''));
+    shopFloorCache.clearPrefix('shop-floor-dashboard:');
+    res.redirect('/shop-floor/boards?message=' + encodeURIComponent('Board log synchronized with Odoo successfully.'));
+  } catch (error) {
+    res.redirect('/shop-floor/boards?error=' + encodeURIComponent(error instanceof Error ? error.message : 'Board log retry failed.'));
   }
 });
 

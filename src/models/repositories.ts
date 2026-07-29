@@ -3601,13 +3601,59 @@ export async function createBoardIntakeQueueEntry(input: {
 }
 
 export async function updateBoardIntakeQueueEntry(id: string, input: { status: 'processing' | 'synced' | 'failed'; stockQuantity?: number; errorMessage?: string }) {
-  await execute(`UPDATE board_intake_queue SET status = ?, odoo_stock_quantity = COALESCE(?, odoo_stock_quantity), error_message = ?, synced_at = CASE WHEN ? = 'synced' THEN CURRENT_TIMESTAMP ELSE synced_at END, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-    [input.status, input.stockQuantity ?? null, input.errorMessage || null, input.status, id]);
+  const retryDelayMinutes = input.status === 'failed' ? 2 : 0;
+  await execute(`UPDATE board_intake_queue SET status = ?, odoo_stock_quantity = COALESCE(?, odoo_stock_quantity), error_message = ?,
+    synced_at = CASE WHEN ? = 'synced' THEN CURRENT_TIMESTAMP ELSE synced_at END,
+    next_retry_at = CASE WHEN ? = 'failed' THEN ${getDatabaseDialect() === 'mysql' ? 'DATE_ADD(CURRENT_TIMESTAMP, INTERVAL ? MINUTE)' : "datetime(CURRENT_TIMESTAMP, '+' || ? || ' minutes')"} ELSE NULL END,
+    updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+    [input.status, input.stockQuantity ?? null, input.errorMessage || null, input.status, input.status, retryDelayMinutes, id]);
 }
 
 export async function getRecentBoardIntakeQueueEntries(limit = 12) {
-  return queryAll<any>(`SELECT id, product_name, customer_name, quantity, status, error_message, created_at, synced_at
+  return queryAll<any>(`SELECT id, product_name, customer_name, quantity, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at
     FROM board_intake_queue ORDER BY created_at DESC LIMIT ?`, [Math.max(1, Math.min(50, limit))]);
+}
+
+export interface BoardIntakeQueueEntry {
+  [key: string]: unknown;
+  id: string;
+  product_id: number;
+  product_name: string;
+  partner_id: number;
+  customer_name: string;
+  quantity: number;
+  actor_name: string;
+  actor_email: string | null;
+  status: 'pending' | 'processing' | 'synced' | 'failed';
+  odoo_stock_quantity: number | null;
+  retry_count: number;
+  error_message: string | null;
+}
+
+export async function getBoardIntakeQueueEntry(id: string) {
+  return queryOne<BoardIntakeQueueEntry>('SELECT * FROM board_intake_queue WHERE id = ?', [id]);
+}
+
+export async function claimBoardIntakeQueueEntry(id: string) {
+  const result = await execute(`UPDATE board_intake_queue
+    SET status = 'processing', retry_count = retry_count + 1, last_attempt_at = CURRENT_TIMESTAMP,
+        next_retry_at = NULL, error_message = NULL, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ? AND status IN ('pending', 'failed')`, [id]);
+  return result.affectedRows > 0;
+}
+
+export async function getDueBoardIntakeQueueEntries(limit = 5) {
+  return queryAll<BoardIntakeQueueEntry>(`SELECT * FROM board_intake_queue
+    WHERE (status = 'pending')
+       OR (status = 'failed' AND (next_retry_at IS NULL OR next_retry_at <= CURRENT_TIMESTAMP))
+       OR (status = 'processing' AND updated_at < ${getDatabaseDialect() === 'mysql' ? 'DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 10 MINUTE)' : "datetime(CURRENT_TIMESTAMP, '-10 minutes')"})
+    ORDER BY created_at ASC LIMIT ?`, [Math.max(1, Math.min(20, limit))]);
+}
+
+export async function releaseStaleBoardIntakeQueueEntry(id: string) {
+  await execute(`UPDATE board_intake_queue SET status = 'failed', next_retry_at = CURRENT_TIMESTAMP,
+    error_message = COALESCE(error_message, 'Previous synchronization attempt was interrupted.'), updated_at = CURRENT_TIMESTAMP
+    WHERE id = ? AND status = 'processing'`, [id]);
 }
 
 export async function getBoardIntakeLoggingReport(startDate: string, endDate: string, reportingStartDate?: string) {

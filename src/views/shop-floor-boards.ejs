@@ -324,7 +324,20 @@
           <% recentIntakes.forEach((item) => { %>
             <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 border rounded-3 px-3 py-2">
               <div><strong><%= item.quantity %> × <%= item.product_name %></strong><div class="small text-muted"><%= item.customer_name %> · <%= formatDateTime(item.created_at) %></div></div>
-              <span class="badge rounded-pill <%= item.status === 'synced' ? 'bg-success-subtle text-success' : item.status === 'failed' ? 'bg-danger-subtle text-danger' : 'bg-warning-subtle text-warning-emphasis' %>" title="<%= item.error_message || '' %>"><%= item.status === 'synced' ? 'Synced to Odoo' : item.status === 'failed' ? 'Sync failed' : 'Syncing' %></span>
+              <div class="d-flex align-items-center gap-2">
+                <div class="text-end">
+                  <span class="badge rounded-pill <%= item.status === 'synced' ? 'bg-success-subtle text-success' : item.status === 'failed' ? 'bg-danger-subtle text-danger' : 'bg-warning-subtle text-warning-emphasis' %>" title="<%= item.error_message || '' %>"><%= item.status === 'synced' ? 'Synced to Odoo' : item.status === 'failed' ? 'Sync failed' : 'Syncing' %></span>
+                  <% if (item.status === 'failed' && item.next_retry_at) { %>
+                    <div class="small text-muted mt-1">Automatic retry scheduled · attempt <%= item.retry_count || 1 %></div>
+                  <% } %>
+                </div>
+                <% if (item.status === 'failed') { %>
+                  <form method="post" action="/shop-floor/board-intake/<%= encodeURIComponent(item.id) %>/retry" data-disable-submit="true" data-loading-message="Retrying Odoo synchronization...">
+                    <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>">
+                    <button type="submit" class="btn btn-sm btn-outline-primary rounded-pill">Retry now</button>
+                  </form>
+                <% } %>
+              </div>
             </div>
           <% }) %>
         </div>

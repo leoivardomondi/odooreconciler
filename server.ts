@@ -10,6 +10,7 @@ import { startEmailAutomationInterval } from './src/services/emailAutomationServ
 import { startStockMirrorInterval } from './src/services/stockMirrorService';
 import { startUserProfileSyncInterval } from './src/services/userProfileSyncService';
 import { startShopFloorOperatorAccessSyncInterval } from './src/services/shopFloorOperatorAccessSyncService';
+import { startBoardIntakeSyncInterval } from './src/services/boardIntakeSyncService';
 import { markStartupFailed, markStartupReady, markStartupStep } from './src/services/startupState';
 import { storageDirectoryPath } from './src/utils/paths';
 
@@ -179,6 +180,7 @@ export async function startServer() {
       startStockMirrorInterval();
       startUserProfileSyncInterval();
       startShopFloorOperatorAccessSyncInterval();
+      startBoardIntakeSyncInterval();
       markStartupReady();
       console.log('[startup] Application initialization completed successfully.');
       writeStartupLog('Application initialization completed successfully.');

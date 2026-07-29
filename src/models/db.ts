@@ -769,6 +769,9 @@ async function ensureSqliteDatabase(config: RuntimeDatabaseConfig) {
       actor_email TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       odoo_stock_quantity REAL,
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      last_attempt_at TEXT,
+      next_retry_at TEXT,
       error_message TEXT,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       synced_at TEXT,
@@ -839,6 +842,9 @@ async function ensureSqliteDatabase(config: RuntimeDatabaseConfig) {
   await ensureColumnSqlite(db, 'po_bill_processed_documents', 'invoice_vendor', 'TEXT');
   await ensureColumnSqlite(db, 'po_bill_processed_documents', 'invoice_total', 'REAL');
   await ensureColumnSqlite(db, 'mpesa_transactions', 'ai_notes', 'TEXT');
+  await ensureColumnSqlite(db, 'board_intake_queue', 'retry_count', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumnSqlite(db, 'board_intake_queue', 'last_attempt_at', 'TEXT');
+  await ensureColumnSqlite(db, 'board_intake_queue', 'next_retry_at', 'TEXT');
 }
 
 async function ensureMysqlDatabase(config: RuntimeDatabaseConfig) {
@@ -1283,6 +1289,9 @@ async function ensureMysqlDatabase(config: RuntimeDatabaseConfig) {
       actor_email VARCHAR(255) NULL,
       status VARCHAR(32) NOT NULL DEFAULT 'pending',
       odoo_stock_quantity DECIMAL(16,4) NULL,
+      retry_count INT NOT NULL DEFAULT 0,
+      last_attempt_at DATETIME NULL,
+      next_retry_at DATETIME NULL,
       error_message TEXT NULL,
       created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       synced_at DATETIME NULL,
@@ -1305,6 +1314,9 @@ async function ensureMysqlDatabase(config: RuntimeDatabaseConfig) {
   await ensureColumnMysql(pool, 'scheduler_runtime_state', 'last_error_run_id', 'VARCHAR(64) NULL', config.mysqlDatabase);
   await ensureColumnMysql(pool, 'scheduler_runtime_state', 'last_error_message', 'TEXT NULL', config.mysqlDatabase);
   await ensureColumnMysql(pool, 'mpesa_transactions', 'ai_notes', 'LONGTEXT NULL', config.mysqlDatabase);
+  await ensureColumnMysql(pool, 'board_intake_queue', 'retry_count', 'INT NOT NULL DEFAULT 0', config.mysqlDatabase);
+  await ensureColumnMysql(pool, 'board_intake_queue', 'last_attempt_at', 'DATETIME NULL', config.mysqlDatabase);
+  await ensureColumnMysql(pool, 'board_intake_queue', 'next_retry_at', 'DATETIME NULL', config.mysqlDatabase);
 }
 
 export async function ensureDatabase() {
