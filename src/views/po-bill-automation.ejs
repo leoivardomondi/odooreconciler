@@ -66,6 +66,33 @@
           </div>
         </div>
 
+        <div class="rounded-3 p-3 mb-4" style="background:#fefce8;border:1px solid #fde68a">
+          <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3">
+            <div>
+              <h3 class="h6 mb-1">Failure retry assessment</h3>
+              <p class="small text-secondary mb-0">Calculated from stored PO scheduler run history, not just the current queue.</p>
+            </div>
+            <span class="badge text-bg-<%= queueDiagnostics.historical.repeatsUnder12Percent >= 25 ? 'danger' : 'success' %>">
+              <%= queueDiagnostics.historical.repeatsUnder12Percent %>% retried inside 12 hours
+            </span>
+          </div>
+          <div class="row g-3">
+            <div class="col-6 col-lg-3"><div class="small text-secondary">Failed/skipped outcomes</div><strong><%= queueDiagnostics.historical.failureOutcomes %></strong></div>
+            <div class="col-6 col-lg-3"><div class="small text-secondary">Documents retried</div><strong><%= queueDiagnostics.historical.retriedDocuments %></strong></div>
+            <div class="col-6 col-lg-3"><div class="small text-secondary">Median retry gap</div><strong><%= queueDiagnostics.historical.medianRetryHours %> hours</strong></div>
+            <div class="col-6 col-lg-3"><div class="small text-secondary">Shortest retry gap</div><strong><%= queueDiagnostics.historical.minimumRetryMinutes %> minutes</strong></div>
+          </div>
+          <% const historicalReasons = Object.entries(queueDiagnostics.historical.reasonCounts).sort((a,b) => b[1]-a[1]); %>
+          <% if (historicalReasons.length) { %>
+            <hr class="my-3">
+            <div class="d-flex flex-wrap gap-2">
+              <% historicalReasons.forEach(([reason, count]) => { %>
+                <span class="badge rounded-pill text-bg-light border"><%= reason %>: <%= count %></span>
+              <% }) %>
+            </div>
+          <% } %>
+        </div>
+
         <div class="table-responsive">
           <table class="table table-sm align-middle mb-0">
             <thead><tr><th>Document</th><th>Queue state</th><th>Best reason</th><th>Attempts</th><th>Next check</th><th></th></tr></thead>

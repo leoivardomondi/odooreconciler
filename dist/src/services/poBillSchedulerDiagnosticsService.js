@@ -29,6 +29,9 @@ function reasonDetails(summaryValue) {
     if (/already billed|duplicate/.test(lower)) {
         return { category: 'Possible duplicate', reason: summary };
     }
+    if (/chatter evidence|processed marker|verification marker/.test(lower)) {
+        return { category: 'Odoo verification marker missing', reason: summary };
+    }
     if (/vendor|supplier/.test(lower)) {
         return { category: 'Vendor mismatch', reason: summary };
     }
@@ -115,6 +118,50 @@ function outcomeReasons(runs) {
     }
     return reasons;
 }
+function historicalFailureAssessment(runs) {
+    const histories = new Map();
+    const reasonCounts = {};
+    let failureOutcomes = 0;
+    for (const run of runs) {
+        const outcomes = Array.isArray(run.context.documentOutcomes) ? run.context.documentOutcomes : [];
+        for (const rawOutcome of outcomes) {
+            if (!rawOutcome || typeof rawOutcome !== 'object')
+                continue;
+            const outcome = rawOutcome;
+            if (String(outcome.status || '') === 'processed')
+                continue;
+            const attachmentId = Number(outcome.attachmentId);
+            if (attachmentId && run.startedAt) {
+                if (!histories.has(attachmentId))
+                    histories.set(attachmentId, []);
+                histories.get(attachmentId).push(new Date(run.startedAt));
+            }
+            const detail = String(outcome.summary || '').trim();
+            const category = reasonDetails(detail).category;
+            reasonCounts[category] = (reasonCounts[category] || 0) + 1;
+            failureOutcomes += 1;
+        }
+    }
+    const intervalsHours = [];
+    for (const dates of histories.values()) {
+        dates.sort((a, b) => a.getTime() - b.getTime());
+        for (let index = 1; index < dates.length; index += 1) {
+            intervalsHours.push((dates[index].getTime() - dates[index - 1].getTime()) / 3_600_000);
+        }
+    }
+    const orderedIntervals = intervalsHours.sort((a, b) => a - b);
+    const under12Hours = orderedIntervals.filter((hours) => hours < 12).length;
+    return {
+        failureOutcomes,
+        retriedDocuments: [...histories.values()].filter((dates) => dates.length > 1).length,
+        repeatIntervals: orderedIntervals.length,
+        repeatsUnder12Hours: under12Hours,
+        repeatsUnder12Percent: orderedIntervals.length ? Math.round((under12Hours / orderedIntervals.length) * 1000) / 10 : 0,
+        medianRetryHours: Math.round(percentile(orderedIntervals, 0.5) * 10) / 10,
+        minimumRetryMinutes: orderedIntervals.length ? Math.max(1, Math.round(orderedIntervals[0] * 60)) : 0,
+        reasonCounts,
+    };
+}
 async function buildPoBillSchedulerDiagnostics(documents) {
     const [settings, recentRuns] = await Promise.all([(0, repositories_1.getSettings)(), (0, repositories_1.getRecentSchedulerRuns)(5000)]);
     const runs = poBillRuns(recentRuns);
@@ -124,6 +171,7 @@ async function buildPoBillSchedulerDiagnostics(documents) {
         return describePoBillQueueDocument(detailedReason ? { ...document, poBillSummary: detailedReason } : document);
     });
     const attention = queue.filter((item) => item.state !== 'processed');
+    const historical = historicalFailureAssessment(runs);
     const completedDurations = runs
         .filter((run) => run.startedAt && run.finishedAt && run.scannedCount > 0)
         .map((run) => Math.max(0, (Date.parse(run.finishedAt) - Date.parse(run.startedAt)) / 1000))
@@ -153,6 +201,9 @@ async function buildPoBillSchedulerDiagnostics(documents) {
     if ((reasonCounts['No safe PO match'] || 0) > 0) {
         recommendations.push('Review supplier names, invoice totals, invoice dates and PO references for “No safe PO match” documents before forcing a match.');
     }
+    if (historical.repeatsUnder12Percent >= 25) {
+        recommendations.push(`${historical.repeatsUnder12Percent}% of historical repeat checks happened within 12 hours. Avoid repeated manual checks until the document or matching PO data changes; preserve the 12/24/48-hour retry backoff.`);
+    }
     return {
         queue: attention.sort((a, b) => {
             const order = { new: 0, due: 1, cooldown: 2, exhausted: 3, stable_skip: 4, processed: 5 };
@@ -170,5 +221,6 @@ async function buildPoBillSchedulerDiagnostics(documents) {
         observedRuns: completedDurations.length,
         p75DurationSeconds: Math.ceil(p75Seconds),
         suggestedIntervalMinutes,
+        historical,
     };
 }
