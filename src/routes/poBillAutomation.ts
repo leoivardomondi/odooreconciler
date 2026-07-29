@@ -5,10 +5,12 @@ import { PoBillAutomationResult } from '../models/types';
 import { OdooClient } from '../services/odooClient';
 import {
   getRecentDocumentPdfsPage,
+  getRecentDocumentPdfs,
   isSupportedPoBillMimetype,
   RecentDocumentPdfsPage,
   runPoBillAutomation,
 } from '../services/poBillAutomationService';
+import { buildPoBillSchedulerDiagnostics } from '../services/poBillSchedulerDiagnosticsService';
 import { runPoBillSchedulerCycle } from '../services/schedulerService';
 import { hasOdooConfiguration, sanitizeBaseUrl } from '../utils/helpers';
 
@@ -67,14 +69,20 @@ async function renderPage(
 ) {
   const requestedPdfPage = parsePositiveInteger(options.form?.pdfPage, 1);
   let recentPdfsPage = emptyRecentPdfsPage(requestedPdfPage);
+  let queueDiagnostics: Awaited<ReturnType<typeof buildPoBillSchedulerDiagnostics>> | null = null;
   const recentPdfsLoaded = Boolean(options.loadRecentPdfs);
 
   if (recentPdfsLoaded) {
     const { client } = await buildClient();
-    recentPdfsPage = await getRecentDocumentPdfsPage(client, {
-      page: requestedPdfPage,
-      pageSize: RECENT_PDFS_PAGE_SIZE,
-    }).catch(() => emptyRecentPdfsPage(requestedPdfPage));
+    const [pageResult, queueDocuments] = await Promise.all([
+      getRecentDocumentPdfsPage(client, {
+        page: requestedPdfPage,
+        pageSize: RECENT_PDFS_PAGE_SIZE,
+      }).catch(() => emptyRecentPdfsPage(requestedPdfPage)),
+      getRecentDocumentPdfs(client, 250).catch(() => []),
+    ]);
+    recentPdfsPage = pageResult;
+    queueDiagnostics = await buildPoBillSchedulerDiagnostics(queueDocuments);
   }
 
   res.render('po-bill-automation', {
@@ -83,6 +91,7 @@ async function renderPage(
     recentPdfs: recentPdfsPage.items,
     recentPdfsPage,
     recentPdfsLoaded,
+    queueDiagnostics,
     result: options.result || null,
     form: {
       attachmentId: options.form?.attachmentId || '',
@@ -117,6 +126,7 @@ router.get('/po-bill-automation', async (req, res) => {
       recentPdfs: [],
       recentPdfsPage: emptyRecentPdfsPage(requestedPdfPage),
       recentPdfsLoaded: false,
+      queueDiagnostics: null,
       result: null,
       form: {
         attachmentId: String(req.query.attachmentId || ''),

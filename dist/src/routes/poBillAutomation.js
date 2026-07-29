@@ -8,6 +8,7 @@ const express_1 = require("express");
 const repositories_1 = require("../models/repositories");
 const odooClient_1 = require("../services/odooClient");
 const poBillAutomationService_1 = require("../services/poBillAutomationService");
+const poBillSchedulerDiagnosticsService_1 = require("../services/poBillSchedulerDiagnosticsService");
 const schedulerService_1 = require("../services/schedulerService");
 const helpers_1 = require("../utils/helpers");
 const router = (0, express_1.Router)();
@@ -46,13 +47,19 @@ async function buildClient() {
 async function renderPage(res, options) {
     const requestedPdfPage = parsePositiveInteger(options.form?.pdfPage, 1);
     let recentPdfsPage = emptyRecentPdfsPage(requestedPdfPage);
+    let queueDiagnostics = null;
     const recentPdfsLoaded = Boolean(options.loadRecentPdfs);
     if (recentPdfsLoaded) {
         const { client } = await buildClient();
-        recentPdfsPage = await (0, poBillAutomationService_1.getRecentDocumentPdfsPage)(client, {
-            page: requestedPdfPage,
-            pageSize: RECENT_PDFS_PAGE_SIZE,
-        }).catch(() => emptyRecentPdfsPage(requestedPdfPage));
+        const [pageResult, queueDocuments] = await Promise.all([
+            (0, poBillAutomationService_1.getRecentDocumentPdfsPage)(client, {
+                page: requestedPdfPage,
+                pageSize: RECENT_PDFS_PAGE_SIZE,
+            }).catch(() => emptyRecentPdfsPage(requestedPdfPage)),
+            (0, poBillAutomationService_1.getRecentDocumentPdfs)(client, 250).catch(() => []),
+        ]);
+        recentPdfsPage = pageResult;
+        queueDiagnostics = await (0, poBillSchedulerDiagnosticsService_1.buildPoBillSchedulerDiagnostics)(queueDocuments);
     }
     res.render('po-bill-automation', {
         pageTitle: 'PO Bill Automation',
@@ -60,6 +67,7 @@ async function renderPage(res, options) {
         recentPdfs: recentPdfsPage.items,
         recentPdfsPage,
         recentPdfsLoaded,
+        queueDiagnostics,
         result: options.result || null,
         form: {
             attachmentId: options.form?.attachmentId || '',
@@ -92,6 +100,7 @@ router.get('/po-bill-automation', async (req, res) => {
             recentPdfs: [],
             recentPdfsPage: emptyRecentPdfsPage(requestedPdfPage),
             recentPdfsLoaded: false,
+            queueDiagnostics: null,
             result: null,
             form: {
                 attachmentId: String(req.query.attachmentId || ''),

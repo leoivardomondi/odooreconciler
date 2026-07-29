@@ -20,6 +20,77 @@
 
   <%- include('partials/alerts', { status, validationErrors: [] }) %>
 
+  <% if (queueDiagnostics) { %>
+    <section class="card shadow-sm border-0 app-card mb-4">
+      <div class="card-body p-4">
+        <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
+          <div>
+            <p class="eyebrow mb-1">Scheduler recovery</p>
+            <h2 class="h4 mb-1">Documents still awaiting attention</h2>
+            <p class="text-secondary mb-0">Shows up to 250 Finance documents, including files never checked, waiting for recheck, or stopped after repeated failures.</p>
+          </div>
+          <a class="btn btn-outline-primary" href="/settings#po-bill-scheduler-settings">Adjust scheduler interval</a>
+        </div>
+
+        <div class="row g-3 mb-4">
+          <div class="col-6 col-md-2"><div class="border rounded-3 p-3 h-100"><div class="small text-secondary">Not checked</div><div class="h3 mb-0"><%= queueDiagnostics.counts.new %></div></div></div>
+          <div class="col-6 col-md-2"><div class="border rounded-3 p-3 h-100"><div class="small text-secondary">Due again</div><div class="h3 mb-0 text-primary"><%= queueDiagnostics.counts.due %></div></div></div>
+          <div class="col-6 col-md-2"><div class="border rounded-3 p-3 h-100"><div class="small text-secondary">Cooling down</div><div class="h3 mb-0 text-warning"><%= queueDiagnostics.counts.cooldown %></div></div></div>
+          <div class="col-6 col-md-2"><div class="border rounded-3 p-3 h-100"><div class="small text-secondary">Retry limit</div><div class="h3 mb-0 text-danger"><%= queueDiagnostics.counts.exhausted %></div></div></div>
+          <div class="col-6 col-md-2"><div class="border rounded-3 p-3 h-100"><div class="small text-secondary">Non-bills</div><div class="h3 mb-0"><%= queueDiagnostics.counts.stable_skip %></div></div></div>
+          <div class="col-6 col-md-2"><div class="border rounded-3 p-3 h-100"><div class="small text-secondary">Completed</div><div class="h3 mb-0 text-success"><%= queueDiagnostics.counts.processed %></div></div></div>
+        </div>
+
+        <div class="row g-3 mb-4">
+          <div class="col-lg-7">
+            <div class="rounded-3 p-3 h-100" style="background:#f8fafc;border:1px solid #e2e8f0">
+              <h3 class="h6 mb-2">Interval assessment</h3>
+              <div class="small text-secondary mb-2">
+                Current: <strong><%= queueDiagnostics.configuredIntervalMinutes %> minutes</strong> &middot; Suggested: <strong><%= queueDiagnostics.suggestedIntervalMinutes %> minutes</strong>
+                <% if (queueDiagnostics.observedRuns) { %> &middot; 75th percentile run: <strong><%= queueDiagnostics.p75DurationSeconds %> seconds</strong><% } %>
+              </div>
+              <ul class="small mb-0 ps-3">
+                <% queueDiagnostics.recommendations.forEach((recommendation) => { %><li class="mb-1"><%= recommendation %></li><% }) %>
+              </ul>
+            </div>
+          </div>
+          <div class="col-lg-5">
+            <div class="rounded-3 p-3 h-100" style="background:#fff7ed;border:1px solid #fed7aa">
+              <h3 class="h6 mb-2">Most likely failure reasons</h3>
+              <% const failureReasonEntries = Object.entries(queueDiagnostics.reasonCounts).sort((a,b) => b[1]-a[1]); %>
+              <% if (!failureReasonEntries.length) { %><p class="small text-secondary mb-0">No unresolved failure reasons were found.</p><% } %>
+              <% failureReasonEntries.slice(0, 6).forEach(([reason, count]) => { %>
+                <div class="d-flex justify-content-between small py-1"><span><%= reason %></span><strong><%= count %></strong></div>
+              <% }) %>
+            </div>
+          </div>
+        </div>
+
+        <div class="table-responsive">
+          <table class="table table-sm align-middle mb-0">
+            <thead><tr><th>Document</th><th>Queue state</th><th>Best reason</th><th>Attempts</th><th>Next check</th><th></th></tr></thead>
+            <tbody>
+              <% if (!queueDiagnostics.queue.length) { %><tr><td colspan="6" class="text-secondary py-3">No documents are waiting for scheduler attention.</td></tr><% } %>
+              <% queueDiagnostics.queue.slice(0, 50).forEach((item) => { const pdf = item.attachment; %>
+                <tr>
+                  <td><strong><%= pdf.name %></strong><div class="small text-secondary">Attachment <%= pdf.id %> &middot; <%= formatDateTime(pdf.write_date || pdf.create_date) %></div></td>
+                  <td><span class="badge text-bg-<%= item.state === 'new' ? 'secondary' : item.state === 'due' ? 'primary' : item.state === 'cooldown' ? 'warning' : item.state === 'exhausted' ? 'danger' : 'info' %>"><%= item.label %></span></td>
+                  <td><strong class="small"><%= item.reasonCategory %></strong><div class="small text-secondary" style="max-width:30rem"><%= item.reason %></div></td>
+                  <td><%= item.attemptCount %></td>
+                  <td><%= item.retryAt ? formatDateTime(item.retryAt) : (item.state === 'new' || item.state === 'due' ? 'Next scheduler run' : 'Manual review') %></td>
+                  <td class="text-end">
+                    <a class="btn btn-sm btn-outline-secondary" href="/po-bill-automation/attachments/<%= pdf.id %>/preview" target="_blank" rel="noopener">Preview</a>
+                    <a class="btn btn-sm btn-outline-primary" href="/po-bill-automation?loadPdfs=1&attachmentId=<%= pdf.id %>">Check now</a>
+                  </td>
+                </tr>
+              <% }) %>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  <% } %>
+
   <div class="row g-4">
     <div class="col-lg-5">
       <div class="card shadow-sm border-0 app-card">
