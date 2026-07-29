@@ -1,8 +1,9 @@
 # Dependencies
 node_modules/
 
-# Build & Dist Outputs
-dist/
+# Build Outputs
+# dist/ is intentionally committed because the cPanel Passenger runtime loads
+# dist/server.js and does not reliably compile TypeScript during deployment.
 dist.zip
 output/
 cpanel-upload-*/
