@@ -21,7 +21,7 @@ function getLocalDayStartTimestamp() {
   return `${value('year')}-${value('month')}-${value('day')} 00:00:00`;
 }
 
-export async function sendDailyMpesaReviewNotification() {
+export async function sendDailyMpesaReviewNotification(recipientOverride = '') {
   const batches = await getMpesaStatementBatchesWithOpenReviewCounts();
   if (!batches.length) {
     return { sent: false, reason: 'no_open_statements', statementCount: 0 };
@@ -48,8 +48,9 @@ export async function sendDailyMpesaReviewNotification() {
     `${env.APP_BASE_URL.replace(/\/$/, '')}/mpesa-reconciliation`,
   ];
 
+  const recipient = recipientOverride.trim() || MPESA_REVIEW_NOTIFICATION_RECIPIENT;
   const options = {
-    to: MPESA_REVIEW_NOTIFICATION_RECIPIENT,
+    to: recipient,
     subject: `M-Pesa review pending: ${statementCount} statement(s)`,
     text: lines.join('\n'),
   };
@@ -61,7 +62,7 @@ export async function sendDailyMpesaReviewNotification() {
     level: 'info',
     message: 'M-Pesa review notification sent',
     context: {
-      recipient: MPESA_REVIEW_NOTIFICATION_RECIPIENT,
+      recipient,
       statementCount,
       statements: batches.map((batch) => ({
         id: batch.id,

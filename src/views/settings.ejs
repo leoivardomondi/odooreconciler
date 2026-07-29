@@ -1,6 +1,30 @@
 <%- include('partials/head') %>
 <%- include('partials/header') %>
 
+<style>
+  .automation-shell{background:#f8fafc;border:1px solid #e2e8f0;border-radius:20px;padding:1.25rem}
+  .automation-schedule{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:1.25rem}
+  .automation-schedule__item{background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:14px 16px;box-shadow:0 3px 14px rgba(15,23,42,.04)}
+  .automation-schedule__item strong{display:block;color:#1e293b;font-size:.92rem;margin-bottom:3px}
+  .automation-schedule__item span{color:#64748b;font-size:.78rem;line-height:1.4}
+  .email-automation-row{background:#fff;border:1px solid #e2e8f0!important;border-radius:18px!important;padding:0!important;overflow:hidden;box-shadow:0 8px 24px rgba(15,23,42,.055);transition:border-color .2s ease,box-shadow .2s ease,transform .2s ease}
+  .email-automation-row:hover{border-color:#cbd5e1!important;box-shadow:0 12px 30px rgba(15,23,42,.08);transform:translateY(-1px)}
+  .automation-card__header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px 18px;border-bottom:1px solid #edf2f7;background:linear-gradient(180deg,#fff,#fbfdff)}
+  .automation-card__identity{display:flex;align-items:center;gap:12px;min-width:0}
+  .automation-card__icon{width:40px;height:40px;border-radius:12px;display:grid;place-items:center;background:#f0f0ff;color:#34315f;font-weight:800;font-size:1.05rem}
+  .automation-card__title{font-weight:750;color:#172033;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .automation-card__type{color:#64748b;font-size:.76rem}
+  .automation-card__body{padding:18px}
+  .automation-field .form-label{font-size:.73rem;font-weight:750;letter-spacing:.025em;text-transform:uppercase;color:#64748b;margin-bottom:7px}
+  .automation-field .form-control,.automation-field .form-select,.automation-field .input-group-text{min-height:44px;border-color:#dbe3ec;background-color:#fff;border-radius:11px;font-size:.9rem}
+  .automation-field .form-control:focus,.automation-field .form-select:focus{border-color:#7672b4;box-shadow:0 0 0 .2rem rgba(78,73,137,.12)}
+  .automation-field .input-group .form-control{border-radius:11px 0 0 11px}
+  .automation-field .input-group-text{border-radius:0 11px 11px 0;color:#64748b}
+  .automation-remove{color:#b42318;font-size:.78rem}
+  .operator-note{display:flex;gap:10px;align-items:flex-start;background:#eef8f4;border:1px solid #cce9df;border-radius:14px;padding:13px 15px;color:#315c50;font-size:.82rem;line-height:1.5;margin-bottom:1rem}
+  @media(max-width:767.98px){.automation-shell{padding:.9rem}.automation-schedule{grid-template-columns:1fr}.automation-card__header{align-items:flex-start}.automation-card__body{padding:14px}.automation-card__identity{align-items:flex-start}}
+</style>
+
 <main class="container py-4 py-lg-5">
   <%
     const fieldTypeBadge = (value) => {
@@ -275,9 +299,120 @@
             </tbody>
           </table>
         </div>
+
+        <hr class="my-4" />
+        <div class="automation-shell">
+        <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-3">
+          <div>
+            <h3 class="h4 mb-1">Email Automation</h3>
+            <p class="text-secondary small mb-0">Manage operational schedules, recipients and custom messages from one place.</p>
+          </div>
+          <button type="button" class="btn btn-primary rounded-pill px-3" id="addEmailAutomation">+ Add automation</button>
+        </div>
+        <div class="automation-schedule">
+          <div class="automation-schedule__item"><strong>Monday–Friday</strong><span>Operator reminders run hourly from 8:00 AM through 5:00 PM.</span></div>
+          <div class="automation-schedule__item"><strong>Saturday</strong><span>Operator reminders run hourly from 8:00 AM through 3:00 PM. Nothing is sent on Sunday.</span></div>
+          <div class="automation-schedule__item"><strong>8:00 AM performance email</strong><span>Boards and attendance use the previous working day. Monday reports use Saturday’s results.</span></div>
+        </div>
+        <div class="row g-3 mb-3">
+          <div class="col-lg-5 automation-field">
+            <label class="form-label" for="shopFloorReportingStartDate">Shop-floor reporting start date</label>
+            <input
+              type="date"
+              class="form-control"
+              id="shopFloorReportingStartDate"
+              name="shopFloorReportingStartDate"
+              value="<%= form.shopFloorReportingStartDate %>"
+              required
+            />
+            <div class="form-text">Boards, board records, operator percentages, attendance summaries and Wednesday reports will not include historical data before this date.</div>
+          </div>
+        </div>
+        <div class="operator-note"><strong>Operator matching:</strong><span>Personal performance emails are sent only when the recipient matches an employee in Odoo. Non-operators, including management recipients, do not receive operator board or attendance summaries.</span></div>
+        <input type="hidden" name="mailAutomationCount" id="mailAutomationCount" value="<%= form.mailAutomations.length %>" />
+        <div id="emailAutomationRows" class="vstack gap-3">
+          <% form.mailAutomations.forEach((item, itemIndex) => { const n = itemIndex + 1; %>
+            <div class="email-automation-row" data-system-key="<%= item.systemKey %>">
+              <input type="hidden" name="mailAutomation<%= n %>Id" value="<%= item.id %>" />
+              <input type="hidden" name="mailAutomation<%= n %>SystemKey" value="<%= item.systemKey %>" />
+              <div class="automation-card__header">
+                <div class="automation-card__identity"><div class="automation-card__icon">✉</div><div><div class="automation-card__title"><%= item.name %></div><div class="automation-card__type"><%= item.systemKey === 'custom' ? 'Custom scheduled email' : 'Built-in operational email' %></div></div></div>
+                <div class="form-check form-switch mb-0"><input class="form-check-input" type="checkbox" role="switch" name="mailAutomation<%= n %>Enabled" id="mailAutomation<%= n %>Enabled" <%= item.enabled ? 'checked' : '' %>><label class="form-check-label small fw-semibold" for="mailAutomation<%= n %>Enabled"><%= item.enabled ? 'Active' : 'Paused' %></label></div>
+              </div>
+              <div class="automation-card__body"><div class="row g-3">
+                <div class="col-lg-4 automation-field"><label class="form-label">Automation name</label><input class="form-control" name="mailAutomation<%= n %>Name" value="<%= item.name %>" required></div>
+                <div class="col-sm-6 col-lg-2 automation-field"><label class="form-label">Frequency</label><select class="form-select automation-frequency" name="mailAutomation<%= n %>Frequency"><option value="hourly" <%= item.frequency === 'hourly' ? 'selected' : '' %>>Hourly</option><option value="daily" <%= item.frequency === 'daily' ? 'selected' : '' %>>Daily</option><option value="weekly" <%= item.frequency === 'weekly' ? 'selected' : '' %>>Weekly</option></select></div>
+                <div class="col-sm-6 col-lg-2 automation-field"><label class="form-label">Repeat every</label><div class="input-group"><input type="number" min="1" max="168" class="form-control" name="mailAutomation<%= n %>Interval" value="<%= item.interval %>"><span class="input-group-text">cycle</span></div></div>
+                <div class="col-sm-6 col-lg-2 automation-field send-hour-field"><label class="form-label">Send hour (0–23)</label><input type="number" min="0" max="23" class="form-control" name="mailAutomation<%= n %>Hour" value="<%= item.hour %>"></div>
+                <div class="col-sm-6 col-lg-2 automation-field weekly-field"><label class="form-label">Weekly day</label><select class="form-select" name="mailAutomation<%= n %>DayOfWeek"><% ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'].forEach((day, dayIndex) => { %><option value="<%= dayIndex %>" <%= item.dayOfWeek === dayIndex ? 'selected' : '' %>><%= day %></option><% }) %></select></div>
+                <div class="col-lg-10 automation-field"><label class="form-label">Recipients</label><input class="form-control" name="mailAutomation<%= n %>Recipients" value="<%= item.recipients %>" placeholder="Comma-separated; leave blank to use system recipients"></div>
+                <div class="col-lg-2 d-flex align-items-end"><label class="form-check automation-remove mb-2"><input class="form-check-input" type="checkbox" name="mailAutomation<%= n %>Remove"> Remove on save</label></div>
+                <div class="automation-custom-fields <%= item.systemKey === 'custom' ? 'row g-3 mx-0 px-0' : 'd-none' %>">
+                  <div class="col-lg-5 automation-field"><label class="form-label">Email subject</label><input class="form-control" name="mailAutomation<%= n %>Subject" value="<%= item.subject %>"></div>
+                  <div class="col-lg-7 automation-field"><label class="form-label">Email message</label><textarea class="form-control" rows="3" name="mailAutomation<%= n %>Body"><%= item.body %></textarea></div>
+                </div>
+              </div>
+            </div>
+          <% }) %>
+        </div>
+        </div>
       </div>
     </div>
   </form>
+
+  <script>
+    (() => {
+      const button = document.getElementById('addEmailAutomation');
+      const rows = document.getElementById('emailAutomationRows');
+      const count = document.getElementById('mailAutomationCount');
+      if (!button || !rows || !count) return;
+      const refreshAutomationRow = (row) => {
+        const frequency = row.querySelector('.automation-frequency')?.value;
+        const weeklyField = row.querySelector('.weekly-field');
+        const sendHourField = row.querySelector('.send-hour-field');
+        if (weeklyField) weeklyField.classList.toggle('d-none', frequency !== 'weekly');
+        if (sendHourField) sendHourField.classList.toggle('d-none', frequency === 'hourly');
+      };
+      rows.querySelectorAll('.email-automation-row').forEach(refreshAutomationRow);
+      rows.addEventListener('change', (event) => {
+        const row = event.target.closest('.email-automation-row');
+        if (!row) return;
+        if (event.target.classList.contains('automation-frequency')) refreshAutomationRow(row);
+        if (event.target.matches('[role="switch"]')) {
+          const label = row.querySelector(`label[for="${event.target.id}"]`);
+          if (label) label.textContent = event.target.checked ? 'Active' : 'Paused';
+        }
+      });
+      button.addEventListener('click', () => {
+        const n = Number(count.value || 0) + 1;
+        if (n > 20) return;
+        count.value = String(n);
+        const wrapper = document.createElement('div');
+        wrapper.className = 'email-automation-row';
+        wrapper.dataset.systemKey = 'custom';
+        wrapper.innerHTML = `
+          <input type="hidden" name="mailAutomation${n}Id" value="custom-${Date.now()}">
+          <input type="hidden" name="mailAutomation${n}SystemKey" value="custom">
+          <div class="automation-card__header">
+            <div class="automation-card__identity"><div class="automation-card__icon">✉</div><div><div class="automation-card__title">New email automation</div><div class="automation-card__type">Custom scheduled email</div></div></div>
+            <div class="form-check form-switch mb-0"><input class="form-check-input" type="checkbox" role="switch" name="mailAutomation${n}Enabled" id="mailAutomation${n}Enabled" checked><label class="form-check-label small fw-semibold" for="mailAutomation${n}Enabled">Active</label></div>
+          </div>
+          <div class="automation-card__body"><div class="row g-3">
+            <div class="col-lg-4 automation-field"><label class="form-label">Automation name</label><input class="form-control" name="mailAutomation${n}Name" required></div>
+            <div class="col-sm-6 col-lg-2 automation-field"><label class="form-label">Frequency</label><select class="form-select automation-frequency" name="mailAutomation${n}Frequency"><option value="hourly">Hourly</option><option value="daily" selected>Daily</option><option value="weekly">Weekly</option></select></div>
+            <div class="col-sm-6 col-lg-2 automation-field"><label class="form-label">Repeat every</label><div class="input-group"><input type="number" min="1" max="168" class="form-control" name="mailAutomation${n}Interval" value="1"><span class="input-group-text">cycle</span></div></div>
+            <div class="col-sm-6 col-lg-2 automation-field send-hour-field"><label class="form-label">Send hour (0–23)</label><input type="number" min="0" max="23" class="form-control" name="mailAutomation${n}Hour" value="8"></div>
+            <div class="col-sm-6 col-lg-2 automation-field weekly-field d-none"><label class="form-label">Weekly day</label><select class="form-select" name="mailAutomation${n}DayOfWeek"><option value="0">Sunday</option><option value="1" selected>Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option></select></div>
+            <div class="col-lg-10 automation-field"><label class="form-label">Recipients</label><input class="form-control" name="mailAutomation${n}Recipients" placeholder="name@example.com, another@example.com" required></div>
+            <div class="col-lg-2 d-flex align-items-end"><label class="form-check automation-remove mb-2"><input class="form-check-input" type="checkbox" name="mailAutomation${n}Remove"> Remove on save</label></div>
+            <div class="automation-custom-fields row g-3 mx-0 px-0"><div class="col-lg-5 automation-field"><label class="form-label">Email subject</label><input class="form-control" name="mailAutomation${n}Subject" required></div><div class="col-lg-7 automation-field"><label class="form-label">Email message</label><textarea class="form-control" rows="3" name="mailAutomation${n}Body" required></textarea></div></div>
+          </div></div>`;
+        rows.appendChild(wrapper);
+        refreshAutomationRow(wrapper);
+        wrapper.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      });
+    })();
+  </script>
 
   <form method="post" action="/settings" class="row g-4" autocomplete="off">
     <div class="col-xl-6">

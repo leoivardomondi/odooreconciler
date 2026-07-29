@@ -1,6 +1,6 @@
 import { Request, Response, Router } from 'express';
 import { randomUUID } from 'crypto';
-import { createBoardIntakeQueueEntry, getRecentBoardIntakeQueueEntries, getSettings, getShopFloorFeatureFlags, saveShopFloorFeatureFlags, updateBoardIntakeQueueEntry, upsertApprovedAuthUser } from '../models/repositories';
+import { createBoardIntakeQueueEntry, getApprovedAuthUsers, getRecentBoardIntakeQueueEntries, getSettings, getShopFloorFeatureFlags, saveShopFloorFeatureFlags, updateBoardIntakeQueueEntry, upsertApprovedAuthUser } from '../models/repositories';
 import { ShopFloorFeatureFlags, ShopFloorFeatureKey } from '../models/types';
 import { OdooClient } from '../services/odooClient';
 import { buildPayrollAdvanceRecords } from '../services/payrollBridgeService';
@@ -13,6 +13,7 @@ import { renderWeeklyShopFloorReportPdf, sendWeeklyShopFloorReport } from '../se
 import { getConfirmedMoQueueSchedule, getMoOverdueState } from '../services/moOverdueService';
 import { isBoardProductName } from '../services/boardProductClassifier';
 import { getStockMirrorForPage, recordExactStockQuantity, recordOptimisticStockAddition, refreshStockMirror } from '../services/stockMirrorService';
+import { syncShopFloorOperatorAccess } from '../services/shopFloorOperatorAccessSyncService';
 import {
   getShopFloorIncidents,
   createShopFloorIncident,
@@ -29,6 +30,65 @@ const MANUFACTURING_AREAS = ['Table Saw Area', 'Edge Banding Area', 'Panel Rack 
 const SHOP_FLOOR_FEATURE_KEYS: ShopFloorFeatureKey[] = [
   'start-finish', 'add-stock', 'receipts', 'deliveries', 'attendance', 'maintenance', 'payroll', 'table-saw', 'edge-banding', 'panel-rack',
 ];
+const purchaseApprovalEmailCooldown = new Map<string, number>();
+const PURCHASE_APPROVAL_EMAIL_COOLDOWN_MS = 30 * 60 * 1000;
+
+async function sendPurchaseApprovalRequest(input: {
+  settings: Awaited<ReturnType<typeof getSettings>>;
+  operatorName: string;
+  operatorEmail: string;
+  procurement: Awaited<ReturnType<OdooClient['getManufacturingOrderBoardProcurement']>>;
+}) {
+  const pendingOrders = input.procurement.purchaseOrders.filter((po) => ['draft', 'sent', 'to approve'].includes(po.state));
+  if (!pendingOrders.length) return { sent: false, throttled: false };
+  const cooldownKey = pendingOrders.map((po) => po.id).sort((a, b) => a - b).join(',');
+  const lastSentAt = purchaseApprovalEmailCooldown.get(cooldownKey) || 0;
+  if (Date.now() - lastSentAt < PURCHASE_APPROVAL_EMAIL_COOLDOWN_MS) {
+    return { sent: false, throttled: true };
+  }
+
+  const users = await getApprovedAuthUsers();
+  const resolvedRecipients = users
+    .filter((user) => user.active && ['dbadmin', 'charles'].some((name) => user.email.toLowerCase().includes(name)))
+    .map((user) => user.email.trim().toLowerCase());
+  const recipients = [...new Set([
+    ...resolvedRecipients,
+    env.AUTH_LOCAL_ADMIN_EMAIL.toLowerCase().includes('dbadmin') ? env.AUTH_LOCAL_ADMIN_EMAIL.trim().toLowerCase() : '',
+    'dbadmin@urbanvibeinteriordesign.co.ke',
+    'charles@urbanvibeinteriordesign.co.ke',
+  ].filter(Boolean))];
+  const poRows = pendingOrders.map((po) =>
+    `<li><strong>${escapeHtml(po.name)}</strong> — ${escapeHtml(po.state)}${po.supplier ? ` — ${escapeHtml(po.supplier)}` : ''}</li>`,
+  ).join('');
+  const boardRows = input.procurement.unavailableBoards.map((board) =>
+    `<li>${escapeHtml(board.name)} — required ${board.required}, available ${board.available}</li>`,
+  ).join('');
+  const appUrl = env.APP_BASE_URL.replace(/\/+$/, '');
+  await sendMailWithConfig(input.settings.mail, {
+    to: recipients.join(', '),
+    subject: `Purchase approval required for ${input.procurement.moName}`,
+    text: [
+      `${input.operatorName} attempted to start ${input.procurement.moName}, but its required boards are waiting on an unapproved purchase order.`,
+      `Sales order: ${input.procurement.origin || 'Not available'}`,
+      `Purchase orders: ${pendingOrders.map((po) => `${po.name} (${po.state})`).join(', ')}`,
+      `Open Purchase Orders: ${appUrl}/purchase-orders`,
+    ].join('\n'),
+    html: `<p><strong>${escapeHtml(input.operatorName)}</strong> (${escapeHtml(input.operatorEmail)}) attempted to start <strong>${escapeHtml(input.procurement.moName)}</strong>, but required boards are waiting on purchase approval.</p>
+      <p>Sales order: <strong>${escapeHtml(input.procurement.origin || 'Not available')}</strong></p>
+      <h3>Purchase orders requiring approval</h3><ul>${poRows}</ul>
+      <h3>Required boards</h3><ul>${boardRows}</ul>
+      <p><a href="${escapeHtml(`${appUrl}/purchase-orders`)}">Open Purchase Orders</a></p>`,
+  });
+  purchaseApprovalEmailCooldown.set(cooldownKey, Date.now());
+  await logEvent('info', 'Purchase approval email sent from Shop Floor start attempt', {
+    moId: input.procurement.moId,
+    moName: input.procurement.moName,
+    purchaseOrders: pendingOrders.map((po) => ({ id: po.id, name: po.name, state: po.state })),
+    recipients,
+    operatorEmail: input.operatorEmail,
+  });
+  return { sent: true, throttled: false };
+}
 
 function canManageShopFloor(req: Request): boolean {
   return Boolean(req.authUser && (req.authUser.role === 'admin' || req.authUser.apps?.includes('shop-floor-admin')));
@@ -533,6 +593,8 @@ async function buildOperatorDashboard(
           });
           if (unavailable.length > 0) {
             const poState = o.origin ? poStateMap.get(o.origin) || null : null;
+            // "To Approve" means the boards have entered the purchasing flow,
+            // so show Incoming / Purchase even though Start still requests approval.
             const needsAlert = !poState || ['draft', 'sent'].includes(poState);
             if (needsAlert) {
               moStockStatus.set(o.id, 'no_stock');
@@ -1393,23 +1455,8 @@ router.post('/shop-floor/operators/sync-access', async (req: Request, res: Respo
   }
 
   try {
-    const settings = await getSettings();
-    const client = new OdooClient(settings.odoo);
-    let added = 0;
-
-    for (const deptName of OPERATOR_DEPARTMENT_NAMES) {
-      const depts = await client.findDepartmentByName(deptName);
-      for (const dept of depts) {
-        const emps = await client.getEmployeesByDepartment(dept.id);
-        for (const emp of emps) {
-          if (!emp.work_email) continue;
-          await upsertApprovedAuthUser(emp.work_email.toLowerCase(), 'user', ['shop-floor'], true, null);
-          added++;
-        }
-      }
-    }
-
-    res.redirect(`/shop-floor/operators?message=${encodeURIComponent(`Synced ${added} operator(s) to Access Control with "shop-floor" app access.`)}`);
+    const result = await syncShopFloorOperatorAccess();
+    res.redirect(`/shop-floor/operators?message=${encodeURIComponent(`Synced ${result.operators} operator(s): ${result.added} added and ${result.updated} updated with Shop Floor access.`)}`);
   } catch (err) {
     res.redirect(`/shop-floor/operators?error=${encodeURIComponent(err instanceof Error ? err.message : 'Failed to sync operators.')}`);
   }
@@ -1694,10 +1741,24 @@ router.get('/shop-floor/partners/search', async (req: Request, res: Response) =>
 });
 
 router.post('/shop-floor/work-order/:id/advance', async (req: Request, res: Response) => {
-  if (!req.authUser) { res.redirect('/login'); return; }
+  const wantsJson = req.get('accept')?.includes('application/json');
+  if (!req.authUser) {
+    if (wantsJson) {
+      res.status(401).json({
+        ok: false,
+        code: 'session_expired',
+        message: 'Your session has expired. Sign in again, then retry this job.',
+        loginUrl: '/login?next=%2Fshop-floor',
+      });
+      return;
+    }
+    res.redirect('/login');
+    return;
+  }
   const moId = Number(req.params.id);
   const action = req.body.action === 'finish' ? 'finish' : 'start';
   if (!Number.isFinite(moId) || moId <= 0) {
+    if (wantsJson) { res.status(400).json({ ok: false, message: 'Invalid manufacturing order.' }); return; }
     res.redirect('/shop-floor?error=' + encodeURIComponent('Invalid manufacturing order.') + '#manufacturing-orders');
     return;
   }
@@ -1705,27 +1766,102 @@ router.post('/shop-floor/work-order/:id/advance', async (req: Request, res: Resp
   try {
     const viewedEmail = getViewedUserEmail(req);
     const cacheKey = `shop-floor-dashboard:v2:${viewedEmail.toLowerCase()}`;
+    const cachedDashboard = shopFloorCache.get<OperatorDashboardData>(cacheKey);
     const settings = await getSettings();
     const client = new OdooClient(settings.odoo);
-    let dashboard = shopFloorCache.get<OperatorDashboardData>(cacheKey);
-    if (!dashboard) {
-      dashboard = await buildOperatorDashboard(client, viewedEmail, req, settings.stock);
-      shopFloorCache.set(cacheKey, dashboard, 60 * 1000);
-    }
-    const selectedOrder = dashboard.workOrders.find((order) => order.id === moId);
-    if (!selectedOrder) {
-      throw new Error('This manufacturing order is not available on your Shop Floor dashboard.');
-    }
-    if (action === 'start' && selectedOrder?.stockStatus === 'no_stock') {
-      res.redirect('/shop-floor?error=' + encodeURIComponent('ADD STOCK NOTICE: This manufacturing order has no stock. Add or receive stock before starting it.') + '#manufacturing-orders');
-      return;
+    const employee = cachedDashboard?.employee?.id
+      ? { id: cachedDashboard.employee.id, name: cachedDashboard.employee.name }
+      : await client.findEmployeeForShopFloorEmail(viewedEmail);
+    if (!employee) {
+      throw new Error('Your signed-in account is not linked to an Odoo employee. Ask an administrator to match your email.');
     }
 
-    await client.advanceManufacturingOrder(moId, action);
+    if (action === 'start') {
+      const procurement = await client.getManufacturingOrderBoardProcurement(moId);
+      if (procurement.waitingForBoards) {
+        const approvedPurchaseOrders = procurement.purchaseOrders.filter((po) => ['purchase', 'done'].includes(po.state));
+        const pendingPurchaseOrders = procurement.purchaseOrders.filter((po) => ['draft', 'sent', 'to approve'].includes(po.state));
+        if (approvedPurchaseOrders.length) {
+          const message = `${procurement.moName} is waiting for purchased boards. Validate their reception before starting the job.`;
+          const redirectTo = `/shop-floor/receipts?message=${encodeURIComponent(message)}`;
+          if (wantsJson) {
+            res.status(409).json({ ok: false, code: 'receipt_required', message, redirectTo });
+            return;
+          }
+          res.redirect(redirectTo);
+          return;
+        }
+        if (pendingPurchaseOrders.length) {
+          const notification = await sendPurchaseApprovalRequest({
+            settings,
+            operatorName: employee.name,
+            operatorEmail: viewedEmail,
+            procurement,
+          });
+          const poNames = pendingPurchaseOrders.map((po) => po.name).join(', ');
+          const message = notification.throttled
+            ? `${poNames} still requires approval. DB Admin and Charles were already notified recently.`
+            : `${poNames} requires approval. An email has been sent to DB Admin and Charles.`;
+          if (wantsJson) {
+            res.status(409).json({ ok: false, code: 'purchase_approval_required', message });
+            return;
+          }
+          res.redirect('/shop-floor?error=' + encodeURIComponent(message) + '#manufacturing-orders');
+          return;
+        }
+      }
+    }
+
+    const advanceResult = await client.advanceManufacturingOrder(moId, action, employee.id);
     shopFloorCache.clearPrefix('shop-floor-dashboard:');
-    res.redirect('/shop-floor?message=' + encodeURIComponent(action === 'finish' ? 'Current operation finished.' : 'Manufacturing operation started.') + '#manufacturing-orders');
+    const message = action === 'finish'
+      ? 'Current operation finished.'
+      : `Manufacturing operation started for ${employee.name}.`;
+    const operatorTrackingWarning = action === 'start'
+      && advanceResult
+      && typeof advanceResult === 'object'
+      && 'operatorLinked' in advanceResult
+      && !advanceResult.operatorLinked
+        ? 'The job is In Progress in Odoo, but Odoo did not allow this app to update the employee tracking field.'
+        : null;
+    if (operatorTrackingWarning) {
+      void logEvent('warn', 'Odoo work order started without employee tracking attribution', {
+        moId,
+        employeeId: employee.id,
+        employeeName: employee.name,
+        operatorEmail: viewedEmail,
+      });
+    }
+    if (wantsJson) {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({
+        ok: true,
+        state: action === 'finish' ? 'done' : 'progress',
+        message,
+        warning: operatorTrackingWarning,
+        employeeName: employee.name,
+      });
+      return;
+    }
+    res.redirect('/shop-floor?message=' + encodeURIComponent(message) + '#manufacturing-orders');
   } catch (err) {
-    res.redirect('/shop-floor?error=' + encodeURIComponent(err instanceof Error ? err.message : 'Could not update the manufacturing order.') + '#manufacturing-orders');
+    const message = err instanceof Error ? err.message : 'Could not update the manufacturing order.';
+    void logEvent('error', 'Shop Floor manufacturing-order action failed in Odoo', {
+      moId,
+      action,
+      operatorEmail: getViewedUserEmail(req),
+      error: message,
+    });
+    const permissionDenied = /access denied|access error|not allowed|permission|forbidden/i.test(message);
+    if (wantsJson) {
+      res.status(permissionDenied ? 403 : 500).json({
+        ok: false,
+        code: permissionDenied ? 'permission_denied' : 'odoo_error',
+        message: permissionDenied ? 'You do not have permission to update this job in Odoo.' : message,
+      });
+      return;
+    }
+    res.redirect('/shop-floor?error=' + encodeURIComponent(message) + '#manufacturing-orders');
   }
 });
 

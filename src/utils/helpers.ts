@@ -15,6 +15,7 @@ import {
   StockConfig,
 } from '../models/types';
 import { env } from './env';
+import { SHOP_FLOOR_REPORTING_START_DATE } from './shopFloorReporting';
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -164,6 +165,13 @@ export function createDefaultMailConfig(): MailConfig {
     socketTimeoutMs: positiveInteger(env.SMTP_SOCKET_TIMEOUT_MS, 45000),
     testRecipient: '',
     accounts,
+    automations: [
+      { id: 'shop-floor-reminders', name: 'Shop-floor task reminders', systemKey: 'shop-floor-reminders', enabled: true, frequency: 'hourly', interval: 1, dayOfWeek: 1, hour: 8, recipients: '', subject: '', body: '', lastSentAt: '' },
+      { id: 'weekly-shop-floor-report', name: 'Weekly shop-floor accountability report', systemKey: 'weekly-shop-floor-report', enabled: true, frequency: 'weekly', interval: 1, dayOfWeek: 3, hour: 8, recipients: '', subject: 'Wednesday Shop Floor Accountability Report', body: '', lastSentAt: '' },
+      { id: 'mpesa-review', name: 'M-Pesa review pending', systemKey: 'mpesa-review', enabled: true, frequency: 'daily', interval: 1, dayOfWeek: 1, hour: 9, recipients: 'charles@urbanvibeinteriordesign.co.ke', subject: '', body: '', lastSentAt: '' },
+      { id: 'mo-overtime', name: 'Large MO overtime suggestion', systemKey: 'mo-overtime', enabled: true, frequency: 'daily', interval: 1, dayOfWeek: 1, hour: 8, recipients: '', subject: '', body: '', lastSentAt: '' },
+    ],
+    shopFloorReportingStartDate: SHOP_FLOOR_REPORTING_START_DATE,
   };
 }
 

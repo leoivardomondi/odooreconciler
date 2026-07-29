@@ -13,11 +13,13 @@ function nairobiParts() {
   return { key: `${get('year')}-${get('month')}-${get('day')}`, hour: Number(get('hour')) };
 }
 
-export async function sendMoOvertimeSuggestion() {
+export async function sendMoOvertimeSuggestion(recipientOverride = '') {
   const [settings, users] = await Promise.all([getSettings(), getApprovedAuthUsers()]);
   const warehouseId = Number(settings.stock.warehouseId || 0);
   if (!warehouseId) return false;
-  const recipient = users.find((user) => user.active && /leo(?:i)?vard/i.test(user.email));
+  const recipient = recipientOverride
+    ? { email: recipientOverride.trim() }
+    : users.find((user) => user.active && /leo(?:i)?vard/i.test(user.email));
   if (!recipient) throw new Error('No active Leovard user was found for the overtime suggestion email.');
   const client = new OdooClient(settings.odoo);
   const orders = await client.getWarehouseScopedActiveWorkOrders(warehouseId, 500);

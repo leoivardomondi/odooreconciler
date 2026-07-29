@@ -5,6 +5,7 @@ import { sendMailWithConfig } from './mailTransport';
 import { logEvent } from './logService';
 import { getConfirmedMoQueueSchedule, getMoOverdueState } from './moOverdueService';
 import { env } from '../utils/env';
+import { clampShopFloorReportingDate } from '../utils/shopFloorReporting';
 
 const DEPARTMENTS = ['Operations', 'Production', 'Shop Floor', 'Manufacturing', 'Factory'];
 const RECIPIENT_NAMES = ['dbadmin', 'charles', 'raphael'];
@@ -32,12 +33,15 @@ export async function buildWeeklyShopFloorReport() {
   const end = new Date();
   const start = new Date(end);
   start.setDate(end.getDate() - 6);
+  const reportingBaseline = settings.mail.shopFloorReportingStartDate;
+  const reportStart = clampShopFloorReportingDate(dateOnly(start), reportingBaseline);
+  const reportEnd = clampShopFloorReportingDate(dateOnly(end), reportingBaseline);
   const [boardSummary, penalties, orders, operators, boardLoggingByOperator] = await Promise.all([
     client.getBoardRegistrationSummary(settings.stock),
     client.getTeamPenalties(settings.stock),
     client.getWarehouseScopedActiveWorkOrders(warehouseId, 500),
     getOperators(client, companyId),
-    getBoardIntakeLoggingReport(dateOnly(start), dateOnly(end)),
+    getBoardIntakeLoggingReport(reportStart, reportEnd, reportingBaseline),
   ]);
   const confirmedQueueSchedule = getConfirmedMoQueueSchedule(orders);
   const overdueNotStarted = orders.filter((order) => {
@@ -45,8 +49,11 @@ export async function buildWeeklyShopFloorReport() {
     const queueFinish = confirmedQueueSchedule.get(order.id)?.estimatedFinishAt;
     return !['done', 'cancel', 'progress'].includes(order.state) && !overdue.createdToday && (overdue.overdueReason !== null || Boolean(queueFinish && end > new Date(queueFinish)));
   }).map((order) => ({ ...order, queueEstimatedFinishAt: confirmedQueueSchedule.get(order.id)?.estimatedFinishAt || null }));
-  const dates = Array.from({ length: 7 }, (_, index) => {
-    const value = new Date(start); value.setDate(start.getDate() + index); return dateOnly(value);
+  const reportStartDate = new Date(`${reportStart}T12:00:00Z`);
+  const reportEndDate = new Date(`${reportEnd}T12:00:00Z`);
+  const reportingDayCount = Math.max(1, Math.floor((reportEndDate.getTime() - reportStartDate.getTime()) / 86400000) + 1);
+  const dates = Array.from({ length: reportingDayCount }, (_, index) => {
+    const value = new Date(reportStartDate); value.setUTCDate(reportStartDate.getUTCDate() + index); return dateOnly(value);
   }).filter((date) => new Intl.DateTimeFormat('en-US', { timeZone: 'Africa/Nairobi', weekday: 'short' }).format(new Date(`${date}T12:00:00Z`)) !== 'Sun');
   const attendanceByDate = operators.length
     ? await Promise.all(dates.map((date) => client.getBulkAttendance(operators.map((operator) => operator.id), date).catch(() => [])))
@@ -58,7 +65,7 @@ export async function buildWeeklyShopFloorReport() {
       return { date, status: record ? (record.check_out ? 'Present' : 'No checkout') : 'Absent' };
     }),
   }));
-  return { generatedAt: new Date(), start: dateOnly(start), end: dateOnly(end), companyName: 'URBAN VIBE INTERIOR DESIGN COMPANY LTD', warehouseId, boardSummary, boardLoggingByOperator, penalties, overdueNotStarted, attendance };
+  return { generatedAt: new Date(), start: reportStart, end: reportEnd, reportingBaseline, companyName: 'URBAN VIBE INTERIOR DESIGN COMPANY LTD', warehouseId, boardSummary, boardLoggingByOperator, penalties, overdueNotStarted, attendance };
 }
 
 export async function renderWeeklyShopFloorReportPdf(reportInput?: Awaited<ReturnType<typeof buildWeeklyShopFloorReport>>): Promise<Buffer> {
@@ -92,7 +99,7 @@ export async function renderWeeklyShopFloorReportPdf(reportInput?: Awaited<Retur
   document.rect(0, 0, pageWidth, 112).fill(navy);
   document.font('Helvetica-Bold').fontSize(20).fillColor('#ffffff').text('Wednesday Shop Floor Report', 42, 30);
   document.font('Helvetica-Bold').fontSize(9).fillColor(copper).text(report.companyName, 42, 59);
-  document.font('Helvetica').fontSize(8).fillColor('#dbe2ea').text(`Warehouse ${report.warehouseId}  |  Week ${report.start} to ${report.end}  |  Generated ${report.generatedAt.toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' })}`, 42, 78);
+  document.font('Helvetica').fontSize(8).fillColor('#dbe2ea').text(`Warehouse ${report.warehouseId}  |  Period ${report.start} to ${report.end}  |  Data baseline ${report.reportingBaseline}  |  Generated ${report.generatedAt.toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' })}`, 42, 78);
   document.y = 130;
 
   const attendanceTotals = report.attendance.reduce((totals, person) => {
@@ -172,13 +179,14 @@ export async function renderWeeklyShopFloorReportPdf(reportInput?: Awaited<Retur
   }, { records: 0, boards: 0, synced: 0, failed: 0, pending: 0 });
   section('Board logging by operator', `Board intake records created from ${report.start} to ${report.end}. Total: ${boardLogTotals.records} record(s), ${boardLogTotals.boards} board(s).`);
   const boardLogCols = [
-    { label: 'OPERATOR', x: 48, width: 174 },
-    { label: 'RECORDS', x: 226, width: 48 },
-    { label: 'BOARDS', x: 280, width: 48 },
-    { label: 'SYNCED', x: 334, width: 48 },
-    { label: 'FAILED', x: 388, width: 44 },
-    { label: 'PENDING', x: 438, width: 48 },
-    { label: 'LAST LOG', x: 492, width: 56 },
+    { label: 'OPERATOR', x: 48, width: 146 },
+    { label: 'RECORDS', x: 198, width: 42 },
+    { label: 'BOARDS', x: 244, width: 42 },
+    { label: 'SHARE', x: 290, width: 42 },
+    { label: 'SYNCED', x: 336, width: 42 },
+    { label: 'FAILED', x: 382, width: 42 },
+    { label: 'PENDING', x: 428, width: 46 },
+    { label: 'LAST LOG', x: 478, width: 66 },
   ];
   tableHeader(boardLogCols);
   if (!report.boardLoggingByOperator.length) {
@@ -190,15 +198,17 @@ export async function renderWeeklyShopFloorReportPdf(reportInput?: Awaited<Retur
     if (document.y < 55) tableHeader(boardLogCols);
     const y = document.y;
     document.rect(42, y, contentWidth, 29).fill(index % 2 ? '#f8fafc' : '#ffffff');
-    document.font('Helvetica-Bold').fontSize(7.3).fillColor(ink).text(operator.name, 48, y + 6, { width: 174, height: 10, ellipsis: true });
-    if (operator.email) document.font('Helvetica').fontSize(5.8).fillColor(muted).text(operator.email, 48, y + 17, { width: 174, height: 8, ellipsis: true });
+    const boardShare = boardLogTotals.boards ? Math.round((operator.boards / boardLogTotals.boards) * 100) : 0;
+    document.font('Helvetica-Bold').fontSize(7.3).fillColor(ink).text(operator.name, 48, y + 6, { width: 146, height: 10, ellipsis: true });
+    if (operator.email) document.font('Helvetica').fontSize(5.8).fillColor(muted).text(operator.email, 48, y + 17, { width: 146, height: 8, ellipsis: true });
     document.font('Helvetica').fontSize(7.5).fillColor(ink)
-      .text(String(operator.records), 226, y + 9, { width: 48, align: 'center' })
-      .text(String(operator.boards), 280, y + 9, { width: 48, align: 'center' })
-      .text(String(operator.synced), 334, y + 9, { width: 48, align: 'center' });
-    document.fillColor(operator.failed > 0 ? '#dc2626' : ink).text(String(operator.failed), 388, y + 9, { width: 44, align: 'center' });
-    document.fillColor(operator.pending > 0 ? '#d97706' : ink).text(String(operator.pending), 438, y + 9, { width: 48, align: 'center' });
-    document.fontSize(5.9).fillColor(muted).text(nairobiDateTime(operator.lastLoggedAt), 492, y + 6, { width: 56, height: 18 });
+      .text(String(operator.records), 198, y + 9, { width: 42, align: 'center' })
+      .text(String(operator.boards), 244, y + 9, { width: 42, align: 'center' })
+      .text(`${boardShare}%`, 290, y + 9, { width: 42, align: 'center' })
+      .text(String(operator.synced), 336, y + 9, { width: 42, align: 'center' });
+    document.fillColor(operator.failed > 0 ? '#dc2626' : ink).text(String(operator.failed), 382, y + 9, { width: 42, align: 'center' });
+    document.fillColor(operator.pending > 0 ? '#d97706' : ink).text(String(operator.pending), 428, y + 9, { width: 46, align: 'center' });
+    document.fontSize(5.9).fillColor(muted).text(nairobiDateTime(operator.lastLoggedAt), 478, y + 6, { width: 66, height: 18 });
     document.y = y + 29;
   });
   document.moveDown(.35);

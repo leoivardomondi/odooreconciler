@@ -6,11 +6,10 @@ import { ensureDatabase, getRuntimeDatabaseConfig } from './src/models/db';
 import { env } from './src/utils/env';
 import { logEvent } from './src/services/logService';
 import { startSchedulerInterval } from './src/services/schedulerService';
-import { startShopFloorTaskReminderInterval } from './src/services/shopFloorTaskReminderService';
-import { startWeeklyShopFloorReportInterval } from './src/services/weeklyShopFloorReportService';
-import { startMoOvertimeSuggestionInterval } from './src/services/moOvertimeSuggestionService';
+import { startEmailAutomationInterval } from './src/services/emailAutomationService';
 import { startStockMirrorInterval } from './src/services/stockMirrorService';
 import { startUserProfileSyncInterval } from './src/services/userProfileSyncService';
+import { startShopFloorOperatorAccessSyncInterval } from './src/services/shopFloorOperatorAccessSyncService';
 import { markStartupFailed, markStartupReady, markStartupStep } from './src/services/startupState';
 import { storageDirectoryPath } from './src/utils/paths';
 
@@ -176,11 +175,10 @@ export async function startServer() {
       writeStartupLog('Database initialization completed.');
       markStartupStep('initializing scheduler');
       await withStartupTimeout('Scheduler initialization', () => startSchedulerInterval());
-      startShopFloorTaskReminderInterval();
-      startWeeklyShopFloorReportInterval();
-      startMoOvertimeSuggestionInterval();
+      startEmailAutomationInterval();
       startStockMirrorInterval();
       startUserProfileSyncInterval();
+      startShopFloorOperatorAccessSyncInterval();
       markStartupReady();
       console.log('[startup] Application initialization completed successfully.');
       writeStartupLog('Application initialization completed successfully.');

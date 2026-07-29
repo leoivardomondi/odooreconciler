@@ -105,6 +105,23 @@ export interface OutgoingMailAccount {
   enabled: boolean;
 }
 
+export type EmailAutomationFrequency = 'hourly' | 'daily' | 'weekly';
+
+export interface EmailAutomation {
+  id: string;
+  name: string;
+  systemKey: 'shop-floor-reminders' | 'weekly-shop-floor-report' | 'mpesa-review' | 'mo-overtime' | 'custom';
+  enabled: boolean;
+  frequency: EmailAutomationFrequency;
+  interval: number;
+  dayOfWeek: number;
+  hour: number;
+  recipients: string;
+  subject: string;
+  body: string;
+  lastSentAt: string;
+}
+
 export interface MailConfig {
   transport: MailTransportMode;
   fallbackTransport: MailFallbackTransportMode;
@@ -119,6 +136,8 @@ export interface MailConfig {
   socketTimeoutMs: number;
   testRecipient: string;
   accounts: OutgoingMailAccount[];
+  automations: EmailAutomation[];
+  shopFloorReportingStartDate: string;
 }
 
 export interface PayrollBridgeConfig {

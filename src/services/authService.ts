@@ -754,9 +754,17 @@ export async function getAuthenticationStateAsync(req: Request): Promise<{
   }
 
   await touchAuthSession(sessionId, getSessionExpiryIso());
+  const currentAccess = await getApprovedAuthUserByEmail(session.user.email);
+  const currentUser = currentAccess?.active
+    ? {
+        ...session.user,
+        role: normalizeAuthRole(currentAccess.role),
+        apps: currentAccess.apps || [],
+      }
+    : session.user;
 
   return {
-    user: session.user,
+    user: currentUser,
     csrfToken: session.csrfToken,
     sessionId,
   };
@@ -777,10 +785,11 @@ export async function attachAuthState(req: Request, res: Response, next: NextFun
     try {
       const imp = JSON.parse(cookies.oj_impersonate);
       if (imp.email) {
+        const currentImpersonatedAccess = await getApprovedAuthUserByEmail(String(imp.email));
         const impersonatedUser: AuthSessionUser = {
           email: imp.email,
-          role: imp.role || 'user',
-          apps: imp.apps,
+          role: currentImpersonatedAccess?.active ? currentImpersonatedAccess.role : (imp.role || 'user'),
+          apps: currentImpersonatedAccess?.active ? (currentImpersonatedAccess.apps || []) : imp.apps,
         };
         req.impersonatedBy = state.user;
         req.viewingAsUser = impersonatedUser;

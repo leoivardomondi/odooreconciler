@@ -2,6 +2,12 @@
 <%- include('partials/header') %>
 
 <main class="container-fluid px-3 px-sm-4 px-lg-5 py-3 py-sm-4" style="max-width:1200px">
+  <div id="shopFloorToast" class="position-fixed top-0 start-50 translate-middle-x mt-3 alert alert-success shadow d-none" role="status" aria-live="polite" style="z-index:1090;max-width:min(92vw,620px)"></div>
+  <div id="shopFloorNetworkStatus" class="alert alert-warning d-none" role="status" aria-live="polite">
+    <strong>You are offline.</strong> Job updates are paused. Reconnect and refresh the job status before trying again.
+  </div>
+  <% if (typeof message === 'string' && message) { %><div class="alert alert-success" role="status"><%= message %></div><% } %>
+  <% if (typeof error === 'string' && error) { %><div class="alert alert-danger" role="alert"><%= error %></div><% } %>
   <!-- Language Toggle -->
   <div class="d-flex justify-content-end mb-2">
     <button id="langToggleBtn" class="btn btn-sm rounded-pill px-3 py-1 d-flex align-items-center gap-2 fw-semibold" style="background:#1e293b;color:#fff;font-size:0.78rem;border:none;box-shadow:0 2px 6px rgba(0,0,0,0.15);transition:all 0.2s" onclick="toggleLanguage()">
@@ -109,7 +115,10 @@
   </style>
 
   <% if (data.error) { %>
-    <div class="alert alert-warning rounded-3 mb-4"><%= data.error %></div>
+    <div class="alert alert-warning rounded-3 mb-4 d-flex flex-wrap align-items-center justify-content-between gap-3" role="alert">
+      <div><strong>Shop Floor could not finish loading.</strong><div class="small mt-1"><%= data.error %></div></div>
+      <a class="btn btn-sm btn-outline-warning" href="/shop-floor?refresh=true">Try Again</a>
+    </div>
   <% } %>
 
   <% if (data.employee) { %>
@@ -519,6 +528,21 @@
       <!-- Left: All Work Orders grouped by Area -->
       <% if (!data.isLimitedDashboard) { %>
       <div id="manufacturing-orders" class="col-lg-8 order-2 order-lg-1" style="scroll-margin-top:1rem">
+        <div class="rounded-4 border bg-white p-3 mb-3" style="box-shadow:0 1px 3px rgba(0,0,0,.04)">
+          <label for="manufacturingOrderSearch" class="form-label small fw-bold mb-2">Find a manufacturing order</label>
+          <div class="input-group">
+            <span class="input-group-text bg-white border-end-0"><i class="bi bi-search" aria-hidden="true"></i></span>
+            <input id="manufacturingOrderSearch" class="form-control border-start-0" type="search" placeholder="Search MO, product, client or operator" autocomplete="off" />
+            <button id="clearManufacturingOrderSearch" class="btn btn-outline-secondary d-none" type="button">Clear</button>
+          </div>
+          <div id="manufacturingOrderSearchCount" class="small text-muted mt-2" aria-live="polite"></div>
+        </div>
+        <div id="manufacturingOrderNoResults" class="rounded-4 border bg-white p-5 mb-3 text-center d-none">
+          <i class="bi bi-search fs-2 text-muted" aria-hidden="true"></i>
+          <h2 class="h6 fw-bold mt-3 mb-1">No matching jobs</h2>
+          <p class="text-muted small mb-3">No manufacturing orders match your search.</p>
+          <button type="button" class="btn btn-outline-secondary btn-sm" data-clear-mo-search>Clear Search</button>
+        </div>
         <%
           // Group work orders by area
           const areaGroups = {};
@@ -543,7 +567,7 @@
           const doneCount = orders.filter(o => o.state === 'done').length;
           const progressCount = orders.filter(o => o.state === 'progress').length;
         %>
-        <div id="area-<%= area.toLowerCase().replace(/ area$/, '').replace(/[^a-z0-9]+/g, '-') %>" class="rounded-4 border bg-white overflow-hidden mb-4" style="box-shadow:0 1px 3px rgba(0,0,0,0.04)">
+        <div id="area-<%= area.toLowerCase().replace(/ area$/, '').replace(/[^a-z0-9]+/g, '-') %>" data-mo-area-group class="rounded-4 border bg-white overflow-hidden mb-4" style="box-shadow:0 1px 3px rgba(0,0,0,0.04)">
           <div class="px-4 py-2 d-flex justify-content-between align-items-center" style="background:#f8fafc;border-bottom:1px solid #e2e8f0">
             <div>
               <span class="fw-bold" style="font-size:0.85rem;color:#1e293b"><%= area %></span>
@@ -557,7 +581,7 @@
             const isOverdue = wo.state !== 'done' && wo.isOverdue;
             const planFormId = `planDate${wo.id}`;
           %>
-            <div class="px-4 py-3 border-bottom d-flex flex-column gap-2" style="<%= isOverdue ? 'background:#fef2f2' : '' %>">
+            <div class="px-4 py-3 border-bottom d-flex flex-column gap-2" data-mo-row="<%= wo.id %>" data-mo-search="<%= [wo.name, wo.product, wo.client, wo.assignedTo, area].filter(Boolean).join(' ').toLowerCase() %>" style="<%= isOverdue ? 'background:#fef2f2' : '' %>">
               <!-- Top Row: MO Name & Badges -->
               <div class="d-flex justify-content-between align-items-center">
                 <button
@@ -581,7 +605,7 @@
                              : wo.state === 'confirmed' ? 'background:#fef9c3;color:#854d0e' 
                              : 'background:#f1f5f9;color:#475569';
                   %>
-                  <span class="badge rounded-pill" style="<%= sb %>;font-weight:600;font-size:0.68rem"><%= wo.state %></span>
+                  <span class="badge rounded-pill" data-mo-state-badge style="<%= sb %>;font-weight:600;font-size:0.68rem"><%= wo.state %></span>
                   
                   <!-- Overdue Badge -->
                   <% if (isOverdue) { %>
@@ -592,7 +616,7 @@
                   <% if (wo.stockStatus === 'no_stock') { %>
                     <span class="badge bg-danger-subtle text-danger border border-danger-subtle py-0.5 px-2 rounded-pill" style="font-size:0.68rem;font-weight:600" data-i18n="no_stock">No Stock</span>
                   <% } else if (wo.stockStatus === 'incoming') { %>
-                    <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle py-0.5 px-2 rounded-pill" style="font-size:0.68rem;font-weight:600" data-i18n="incoming">Incoming</span>
+                    <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle py-0.5 px-2 rounded-pill" style="font-size:0.68rem;font-weight:600" data-i18n="incoming">Incoming / Purchase</span>
                   <% } else { %>
                     <span class="badge bg-success-subtle text-success border border-success-subtle py-0.5 px-2 rounded-pill" style="font-size:0.68rem;font-weight:600" data-i18n="ready">Ready</span>
                   <% } %>
@@ -1251,13 +1275,14 @@
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body p-4">
-          <div id="addStockNotice" class="alert alert-danger d-none" role="alert">
+          <div id="addStockNotice" class="alert alert-danger d-none" role="alert" tabindex="-1">
             <div class="fw-bold mb-1">ADD STOCK NOTICE</div>
             <div class="small mb-3">This manufacturing order has no available stock. Add or receive the required stock before starting.</div>
             <a href="/shop-floor/boards" class="btn btn-danger btn-sm">Add Stock</a>
           </div>
+          <div id="manufacturingOrderActionStatus" class="alert d-none" role="status" aria-live="polite"></div>
           <div class="d-grid gap-3">
-            <form id="manufacturingOrderActionForm" method="post" action="">
+            <form id="manufacturingOrderActionForm" method="post" action="" data-no-loading="true">
               <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
               <input type="hidden" name="action" id="manufacturingOrderActionValue" value="start" />
               <button id="manufacturingOrderStartButton" class="btn btn-success w-100 py-3 fw-bold" type="submit"><i class="bi bi-play-fill me-2"></i><span>Start</span></button>
@@ -1307,6 +1332,52 @@
 
 <script>
 (function() {
+  var networkStatus = document.getElementById('shopFloorNetworkStatus');
+  if (!networkStatus) return;
+  function updateNetworkState() {
+    networkStatus.classList.toggle('d-none', navigator.onLine);
+  }
+  window.addEventListener('offline', updateNetworkState);
+  window.addEventListener('online', updateNetworkState);
+  updateNetworkState();
+})();
+
+(function() {
+  var input = document.getElementById('manufacturingOrderSearch');
+  if (!input) return;
+  var clearButton = document.getElementById('clearManufacturingOrderSearch');
+  var emptyState = document.getElementById('manufacturingOrderNoResults');
+  var count = document.getElementById('manufacturingOrderSearchCount');
+
+  function applySearch() {
+    var query = input.value.trim().toLowerCase();
+    var visible = 0;
+    document.querySelectorAll('[data-mo-area-group]').forEach(function(group) {
+      var groupVisible = 0;
+      group.querySelectorAll('[data-mo-row]').forEach(function(row) {
+        var matches = !query || (row.getAttribute('data-mo-search') || '').includes(query);
+        row.classList.toggle('d-none', !matches);
+        if (matches) { visible++; groupVisible++; }
+      });
+      group.classList.toggle('d-none', groupVisible === 0);
+    });
+    clearButton.classList.toggle('d-none', !query);
+    emptyState.classList.toggle('d-none', !query || visible > 0);
+    count.textContent = query ? (visible + (visible === 1 ? ' matching job' : ' matching jobs')) : '';
+  }
+
+  input.addEventListener('input', applySearch);
+  [clearButton, document.querySelector('[data-clear-mo-search]')].forEach(function(button) {
+    if (!button) return;
+    button.addEventListener('click', function() {
+      input.value = '';
+      applySearch();
+      input.focus();
+    });
+  });
+})();
+
+(function() {
   var actionModal = document.getElementById('manufacturingOrderActionModal');
   if (!actionModal) return;
 
@@ -1316,12 +1387,25 @@
   var actionLabel = actionButton.querySelector('span');
   var stockBadge = document.getElementById('manufacturingOrderStockBadge');
   var addStockNotice = document.getElementById('addStockNotice');
+  var actionStatus = document.getElementById('manufacturingOrderActionStatus');
   var currentStockStatus = 'ready';
+  var currentMoId = '';
+  var requestInProgress = false;
+  var toast = document.getElementById('shopFloorToast');
+
+  function showToast(message) {
+    if (!toast) return;
+    toast.textContent = message;
+    toast.classList.remove('d-none');
+    window.clearTimeout(showToast.timer);
+    showToast.timer = window.setTimeout(function() { toast.classList.add('d-none'); }, 5000);
+  }
 
   actionModal.addEventListener('show.bs.modal', function(event) {
     var trigger = event.relatedTarget;
     if (!trigger) return;
     var moId = trigger.getAttribute('data-mo-id');
+    currentMoId = moId || '';
     var moState = trigger.getAttribute('data-mo-state') || 'confirmed';
     currentStockStatus = trigger.getAttribute('data-stock-status') || 'ready';
     var isInProgress = moState === 'progress';
@@ -1333,20 +1417,131 @@
     actionValue.value = isInProgress ? 'finish' : 'start';
     actionLabel.textContent = isDone ? 'Completed' : (isInProgress ? 'Finish' : 'Start');
     actionButton.disabled = isDone;
+    requestInProgress = false;
     actionButton.classList.toggle('btn-success', !isInProgress);
     actionButton.classList.toggle('btn-primary', isInProgress);
     addStockNotice.classList.add('d-none');
+    actionStatus.className = 'alert d-none';
+    actionStatus.textContent = '';
 
-    var stockLabels = { ready: 'Ready', incoming: 'Incoming', no_stock: 'No Stock' };
+    var stockLabels = { ready: 'Ready', incoming: 'Incoming / Purchase', no_stock: 'No Stock' };
     stockBadge.textContent = stockLabels[currentStockStatus] || currentStockStatus;
     stockBadge.className = 'badge rounded-pill ' + (currentStockStatus === 'ready' ? 'bg-success-subtle text-success' : currentStockStatus === 'incoming' ? 'bg-warning-subtle text-warning-emphasis' : 'bg-danger-subtle text-danger');
   });
 
-  form.addEventListener('submit', function(event) {
+  function updateOrderUi(moId, state) {
+    var row = document.querySelector('[data-mo-row="' + moId + '"]');
+    if (!row) return;
+    var badge = row.querySelector('[data-mo-state-badge]');
+    if (badge) {
+      badge.textContent = state;
+      badge.style.background = state === 'done' ? '#dcfce7' : '#dbeafe';
+      badge.style.color = state === 'done' ? '#166534' : '#1e40af';
+    }
+    row.querySelectorAll('[data-mo-action]').forEach(function(trigger) {
+      trigger.setAttribute('data-mo-state', state);
+      if (trigger.tagName !== 'BUTTON' || trigger.classList.contains('btn-link')) return;
+      var isDone = state === 'done';
+      trigger.disabled = isDone;
+      trigger.classList.toggle('btn-success', false);
+      trigger.classList.toggle('btn-primary', !isDone);
+      trigger.classList.toggle('btn-outline-secondary', isDone);
+      trigger.innerHTML = isDone
+        ? '<i class="bi bi-check-circle-fill me-1" aria-hidden="true"></i>Completed'
+        : '<i class="bi bi-stop-fill me-1" aria-hidden="true"></i>Finish';
+    });
+  }
+
+  form.addEventListener('submit', async function(event) {
+    event.preventDefault();
+    if (requestInProgress) return;
     if (actionValue.value === 'start' && currentStockStatus === 'no_stock') {
-      event.preventDefault();
       addStockNotice.classList.remove('d-none');
+      addStockNotice.focus();
       addStockNotice.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      return;
+    }
+
+    requestInProgress = true;
+    addStockNotice.classList.add('d-none');
+    actionStatus.className = 'alert d-none';
+    actionButton.disabled = true;
+    var originalHtml = actionButton.innerHTML;
+    var actionName = actionValue.value === 'finish' ? 'Finishing' : 'Starting';
+    var controller = new AbortController();
+    var slowTimer = window.setTimeout(function() {
+      actionStatus.className = 'alert alert-info py-2';
+      actionStatus.textContent = 'Odoo is taking longer than usual. Keep this page open while the job status is confirmed.';
+    }, 5000);
+    var timeoutTimer = window.setTimeout(function() { controller.abort(); }, 30000);
+    actionButton.innerHTML = '<span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span><span>' + actionName + '…</span>';
+
+    try {
+      var response = await fetch(form.action, {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'
+        },
+        body: new URLSearchParams(new FormData(form)).toString(),
+        signal: controller.signal
+      });
+      window.clearTimeout(slowTimer);
+      window.clearTimeout(timeoutTimer);
+      var result = await response.json().catch(function() {
+        return { ok: false, message: 'Odoo returned an unexpected response.' };
+      });
+      if (result.redirectTo) {
+        actionStatus.className = 'alert alert-warning py-2';
+        actionStatus.textContent = result.message || 'Purchased boards must be received before this job can start.';
+        window.location.assign(result.redirectTo);
+        return;
+      }
+      if (!response.ok || !result.ok) {
+        var responseError = new Error(result.message || 'Could not update this job.');
+        responseError.code = result.code || '';
+        responseError.loginUrl = result.loginUrl || '';
+        responseError.httpStatus = response.status;
+        throw responseError;
+      }
+
+      updateOrderUi(currentMoId, result.state);
+      actionStatus.className = 'alert ' + (result.warning ? 'alert-warning' : 'alert-success') + ' py-2';
+      actionStatus.textContent = result.warning ? (result.message + ' ' + result.warning) : result.message;
+      actionButton.innerHTML = result.state === 'done'
+        ? '<i class="bi bi-check-circle-fill me-2"></i><span>Completed</span>'
+        : '<i class="bi bi-stop-fill me-2"></i><span>Finish</span>';
+      actionButton.disabled = result.state === 'done';
+      actionValue.value = result.state === 'progress' ? 'finish' : 'start';
+      showToast(result.message);
+      window.setTimeout(function() {
+        var modal = bootstrap.Modal.getInstance(actionModal);
+        if (modal) modal.hide();
+      }, 1100);
+    } catch (error) {
+      window.clearTimeout(slowTimer);
+      window.clearTimeout(timeoutTimer);
+      actionStatus.className = 'alert alert-warning py-2';
+      if (error && error.name === 'AbortError') {
+        actionStatus.innerHTML = '<strong>Confirmation timed out.</strong><div class="small mt-1">The job may already have started in Odoo. Check its latest status before trying again.</div><a class="btn btn-sm btn-outline-secondary mt-2" href="/shop-floor?refresh=true#manufacturing-orders">Refresh Job Status</a>';
+      } else if (error && (error.code === 'session_expired' || error.httpStatus === 401)) {
+        actionStatus.innerHTML = '<strong>Session expired.</strong><div class="small mt-1">Sign in again, then return to this job.</div><a class="btn btn-sm btn-primary mt-2" href="' + (error.loginUrl || '/login?next=%2Fshop-floor') + '">Sign In</a>';
+      } else if (error && (error.code === 'permission_denied' || error.httpStatus === 403)) {
+        actionStatus.innerHTML = '<strong>Permission denied.</strong><div class="small mt-1">You do not have permission to update this job in Odoo.</div><a class="btn btn-sm btn-outline-secondary mt-2" href="mailto:dbadmin@urbanvibeinteriordesign.co.ke">Contact Administrator</a>';
+      } else if (!navigator.onLine || error instanceof TypeError) {
+        actionStatus.innerHTML = '<strong>Connection lost.</strong><div class="small mt-1">The job may have started. Reconnect and refresh its status before trying again.</div><a class="btn btn-sm btn-outline-secondary mt-2" href="/shop-floor?refresh=true#manufacturing-orders">Refresh Job Status</a>';
+      } else {
+        actionStatus.textContent = error instanceof Error ? error.message : 'Could not update this job.';
+        var refreshLink = document.createElement('a');
+        refreshLink.className = 'btn btn-sm btn-outline-secondary mt-2 d-block';
+        refreshLink.href = '/shop-floor?refresh=true#manufacturing-orders';
+        refreshLink.textContent = 'Refresh Job Status';
+        actionStatus.appendChild(refreshLink);
+      }
+      actionButton.innerHTML = originalHtml;
+      actionButton.disabled = false;
+    } finally {
+      requestInProgress = false;
     }
   });
 })();
@@ -1474,6 +1669,11 @@
       if (!isValid) {
         e.preventDefault();
         e.stopPropagation();
+        var firstInvalid = form.querySelector('.is-invalid');
+        if (firstInvalid) {
+          firstInvalid.focus();
+          firstInvalid.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
         return;
       }
 
@@ -1940,7 +2140,7 @@ var _i18n = {
     done: 'imekamilika',
     overdue: 'Imechelewa',
     no_stock: 'Hakuna Hisa',
-    incoming: 'Inakuja',
+    incoming: 'Inakuja / Imenunuliwa',
     ready: 'Tayari',
     assigned: 'Amepewa',
     unassigned: 'Hajapewa',

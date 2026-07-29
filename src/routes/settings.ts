@@ -11,6 +11,7 @@ import {
 import {
   AppSettings,
   FieldMappings,
+  EmailAutomation,
   MailConfig,
   OdooModelField,
   OutgoingMailAccount,
@@ -26,6 +27,7 @@ import {
   resolveFieldMappings,
   sanitizeBaseUrl,
 } from '../utils/helpers';
+import { normalizeShopFloorReportingStartDate } from '../utils/shopFloorReporting';
 
 const router = Router();
 
@@ -153,6 +155,11 @@ const mailValidators = [
     .isInt({ min: 1000, max: 300000 })
     .withMessage('Socket timeout must be between 1000 and 300000 ms.'),
   body('mailTestRecipient').optional({ values: 'falsy' }).trim().isEmail().withMessage('Enter a valid test recipient email.'),
+  body('shopFloorReportingStartDate')
+    .optional({ values: 'falsy' })
+    .trim()
+    .isISO8601({ strict: true, strictSeparator: true })
+    .withMessage('Shop-floor reporting start date must be a valid date.'),
   ...Array.from({ length: 5 }, (_value, index) => {
     const accountNumber = index + 1;
     return [
@@ -208,6 +215,7 @@ interface MappingDiagnosticRow {
 }
 
 const MAIL_ACCOUNT_FORM_COUNT = 5;
+const EMAIL_AUTOMATION_FORM_COUNT = 20;
 
 function hasMailSource(source: Record<string, string>) {
   return Object.keys(source).some((key) => key.startsWith('mail'));
@@ -338,7 +346,35 @@ function buildMailConfigFromSource(source: Record<string, string>, existing: Mai
       ),
       socketTimeoutMs: positiveNumberFromSource(source, 'mailSocketTimeoutMs', existing.socketTimeoutMs || 45000),
       testRecipient: (source.mailTestRecipient ?? (existing.testRecipient || '')).trim(),
+      shopFloorReportingStartDate: normalizeShopFloorReportingStartDate(
+        source.shopFloorReportingStartDate ?? existing.shopFloorReportingStartDate,
+      ),
       accounts,
+      automations: hasMailSource(source) && source.mailAutomationCount !== undefined
+        ? Array.from(
+            { length: Math.min(EMAIL_AUTOMATION_FORM_COUNT, Math.max(0, Number(source.mailAutomationCount) || 0)) },
+            (_value, index): EmailAutomation => {
+              const number = index + 1;
+              const current = existing.automations[index];
+              const systemKey = (source[`mailAutomation${number}SystemKey`] || current?.systemKey || 'custom') as EmailAutomation['systemKey'];
+              const frequency = (source[`mailAutomation${number}Frequency`] || current?.frequency || 'daily') as EmailAutomation['frequency'];
+              return {
+                id: (source[`mailAutomation${number}Id`] || current?.id || `custom-${Date.now()}-${number}`).replace(/[^a-zA-Z0-9_-]/g, ''),
+                name: (source[`mailAutomation${number}Name`] || current?.name || `Email ${number}`).trim(),
+                systemKey: ['shop-floor-reminders', 'weekly-shop-floor-report', 'mpesa-review', 'mo-overtime'].includes(systemKey) ? systemKey : 'custom',
+                enabled: source[`mailAutomation${number}Enabled`] === 'on',
+                frequency: ['hourly', 'daily', 'weekly'].includes(frequency) ? frequency : 'daily',
+                interval: Math.min(168, Math.max(1, Number(source[`mailAutomation${number}Interval`]) || 1)),
+                dayOfWeek: Math.min(6, Math.max(0, Number(source[`mailAutomation${number}DayOfWeek`]) || 0)),
+                hour: Math.min(23, Math.max(0, Number(source[`mailAutomation${number}Hour`]) || 0)),
+                recipients: (source[`mailAutomation${number}Recipients`] || '').trim(),
+                subject: (source[`mailAutomation${number}Subject`] || '').trim(),
+                body: source[`mailAutomation${number}Body`] || '',
+                lastSentAt: current?.id === source[`mailAutomation${number}Id`] ? current.lastSentAt : '',
+              };
+            },
+          ).filter((item, index) => item.name && source[`mailAutomation${index + 1}Remove`] !== 'on')
+        : existing.automations,
     },
     source.mailPreset || '',
   );
@@ -392,7 +428,9 @@ function buildMailFormValues(source: Record<string, string>, existing: MailConfi
     mailGreetingTimeoutMs: String(mail.greetingTimeoutMs || 30000),
     mailSocketTimeoutMs: String(mail.socketTimeoutMs || 45000),
     mailTestRecipient: source.mailTestRecipient ?? mail.testRecipient,
+    shopFloorReportingStartDate: source.shopFloorReportingStartDate ?? mail.shopFloorReportingStartDate,
     mailAccounts: accounts,
+    mailAutomations: mail.automations,
   };
 }
 

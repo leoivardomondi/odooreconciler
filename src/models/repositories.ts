@@ -19,6 +19,7 @@ import {
   MpesaTransactionExplorerOptions,
   MpesaTransactionExplorerRow,
   OutgoingMailAccount,
+  EmailAutomation,
   OdooModelField,
   OdooModelFieldCache,
   PayrollBridgeConfig,
@@ -44,6 +45,7 @@ import {
 } from '../utils/helpers';
 import { appDateTimeFromNow, appDateTime } from '../utils/dateTime';
 import { env } from '../utils/env';
+import { clampShopFloorReportingDate, normalizeShopFloorReportingStartDate } from '../utils/shopFloorReporting';
 
 function nowMinusMinutesIso(windowMinutes: number): string {
   return appDateTimeFromNow(-Math.max(1, windowMinutes) * 60 * 1000);
@@ -192,6 +194,29 @@ function readMailConfig(mailConfigJson: string | null): MailConfig {
     socketTimeoutMs: positiveNumberValue(raw.socketTimeoutMs, defaults.socketTimeoutMs),
     testRecipient: stringValue(raw.testRecipient, defaults.testRecipient || '').trim(),
     accounts,
+    automations: (Array.isArray(raw.automations) ? raw.automations : defaults.automations).map((entry, index): EmailAutomation => {
+      const item = asRecord(entry);
+      const fallback = defaults.automations[index];
+      const systemKey = stringValue(item.systemKey, fallback?.systemKey || 'custom') as EmailAutomation['systemKey'];
+      const frequency = stringValue(item.frequency, fallback?.frequency || 'daily') as EmailAutomation['frequency'];
+      return {
+        id: stringValue(item.id, fallback?.id || `custom-${index + 1}`),
+        name: stringValue(item.name, fallback?.name || `Email ${index + 1}`),
+        systemKey: ['shop-floor-reminders', 'weekly-shop-floor-report', 'mpesa-review', 'mo-overtime', 'custom'].includes(systemKey) ? systemKey : 'custom',
+        enabled: booleanValue(item.enabled, fallback?.enabled ?? false),
+        frequency: ['hourly', 'daily', 'weekly'].includes(frequency) ? frequency : 'daily',
+        interval: positiveNumberValue(item.interval, fallback?.interval || 1),
+        dayOfWeek: Math.min(6, Math.max(0, Number(item.dayOfWeek ?? fallback?.dayOfWeek ?? 1))),
+        hour: Math.min(23, Math.max(0, Number(item.hour ?? fallback?.hour ?? 8))),
+        recipients: stringValue(item.recipients, fallback?.recipients || '').trim(),
+        subject: stringValue(item.subject, fallback?.subject || '').trim(),
+        body: stringValue(item.body, fallback?.body || ''),
+        lastSentAt: stringValue(item.lastSentAt, ''),
+      };
+    }),
+    shopFloorReportingStartDate: normalizeShopFloorReportingStartDate(
+      stringValue(raw.shopFloorReportingStartDate, defaults.shopFloorReportingStartDate),
+    ),
   };
 
   const normalizedHost = resolved.host.toLowerCase();
@@ -3585,7 +3610,9 @@ export async function getRecentBoardIntakeQueueEntries(limit = 12) {
     FROM board_intake_queue ORDER BY created_at DESC LIMIT ?`, [Math.max(1, Math.min(50, limit))]);
 }
 
-export async function getBoardIntakeLoggingReport(startDate: string, endDate: string) {
+export async function getBoardIntakeLoggingReport(startDate: string, endDate: string, reportingStartDate?: string) {
+  const effectiveStartDate = clampShopFloorReportingDate(startDate, reportingStartDate);
+  const effectiveEndDate = clampShopFloorReportingDate(endDate, reportingStartDate);
   const rows = await queryAll<{
     actor_name: string | null;
     actor_email: string | null;
@@ -3595,7 +3622,7 @@ export async function getBoardIntakeLoggingReport(startDate: string, endDate: st
   }>(`SELECT actor_name, actor_email, quantity, status, created_at
       FROM board_intake_queue
       WHERE created_at >= ? AND created_at <= ?
-      ORDER BY created_at ASC`, [`${startDate} 00:00:00`, `${endDate} 23:59:59`]);
+      ORDER BY created_at ASC`, [`${effectiveStartDate} 00:00:00`, `${effectiveEndDate} 23:59:59`]);
 
   const byOperator = new Map<string, {
     name: string;

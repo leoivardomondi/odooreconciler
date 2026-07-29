@@ -1070,6 +1070,13 @@ export class OdooClient {
     return this.request<T>(model, method, { ids, ...values });
   }
 
+  async checkModelAccess(model: string, operation: 'read' | 'write' | 'create' | 'unlink'): Promise<boolean> {
+    return this.request<boolean>(model, 'check_access_rights', {
+      operation,
+      raise_exception: false,
+    });
+  }
+
   private wait(ms: number): Promise<void> {
     return new Promise((resolve) => {
       setTimeout(resolve, ms);
@@ -1159,6 +1166,38 @@ export class OdooClient {
       },
     );
 
+    return employees[0] || null;
+  }
+
+  /**
+   * Resolve an authenticated app user to an Odoo employee in one request.
+   * This is used by latency-sensitive Shop Floor actions and does not use an
+   * employee PIN because the app session has already authenticated the user.
+   */
+  async findEmployeeForShopFloorEmail(email: string) {
+    const normalizedEmail = String(email || '').trim();
+    if (!normalizedEmail) return null;
+    const employees = await this.request<Array<{
+      id: number;
+      name: string;
+      job_title: string | null;
+      department_id: [number, string] | null;
+      work_email: string | null;
+      mobile_phone: string | null;
+      parent_id: [number, string] | null;
+    }>>(
+      'hr.employee',
+      'search_read',
+      {
+        domain: [
+          '|',
+          ['work_email', '=ilike', normalizedEmail],
+          ['user_id.login', '=ilike', normalizedEmail],
+        ],
+        fields: ['id', 'name', 'job_title', 'department_id', 'work_email', 'mobile_phone', 'parent_id'],
+        limit: 1,
+      },
+    );
     return employees[0] || null;
   }
 
@@ -1523,6 +1562,76 @@ export class OdooClient {
       }
     }
     return stateMap;
+  }
+
+  async getManufacturingOrderBoardProcurement(moId: number) {
+    const [productions, components] = await Promise.all([
+      this.searchReadRecords<{
+        id: number;
+        name: string;
+        origin: string | null;
+      }>('mrp.production', {
+        domain: [['id', '=', moId]],
+        fields: ['id', 'name', 'origin'],
+        limit: 1,
+      }),
+      this.searchReadRecords<{
+        product_id: [number, string] | false;
+        product_uom_qty: number;
+        quantity: number;
+        state: string;
+        forecast_availability: number | string | null | boolean;
+      }>('stock.move', {
+        domain: [['raw_material_production_id', '=', moId]],
+        fields: ['product_id', 'product_uom_qty', 'quantity', 'state', 'forecast_availability'],
+        limit: 1000,
+      }),
+    ]);
+    const production = productions[0];
+    if (!production) {
+      throw new OdooClientError('Manufacturing order was not found in Odoo.');
+    }
+    const unavailableBoards = components.filter((component) => {
+      const productName = Array.isArray(component.product_id) ? component.product_id[1] : '';
+      if (!isBoardProductName(productName) || ['done', 'cancel', 'draft', 'assigned'].includes(component.state)) {
+        return false;
+      }
+      return ['confirmed', 'waiting', 'partially_available'].includes(component.state)
+        || !component.forecast_availability
+        || component.forecast_availability === 'unavailable';
+    }).map((component) => ({
+      name: Array.isArray(component.product_id) ? component.product_id[1] : 'Board',
+      required: Number(component.product_uom_qty || 0),
+      available: Number(component.quantity || 0),
+    }));
+
+    const purchaseOrders = production.origin
+      ? await this.searchReadRecords<{
+          id: number;
+          name: string;
+          state: string;
+          partner_id: [number, string] | false;
+        }>('purchase.order', {
+          domain: [['origin', '=', production.origin], ['state', '!=', 'cancel']],
+          fields: ['id', 'name', 'state', 'partner_id'],
+          order: 'id desc',
+          limit: 100,
+        })
+      : [];
+
+    return {
+      moId: production.id,
+      moName: production.name,
+      origin: production.origin || null,
+      waitingForBoards: unavailableBoards.length > 0,
+      unavailableBoards,
+      purchaseOrders: purchaseOrders.map((po) => ({
+        id: po.id,
+        name: po.name,
+        state: po.state,
+        supplier: Array.isArray(po.partner_id) ? po.partner_id[1] : null,
+      })),
+    };
   }
 
   /**
@@ -3219,39 +3328,109 @@ export class OdooClient {
     return this.callRecordMethod('stock.picking', 'button_validate', [pickingId]);
   }
 
-  async advanceManufacturingOrder(moId: number, action: 'start' | 'finish') {
-    const productions = await this.searchReadRecords<{ id: number; state: string }>('mrp.production', {
-      domain: [['id', '=', moId]],
-      fields: ['id', 'state'],
-      limit: 1,
-    });
+  async advanceManufacturingOrder(moId: number, action: 'start' | 'finish', employeeId?: number) {
+    if (!employeeId || !Number.isSafeInteger(employeeId)) {
+      throw new OdooClientError('Your account is not linked to a valid Odoo employee.');
+    }
+    const [productions, workorders] = await Promise.all([
+      this.searchReadRecords<{ id: number; name: string; state: string }>('mrp.production', {
+        domain: [['id', '=', moId]],
+        fields: ['id', 'name', 'state'],
+        limit: 1,
+      }),
+      this.searchReadRecords<{
+        id: number;
+        state: string;
+        workcenter_id: [number, string] | false;
+        employee_ids: number[];
+      }>('mrp.workorder', {
+        domain: [['production_id', '=', moId], ['state', 'not in', ['done', 'cancel']]],
+        fields: ['id', 'state', 'workcenter_id', 'employee_ids'],
+        limit: 100,
+        order: 'id asc',
+      }),
+    ]);
     const production = productions[0];
     if (!production || ['done', 'cancel'].includes(production.state)) {
       throw new OdooClientError('This manufacturing order is no longer active.');
     }
+    if (!String(production.name || '').toUpperCase().startsWith('WH/MO/')) {
+      throw new OdooClientError('This manufacturing order is outside the Shop Floor warehouse.');
+    }
 
-    const workorders = await this.searchReadRecords<{ id: number; state: string }>('mrp.workorder', {
-      domain: [['production_id', '=', moId], ['state', 'not in', ['done', 'cancel']]],
-      fields: ['id', 'state'],
-      limit: 100,
-      order: 'id asc',
-    });
+    const assertEmployeeMayUseWorkcenter = async (workorder: {
+      id: number;
+      workcenter_id: [number, string] | false;
+    }) => {
+      if (!Array.isArray(workorder.workcenter_id)) {
+        throw new OdooClientError('This operation has no Odoo work centre assigned.');
+      }
+      const workcenters = await this.searchReadRecords<{ id: number; employee_ids: number[] }>('mrp.workcenter', {
+        domain: [['id', '=', workorder.workcenter_id[0]]],
+        fields: ['id', 'employee_ids'],
+        limit: 1,
+      });
+      const allowedEmployees = workcenters[0]?.employee_ids || [];
+      if (allowedEmployees.length && !allowedEmployees.includes(employeeId)) {
+        throw new OdooClientError(
+          `You are not assigned to ${workorder.workcenter_id[1]} in Odoo. Ask an administrator to add you under Allowed Employees.`,
+        );
+      }
+    };
 
     if (action === 'start') {
-      await this.callRecordMethod('mrp.production', 'action_assign', [moId]).catch(() => null);
       const workorder = workorders.find((item) => item.state === 'ready') || workorders.find((item) => item.state !== 'progress');
       if (!workorder) {
         if (workorders.some((item) => item.state === 'progress')) return;
         throw new OdooClientError('No work operation is available to start for this manufacturing order.');
       }
-      return this.callRecordMethod('mrp.workorder', 'button_start', [workorder.id]);
+      await assertEmployeeMayUseWorkcenter(workorder);
+      await this.callRecordMethod('mrp.workorder', 'start_employee', [workorder.id], {
+        employee_id: employeeId,
+      });
+      const [verifiedWorkorder, activeTimers] = await Promise.all([
+        this.searchReadRecords<{ id: number; state: string; employee_ids: number[] }>('mrp.workorder', {
+          domain: [['id', '=', workorder.id]],
+          fields: ['id', 'state', 'employee_ids'],
+          limit: 1,
+        }),
+        this.searchReadRecords<{ id: number; employee_id: [number, string] | false }>('mrp.workcenter.productivity', {
+          domain: [
+            ['workorder_id', '=', workorder.id],
+            ['employee_id', '=', employeeId],
+            ['date_end', '=', false],
+          ],
+          fields: ['id', 'employee_id'],
+          order: 'date_start desc, id desc',
+          limit: 1,
+        }),
+      ]);
+      if (verifiedWorkorder[0]?.state !== 'progress' || !activeTimers[0]) {
+        throw new OdooClientError('Odoo did not verify the employee timer and In Progress state. The job was not reported as started.');
+      }
+      return { workorderId: workorder.id, state: 'progress' as const, operatorLinked: true };
     }
 
-    const activeWorkorder = workorders.find((item) => item.state === 'progress');
+    const activeWorkorder = workorders.find(
+      (item) => item.state === 'progress' && (item.employee_ids || []).includes(employeeId),
+    );
     if (!activeWorkorder) {
-      throw new OdooClientError('This manufacturing order has no operation currently in progress.');
+      throw new OdooClientError('You do not have an active employee timer on this manufacturing order.');
     }
-    return this.callRecordMethod('mrp.workorder', 'button_finish', [activeWorkorder.id]);
+    await assertEmployeeMayUseWorkcenter(activeWorkorder);
+    await this.callRecordMethod('mrp.workorder', 'stop_employee', [activeWorkorder.id], {
+      employee_id: employeeId,
+    });
+    await this.callRecordMethod('mrp.workorder', 'button_finish', [activeWorkorder.id]);
+    const verification = await this.searchReadRecords<{ id: number; state: string }>('mrp.workorder', {
+      domain: [['id', '=', activeWorkorder.id]],
+      fields: ['id', 'state'],
+      limit: 1,
+    });
+    if (verification[0]?.state !== 'done') {
+      throw new OdooClientError('Odoo did not verify that the operation was completed.');
+    }
+    return { workorderId: activeWorkorder.id, state: 'done' as const, operatorLinked: true };
   }
 
   /**
