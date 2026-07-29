@@ -2402,6 +2402,8 @@ export class OdooClient {
     warehouseId?: string;
     pickingTypeId?: string;
     locationId?: string;
+    fromDate?: string;
+    toDate?: string;
   }): Promise<{
     monthLabel: string;
     registeredBoards: number;
@@ -2415,11 +2417,21 @@ export class OdooClient {
     try {
       const targetCompanyId = await this.getTargetCompanyId();
       const now = new Date();
-      const firstDayOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-      const lastDayOfMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-      const firstDayStr = `${firstDayOfMonth.getFullYear()}-${String(firstDayOfMonth.getMonth() + 1).padStart(2, '0')}-01 00:00:00`;
-      const lastDayStr = `${lastDayOfMonth.getFullYear()}-${String(lastDayOfMonth.getMonth() + 1).padStart(2, '0')}-${String(lastDayOfMonth.getDate()).padStart(2, '0')} 23:59:59`;
-      const monthLabel = now.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+      const defaultFromDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`;
+      const defaultToDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate()).padStart(2, '0')}`;
+      const fromDate = /^\d{4}-\d{2}-\d{2}$/.test(String(stockScope?.fromDate || ''))
+        ? String(stockScope!.fromDate)
+        : defaultFromDate;
+      const toDate = /^\d{4}-\d{2}-\d{2}$/.test(String(stockScope?.toDate || ''))
+        ? String(stockScope!.toDate)
+        : defaultToDate;
+      const firstDayOfMonth = new Date(`${fromDate}T00:00:00`);
+      const lastDayOfMonth = new Date(`${toDate}T23:59:59`);
+      const firstDayStr = `${fromDate} 00:00:00`;
+      const lastDayStr = `${toDate} 23:59:59`;
+      const monthLabel = fromDate === defaultFromDate && toDate === defaultToDate
+        ? now.toLocaleString('en-US', { month: 'long', year: 'numeric' })
+        : `${fromDate} to ${toDate}`;
 
       const locationId = Number(stockScope?.locationId || 0) || null;
       const pickingTypeId = Number(stockScope?.pickingTypeId || 0) || null;
@@ -2617,7 +2629,7 @@ export class OdooClient {
         ? Math.min(100, Math.max(0, Math.round((registeredBoards / expectedBoards) * 100)))
         : 0;
 
-      const details = `Cutting MOs due on SO confirmation day: ${expectedBoards} | Physical inventory logged same day: ${registeredBoards} | Missing same-day board entries: ${missingBoards} | Board purchase component found: ${boardPurchasesByOrigin.size} excluded | Edge banding excluded`;
+      const details = `Period ${fromDate} to ${toDate} | Cutting MOs due on SO confirmation day: ${expectedBoards} | MOs with physical inventory logged same day: ${registeredBoards} | Missing same-day MO board entries: ${missingBoards} | Board purchase component found: ${boardPurchasesByOrigin.size} excluded | Edge banding excluded`;
 
       return {
         monthLabel,

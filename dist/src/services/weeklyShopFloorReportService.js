@@ -44,7 +44,11 @@ async function buildWeeklyShopFloorReport() {
     const reportStart = (0, shopFloorReporting_1.clampShopFloorReportingDate)(dateOnly(start), reportingBaseline);
     const reportEnd = (0, shopFloorReporting_1.clampShopFloorReportingDate)(dateOnly(end), reportingBaseline);
     const [boardSummary, penalties, orders, operators, boardLoggingByOperator] = await Promise.all([
-        client.getBoardRegistrationSummary(settings.stock),
+        client.getBoardRegistrationSummary({
+            ...settings.stock,
+            fromDate: reportStart,
+            toDate: reportEnd,
+        }),
         client.getTeamPenalties(settings.stock),
         client.getWarehouseScopedActiveWorkOrders(warehouseId, 500),
         getOperators(client, companyId),
@@ -134,14 +138,14 @@ async function renderWeeklyShopFloorReportPdf(reportInput) {
     const cardGap = 8;
     const cardWidth = (contentWidth - cardGap * 3) / 4;
     const cardY = document.y;
-    card(42, cardY, cardWidth, 'Board coverage', `${coverage}%`, `${report.boardSummary?.registeredBoards || 0}/${report.boardSummary?.expectedBoards || 0} boards logged`, coverage >= 90 ? '#16a34a' : '#dc2626');
-    card(42 + cardWidth + cardGap, cardY, cardWidth, 'Missing board logs', String(report.boardSummary?.missingBoards || 0), 'Requires stock logging', '#dc2626');
+    card(42, cardY, cardWidth, 'MO board coverage', `${coverage}%`, `${report.boardSummary?.registeredBoards || 0}/${report.boardSummary?.expectedBoards || 0} cutting MOs logged`, coverage >= 90 ? '#16a34a' : '#dc2626');
+    card(42 + cardWidth + cardGap, cardY, cardWidth, 'Missing MO board logs', String(report.boardSummary?.missingBoards || 0), `From ${report.start}`, '#dc2626');
     card(42 + (cardWidth + cardGap) * 2, cardY, cardWidth, 'Open receipts', String(report.penalties?.undoneReceipts || 0), 'Awaiting validation', '#d97706');
     card(42 + (cardWidth + cardGap) * 3, cardY, cardWidth, 'Attendance rate', `${attendanceRate}%`, `${attendanceTotals.absent} absence(s)`, attendanceRate >= 90 ? '#16a34a' : '#d97706');
     document.y = cardY + 78;
     section('Management summary');
     const criticalPoints = [
-        `${report.boardSummary?.missingBoards || 0} board(s) remain unlogged; current coverage is ${coverage}%.`,
+        `${report.boardSummary?.missingBoards || 0} cutting MO(s) from ${report.start} to ${report.end} have no same-day board inventory log; current coverage is ${coverage}%.`,
         `${report.penalties?.undoneReceipts || 0} purchased-board receipt(s) need validation.`,
         `${report.overdueNotStarted.length} manufacturing order(s) are overdue and have not started.`,
         `${attendanceTotals.absent} absence record(s) and ${attendanceTotals.noCheckout} missing checkout(s) were recorded across ${report.attendance[0]?.days.length || 0} working day(s).`,
@@ -166,7 +170,7 @@ async function renderWeeklyShopFloorReportPdf(reportInput) {
     document.font('Helvetica-Bold').fontSize(19).fillColor(adoptionColor).text(`${adoptionScore}%`, 54, assessmentY + 9, { width: 84 });
     document.font('Helvetica-Bold').fontSize(7).fillColor(adoptionColor).text(adoptionLabel, 54, assessmentY + 34, { width: 84 });
     const usageEvidence = [
-        { label: 'Board logging', score: coverage, issue: `${report.boardSummary?.missingBoards || 0} missing` },
+        { label: 'MO board logging', score: coverage, issue: `${report.boardSummary?.missingBoards || 0} MOs missing` },
         { label: 'Receipt validation', score: receiptUsageScore, issue: `${report.penalties?.undoneReceipts || 0} pending` },
         { label: 'MO workflow updates', score: moUsageScore, issue: `${report.overdueNotStarted.length} overdue/not started` },
         { label: 'Attendance completion', score: attendanceDataCompleteness, issue: `${attendanceTotals.noCheckout} missing checkout` },
