@@ -1,4 +1,5 @@
 import { OcrPageResult } from '../types';
+import { getBundledTesseractOptions } from '../../utils/tesseractData';
 
 function withTimeout<T>(operation: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   let timeoutHandle: NodeJS.Timeout | null = null;
@@ -28,7 +29,7 @@ export async function tesseractOcr(
 
     for (const image of imagePaths) {
       const result = await withTimeout(
-        recognizer(image.imagePath, 'eng'),
+        recognizer(image.imagePath, 'eng', getBundledTesseractOptions()),
         timeoutMs,
         `Tesseract OCR page ${image.pageNumber}`,
       );

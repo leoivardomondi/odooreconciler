@@ -1,5 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
+import { getBundledTesseractOptions } from '../../utils/tesseractData';
 
 function clamp(value: number) {
   return Math.max(0, Math.min(255, value));
@@ -48,7 +49,7 @@ async function autoOrientImage(imagePath: string) {
 
   try {
     const tesseract = await import('tesseract.js');
-    worker = await tesseract.createWorker('eng');
+    worker = await tesseract.createWorker('eng', undefined, getBundledTesseractOptions());
     let best = { angle: 0, imagePath, score: Number.NEGATIVE_INFINITY };
 
     for (const angle of ORIENTATION_ANGLES) {

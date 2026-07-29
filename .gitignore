@@ -21,9 +21,8 @@ stderr.log
 server3102*
 ~$*
 
-# Database exports & large binary assets
+# Database exports
 mpesa_tables_export.sql
-eng.traineddata
 storage/*.sqlite
 storage/*.db
 

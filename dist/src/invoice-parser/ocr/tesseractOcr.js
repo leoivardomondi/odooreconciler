@@ -34,6 +34,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.tesseractOcr = tesseractOcr;
+const tesseractData_1 = require("../../utils/tesseractData");
 function withTimeout(operation, timeoutMs, label) {
     let timeoutHandle = null;
     return Promise.race([
@@ -55,7 +56,7 @@ async function tesseractOcr(imagePaths) {
         const pages = [];
         const timeoutMs = Math.max(30_000, Number(process.env.OCR_PAGE_TIMEOUT_MS || 120_000));
         for (const image of imagePaths) {
-            const result = await withTimeout(recognizer(image.imagePath, 'eng'), timeoutMs, `Tesseract OCR page ${image.pageNumber}`);
+            const result = await withTimeout(recognizer(image.imagePath, 'eng', (0, tesseractData_1.getBundledTesseractOptions)()), timeoutMs, `Tesseract OCR page ${image.pageNumber}`);
             pages.push({
                 pageNumber: image.pageNumber,
                 text: result.data.text || '',

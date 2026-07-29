@@ -39,6 +39,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.preprocessImage = preprocessImage;
 const promises_1 = __importDefault(require("fs/promises"));
 const path_1 = __importDefault(require("path"));
+const tesseractData_1 = require("../../utils/tesseractData");
 function clamp(value) {
     return Math.max(0, Math.min(255, value));
 }
@@ -73,7 +74,7 @@ async function autoOrientImage(imagePath) {
     let selectedPath = imagePath;
     try {
         const tesseract = await Promise.resolve().then(() => __importStar(require('tesseract.js')));
-        worker = await tesseract.createWorker('eng');
+        worker = await tesseract.createWorker('eng', undefined, (0, tesseractData_1.getBundledTesseractOptions)());
         let best = { angle: 0, imagePath, score: Number.NEGATIVE_INFINITY };
         for (const angle of ORIENTATION_ANGLES) {
             let candidatePath = imagePath;
