@@ -924,6 +924,15 @@ export function enforceCsrf(req: Request, res: Response, next: NextFunction) {
 
   const submittedToken = String(req.body?._csrf || req.get('x-csrf-token') || req.query._csrf || '');
   if (!submittedToken || !req.csrfToken || submittedToken !== req.csrfToken) {
+    if (req.get('accept')?.includes('application/json') || req.xhr) {
+      res.status(403).json({
+        ok: false,
+        code: 'csrf_invalid',
+        message: 'Your security token has expired. Refresh the page, then try again.',
+        refreshUrl: '/shop-floor?refresh=true#manufacturing-orders',
+      });
+      return;
+    }
     res.status(403).render('error', {
       pageTitle: 'Security Check Failed',
       errorMessage: 'The security token for this form is missing or invalid.',

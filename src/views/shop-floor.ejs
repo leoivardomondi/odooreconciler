@@ -1489,7 +1489,13 @@
       window.clearTimeout(slowTimer);
       window.clearTimeout(timeoutTimer);
       var result = await response.json().catch(function() {
-        return { ok: false, message: 'Odoo returned an unexpected response.' };
+        return {
+          ok: false,
+          code: response.status === 403 ? 'csrf_invalid' : 'unexpected_response',
+          message: response.status === 403
+            ? 'Your security token has expired. Refresh the page, then try again.'
+            : 'The server returned an unexpected response. Refresh the job status before trying again.'
+        };
       });
       if (result.redirectTo) {
         actionStatus.className = 'alert alert-warning py-2';
@@ -1501,6 +1507,7 @@
         var responseError = new Error(result.message || 'Could not update this job.');
         responseError.code = result.code || '';
         responseError.loginUrl = result.loginUrl || '';
+        responseError.refreshUrl = result.refreshUrl || '';
         responseError.httpStatus = response.status;
         throw responseError;
       }
@@ -1527,7 +1534,11 @@
       } else if (error && (error.code === 'session_expired' || error.httpStatus === 401)) {
         actionStatus.innerHTML = '<strong>Session expired.</strong><div class="small mt-1">Sign in again, then return to this job.</div><a class="btn btn-sm btn-primary mt-2" href="' + (error.loginUrl || '/login?next=%2Fshop-floor') + '">Sign In</a>';
       } else if (error && (error.code === 'permission_denied' || error.httpStatus === 403)) {
+        if (error.code === 'csrf_invalid') {
+          actionStatus.innerHTML = '<strong>Security token expired.</strong><div class="small mt-1">Refresh this page before starting the job again.</div><a class="btn btn-sm btn-primary mt-2" href="' + (error.refreshUrl || '/shop-floor?refresh=true#manufacturing-orders') + '">Refresh Page</a>';
+        } else {
         actionStatus.innerHTML = '<strong>Permission denied.</strong><div class="small mt-1">You do not have permission to update this job in Odoo.</div><a class="btn btn-sm btn-outline-secondary mt-2" href="mailto:dbadmin@urbanvibeinteriordesign.co.ke">Contact Administrator</a>';
+        }
       } else if (!navigator.onLine || error instanceof TypeError) {
         actionStatus.innerHTML = '<strong>Connection lost.</strong><div class="small mt-1">The job may have started. Reconnect and refresh its status before trying again.</div><a class="btn btn-sm btn-outline-secondary mt-2" href="/shop-floor?refresh=true#manufacturing-orders">Refresh Job Status</a>';
       } else {
