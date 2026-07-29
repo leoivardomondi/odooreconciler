@@ -660,6 +660,15 @@ function requireAuthentication(req, res, next) {
         return;
     }
     const nextPath = sanitizeRedirectPath(req.originalUrl || '/dashboard');
+    if (req.get('accept')?.includes('application/json') || req.xhr) {
+        res.status(401).json({
+            ok: false,
+            code: 'session_expired',
+            message: 'Your session has expired. Sign in again, then retry this job.',
+            loginUrl: `/login?next=${encodeURIComponent(nextPath)}`,
+        });
+        return;
+    }
     res.redirect(`/login?next=${encodeURIComponent(nextPath)}`);
 }
 function canAccessPath(user, method, requestPath) {
@@ -713,6 +722,14 @@ function requireAuthorizedAccess(req, res, next) {
     const effectiveUser = req.viewingAsUser || req.authUser;
     if (canAccessPath(effectiveUser, req.method, req.path)) {
         next();
+        return;
+    }
+    if (req.get('accept')?.includes('application/json') || req.xhr) {
+        res.status(403).json({
+            ok: false,
+            code: 'permission_denied',
+            message: 'Your account role does not have access to this area.',
+        });
         return;
     }
     res.status(403).render('error', {

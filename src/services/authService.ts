@@ -816,6 +816,15 @@ export function requireAuthentication(req: Request, res: Response, next: NextFun
   }
 
   const nextPath = sanitizeRedirectPath(req.originalUrl || '/dashboard');
+  if (req.get('accept')?.includes('application/json') || req.xhr) {
+    res.status(401).json({
+      ok: false,
+      code: 'session_expired',
+      message: 'Your session has expired. Sign in again, then retry this job.',
+      loginUrl: `/login?next=${encodeURIComponent(nextPath)}`,
+    });
+    return;
+  }
   res.redirect(`/login?next=${encodeURIComponent(nextPath)}`);
 }
 
@@ -878,6 +887,14 @@ export function requireAuthorizedAccess(req: Request, res: Response, next: NextF
     return;
   }
 
+  if (req.get('accept')?.includes('application/json') || req.xhr) {
+    res.status(403).json({
+      ok: false,
+      code: 'permission_denied',
+      message: 'Your account role does not have access to this area.',
+    });
+    return;
+  }
   res.status(403).render('error', {
     pageTitle: 'Access Denied',
     errorMessage: 'Your account role does not have access to this area.',
