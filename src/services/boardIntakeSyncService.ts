@@ -9,6 +9,7 @@ import { getSettings } from '../models/repositories';
 import { recordExactStockQuantity, refreshStockMirror } from './stockMirrorService';
 import { logEvent } from './logService';
 import { OdooClient } from './odooClient';
+import { isBoardProductName } from './boardProductClassifier';
 
 const AUTO_RETRY_INTERVAL_MS = 2 * 60 * 1000;
 let intervalHandle: NodeJS.Timeout | null = null;
@@ -43,6 +44,20 @@ export async function syncBoardIntakeEntry(id: string) {
     // retry skips the inventory addition and cannot double-add the boards.
     let stockQuantity = entry.odoo_stock_quantity;
     if (stockQuantity == null) {
+      if (!isBoardProductName(entry.product_name)) {
+        throw new Error(
+          `${entry.product_name} is not recognized as a physical board. Services and non-board products cannot receive stock quantities.`,
+        );
+      }
+      const stockable = await client.ensureBoardProductIsStockable(Number(entry.product_id));
+      if (stockable.changed) {
+        await logEvent('warn', 'Odoo board product changed from consumable to stockable', {
+          boardIntakeId: id,
+          productId: entry.product_id,
+          productTemplateId: stockable.templateId,
+          productName: stockable.productName,
+        }).catch(() => undefined);
+      }
       const stockResult = await client.addBoardsToStock({
         productId: Number(entry.product_id),
         quantity: Number(entry.quantity),

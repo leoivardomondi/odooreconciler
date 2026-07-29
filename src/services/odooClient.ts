@@ -3192,6 +3192,61 @@ export class OdooClient {
     return locations[0].id;
   }
 
+  async ensureBoardProductIsStockable(productId: number): Promise<{
+    changed: boolean;
+    productName: string;
+    templateId: number;
+  }> {
+    const variants = await this.request<Array<{
+      id: number;
+      display_name?: string;
+      product_tmpl_id?: [number, string] | false;
+    }>>('product.product', 'read', {
+      ids: [productId],
+      fields: ['id', 'display_name', 'product_tmpl_id'],
+    });
+    const variant = variants[0];
+    const templateId = Array.isArray(variant?.product_tmpl_id) ? Number(variant.product_tmpl_id[0]) : 0;
+    const productName = String(variant?.display_name || `Product ${productId}`);
+    if (!variant || !templateId) {
+      throw new OdooClientError(`Odoo board product ${productId} was not found or has no product template.`);
+    }
+
+    const availableFields = await this.request<Record<string, unknown>>('product.template', 'fields_get', {
+      attributes: ['type', 'readonly'],
+    });
+    const fields = ['id', 'name'];
+    if (availableFields.is_storable) fields.push('is_storable');
+    if (availableFields.detailed_type) fields.push('detailed_type');
+    if (availableFields.type) fields.push('type');
+    const templates = await this.request<Array<Record<string, unknown>>>('product.template', 'read', {
+      ids: [templateId],
+      fields,
+    });
+    const template = templates[0];
+    if (!template) throw new OdooClientError(`Odoo product template ${templateId} was not found.`);
+
+    const alreadyStockable =
+      template.is_storable === true ||
+      template.detailed_type === 'product' ||
+      template.type === 'product';
+    if (alreadyStockable) return { changed: false, productName, templateId };
+
+    if (availableFields.is_storable) {
+      await this.writeRecord('product.template', [templateId], { is_storable: true });
+    } else if (availableFields.detailed_type) {
+      await this.writeRecord('product.template', [templateId], { detailed_type: 'product' });
+    } else if (availableFields.type) {
+      await this.writeRecord('product.template', [templateId], { type: 'product' });
+    } else {
+      throw new OdooClientError(
+        `${productName} is a consumable and this Odoo version exposes no writable stockable-product field.`,
+      );
+    }
+
+    return { changed: true, productName, templateId };
+  }
+
   /**
    * Add boards to stock at the main warehouse location.
    * Increments current quantity by the given amount via inventory adjustment.
