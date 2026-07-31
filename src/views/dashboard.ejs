@@ -5,6 +5,7 @@
   const safePwaDueTaskCount = typeof pwaDueTaskCount === 'undefined' ? 0 : Number(pwaDueTaskCount || 0);
   const safePwaBadgeBreakdown = typeof pwaBadgeBreakdown === 'undefined' ? null : pwaBadgeBreakdown;
   const statusClass = (value) => {
+    if (value === 'started' || value === 'running' || value === 'in_progress') return 'primary';
     if (value === 'success') return 'success';
     if (value === 'error') return 'danger';
     if (value === 'completed') return 'success';
