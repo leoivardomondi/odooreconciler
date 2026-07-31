@@ -60,7 +60,7 @@ function retryHours(
 ) {
   if (transient) return policy?.transientRetryHours || TRANSIENT_RETRY_HOURS;
   if (stable) return (policy?.stableSkipRetryDays || 14) * 24;
-  const steps = policy?.retryBackoffHours?.length ? policy.retryBackoffHours : [12, 24, 48, 96, 168];
+  const steps = policy?.retryBackoffHours?.length ? policy.retryBackoffHours : [168, 168, 168, 168, 168, 168, 168, 168, 168, 168];
   return steps[Math.min(attemptCount(pdf), steps.length - 1)];
 }
 

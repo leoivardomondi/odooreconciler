@@ -2,6 +2,7 @@ import { Request, Response, Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import {
   clearCachedModelFields,
+  getApprovedAuthUsers,
   getCachedModelFields,
   getSettings,
   saveCachedModelFields,
@@ -64,6 +65,8 @@ const credentialValidators = [
   body('username').trim().notEmpty().withMessage('Username is required.'),
   body('apiKey').optional({ values: 'falsy' }).trim(),
   body('clearStoredApiKey').optional({ values: 'falsy' }).trim(),
+  body('shopFloorPassword').optional({ values: 'falsy' }).trim(),
+  body('clearStoredShopFloorPassword').optional({ values: 'falsy' }).trim(),
 ];
 
 const mappingValidators = [
@@ -523,6 +526,9 @@ async function buildFormValues(
     apiKey: '',
     clearStoredApiKey: source.clearStoredApiKey === 'on',
     hasStoredApiKey: Boolean(resolvedExisting.odoo.apiKey),
+    shopFloorPassword: '',
+    clearStoredShopFloorPassword: source.clearStoredShopFloorPassword === 'on',
+    hasStoredShopFloorPassword: Boolean(resolvedExisting.odoo.shopFloorPassword),
     edgeJsonField: source.edgeJsonField ?? resolvedMappings.edgeJsonField,
     processedField: source.processedField ?? resolvedMappings.processedField,
     processedAtField: source.processedAtField ?? resolvedMappings.processedAtField,
@@ -813,6 +819,8 @@ async function renderSettingsPage(
     existing.fieldMappings,
   );
 
+  const approvedUsers = await getApprovedAuthUsers().catch(() => []);
+
   res.render('settings', {
     pageTitle: 'Settings',
     form,
@@ -823,6 +831,7 @@ async function renderSettingsPage(
     saleOrderFieldState,
     missingMappings,
     mappingDiagnostics,
+    approvedUsers,
   });
 }
 
@@ -841,6 +850,56 @@ router.get('/settings', async (req, res) => {
 router.get('/settings/mail', (_req, res) => {
   res.redirect('/settings');
 });
+
+router.post('/settings/shop-floor-session/begin', async (_req: Request, res: Response) => {
+  try {
+    const settings = await getSettings();
+    const result = await new OdooClient(settings.odoo).beginShopFloorSession();
+    const message = result.connected
+      ? 'Odoo Shop Floor is connected. The server will reuse this session for operator actions.'
+      : result.requiresOtp
+        ? 'Odoo sent a verification code. Enter it below to finish connecting Shop Floor.'
+        : 'Odoo Shop Floor sign-in started.';
+    await logEvent('info', 'Odoo Shop Floor session sign-in started from settings', {
+      connected: result.connected,
+      requiresOtp: result.requiresOtp,
+    });
+    res.redirect(`/settings?message=${encodeURIComponent(message)}#odoo-shop-floor-session`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Could not start the Odoo Shop Floor session.';
+    await logEvent('error', 'Odoo Shop Floor session sign-in failed from settings', { error: message });
+    res.redirect(`/settings?error=${encodeURIComponent(message)}#odoo-shop-floor-session`);
+  }
+});
+
+router.post(
+  '/settings/shop-floor-session/verify',
+  body('otpCode')
+    .trim()
+    .matches(/^\d{4,10}$/)
+    .withMessage('Enter the numeric verification code sent by Odoo.'),
+  async (req: Request, res: Response) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.redirect(
+        `/settings?error=${encodeURIComponent(errors.array()[0]?.msg || 'Enter a valid verification code.')}#odoo-shop-floor-session`,
+      );
+    }
+
+    try {
+      const settings = await getSettings();
+      await new OdooClient(settings.odoo).verifyShopFloorOtp(String(req.body.otpCode));
+      await logEvent('info', 'Odoo Shop Floor OTP verified from settings');
+      res.redirect(
+        `/settings?message=${encodeURIComponent('Odoo Shop Floor connected. This server session will be reused until Odoo expires it.')}#odoo-shop-floor-session`,
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Odoo did not accept the verification code.';
+      await logEvent('error', 'Odoo Shop Floor OTP verification failed from settings', { error: message });
+      res.redirect(`/settings?error=${encodeURIComponent(message)}#odoo-shop-floor-session`);
+    }
+  },
+);
 
 router.post('/settings/mail', mailValidators, async (req: Request, res: Response) => {
   const errors = validationResult(req);
@@ -1106,6 +1165,9 @@ router.post('/settings', validators, async (req: Request, res: Response) => {
       apiKey: req.body.apiKey?.trim() || '',
       keepExistingApiKey: true,
       clearStoredApiKey: req.body.clearStoredApiKey === 'on',
+      shopFloorPassword: req.body.shopFloorPassword?.trim() || '',
+      keepExistingShopFloorPassword: true,
+      clearStoredShopFloorPassword: req.body.clearStoredShopFloorPassword === 'on',
       fieldMappings: sanitizedMappings.sanitized as unknown as Record<string, string>,
       parser: {
         filenameKeyword: req.body.filenameKeyword?.trim(),

@@ -37,14 +37,14 @@ const MAX_PO_BILL_RETRY_ATTEMPTS = 5;
 const SALES_ORDER_SCHEDULER_JOB_TYPE = 'sales_order_processing';
 const PO_BILL_SCHEDULER_JOB_TYPE = 'po_bill_matching';
 const SALES_ORDER_ALLOWED_WINDOW = {
-    startMinute: 8 * 60,
-    endMinute: 17 * 60,
-    label: '08:00-17:00',
+    startMinute: 0,
+    endMinute: 24 * 60,
+    label: '00:00-24:00 (24/7 All Hours)',
 };
 const PO_BILL_ALLOWED_WINDOW = {
-    startMinute: 17 * 60,
-    endMinute: 7 * 60,
-    label: '17:00-07:00',
+    startMinute: 0,
+    endMinute: 24 * 60,
+    label: '00:00-24:00 (24/7 All Hours)',
 };
 const JOB_SUMMARY_REMINDER_RUN_MINUTE = 16 * 60 + 40;
 const JOB_SUMMARY_REMINDER_RUN_WINDOW_MINUTES = 10;
@@ -188,10 +188,10 @@ function getPoBillRetryCooldownHours(retryClass, attemptCount, policy) {
         case 'transient':
             return Math.max(1, Number(policy.transientRetryHours || PO_BILL_TRANSIENT_RETRY_COOLDOWN_HOURS));
         case 'changeable': {
-            // Escalating cooldowns: 12h → 24h → 48h → 96h → 168h
+            // 7-day (168h) retry interval per attempt
             const escalationSteps = policy.retryBackoffHours?.length
                 ? policy.retryBackoffHours
-                : [PO_BILL_RETRY_COOLDOWN_HOURS, 24, 48, 96, 168];
+                : [168, 168, 168, 168, 168, 168, 168, 168, 168, 168];
             const index = Math.min(attemptCount, escalationSteps.length - 1);
             return escalationSteps[index];
         }

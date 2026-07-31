@@ -19,8 +19,11 @@ export async function sendMoOvertimeSuggestion(recipientOverride = '') {
   if (!warehouseId) return false;
   const recipient = recipientOverride
     ? { email: recipientOverride.trim() }
-    : users.find((user) => user.active && /leo(?:i)?vard/i.test(user.email));
-  if (!recipient) throw new Error('No active Leovard user was found for the overtime suggestion email.');
+    : users.find((user) => user.active && /^dbadmin/i.test(user.email)) ||
+      users.find((user) => user.active && /leo(?:i)?vard|dbadmin/i.test(user.email)) ||
+      users.find((user) => user.active && user.role === 'admin') ||
+      users.find((user) => user.active);
+  if (!recipient) throw new Error('No active user found to receive the overtime suggestion email.');
   const client = new OdooClient(settings.odoo);
   const orders = await client.getWarehouseScopedActiveWorkOrders(warehouseId, 500);
   const largeCuttingOrders = orders.filter((order) => {

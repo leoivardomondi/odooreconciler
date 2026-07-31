@@ -561,19 +561,52 @@
             return aIndex - bIndex;
           });
         %>
+        <%
+          const areaThemes = {
+            'Table Saw Area': {
+              border: '#7c3aed',
+              borderLight: '#ddd6fe',
+              bgHeader: '#f5f3ff',
+              badgeBg: '#7c3aed',
+              badgeText: '#ffffff'
+            },
+            'Edge Banding Area': {
+              border: '#c2410c',
+              borderLight: '#ffedd5',
+              bgHeader: '#fff7ed',
+              badgeBg: '#c2410c',
+              badgeText: '#ffffff'
+            },
+            'Panel Rack Area': {
+              border: '#0f766e',
+              borderLight: '#ccfbf1',
+              bgHeader: '#f0fdf4',
+              badgeBg: '#0f766e',
+              badgeText: '#ffffff'
+            }
+          };
+          const defaultAreaTheme = {
+            border: '#1d4ed8',
+            borderLight: '#dbeafe',
+            bgHeader: '#eff6ff',
+            badgeBg: '#1d4ed8',
+            badgeText: '#ffffff'
+          };
+        %>
 
         <% sortedAreas.forEach((area) => {
           const orders = areaGroups[area];
           const doneCount = orders.filter(o => o.state === 'done').length;
           const progressCount = orders.filter(o => o.state === 'progress').length;
+          const theme = areaThemes[area] || defaultAreaTheme;
         %>
-        <div id="area-<%= area.toLowerCase().replace(/ area$/, '').replace(/[^a-z0-9]+/g, '-') %>" data-mo-area-group class="rounded-4 border bg-white overflow-hidden mb-4" style="box-shadow:0 1px 3px rgba(0,0,0,0.04)">
-          <div class="px-4 py-2 d-flex justify-content-between align-items-center" style="background:#f8fafc;border-bottom:1px solid #e2e8f0">
-            <div>
-              <span class="fw-bold" style="font-size:0.85rem;color:#1e293b"><%= area %></span>
-              <span class="badge rounded-pill ms-2" style="background:#e2e8f0;color:#475569;font-weight:600"><%= orders.length %></span>
+        <div id="area-<%= area.toLowerCase().replace(/ area$/, '').replace(/[^a-z0-9]+/g, '-') %>" data-mo-area-group class="rounded-4 bg-white overflow-hidden mb-4" style="box-shadow:0 4px 12px rgba(0,0,0,0.05); border: 2px solid <%= theme.borderLight %> !important; border-left: 7px solid <%= theme.border %> !important;">
+          <div class="px-4 py-2.5 d-flex justify-content-between align-items-center" style="background:<%= theme.bgHeader %>; border-bottom: 1.5px solid <%= theme.borderLight %>">
+            <div class="d-flex align-items-center gap-2">
+              <span class="fw-bold" style="font-size:0.9rem; color:<%= theme.border %>"><%= area %></span>
+              <span class="badge rounded-pill" style="background:<%= theme.badgeBg %>; color:<%= theme.badgeText %>; font-weight:700; font-size:0.72rem"><%= orders.length %></span>
             </div>
-            <div style="font-size:0.72rem;color:#94a3b8">
+            <div style="font-size:0.75rem; font-weight:600; color:<%= theme.border %>; opacity:0.85">
               <%= progressCount %> <span data-i18n="in_progress">in progress</span> · <%= doneCount %> <span data-i18n="done">done</span>
             </div>
           </div>
@@ -602,6 +635,7 @@
                   <% 
                     const sb = wo.state === 'done' ? 'background:#dcfce7;color:#166534' 
                              : wo.state === 'progress' ? 'background:#dbeafe;color:#1e40af' 
+                             : wo.state === 'paused' ? 'background:#fff7ed;color:#c2410c;border:1px solid #ffedd5' 
                              : wo.state === 'confirmed' ? 'background:#fef9c3;color:#854d0e' 
                              : 'background:#f1f5f9;color:#475569';
                   %>
@@ -653,22 +687,73 @@
               </div>
 
               <div class="d-flex flex-wrap align-items-center gap-2">
-                <button
-                  type="button"
-                  class="btn btn-sm rounded-pill px-3 fw-bold <%= wo.state === 'progress' ? 'btn-primary' : wo.state === 'done' ? 'btn-outline-secondary' : 'btn-success' %>"
-                  data-mo-action
-                  data-bs-toggle="modal"
-                  data-bs-target="#manufacturingOrderActionModal"
-                  data-mo-id="<%= wo.id %>"
-                  data-mo-name="<%= wo.name %>"
-                  data-mo-product="<%= wo.product %>"
-                  data-mo-state="<%= wo.state %>"
-                  data-stock-status="<%= wo.stockStatus %>"
-                  <%= wo.state === 'done' ? 'disabled' : '' %>
-                >
-                  <i class="bi <%= wo.state === 'progress' ? 'bi-stop-fill' : wo.state === 'done' ? 'bi-check-circle-fill' : 'bi-play-fill' %> me-1" aria-hidden="true"></i>
-                  <%= wo.state === 'progress' ? 'Finish' : wo.state === 'done' ? 'Completed' : 'Start' %>
-                </button>
+                <% if (wo.state === 'paused') { %>
+                  <button
+                    type="button"
+                    class="btn btn-sm rounded-pill px-3 fw-bold btn-success"
+                    data-mo-action
+                    data-bs-toggle="modal"
+                    data-bs-target="#manufacturingOrderActionModal"
+                    data-mo-id="<%= wo.id %>"
+                    data-mo-name="<%= wo.name %>"
+                    data-mo-product="<%= wo.product %>"
+                    data-mo-state="confirmed"
+                    data-stock-status="<%= wo.stockStatus %>"
+                  >
+                    <i class="bi bi-play-fill me-1" aria-hidden="true"></i>
+                    Continue
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-sm rounded-pill px-3 fw-bold btn-primary"
+                    data-mo-action
+                    data-bs-toggle="modal"
+                    data-bs-target="#manufacturingOrderActionModal"
+                    data-mo-id="<%= wo.id %>"
+                    data-mo-name="<%= wo.name %>"
+                    data-mo-product="<%= wo.product %>"
+                    data-mo-state="progress"
+                    data-stock-status="<%= wo.stockStatus %>"
+                  >
+                    <i class="bi bi-stop-fill me-1" aria-hidden="true"></i>
+                    Finish
+                  </button>
+                <% } else { %>
+                  <button
+                    type="button"
+                    class="btn btn-sm rounded-pill px-3 fw-bold <%= wo.state === 'progress' ? 'btn-primary' : wo.state === 'done' ? 'btn-outline-secondary' : 'btn-success' %>"
+                    data-mo-action
+                    data-bs-toggle="modal"
+                    data-bs-target="#manufacturingOrderActionModal"
+                    data-mo-id="<%= wo.id %>"
+                    data-mo-name="<%= wo.name %>"
+                    data-mo-product="<%= wo.product %>"
+                    data-mo-state="<%= wo.state %>"
+                    data-stock-status="<%= wo.stockStatus %>"
+                    <%= wo.state === 'done' ? 'disabled' : '' %>
+                  >
+                    <i class="bi <%= wo.state === 'progress' ? 'bi-stop-fill' : wo.state === 'done' ? 'bi-check-circle-fill' : 'bi-play-fill' %> me-1" aria-hidden="true"></i>
+                    <%= wo.state === 'progress' ? 'Finish' : wo.state === 'done' ? 'Completed' : 'Start' %>
+                  </button>
+                <% } %>
+                <% if (wo.state === 'progress') { %>
+                  <button
+                    type="button"
+                    class="btn btn-sm rounded-pill px-3 fw-bold"
+                    style="background:#fff7ed;color:#c2410c;border:1px solid #ffedd5 !important;font-size:0.78rem"
+                    data-bs-toggle="modal"
+                    data-bs-target="#pauseMoModal"
+                    data-pause-id="<%= wo.id %>"
+                    data-pause-name="<%= wo.name %>"
+                    data-pause-product="<%= wo.product %>"
+                    data-pause-qty="<%= wo.qty %>"
+                    data-pause-produced="<%= wo.produced %>"
+                    onclick="openPauseMoModal(this)"
+                  >
+                    <i class="bi bi-pause-circle-fill me-1" aria-hidden="true"></i>
+                    Pause
+                  </button>
+                <% } %>
                 <button
                   type="button"
                   class="btn btn-sm rounded-pill px-3"
@@ -1413,7 +1498,7 @@
 
     document.getElementById('manufacturingOrderActionTitle').textContent = trigger.getAttribute('data-mo-name') || 'Manufacturing Order';
     document.getElementById('manufacturingOrderProduct').textContent = trigger.getAttribute('data-mo-product') || '';
-    form.action = '/shop-floor/work-order/' + encodeURIComponent(moId) + '/advance';
+    form.setAttribute('action', '/shop-floor/work-order/' + encodeURIComponent(moId) + '/advance');
     actionValue.value = isInProgress ? 'finish' : 'start';
     actionLabel.textContent = isDone ? 'Completed' : (isInProgress ? 'Finish' : 'Start');
     actionButton.disabled = isDone;
@@ -1430,26 +1515,9 @@
   });
 
   function updateOrderUi(moId, state) {
-    var row = document.querySelector('[data-mo-row="' + moId + '"]');
-    if (!row) return;
-    var badge = row.querySelector('[data-mo-state-badge]');
-    if (badge) {
-      badge.textContent = state;
-      badge.style.background = state === 'done' ? '#dcfce7' : '#dbeafe';
-      badge.style.color = state === 'done' ? '#166534' : '#1e40af';
-    }
-    row.querySelectorAll('[data-mo-action]').forEach(function(trigger) {
-      trigger.setAttribute('data-mo-state', state);
-      if (trigger.tagName !== 'BUTTON' || trigger.classList.contains('btn-link')) return;
-      var isDone = state === 'done';
-      trigger.disabled = isDone;
-      trigger.classList.toggle('btn-success', false);
-      trigger.classList.toggle('btn-primary', !isDone);
-      trigger.classList.toggle('btn-outline-secondary', isDone);
-      trigger.innerHTML = isDone
-        ? '<i class="bi bi-check-circle-fill me-1" aria-hidden="true"></i>Completed'
-        : '<i class="bi bi-stop-fill me-1" aria-hidden="true"></i>Finish';
-    });
+    window.setTimeout(function() {
+      window.location.reload();
+    }, 400);
   }
 
   form.addEventListener('submit', async function(event) {
@@ -1477,7 +1545,7 @@
     actionButton.innerHTML = '<span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span><span>' + actionName + '…</span>';
 
     try {
-      var response = await fetch(form.action, {
+      var response = await fetch(form.getAttribute('action'), {
         method: 'POST',
         headers: {
           'Accept': 'application/json',
@@ -1512,19 +1580,18 @@
         throw responseError;
       }
 
-      updateOrderUi(currentMoId, result.state);
       actionStatus.className = 'alert ' + (result.warning ? 'alert-warning' : 'alert-success') + ' py-2';
       actionStatus.textContent = result.warning ? (result.message + ' ' + result.warning) : result.message;
       actionButton.innerHTML = result.state === 'done'
         ? '<i class="bi bi-check-circle-fill me-2"></i><span>Completed</span>'
         : '<i class="bi bi-stop-fill me-2"></i><span>Finish</span>';
       actionButton.disabled = result.state === 'done';
-      actionValue.value = result.state === 'progress' ? 'finish' : 'start';
       showToast(result.message);
       window.setTimeout(function() {
         var modal = bootstrap.Modal.getInstance(actionModal);
         if (modal) modal.hide();
-      }, 1100);
+        window.location.reload();
+      }, 600);
     } catch (error) {
       window.clearTimeout(slowTimer);
       window.clearTimeout(timeoutTimer);
@@ -1537,7 +1604,8 @@
         if (error.code === 'csrf_invalid') {
           actionStatus.innerHTML = '<strong>Security token expired.</strong><div class="small mt-1">Refresh this page before starting the job again.</div><a class="btn btn-sm btn-primary mt-2" href="' + (error.refreshUrl || '/shop-floor?refresh=true#manufacturing-orders') + '">Refresh Page</a>';
         } else {
-        actionStatus.innerHTML = '<strong>Permission denied.</strong><div class="small mt-1">You do not have permission to update this job in Odoo.</div><a class="btn btn-sm btn-outline-secondary mt-2" href="mailto:dbadmin@urbanvibeinteriordesign.co.ke">Contact Administrator</a>';
+        actionStatus.innerHTML = '<strong>Odoo denied this action.</strong><div class="small mt-1"></div><a class="btn btn-sm btn-outline-secondary mt-2" href="mailto:dbadmin@urbanvibeinteriordesign.co.ke">Contact Administrator</a>';
+        actionStatus.querySelector('.small').textContent = error.message || 'You do not have permission to update this job in Odoo.';
         }
       } else if (!navigator.onLine || error instanceof TypeError) {
         actionStatus.innerHTML = '<strong>Connection lost.</strong><div class="small mt-1">The job may have started. Reconnect and refresh its status before trying again.</div><a class="btn btn-sm btn-outline-secondary mt-2" href="/shop-floor?refresh=true#manufacturing-orders">Refresh Job Status</a>';
@@ -2142,6 +2210,10 @@ var _i18n = {
     items: 'bidhaa',
     client: 'Mteja',
     need: 'Inahitajika',
+    stock_needed: 'Hisa Inahitajika — Hakuna Maagizo ya Ununuzi',
+    items: 'bidhaa',
+    client: 'Mteja',
+    need: 'Inahitajika',
     assigned_mo: 'MO Zilizopewa',
     done_mo: 'MO Zilizomalizika',
     active_mo: 'MO Zinazoendelea',
@@ -2149,12 +2221,10 @@ var _i18n = {
     late_checkin: 'Kuingia Kuchelewa',
     in_progress: 'inaendelea',
     done: 'imekamilika',
+    paused: 'imesimamishwa',
     overdue: 'Imechelewa',
     no_stock: 'Hakuna Hisa',
     incoming: 'Inakuja / Imenunuliwa',
-    ready: 'Tayari',
-    assigned: 'Amepewa',
-    unassigned: 'Hajapewa',
     no_active_mo: 'Hakuna maagizo ya uzalishaji yanayoendelea.',
     recent_attendance: 'Mahudhurio ya Hivi Karibuni',
     on_duty: 'Kazini',
@@ -2220,15 +2290,66 @@ function setLanguage(lang) {
   localStorage.setItem('shopFloorLang', lang);
 }
 
-function toggleLanguage() {
-  var current = localStorage.getItem('shopFloorLang') || 'en';
-  setLanguage(current === 'en' ? 'sw' : 'en');
-}
+function openPauseMoModal(btn) {
+  var id = btn.getAttribute('data-pause-id');
+  var name = btn.getAttribute('data-pause-name');
+  var product = btn.getAttribute('data-pause-product');
+  var totalQty = btn.getAttribute('data-pause-qty');
+  var producedQty = btn.getAttribute('data-pause-produced');
 
-// Auto-apply saved language on load
-(function() {
-  var saved = localStorage.getItem('shopFloorLang');
-  if (saved === 'sw') setLanguage('sw');
-})();
+  var form = document.getElementById('pauseMoForm');
+  if (form) {
+    form.action = '/shop-floor/work-order/' + encodeURIComponent(id) + '/pause';
+  }
+  var nameEl = document.getElementById('pauseMoNameDisplay');
+  var prodEl = document.getElementById('pauseMoProductDisplay');
+  var totalEl = document.getElementById('pauseMoTotalQtyDisplay');
+  var qtyEl = document.getElementById('pauseMoQtyProduced');
+  if (nameEl) nameEl.textContent = name;
+  if (prodEl) prodEl.textContent = product;
+  if (totalEl) totalEl.textContent = totalQty;
+  if (qtyEl) qtyEl.value = producedQty || 0;
+}
 </script>
 
+<!-- Pause Manufacturing Order Modal -->
+<div class="modal fade" id="pauseMoModal" tabindex="-1" aria-labelledby="pauseMoModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <form method="post" action="" id="pauseMoForm" class="modal-content border-0 shadow-lg" style="border-radius:16px; overflow:hidden">
+      <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+      <div class="modal-header bg-warning-subtle text-warning-emphasis border-0 px-4 py-3">
+        <h5 class="modal-title fw-bold" id="pauseMoModalLabel">
+          <i class="bi bi-pause-circle-fill me-2"></i>Pause Manufacturing Order
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body p-4">
+        <div class="mb-3">
+          <label class="form-label text-muted small mb-1 fw-semibold">Manufacturing Order</label>
+          <div class="fw-bold fs-5 text-dark" id="pauseMoNameDisplay">-</div>
+          <div class="text-secondary small" id="pauseMoProductDisplay">-</div>
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label text-muted small mb-1 fw-semibold">Units Completed So Far</label>
+          <input type="number" name="qtyProduced" id="pauseMoQtyProduced" class="form-control rounded-3" min="0" value="0" />
+          <div class="form-text small">Enter quantity finished before pausing (Total MO Quantity: <span id="pauseMoTotalQtyDisplay">0</span>).</div>
+        </div>
+
+        <div class="form-check form-switch bg-light p-3 rounded-3 border mb-3 ms-0">
+          <input class="form-check-input ms-0 me-2" type="checkbox" role="switch" name="createBackorder" value="true" id="pauseMoBackorderCheck" checked>
+          <label class="form-check-label fw-bold text-dark" for="pauseMoBackorderCheck">
+            Create Backorder for Remaining Units
+          </label>
+          <div class="text-muted small mt-1">Pauses current task and creates a backorder in Odoo for unproduced units so other orders can be prioritized.</div>
+        </div>
+      </div>
+      <div class="modal-footer border-top-0 px-4 pb-4">
+        <button type="button" class="btn btn-light rounded-pill px-4" data-bs-dismiss="modal">Cancel</button>
+        <button type="submit" class="btn btn-warning rounded-pill px-4 fw-bold">
+          <i class="bi bi-pause-fill me-1"></i>Pause Task
+        </button>
+      </div>
+    </form>
+  </div>
+</div>

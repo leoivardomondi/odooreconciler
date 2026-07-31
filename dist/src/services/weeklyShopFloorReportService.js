@@ -30,19 +30,27 @@ async function getOperators(client, companyId) {
     const employees = (await Promise.all(unique.map((department) => client.getEmployeesByDepartment(department.id, companyId)))).flat();
     return [...new Map(employees.map((employee) => [employee.id, employee])).values()];
 }
-async function buildWeeklyShopFloorReport() {
+async function buildWeeklyShopFloorReport(scope) {
     const settings = await (0, repositories_1.getSettings)();
     const client = new odooClient_1.OdooClient(settings.odoo);
     const companyId = await client.getTargetCompanyIdValue();
     const warehouseId = Number(settings.stock.warehouseId || 0);
     if (!warehouseId)
         throw new Error('The Urban Vibe warehouse ID must be configured before generating the weekly report.');
-    const end = new Date();
-    const start = new Date(end);
-    start.setDate(end.getDate() - 6);
+    let reportStart;
+    let reportEnd;
     const reportingBaseline = settings.mail.shopFloorReportingStartDate;
-    const reportStart = (0, shopFloorReporting_1.clampShopFloorReportingDate)(dateOnly(start), reportingBaseline);
-    const reportEnd = (0, shopFloorReporting_1.clampShopFloorReportingDate)(dateOnly(end), reportingBaseline);
+    if (scope?.fromDate && scope?.toDate && /^\d{4}-\d{2}-\d{2}$/.test(String(scope.fromDate)) && /^\d{4}-\d{2}-\d{2}$/.test(String(scope.toDate))) {
+        reportStart = (0, shopFloorReporting_1.clampShopFloorReportingDate)(String(scope.fromDate), reportingBaseline);
+        reportEnd = (0, shopFloorReporting_1.clampShopFloorReportingDate)(String(scope.toDate), reportingBaseline);
+    }
+    else {
+        const end = new Date();
+        const start = new Date(end);
+        start.setDate(end.getDate() - 6);
+        reportStart = (0, shopFloorReporting_1.clampShopFloorReportingDate)(dateOnly(start), reportingBaseline);
+        reportEnd = (0, shopFloorReporting_1.clampShopFloorReportingDate)(dateOnly(end), reportingBaseline);
+    }
     const [boardSummary, penalties, orders, operators, boardLoggingByOperator] = await Promise.all([
         client.getBoardRegistrationSummary({
             ...settings.stock,
@@ -54,11 +62,12 @@ async function buildWeeklyShopFloorReport() {
         getOperators(client, companyId),
         (0, repositories_1.getBoardIntakeLoggingReport)(reportStart, reportEnd, reportingBaseline),
     ]);
+    const endDateObj = new Date(`${reportEnd}T23:59:59Z`);
     const confirmedQueueSchedule = (0, moOverdueService_1.getConfirmedMoQueueSchedule)(orders);
     const overdueNotStarted = orders.filter((order) => {
-        const overdue = (0, moOverdueService_1.getMoOverdueState)({ createDate: order.create_date, plannedStart: order.date_start, clientDeadline: order.date_deadline, quantity: order.product_qty, productName: productName(order.product_id) }, end);
+        const overdue = (0, moOverdueService_1.getMoOverdueState)({ createDate: order.create_date, plannedStart: order.date_start, clientDeadline: order.date_deadline, quantity: order.product_qty, productName: productName(order.product_id) }, endDateObj);
         const queueFinish = confirmedQueueSchedule.get(order.id)?.estimatedFinishAt;
-        return !['done', 'cancel', 'progress'].includes(order.state) && !overdue.createdToday && (overdue.overdueReason !== null || Boolean(queueFinish && end > new Date(queueFinish)));
+        return !['done', 'cancel', 'progress'].includes(order.state) && !overdue.createdToday && (overdue.overdueReason !== null || Boolean(queueFinish && endDateObj > new Date(queueFinish)));
     }).map((order) => ({ ...order, queueEstimatedFinishAt: confirmedQueueSchedule.get(order.id)?.estimatedFinishAt || null }));
     const reportStartDate = new Date(`${reportStart}T12:00:00Z`);
     const reportEndDate = new Date(`${reportEnd}T12:00:00Z`);
@@ -80,8 +89,8 @@ async function buildWeeklyShopFloorReport() {
     }));
     return { generatedAt: new Date(), start: reportStart, end: reportEnd, reportingBaseline, companyName: 'URBAN VIBE INTERIOR DESIGN COMPANY LTD', warehouseId, boardSummary, boardLoggingByOperator, penalties, overdueNotStarted, attendance };
 }
-async function renderWeeklyShopFloorReportPdf(reportInput) {
-    const report = reportInput || await buildWeeklyShopFloorReport();
+async function renderWeeklyShopFloorReportPdf(reportInput, scope) {
+    const report = reportInput || await buildWeeklyShopFloorReport(scope);
     const document = new pdfkit_1.default({ size: 'A4', margin: 42, bufferPages: true });
     const chunks = [];
     document.on('data', (chunk) => chunks.push(Buffer.from(chunk)));

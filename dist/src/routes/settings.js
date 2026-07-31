@@ -41,6 +41,8 @@ const credentialValidators = [
     (0, express_validator_1.body)('username').trim().notEmpty().withMessage('Username is required.'),
     (0, express_validator_1.body)('apiKey').optional({ values: 'falsy' }).trim(),
     (0, express_validator_1.body)('clearStoredApiKey').optional({ values: 'falsy' }).trim(),
+    (0, express_validator_1.body)('shopFloorPassword').optional({ values: 'falsy' }).trim(),
+    (0, express_validator_1.body)('clearStoredShopFloorPassword').optional({ values: 'falsy' }).trim(),
 ];
 const mappingValidators = [
     (0, express_validator_1.body)('edgeJsonField').optional({ values: 'falsy' }).trim(),
@@ -412,6 +414,9 @@ async function buildFormValues(source, existing, availableFields = []) {
         apiKey: '',
         clearStoredApiKey: source.clearStoredApiKey === 'on',
         hasStoredApiKey: Boolean(resolvedExisting.odoo.apiKey),
+        shopFloorPassword: '',
+        clearStoredShopFloorPassword: source.clearStoredShopFloorPassword === 'on',
+        hasStoredShopFloorPassword: Boolean(resolvedExisting.odoo.shopFloorPassword),
         edgeJsonField: source.edgeJsonField ?? resolvedMappings.edgeJsonField,
         processedField: source.processedField ?? resolvedMappings.processedField,
         processedAtField: source.processedAtField ?? resolvedMappings.processedAtField,
@@ -632,6 +637,7 @@ async function renderSettingsPage(res, options = {}) {
     };
     const missingMappings = (0, helpers_1.getMissingFieldMappingLabels)(sanitizeFieldMappings(mappingSource, saleOrderFieldState.fields, existing.fieldMappings).sanitized);
     const mappingDiagnostics = buildMappingDiagnostics(mappingSource, saleOrderFieldState.fields, existing.fieldMappings);
+    const approvedUsers = await (0, repositories_1.getApprovedAuthUsers)().catch(() => []);
     res.render('settings', {
         pageTitle: 'Settings',
         form,
@@ -642,6 +648,7 @@ async function renderSettingsPage(res, options = {}) {
         saleOrderFieldState,
         missingMappings,
         mappingDiagnostics,
+        approvedUsers,
     });
 }
 router.get('/settings', async (req, res) => {
@@ -657,6 +664,47 @@ router.get('/settings', async (req, res) => {
 });
 router.get('/settings/mail', (_req, res) => {
     res.redirect('/settings');
+});
+router.post('/settings/shop-floor-session/begin', async (_req, res) => {
+    try {
+        const settings = await (0, repositories_1.getSettings)();
+        const result = await new odooClient_1.OdooClient(settings.odoo).beginShopFloorSession();
+        const message = result.connected
+            ? 'Odoo Shop Floor is connected. The server will reuse this session for operator actions.'
+            : result.requiresOtp
+                ? 'Odoo sent a verification code. Enter it below to finish connecting Shop Floor.'
+                : 'Odoo Shop Floor sign-in started.';
+        await (0, logService_1.logEvent)('info', 'Odoo Shop Floor session sign-in started from settings', {
+            connected: result.connected,
+            requiresOtp: result.requiresOtp,
+        });
+        res.redirect(`/settings?message=${encodeURIComponent(message)}#odoo-shop-floor-session`);
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : 'Could not start the Odoo Shop Floor session.';
+        await (0, logService_1.logEvent)('error', 'Odoo Shop Floor session sign-in failed from settings', { error: message });
+        res.redirect(`/settings?error=${encodeURIComponent(message)}#odoo-shop-floor-session`);
+    }
+});
+router.post('/settings/shop-floor-session/verify', (0, express_validator_1.body)('otpCode')
+    .trim()
+    .matches(/^\d{4,10}$/)
+    .withMessage('Enter the numeric verification code sent by Odoo.'), async (req, res) => {
+    const errors = (0, express_validator_1.validationResult)(req);
+    if (!errors.isEmpty()) {
+        return res.redirect(`/settings?error=${encodeURIComponent(errors.array()[0]?.msg || 'Enter a valid verification code.')}#odoo-shop-floor-session`);
+    }
+    try {
+        const settings = await (0, repositories_1.getSettings)();
+        await new odooClient_1.OdooClient(settings.odoo).verifyShopFloorOtp(String(req.body.otpCode));
+        await (0, logService_1.logEvent)('info', 'Odoo Shop Floor OTP verified from settings');
+        res.redirect(`/settings?message=${encodeURIComponent('Odoo Shop Floor connected. This server session will be reused until Odoo expires it.')}#odoo-shop-floor-session`);
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : 'Odoo did not accept the verification code.';
+        await (0, logService_1.logEvent)('error', 'Odoo Shop Floor OTP verification failed from settings', { error: message });
+        res.redirect(`/settings?error=${encodeURIComponent(message)}#odoo-shop-floor-session`);
+    }
 });
 router.post('/settings/mail', mailValidators, async (req, res) => {
     const errors = (0, express_validator_1.validationResult)(req);
@@ -898,6 +946,9 @@ router.post('/settings', validators, async (req, res) => {
             apiKey: req.body.apiKey?.trim() || '',
             keepExistingApiKey: true,
             clearStoredApiKey: req.body.clearStoredApiKey === 'on',
+            shopFloorPassword: req.body.shopFloorPassword?.trim() || '',
+            keepExistingShopFloorPassword: true,
+            clearStoredShopFloorPassword: req.body.clearStoredShopFloorPassword === 'on',
             fieldMappings: sanitizedMappings.sanitized,
             parser: {
                 filenameKeyword: req.body.filenameKeyword?.trim(),

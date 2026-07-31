@@ -13,6 +13,11 @@ import { sendDailyMpesaReviewNotification } from '../services/mpesaReviewNotific
 import { sendHourlyShopFloorTaskReminders } from '../services/shopFloorTaskReminderService';
 import { OdooClient } from '../services/odooClient';
 import { runPoBillSchedulerCycle, runSchedulerCycle } from '../services/schedulerService';
+import {
+  generateSchedulerFailureCsv,
+  getSchedulerFailureReport,
+  renderSchedulerFailurePdf,
+} from '../services/schedulerFailureAnalysisService';
 import { env } from '../utils/env';
 import { hasOdooConfiguration, isJobSummaryAttachment, sanitizeForLog } from '../utils/helpers';
 import { storageDirectoryPath } from '../utils/paths';
@@ -159,16 +164,10 @@ function validateAttachmentUploadedPayload(body: unknown): {
     : 'custom';
 
   if (!attachmentId) {
-    errors.push('attachment_id or id must be a positive integer.');
+    errors.push('attachment_id, id, or _id must be a positive integer.');
   }
 
-  if (!orderId) {
-    errors.push('order_id or res_id must be a positive integer.');
-  }
-
-  if (!filename) {
-    errors.push('filename or name is required.');
-  } else if (filename.length > 512) {
+  if (filename && filename.length > 512) {
     errors.push('filename or name must be 512 characters or fewer.');
   }
 
@@ -190,15 +189,15 @@ function validateAttachmentUploadedPayload(body: unknown): {
     errors.push('_model must be 128 characters or fewer.');
   }
 
-  if (errors.length > 0 || !attachmentId || !orderId) {
+  if (errors.length > 0 || !attachmentId) {
     return { payload: null, errors };
   }
 
   return {
     payload: {
       attachmentId,
-      orderId,
-      filename,
+      orderId: orderId || 0,
+      filename: filename || '',
       resModel,
       mimetype,
       sourceModel,
@@ -386,7 +385,24 @@ router.post('/jobs/attachment-uploaded', async (req, res) => {
   try {
     const settings = await getSettings();
 
-    if (!filenameMatchesJobSummaryKeyword(payload.filename, settings.parser.filenameKeyword)) {
+    const client = new OdooClient(settings.odoo);
+
+    if (!payload.orderId || !payload.filename) {
+      try {
+        const attachmentRecord = await client.getAttachmentRecord(payload.attachmentId);
+
+        if (attachmentRecord) {
+          payload.orderId = attachmentRecord.res_id || payload.orderId;
+          payload.filename = attachmentRecord.name || payload.filename;
+          payload.resModel = attachmentRecord.res_model || payload.resModel;
+          payload.mimetype = attachmentRecord.mimetype || payload.mimetype;
+        }
+      } catch (err) {
+        console.warn('[webhook] Could not auto-enrich attachment details from Odoo:', err);
+      }
+    }
+
+    if (payload.filename && !filenameMatchesJobSummaryKeyword(payload.filename, settings.parser.filenameKeyword)) {
       writeWebhookTrace('ignored_filename_keyword', {
         ...requestContext,
         payload,
@@ -412,25 +428,6 @@ router.post('/jobs/attachment-uploaded', async (req, res) => {
       });
     }
 
-    if (!hasOdooConfiguration(settings)) {
-      writeWebhookTrace('failed_odoo_not_configured', {
-        ...requestContext,
-        payload,
-      });
-      await logEvent('error', 'Odoo attachment webhook could not run because Odoo is not configured', {
-        ...requestContext,
-        payloadFormat: payload.payloadFormat,
-        attachmentId: payload.attachmentId,
-        orderId: payload.orderId,
-      });
-      return res.status(503).json({
-        ok: false,
-        status: 'not_configured',
-        error: 'Odoo is not configured yet.',
-      });
-    }
-
-    const client = new OdooClient(settings.odoo);
     let targetOrderId = payload.orderId;
 
     if (payload.resModel === 'mail.message') {
@@ -802,6 +799,50 @@ router.get('/jobs/send-mpesa-review-notification', async (req, res) => {
   } catch (error) {
     const message = error instanceof Error ? error.message : 'M-Pesa notification failed.';
     res.status(500).json({ ok: false, error: message });
+  }
+});
+
+router.get('/jobs/scheduler-failures/export.csv', async (req, res) => {
+  try {
+    const range = (req.query.range as 'daily' | 'weekly' | 'all') || 'weekly';
+    const fromDate = req.query.fromDate as string | undefined;
+    const toDate = req.query.toDate as string | undefined;
+    const report = await getSchedulerFailureReport({ range, fromDate, toDate });
+    const csv = generateSchedulerFailureCsv(report);
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="scheduler-failures-${fromDate || range}-${new Date().toISOString().slice(0, 10)}.csv"`);
+    return res.send(csv);
+  } catch (error) {
+    return res.status(500).send('Could not generate CSV failure report.');
+  }
+});
+
+router.get('/jobs/scheduler-failures/report.pdf', async (req, res) => {
+  try {
+    const range = (req.query.range as 'daily' | 'weekly' | 'all') || 'weekly';
+    const fromDate = req.query.fromDate as string | undefined;
+    const toDate = req.query.toDate as string | undefined;
+    const report = await getSchedulerFailureReport({ range, fromDate, toDate });
+    const pdfBuffer = await renderSchedulerFailurePdf(report);
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="scheduler-failures-${fromDate || range}-${new Date().toISOString().slice(0, 10)}.pdf"`);
+    return res.send(pdfBuffer);
+  } catch (error) {
+    return res.status(500).send('Could not generate PDF failure report.');
+  }
+});
+
+router.get('/jobs/scheduler-failures/json', async (req, res) => {
+  try {
+    const range = (req.query.range as 'daily' | 'weekly' | 'all') || 'weekly';
+    const fromDate = req.query.fromDate as string | undefined;
+    const toDate = req.query.toDate as string | undefined;
+    const report = await getSchedulerFailureReport({ range, fromDate, toDate });
+    return res.json({ ok: true, report });
+  } catch (error) {
+    return res.status(500).json({ ok: false, message: 'Could not fetch failure report.' });
   }
 });
 

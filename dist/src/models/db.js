@@ -302,6 +302,7 @@ async function ensureSqliteDatabase(config) {
       odoo_database TEXT NOT NULL DEFAULT '',
       odoo_username TEXT NOT NULL DEFAULT '',
       odoo_api_key_encrypted TEXT NOT NULL DEFAULT '',
+      odoo_shop_floor_password_encrypted TEXT NOT NULL DEFAULT '',
       field_mapping_json TEXT NOT NULL DEFAULT '{}',
       parser_config_json TEXT NOT NULL DEFAULT '{}',
       ai_config_json TEXT NOT NULL DEFAULT '{}',
@@ -666,6 +667,7 @@ async function ensureSqliteDatabase(config) {
       ON auth_login_events(email, created_at);
   `);
     await ensureColumnSqlite(db, 'settings', 'scheduler_config_json', `TEXT NOT NULL DEFAULT '{}'`);
+    await ensureColumnSqlite(db, 'settings', 'odoo_shop_floor_password_encrypted', `TEXT NOT NULL DEFAULT ''`);
     await ensureColumnSqlite(db, 'settings', 'ai_config_json', `TEXT NOT NULL DEFAULT '{}'`);
     await ensureColumnSqlite(db, 'settings', 'stock_config_json', `TEXT NOT NULL DEFAULT '{}'`);
     await ensureColumnSqlite(db, 'settings', 'mail_config_json', `TEXT NOT NULL DEFAULT '{}'`);
@@ -707,6 +709,7 @@ async function ensureMysqlDatabase(config) {
       odoo_database TEXT NOT NULL,
       odoo_username TEXT NOT NULL,
       odoo_api_key_encrypted TEXT NOT NULL,
+      odoo_shop_floor_password_encrypted TEXT NOT NULL,
       field_mapping_json LONGTEXT NOT NULL,
       parser_config_json LONGTEXT NOT NULL,
       ai_config_json LONGTEXT NOT NULL,
@@ -722,6 +725,7 @@ async function ensureMysqlDatabase(config) {
     )
   `);
     await ensureColumnMysql(pool, 'settings', 'scheduler_config_json', 'LONGTEXT NOT NULL', config.mysqlDatabase);
+    await ensureColumnMysql(pool, 'settings', 'odoo_shop_floor_password_encrypted', 'TEXT NOT NULL', config.mysqlDatabase);
     await ensureColumnMysql(pool, 'settings', 'ai_config_json', 'LONGTEXT NOT NULL', config.mysqlDatabase);
     await ensureColumnMysql(pool, 'settings', 'stock_config_json', 'LONGTEXT NOT NULL', config.mysqlDatabase);
     await ensureColumnMysql(pool, 'settings', 'mail_config_json', 'LONGTEXT NULL', config.mysqlDatabase);
@@ -733,13 +737,14 @@ async function ensureMysqlDatabase(config) {
       odoo_database,
       odoo_username,
       odoo_api_key_encrypted,
+      odoo_shop_floor_password_encrypted,
       field_mapping_json,
       parser_config_json,
       ai_config_json,
       scheduler_config_json,
       stock_config_json,
       connection_status
-    ) VALUES (1, '', '', '', '', '{}', '{}', '{}', '{}', '{}', 'not_configured')
+    ) VALUES (1, '', '', '', '', '', '{}', '{}', '{}', '{}', '{}', 'not_configured')
   `);
     await query('create shop floor feature flags table', `
     CREATE TABLE IF NOT EXISTS shop_floor_feature_flags (

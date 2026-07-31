@@ -75,17 +75,33 @@ export async function syncBoardIntakeEntry(id: string) {
       partnerId: Number(entry.partner_id),
     });
     if (matchingMOs.length) {
+      for (const mo of matchingMOs) {
+        if (Math.abs(mo.qtyNeeded - Number(entry.quantity)) > 0.001 && Number(entry.quantity) > 0) {
+          await client.adjustMOComponentQuantity(
+            mo.moId,
+            Number(entry.product_id),
+            Number(entry.quantity),
+            `logged board intake (${Number(entry.quantity)} boards) difference`,
+            entry.actor_name,
+          );
+        }
+      }
       const reportDate = new Intl.DateTimeFormat('en-CA', {
         timeZone: 'Africa/Nairobi',
         year: 'numeric',
         month: '2-digit',
         day: '2-digit',
       }).format(new Date());
-      const note = `<p><strong>Boards logged in Shop Flow</strong><br/>User: ${escapeHtml(entry.actor_name)}<br/>Client: ${escapeHtml(entry.customer_name)}<br/>Board: ${escapeHtml(entry.product_name)}<br/>Quantity: ${Number(entry.quantity)}<br/>Date: ${reportDate}</p>`;
+      const note = `Boards logged in OPERATOR MOBILE APP\nUser: ${entry.actor_name}\nClient: ${entry.customer_name}\nBoard: ${entry.product_name}\nQuantity: ${Number(entry.quantity)}\nDate: ${reportDate}`;
       await Promise.all(matchingMOs.map((mo) =>
         client.postModelChatterMessage('mrp.production', mo.moId, note).catch(() => null),
       ));
       await client.reserveStockOnMOs(matchingMOs.map((mo) => mo.moId));
+    }
+
+    const warehouseId = Number(settings.stock.warehouseId || 0);
+    if (warehouseId) {
+      await client.autoReserveConfirmedMOs(warehouseId).catch(() => null);
     }
 
     await updateBoardIntakeQueueEntry(id, { status: 'synced', stockQuantity });

@@ -52,8 +52,8 @@ function nowMinusMinutesIso(windowMinutes: number): string {
 }
 
 function getSchedulerLockStaleMs() {
-  const configuredMinutes = Number(env.SCHEDULER_LOCK_STALE_MINUTES || 45);
-  const minutes = Number.isFinite(configuredMinutes) && configuredMinutes > 0 ? configuredMinutes : 45;
+  const configuredMinutes = Number(env.SCHEDULER_LOCK_STALE_MINUTES || 10);
+  const minutes = Number.isFinite(configuredMinutes) && configuredMinutes > 0 ? configuredMinutes : 10;
   return minutes * 60 * 1000;
 }
 
@@ -62,6 +62,7 @@ type SettingsRow = {
   odoo_database: string;
   odoo_username: string;
   odoo_api_key_encrypted: string;
+  odoo_shop_floor_password_encrypted: string;
   field_mapping_json: string;
   parser_config_json: string;
   ai_config_json: string;
@@ -77,29 +78,60 @@ type SettingsRow = {
 };
 
 async function getSettingsRow(): Promise<SettingsRow> {
-  const row = await queryOne<SettingsRow>(
-    `
-      SELECT
-        odoo_base_url,
-        odoo_database,
-        odoo_username,
-        odoo_api_key_encrypted,
-        field_mapping_json,
-        parser_config_json,
-        ai_config_json,
-        scheduler_config_json,
-        stock_config_json,
-        mail_config_json,
-        payroll_bridge_config_json,
-        connection_status,
-        connection_checked_at,
-        connection_message,
-        connection_version,
-        updated_at
-      FROM settings
-      WHERE id = 1
-    `,
-  );
+  let row: SettingsRow | null = null;
+  try {
+    row = await queryOne<SettingsRow>(
+      `
+        SELECT
+          odoo_base_url,
+          odoo_database,
+          odoo_username,
+          odoo_api_key_encrypted,
+          odoo_shop_floor_password_encrypted,
+          field_mapping_json,
+          parser_config_json,
+          ai_config_json,
+          scheduler_config_json,
+          stock_config_json,
+          mail_config_json,
+          payroll_bridge_config_json,
+          connection_status,
+          connection_checked_at,
+          connection_message,
+          connection_version,
+          updated_at
+        FROM settings
+        WHERE id = 1
+      `,
+    );
+  } catch (_error) {
+    row = await queryOne<SettingsRow>(
+      `
+        SELECT
+          odoo_base_url,
+          odoo_database,
+          odoo_username,
+          odoo_api_key_encrypted,
+          field_mapping_json,
+          parser_config_json,
+          ai_config_json,
+          scheduler_config_json,
+          stock_config_json,
+          mail_config_json,
+          payroll_bridge_config_json,
+          connection_status,
+          connection_checked_at,
+          connection_message,
+          connection_version,
+          updated_at
+        FROM settings
+        WHERE id = 1
+      `,
+    );
+    if (row) {
+      row.odoo_shop_floor_password_encrypted = '';
+    }
+  }
 
   if (!row) {
     throw new Error('Application settings row is missing.');
@@ -414,6 +446,7 @@ export async function getSettings(): Promise<AppSettings> {
   const mail = readMailConfig(row.mail_config_json);
   const payrollBridge = readPayrollBridgeConfig(row.payroll_bridge_config_json);
   let odooApiKey = '';
+  let odooShopFloorPassword = '';
 
   if (row.odoo_api_key_encrypted) {
     try {
@@ -425,6 +458,16 @@ export async function getSettings(): Promise<AppSettings> {
       );
     }
   }
+  if (row.odoo_shop_floor_password_encrypted) {
+    try {
+      odooShopFloorPassword = decryptSecret(row.odoo_shop_floor_password_encrypted);
+    } catch (error) {
+      console.warn(
+        '[settings] Stored Odoo Shop Floor web password could not be decrypted. Re-save it in Settings using the current APP_ENCRYPTION_KEY.',
+        error instanceof Error ? error.message : error,
+      );
+    }
+  }
 
   return {
     odoo: {
@@ -432,6 +475,7 @@ export async function getSettings(): Promise<AppSettings> {
       database: row.odoo_database || '',
       username: row.odoo_username || '',
       apiKey: odooApiKey,
+      shopFloorPassword: odooShopFloorPassword,
     },
     fieldMappings,
     parser: {
@@ -499,6 +543,9 @@ export async function saveSettings(input: {
   apiKey: string;
   keepExistingApiKey?: boolean;
   clearStoredApiKey?: boolean;
+  shopFloorPassword?: string;
+  keepExistingShopFloorPassword?: boolean;
+  clearStoredShopFloorPassword?: boolean;
   fieldMappings?: Record<string, string>;
   parser?: Record<string, unknown>;
   ai?: Record<string, unknown>;
@@ -516,6 +563,13 @@ export async function saveSettings(input: {
     : input.keepExistingApiKey && !input.apiKey
       ? existing.odoo.apiKey
       : input.apiKey || '';
+  const nextShopFloorPassword = input.clearStoredShopFloorPassword
+    ? (input.shopFloorPassword || '')
+    : input.shopFloorPassword
+      ? input.shopFloorPassword
+      : input.keepExistingShopFloorPassword === false
+        ? ''
+        : existing.odoo.shopFloorPassword || '';
   const fieldMappings = {
     ...createEmptyFieldMappings(),
     ...existing.fieldMappings,
@@ -595,38 +649,75 @@ export async function saveSettings(input: {
       }
     : existing.payrollBridge;
 
-  await execute(
-    `
-      UPDATE settings
-      SET
-        odoo_base_url = ?,
-        odoo_database = ?,
-        odoo_username = ?,
-        odoo_api_key_encrypted = ?,
-        field_mapping_json = ?,
-        parser_config_json = ?,
-        ai_config_json = ?,
-        scheduler_config_json = ?,
-        stock_config_json = ?,
-        mail_config_json = ?,
-        payroll_bridge_config_json = ?,
-        updated_at = CURRENT_TIMESTAMP
-      WHERE id = 1
-    `,
-    [
-      input.baseUrl,
-      input.database,
-      input.username,
-      encryptSecret(nextApiKey),
-      JSON.stringify(fieldMappings),
-      JSON.stringify(parser),
-      JSON.stringify(ai),
-      JSON.stringify(scheduler),
-      JSON.stringify(stock),
-      JSON.stringify(buildStoredMailConfig(mail)),
-      JSON.stringify(buildStoredPayrollBridgeConfig(payrollBridge)),
-    ],
-  );
+  try {
+    await execute(
+      `
+        UPDATE settings
+        SET
+          odoo_base_url = ?,
+          odoo_database = ?,
+          odoo_username = ?,
+          odoo_api_key_encrypted = ?,
+          odoo_shop_floor_password_encrypted = ?,
+          field_mapping_json = ?,
+          parser_config_json = ?,
+          ai_config_json = ?,
+          scheduler_config_json = ?,
+          stock_config_json = ?,
+          mail_config_json = ?,
+          payroll_bridge_config_json = ?,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = 1
+      `,
+      [
+        input.baseUrl,
+        input.database,
+        input.username,
+        encryptSecret(nextApiKey),
+        nextShopFloorPassword ? encryptSecret(nextShopFloorPassword) : '',
+        JSON.stringify(fieldMappings),
+        JSON.stringify(parser),
+        JSON.stringify(ai),
+        JSON.stringify(scheduler),
+        JSON.stringify(stock),
+        JSON.stringify(buildStoredMailConfig(mail)),
+        JSON.stringify(buildStoredPayrollBridgeConfig(payrollBridge)),
+      ],
+    );
+  } catch (_err) {
+    await execute(
+      `
+        UPDATE settings
+        SET
+          odoo_base_url = ?,
+          odoo_database = ?,
+          odoo_username = ?,
+          odoo_api_key_encrypted = ?,
+          field_mapping_json = ?,
+          parser_config_json = ?,
+          ai_config_json = ?,
+          scheduler_config_json = ?,
+          stock_config_json = ?,
+          mail_config_json = ?,
+          payroll_bridge_config_json = ?,
+          updated_at = CURRENT_TIMESTAMP
+        WHERE id = 1
+      `,
+      [
+        input.baseUrl,
+        input.database,
+        input.username,
+        encryptSecret(nextApiKey),
+        JSON.stringify(fieldMappings),
+        JSON.stringify(parser),
+        JSON.stringify(ai),
+        JSON.stringify(scheduler),
+        JSON.stringify(stock),
+        JSON.stringify(buildStoredMailConfig(mail)),
+        JSON.stringify(buildStoredPayrollBridgeConfig(payrollBridge)),
+      ],
+    );
+  }
 
   return getSettings();
 }
@@ -845,25 +936,32 @@ export async function getRecentSchedulerRuns(limit = 10): Promise<SchedulerRunEn
   return rows.map(mapSchedulerRun);
 }
 
+function formatDbDateString(val: unknown): string | null {
+  if (!val) return null;
+  if (val instanceof Date) return val.toISOString();
+  if (typeof val === 'string' && val.trim()) return val;
+  return null;
+}
+
 function mapSchedulerRuntimeState(row: {
   lock_run_id: string | null;
-  lock_acquired_at: string | null;
+  lock_acquired_at: unknown;
   last_successful_run_id: string | null;
-  last_successful_finished_at: string | null;
-  last_checkpoint_at: string | null;
+  last_successful_finished_at: unknown;
+  last_checkpoint_at: unknown;
   last_error_run_id: string | null;
   last_error_message: string | null;
-  updated_at: string | null;
+  updated_at: unknown;
 }): SchedulerRuntimeState {
   return {
     lockRunId: row.lock_run_id,
-    lockAcquiredAt: row.lock_acquired_at,
+    lockAcquiredAt: formatDbDateString(row.lock_acquired_at),
     lastSuccessfulRunId: row.last_successful_run_id,
-    lastSuccessfulFinishedAt: row.last_successful_finished_at,
-    lastCheckpointAt: row.last_checkpoint_at,
+    lastSuccessfulFinishedAt: formatDbDateString(row.last_successful_finished_at),
+    lastCheckpointAt: formatDbDateString(row.last_checkpoint_at),
     lastErrorRunId: row.last_error_run_id,
     lastErrorMessage: row.last_error_message,
-    updatedAt: row.updated_at,
+    updatedAt: formatDbDateString(row.updated_at),
   };
 }
 

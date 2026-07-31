@@ -24,18 +24,28 @@ async function getOperators(client: OdooClient, companyId: number) {
   return [...new Map(employees.map((employee) => [employee.id, employee])).values()];
 }
 
-export async function buildWeeklyShopFloorReport() {
+export async function buildWeeklyShopFloorReport(scope?: { fromDate?: string; toDate?: string }) {
   const settings = await getSettings();
   const client = new OdooClient(settings.odoo);
   const companyId = await client.getTargetCompanyIdValue();
   const warehouseId = Number(settings.stock.warehouseId || 0);
   if (!warehouseId) throw new Error('The Urban Vibe warehouse ID must be configured before generating the weekly report.');
-  const end = new Date();
-  const start = new Date(end);
-  start.setDate(end.getDate() - 6);
+
+  let reportStart: string;
+  let reportEnd: string;
   const reportingBaseline = settings.mail.shopFloorReportingStartDate;
-  const reportStart = clampShopFloorReportingDate(dateOnly(start), reportingBaseline);
-  const reportEnd = clampShopFloorReportingDate(dateOnly(end), reportingBaseline);
+
+  if (scope?.fromDate && scope?.toDate && /^\d{4}-\d{2}-\d{2}$/.test(String(scope.fromDate)) && /^\d{4}-\d{2}-\d{2}$/.test(String(scope.toDate))) {
+    reportStart = clampShopFloorReportingDate(String(scope.fromDate), reportingBaseline);
+    reportEnd = clampShopFloorReportingDate(String(scope.toDate), reportingBaseline);
+  } else {
+    const end = new Date();
+    const start = new Date(end);
+    start.setDate(end.getDate() - 6);
+    reportStart = clampShopFloorReportingDate(dateOnly(start), reportingBaseline);
+    reportEnd = clampShopFloorReportingDate(dateOnly(end), reportingBaseline);
+  }
+
   const [boardSummary, penalties, orders, operators, boardLoggingByOperator] = await Promise.all([
     client.getBoardRegistrationSummary({
       ...settings.stock,
@@ -47,11 +57,12 @@ export async function buildWeeklyShopFloorReport() {
     getOperators(client, companyId),
     getBoardIntakeLoggingReport(reportStart, reportEnd, reportingBaseline),
   ]);
+  const endDateObj = new Date(`${reportEnd}T23:59:59Z`);
   const confirmedQueueSchedule = getConfirmedMoQueueSchedule(orders);
   const overdueNotStarted = orders.filter((order) => {
-    const overdue = getMoOverdueState({ createDate: order.create_date, plannedStart: order.date_start, clientDeadline: order.date_deadline, quantity: order.product_qty, productName: productName(order.product_id) }, end);
+    const overdue = getMoOverdueState({ createDate: order.create_date, plannedStart: order.date_start, clientDeadline: order.date_deadline, quantity: order.product_qty, productName: productName(order.product_id) }, endDateObj);
     const queueFinish = confirmedQueueSchedule.get(order.id)?.estimatedFinishAt;
-    return !['done', 'cancel', 'progress'].includes(order.state) && !overdue.createdToday && (overdue.overdueReason !== null || Boolean(queueFinish && end > new Date(queueFinish)));
+    return !['done', 'cancel', 'progress'].includes(order.state) && !overdue.createdToday && (overdue.overdueReason !== null || Boolean(queueFinish && endDateObj > new Date(queueFinish)));
   }).map((order) => ({ ...order, queueEstimatedFinishAt: confirmedQueueSchedule.get(order.id)?.estimatedFinishAt || null }));
   const reportStartDate = new Date(`${reportStart}T12:00:00Z`);
   const reportEndDate = new Date(`${reportEnd}T12:00:00Z`);
@@ -72,8 +83,11 @@ export async function buildWeeklyShopFloorReport() {
   return { generatedAt: new Date(), start: reportStart, end: reportEnd, reportingBaseline, companyName: 'URBAN VIBE INTERIOR DESIGN COMPANY LTD', warehouseId, boardSummary, boardLoggingByOperator, penalties, overdueNotStarted, attendance };
 }
 
-export async function renderWeeklyShopFloorReportPdf(reportInput?: Awaited<ReturnType<typeof buildWeeklyShopFloorReport>>): Promise<Buffer> {
-  const report = reportInput || await buildWeeklyShopFloorReport();
+export async function renderWeeklyShopFloorReportPdf(
+  reportInput?: Awaited<ReturnType<typeof buildWeeklyShopFloorReport>>,
+  scope?: { fromDate?: string; toDate?: string }
+): Promise<Buffer> {
+  const report = reportInput || await buildWeeklyShopFloorReport(scope);
   const document = new PDFDocument({ size: 'A4', margin: 42, bufferPages: true });
   const chunks: Buffer[] = [];
   document.on('data', (chunk) => chunks.push(Buffer.from(chunk)));

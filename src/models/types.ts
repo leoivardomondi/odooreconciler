@@ -5,6 +5,7 @@ export interface OdooCredentials {
   database: string;
   username: string;
   apiKey: string;
+  shopFloorPassword?: string;
 }
 
 export interface FieldMappings {

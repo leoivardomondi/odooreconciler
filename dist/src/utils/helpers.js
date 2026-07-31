@@ -94,9 +94,9 @@ exports.DEFAULT_PO_BILL_SCHEDULER_CONFIG = {
     fromDate: '2026-01-01 00:00:00',
     cronToken: '',
     useInProcessInterval: false,
-    maxRetryAttempts: 5,
+    maxRetryAttempts: 10,
     transientRetryHours: 2,
-    retryBackoffHours: [12, 24, 48, 96, 168],
+    retryBackoffHours: [168, 168, 168, 168, 168, 168, 168, 168, 168, 168],
     stableSkipRetryDays: 14,
 };
 exports.DEFAULT_STOCK_CONFIG = {

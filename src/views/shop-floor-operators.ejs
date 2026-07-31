@@ -47,10 +47,14 @@
 
       <div class="operators-page__actions">
         <a href="/settings/staff-onboarding" class="btn operators-page__secondary-action rounded-pill">Onboarding Approvals</a>
-        <a href="/shop-floor/operators/weekly-report.pdf" class="btn operators-page__secondary-action operators-page__download-action rounded-pill">
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:6px;vertical-align:-2px"><path d="M6 2h9l5 5v15H6z"/><path d="M14 2v6h6M9 14h6m-6 4h6"/></svg>
-          Download Weekly PDF
-        </a>
+        <form method="get" action="/shop-floor/operators/weekly-report.pdf" target="_blank" class="d-flex align-items-center gap-1">
+          <input type="date" name="fromDate" class="form-control form-control-sm rounded-pill" title="Report Start Date" style="width: 135px;" />
+          <input type="date" name="toDate" class="form-control form-control-sm rounded-pill" title="Report End Date" style="width: 135px;" />
+          <button type="submit" class="btn operators-page__secondary-action operators-page__download-action rounded-pill">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:6px;vertical-align:-2px"><path d="M6 2h9l5 5v15H6z"/><path d="M14 2v6h6M9 14h6m-6 4h6"/></svg>
+            Download Report PDF
+          </button>
+        </form>
         <form method="post" action="/shop-floor/operators/send-weekly-report" data-confirm="Send the Wednesday accountability PDF now?" class="d-flex flex-wrap align-items-center gap-2">
           <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
           <input type="hidden" name="sendMode" value="all" class="report-send-mode" />

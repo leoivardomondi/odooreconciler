@@ -82,6 +82,43 @@ function shouldShowLinkLoading(event, anchor) {
   return Boolean(href) && href !== '#';
 }
 
+function beginInstantNavigation(anchor) {
+  const label = (anchor.textContent || 'Page').replace(/\s+/g, ' ').trim();
+  const nav = anchor.closest('.main-nav');
+  if (nav) {
+    nav.querySelectorAll('.nav-link.active').forEach((link) => link.classList.remove('active'));
+    const topLevelLink = anchor.classList.contains('nav-link')
+      ? anchor
+      : anchor.closest('.dropdown')?.querySelector('.nav-link');
+    if (topLevelLink instanceof HTMLElement) topLevelLink.classList.add('active');
+  }
+
+  const main = document.querySelector('main');
+  if (!(main instanceof HTMLElement)) return;
+  main.setAttribute('aria-busy', 'true');
+  main.classList.add('instant-page-shell');
+  main.innerHTML = `
+    <section class="instant-page-loading" role="status" aria-live="polite">
+      <div class="instant-page-loading__heading">
+        <span class="instant-page-loading__spinner" aria-hidden="true"></span>
+        <div>
+          <p class="instant-page-loading__eyebrow">Opening</p>
+          <h1>${label.replace(/[&<>"']/g, (character) => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;',
+          })[character])}</h1>
+          <p>Your menu is ready. The latest data is loading now.</p>
+        </div>
+      </div>
+      <div class="instant-page-loading__grid" aria-hidden="true">
+        <span class="instant-page-loading__card instant-page-loading__card--wide"></span>
+        <span class="instant-page-loading__card"></span>
+        <span class="instant-page-loading__card"></span>
+        <span class="instant-page-loading__card instant-page-loading__card--wide"></span>
+      </div>
+    </section>
+  `;
+}
+
 function markSubmitterLoading(submitter, message) {
   if (submitter instanceof HTMLButtonElement) {
     if (!submitter.dataset.originalText) {
@@ -133,6 +170,24 @@ document.addEventListener('click', async (event) => {
     showAppLoading(refreshTrigger.getAttribute('data-loading-message') || 'Refreshing app...');
     window.location.reload();
     return;
+  }
+
+  const instantNavLink = target.closest('a[data-instant-nav]');
+  if (
+    instantNavLink instanceof HTMLAnchorElement
+    && shouldShowLinkLoading(event, instantNavLink)
+    && instantNavLink.origin === window.location.origin
+  ) {
+    const destination = new URL(instantNavLink.href);
+    const current = new URL(window.location.href);
+    if (destination.pathname !== current.pathname || destination.search !== current.search) {
+      event.preventDefault();
+      beginInstantNavigation(instantNavLink);
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => window.location.assign(destination.href));
+      });
+      return;
+    }
   }
 
   const loadingLink = target.closest('a[data-loading-message]');

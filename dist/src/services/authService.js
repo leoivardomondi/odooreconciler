@@ -720,7 +720,9 @@ function canAccessPath(user, method, requestPath) {
 }
 function requireAuthorizedAccess(req, res, next) {
     const effectiveUser = req.viewingAsUser || req.authUser;
-    if (canAccessPath(effectiveUser, req.method, req.path)) {
+    const administratorPreview = Boolean(req.viewingAsUser) &&
+        normalizeAuthRole(req.authUser?.role) === 'admin';
+    if (administratorPreview || canAccessPath(effectiveUser, req.method, req.path)) {
         next();
         return;
     }

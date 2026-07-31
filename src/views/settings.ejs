@@ -345,7 +345,32 @@
                 <div class="col-sm-6 col-lg-2 automation-field"><label class="form-label">Repeat every</label><div class="input-group"><input type="number" min="1" max="168" class="form-control" name="mailAutomation<%= n %>Interval" value="<%= item.interval %>"><span class="input-group-text">cycle</span></div></div>
                 <div class="col-sm-6 col-lg-2 automation-field send-hour-field"><label class="form-label">Send hour (0–23)</label><input type="number" min="0" max="23" class="form-control" name="mailAutomation<%= n %>Hour" value="<%= item.hour %>"></div>
                 <div class="col-sm-6 col-lg-2 automation-field weekly-field"><label class="form-label">Weekly day</label><select class="form-select" name="mailAutomation<%= n %>DayOfWeek"><% ['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'].forEach((day, dayIndex) => { %><option value="<%= dayIndex %>" <%= item.dayOfWeek === dayIndex ? 'selected' : '' %>><%= day %></option><% }) %></select></div>
-                <div class="col-lg-10 automation-field"><label class="form-label">Recipients</label><input class="form-control" name="mailAutomation<%= n %>Recipients" value="<%= item.recipients %>" placeholder="Comma-separated; leave blank to use system recipients"></div>
+                <div class="col-lg-10 automation-field">
+                  <label class="form-label d-flex justify-content-between align-items-center mb-1">
+                    <span>Recipients</span>
+                    <span class="small text-muted" style="font-size: 0.75rem;">Click <strong>&times;</strong> on any badge to remove recipient</span>
+                  </label>
+                  <div class="automation-pills-wrapper p-2 bg-light rounded border mb-2 d-flex flex-wrap align-items-center gap-1" id="recipientPills_<%= n %>"></div>
+                  <div class="row g-2 align-items-center">
+                    <div class="col-md-6 col-lg-5">
+                      <div class="input-group input-group-sm">
+                        <input type="email" class="form-control automation-add-input" id="addEmailInput_<%= n %>" placeholder="Add email address..." onkeydown="if(event.key==='Enter'){event.preventDefault();addEmailFromInput(<%= n %>);}">
+                        <button type="button" class="btn btn-sm btn-outline-primary" onclick="addEmailFromInput(<%= n %>)">+ Add</button>
+                      </div>
+                    </div>
+                    <% if (typeof approvedUsers !== 'undefined' && approvedUsers && approvedUsers.length > 0) { %>
+                      <div class="col-md-6 col-lg-7">
+                        <div class="d-flex align-items-center flex-wrap gap-1">
+                          <span class="small text-muted me-1" style="font-size: 0.75rem;">Quick add:</span>
+                          <% approvedUsers.filter(u => u.active && u.email).forEach(u => { %>
+                            <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2 rounded-pill small me-1 mb-1" style="font-size: 0.72rem;" onclick="addEmailDirect(<%= n %>, '<%= u.email %>')">+ <%= u.email %></button>
+                          <% }) %>
+                        </div>
+                      </div>
+                    <% } %>
+                  </div>
+                  <input type="hidden" name="mailAutomation<%= n %>Recipients" id="mailAutomation<%= n %>Recipients" class="automation-recipients-hidden" value="<%= item.recipients %>" />
+                </div>
                 <div class="col-lg-2 d-flex align-items-end"><label class="form-check automation-remove mb-2"><input class="form-check-input" type="checkbox" name="mailAutomation<%= n %>Remove"> Remove on save</label></div>
                 <div class="automation-custom-fields <%= item.systemKey === 'custom' ? 'row g-3 mx-0 px-0' : 'd-none' %>">
                   <div class="col-lg-5 automation-field"><label class="form-label">Email subject</label><input class="form-control" name="mailAutomation<%= n %>Subject" value="<%= item.subject %>"></div>
@@ -361,6 +386,63 @@
   </form>
 
   <script>
+    function parseEmails(str) {
+      return [...new Set((str || '').split(/[\s,\n;]+/).map(e => e.trim().toLowerCase()).filter(Boolean))];
+    }
+
+    window.renderRecipientPills = function(n) {
+      const hiddenInput = document.getElementById(`mailAutomation${n}Recipients`);
+      const container = document.getElementById(`recipientPills_${n}`);
+      if (!hiddenInput || !container) return;
+
+      const emails = parseEmails(hiddenInput.value);
+      container.innerHTML = '';
+
+      if (emails.length === 0) {
+        container.innerHTML = `<span class="badge bg-warning-subtle text-dark border border-warning-subtle py-1 px-2 me-1" style="font-weight: 500;">Default System Users (all active approved users)</span>`;
+      } else {
+        emails.forEach(email => {
+          const pill = document.createElement('span');
+          pill.className = 'badge bg-white text-dark border shadow-sm py-1 px-2 d-inline-flex align-items-center gap-1 font-monospace me-1 mb-1';
+          pill.style.fontSize = '0.82rem';
+          pill.innerHTML = `
+            <span>${email}</span>
+            <button type="button" class="btn-close ms-1" style="font-size: 0.55rem; padding: 2px;" aria-label="Remove ${email}" onclick="removeEmailDirect(${n}, '${email}')" title="Remove ${email}"></button>
+          `;
+          container.appendChild(pill);
+        });
+      }
+    };
+
+    window.removeEmailDirect = function(n, emailToRemove) {
+      const hiddenInput = document.getElementById(`mailAutomation${n}Recipients`);
+      if (!hiddenInput) return;
+      const emails = parseEmails(hiddenInput.value).filter(e => e !== emailToRemove.toLowerCase());
+      hiddenInput.value = emails.join(', ');
+      renderRecipientPills(n);
+    };
+
+    window.addEmailDirect = function(n, emailToAdd) {
+      const clean = (emailToAdd || '').trim().toLowerCase();
+      if (!clean || !clean.includes('@')) return;
+      const hiddenInput = document.getElementById(`mailAutomation${n}Recipients`);
+      if (!hiddenInput) return;
+      const emails = parseEmails(hiddenInput.value);
+      if (!emails.includes(clean)) {
+        emails.push(clean);
+        hiddenInput.value = emails.join(', ');
+        renderRecipientPills(n);
+      }
+    };
+
+    window.addEmailFromInput = function(n) {
+      const input = document.getElementById(`addEmailInput_${n}`);
+      if (input && input.value) {
+        addEmailDirect(n, input.value);
+        input.value = '';
+      }
+    };
+
     (() => {
       const button = document.getElementById('addEmailAutomation');
       const rows = document.getElementById('emailAutomationRows');
@@ -403,18 +485,37 @@
             <div class="col-sm-6 col-lg-2 automation-field"><label class="form-label">Repeat every</label><div class="input-group"><input type="number" min="1" max="168" class="form-control" name="mailAutomation${n}Interval" value="1"><span class="input-group-text">cycle</span></div></div>
             <div class="col-sm-6 col-lg-2 automation-field send-hour-field"><label class="form-label">Send hour (0–23)</label><input type="number" min="0" max="23" class="form-control" name="mailAutomation${n}Hour" value="8"></div>
             <div class="col-sm-6 col-lg-2 automation-field weekly-field d-none"><label class="form-label">Weekly day</label><select class="form-select" name="mailAutomation${n}DayOfWeek"><option value="0">Sunday</option><option value="1" selected>Monday</option><option value="2">Tuesday</option><option value="3">Wednesday</option><option value="4">Thursday</option><option value="5">Friday</option><option value="6">Saturday</option></select></div>
-            <div class="col-lg-10 automation-field"><label class="form-label">Recipients</label><input class="form-control" name="mailAutomation${n}Recipients" placeholder="name@example.com, another@example.com" required></div>
+            <div class="col-lg-10 automation-field">
+              <label class="form-label d-flex justify-content-between align-items-center mb-1">
+                <span>Recipients</span>
+                <span class="small text-muted" style="font-size: 0.75rem;">Click <strong>&times;</strong> on any badge to remove recipient</span>
+              </label>
+              <div class="automation-pills-wrapper p-2 bg-light rounded border mb-2 d-flex flex-wrap align-items-center gap-1" id="recipientPills_${n}"></div>
+              <div class="input-group input-group-sm" style="max-width: 320px;">
+                <input type="email" class="form-control automation-add-input" id="addEmailInput_${n}" placeholder="Add email address..." onkeydown="if(event.key==='Enter'){event.preventDefault();addEmailFromInput(${n});}">
+                <button type="button" class="btn btn-sm btn-outline-primary" onclick="addEmailFromInput(${n})">+ Add</button>
+              </div>
+              <input type="hidden" name="mailAutomation${n}Recipients" id="mailAutomation${n}Recipients" class="automation-recipients-hidden" value="" />
+            </div>
             <div class="col-lg-2 d-flex align-items-end"><label class="form-check automation-remove mb-2"><input class="form-check-input" type="checkbox" name="mailAutomation${n}Remove"> Remove on save</label></div>
             <div class="automation-custom-fields row g-3 mx-0 px-0"><div class="col-lg-5 automation-field"><label class="form-label">Email subject</label><input class="form-control" name="mailAutomation${n}Subject" required></div><div class="col-lg-7 automation-field"><label class="form-label">Email message</label><textarea class="form-control" rows="3" name="mailAutomation${n}Body" required></textarea></div></div>
           </div></div>`;
         rows.appendChild(wrapper);
         refreshAutomationRow(wrapper);
+        renderRecipientPills(n);
         wrapper.scrollIntoView({ behavior: 'smooth', block: 'center' });
       });
+
+      // Initialize recipient pills for all existing automation rows
+      const totalAutomations = Number(count.value || 0);
+      for (let i = 1; i <= totalAutomations; i++) {
+        renderRecipientPills(i);
+      }
     })();
   </script>
 
   <form method="post" action="/settings" class="row g-4" autocomplete="off">
+    <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
     <div class="col-xl-6">
       <div class="card shadow-sm border-0 app-card h-100">
         <div class="card-body p-4">
@@ -454,6 +555,75 @@
                 <label class="form-check-label" for="clearStoredApiKey">
                   Clear stored API key
                 </label>
+              </div>
+            </div>
+            <div class="col-12">
+              <label class="form-label">Shop Floor web password <span class="text-secondary fw-normal">(optional)</span></label>
+              <input
+                type="password"
+                class="form-control"
+                name="shopFloorPassword"
+                data-clear-sensitive-field="true"
+                autocomplete="new-password"
+                autocapitalize="off"
+                spellcheck="false"
+                placeholder="<%= form.hasStoredShopFloorPassword ? 'Leave blank to keep the stored Shop Floor password' : 'Enter the Odoo user web-login password' %>"
+              />
+              <div class="form-text">
+                Used only to open an authenticated Odoo Shop Floor web session. It is stored encrypted and does not replace the API key.
+              </div>
+              <div class="form-check mt-2">
+                <input class="form-check-input" type="checkbox" name="clearStoredShopFloorPassword" id="clearStoredShopFloorPassword" <%= form.clearStoredShopFloorPassword ? 'checked' : '' %> />
+                <label class="form-check-label" for="clearStoredShopFloorPassword">
+                  Clear stored Shop Floor web password
+                </label>
+              </div>
+            </div>
+            <div class="col-12" id="odoo-shop-floor-session">
+              <div class="border rounded-4 bg-light p-3">
+                <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
+                  <div>
+                    <h3 class="h6 mb-1">Shop Floor session</h3>
+                    <p class="text-secondary small mb-0">
+                      Connect once with Odoo two-factor verification. The server securely reuses the session for operator Start and Finish actions and only asks again after Odoo expires it.
+                    </p>
+                  </div>
+                  <button
+                    type="submit"
+                    formaction="/settings/shop-floor-session/begin"
+                    formmethod="post"
+                    formnovalidate
+                    class="btn btn-outline-primary"
+                  >
+                    Request OTP
+                  </button>
+                </div>
+                <div class="row g-2 align-items-end mt-2">
+                  <div class="col-sm-7">
+                    <label class="form-label" for="shopFloorOtpCode">Odoo verification code</label>
+                    <input
+                      type="text"
+                      class="form-control font-monospace"
+                      id="shopFloorOtpCode"
+                      name="otpCode"
+                      inputmode="numeric"
+                      autocomplete="one-time-code"
+                      pattern="[0-9]{4,10}"
+                      maxlength="10"
+                      placeholder="Enter the code from Odoo"
+                    />
+                  </div>
+                  <div class="col-sm-5">
+                    <button
+                      type="submit"
+                      formaction="/settings/shop-floor-session/verify"
+                      formmethod="post"
+                      class="btn btn-primary w-100"
+                    >
+                      Verify &amp; Connect
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
@@ -925,7 +1095,22 @@
             </div>
           </div>
 
-          <hr class="my-4" />
+          <div class="card bg-body-tertiary border-0 mb-4">
+            <div class="card-body p-3">
+              <div class="d-flex justify-content-between align-items-center gap-2 flex-wrap">
+                <div>
+                  <h3 class="h6 mb-0 fw-bold">Download Scheduler Failure & Analysis Reports</h3>
+                  <div class="small text-secondary">Export daily or weekly failure breakdowns with reasons and automated diagnostic suggestions.</div>
+                </div>
+                <div class="d-flex gap-2 flex-wrap">
+                  <a href="/jobs/scheduler-failures/export.csv?range=daily" class="btn btn-sm btn-outline-secondary" download>📊 Daily CSV</a>
+                  <a href="/jobs/scheduler-failures/report.pdf?range=daily" target="_blank" class="btn btn-sm btn-outline-danger">📄 Daily PDF</a>
+                  <a href="/jobs/scheduler-failures/export.csv?range=weekly" class="btn btn-sm btn-primary" download>📊 Weekly CSV</a>
+                  <a href="/jobs/scheduler-failures/report.pdf?range=weekly" target="_blank" class="btn btn-sm btn-danger">📄 Weekly PDF</a>
+                </div>
+              </div>
+            </div>
+          </div>
 
           <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
             <h2 class="h4 mb-0">Background Scheduler</h2>
@@ -1052,12 +1237,12 @@
                   </div>
                   <div class="col-md-3">
                     <label class="form-label" for="poBillSchedulerRetryBackoffHours">PO Match Backoff</label>
-                    <input id="poBillSchedulerRetryBackoffHours" type="text" class="form-control font-monospace" name="poBillSchedulerRetryBackoffHours" value="<%= form.poBillSchedulerRetryBackoffHours %>" placeholder="12, 24, 48, 96, 168" />
+                    <input id="poBillSchedulerRetryBackoffHours" type="text" class="form-control font-monospace" name="poBillSchedulerRetryBackoffHours" value="<%= form.poBillSchedulerRetryBackoffHours %>" placeholder="168, 168, 168, 168, 168" />
                     <div class="form-text">Hours after consecutive failed match attempts.</div>
                   </div>
                 </div>
                 <div class="alert alert-warning border-0 small mt-3 mb-0">
-                  Recommended: scheduler every <strong>7 minutes</strong>; OCR/API retry after <strong>2 hours</strong>; PO matching backoff <strong>12, 24, 48, 96, 168 hours</strong>; non-bills every <strong>14 days</strong>. Manual “Check now” can still run immediately.
+                  Recommended: scheduler every <strong>15–45 minutes</strong>; OCR/API retry after <strong>2 hours</strong>; PO matching backoff <strong>168 hours (7 days per attempt)</strong>; non-bills every <strong>14 days</strong>. Manual “Check now” can still run immediately.
                 </div>
               </div>
             </div>

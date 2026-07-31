@@ -882,7 +882,10 @@ export function canAccessPath(
 
 export function requireAuthorizedAccess(req: Request, res: Response, next: NextFunction) {
   const effectiveUser = req.viewingAsUser || req.authUser;
-  if (canAccessPath(effectiveUser, req.method, req.path)) {
+  const administratorPreview =
+    Boolean(req.viewingAsUser) &&
+    normalizeAuthRole(req.authUser?.role) === 'admin';
+  if (administratorPreview || canAccessPath(effectiveUser, req.method, req.path)) {
     next();
     return;
   }

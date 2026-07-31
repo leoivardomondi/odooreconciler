@@ -5,6 +5,7 @@ node_modules/
 # dist/ is intentionally committed because the cPanel Passenger runtime loads
 # dist/server.js and does not reliably compile TypeScript during deployment.
 dist.zip
+*.zip
 output/
 cpanel-upload-*/
 

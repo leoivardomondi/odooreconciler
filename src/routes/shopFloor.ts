@@ -33,6 +33,7 @@ const SHOP_FLOOR_FEATURE_KEYS: ShopFloorFeatureKey[] = [
 ];
 const purchaseApprovalEmailCooldown = new Map<string, number>();
 const PURCHASE_APPROVAL_EMAIL_COOLDOWN_MS = 30 * 60 * 1000;
+const manuallyPausedMoIds = new Set<number>();
 
 async function sendPurchaseApprovalRequest(input: {
   settings: Awaited<ReturnType<typeof getSettings>>;
@@ -541,11 +542,12 @@ async function buildOperatorDashboard(
         const originsToFetch = [...new Set(allOrders.map(o => o.origin).filter(Boolean))] as string[];
         const moIds = allOrders.map(o => o.id);
 
-        const [clientMap, saleOrderDateMap, allComponents, poStateMap] = await Promise.all([
+        const [clientMap, saleOrderDateMap, allComponents, poStateMap, workOrderStateMap] = await Promise.all([
           client.getBulkSaleOrderClients(originsToFetch).catch(() => new Map<string, string>()),
           client.getBulkSaleOrderConfirmationDates(originsToFetch).catch(() => new Map<string, string>()),
           client.getBulkManufacturingOrderComponents(moIds).catch(() => []),
           client.getBulkRelatedPurchaseOrderStates(originsToFetch).catch(() => new Map<string, string>()),
+          client.getBulkWorkOrderStates(moIds).catch(() => new Map<number, string>()),
         ]);
 
         const componentsByMoId = new Map<number, any[]>();
@@ -594,8 +596,6 @@ async function buildOperatorDashboard(
           });
           if (unavailable.length > 0) {
             const poState = o.origin ? poStateMap.get(o.origin) || null : null;
-            // "To Approve" means the boards have entered the purchasing flow,
-            // so show Incoming / Purchase even though Start still requests approval.
             const needsAlert = !poState || ['draft', 'sent'].includes(poState);
             if (needsAlert) {
               moStockStatus.set(o.id, 'no_stock');
@@ -630,29 +630,44 @@ async function buildOperatorDashboard(
         const mappedWorkOrders = allOrders.map((o) => {
           const baseTiming = getMoOverdueState({ createDate: o.create_date, plannedStart: o.date_start, clientDeadline: o.date_deadline, quantity: o.product_qty, productName: Array.isArray(o.product_id) ? o.product_id[1] : String(o.product_id || '') });
           const queueTiming = confirmedQueueSchedule.get(o.id);
+          const rawWoState = workOrderStateMap.get(o.id);
+          const isManuallyPaused = manuallyPausedMoIds.has(o.id);
+          const effectiveState = isManuallyPaused || rawWoState === 'pending'
+            ? 'paused'
+            : rawWoState === 'progress' || o.state === 'progress'
+              ? 'progress'
+              : o.state || 'draft';
           return {
-          ...baseTiming,
-          ...queueTiming,
-          isOverdue: !baseTiming.createdToday && (baseTiming.overdueReason !== null || Boolean(queueTiming && new Date() > new Date(queueTiming.estimatedFinishAt))),
-          id: o.id,
-          name: o.name,
-          product: Array.isArray(o.product_id) ? o.product_id[1] : String(o.product_id),
-          qty: o.product_qty || 0,
-          produced: o.qty_produced || 0,
-          state: o.state || 'draft',
-          plannedStart: o.date_start || null,
-          dateStarted: o.date_start || null,
-          dateFinished: o.date_finished || null,
-          dateDeadline: o.date_deadline || null,
-          createdAt: o.create_date || null,
-          progress: o.product_qty > 0 ? Math.round(((o.qty_produced || 0) / o.product_qty) * 100) : 0,
-          origin: o.origin || null,
-          client: o.origin ? clientMap.get(o.origin) || null : null,
-          assignedTo: Array.isArray(o.user_id) ? o.user_id[1] : null,
-          area: detectArea(Array.isArray(o.product_id) ? o.product_id[1] : ''),
-          hasStockIssue: moIdsWithStockIssues.has(o.id),
-          stockStatus: moStockStatus.get(o.id) || 'ready',
-        };
+            ...baseTiming,
+            ...queueTiming,
+            isOverdue: !baseTiming.createdToday && (baseTiming.overdueReason !== null || Boolean(queueTiming && new Date() > new Date(queueTiming.estimatedFinishAt))),
+            id: o.id,
+            name: o.name,
+            product: Array.isArray(o.product_id) ? o.product_id[1] : String(o.product_id),
+            qty: o.product_qty || 0,
+            produced: o.qty_produced || 0,
+            state: effectiveState,
+            plannedStart: o.date_start || null,
+            dateStarted: o.date_start || null,
+            dateFinished: o.date_finished || null,
+            dateDeadline: o.date_deadline || null,
+            createdAt: o.create_date || null,
+            progress: o.product_qty > 0 ? Math.round(((o.qty_produced || 0) / o.product_qty) * 100) : 0,
+            origin: o.origin || null,
+            client: o.origin ? clientMap.get(o.origin) || null : null,
+            assignedTo: Array.isArray(o.user_id) ? o.user_id[1] : null,
+            area: detectArea(Array.isArray(o.product_id) ? o.product_id[1] : ''),
+            hasStockIssue: moIdsWithStockIssues.has(o.id),
+            stockStatus: moStockStatus.get(o.id) || 'ready',
+          };
+        }).sort((a, b) => {
+          if (a.state === 'progress' && b.state !== 'progress') return -1;
+          if (a.state !== 'progress' && b.state === 'progress') return 1;
+          if (a.state === 'paused' && b.state !== 'paused') return -1;
+          if (a.state !== 'paused' && b.state === 'paused') return 1;
+          if (a.stockStatus === 'ready' && b.stockStatus !== 'ready') return -1;
+          if (a.stockStatus !== 'ready' && b.stockStatus === 'ready') return 1;
+          return 0;
         });
 
         const completedAreaStats = new Map<string, {
@@ -1814,6 +1829,7 @@ router.post('/shop-floor/work-order/:id/advance', async (req: Request, res: Resp
     }
 
     const advanceResult = await client.advanceManufacturingOrder(moId, action, employee.id);
+    manuallyPausedMoIds.delete(moId);
     shopFloorCache.clearPrefix('shop-floor-dashboard:');
     const message = action === 'finish'
       ? 'Current operation finished.'
@@ -1858,7 +1874,7 @@ router.post('/shop-floor/work-order/:id/advance', async (req: Request, res: Resp
       res.status(permissionDenied ? 403 : 500).json({
         ok: false,
         code: permissionDenied ? 'permission_denied' : 'odoo_error',
-        message: permissionDenied ? 'You do not have permission to update this job in Odoo.' : message,
+        message,
       });
       return;
     }
@@ -1866,11 +1882,44 @@ router.post('/shop-floor/work-order/:id/advance', async (req: Request, res: Resp
   }
 });
 
+router.get('/shop-floor/work-order/:id/pause', (req: Request, res: Response) => {
+  res.redirect('/shop-floor#manufacturing-orders');
+});
+
+router.post('/shop-floor/work-order/:id/pause', async (req: Request, res: Response) => {
+  if (!req.authUser) {
+    res.redirect('/login');
+    return;
+  }
+  const moId = Number(req.params.id);
+  const createBackorder = String(req.body.createBackorder || 'true') === 'true';
+  const qtyProduced = Number(req.body.qtyProduced || 0);
+
+  try {
+    const settings = await getSettings();
+    const client = new OdooClient(settings.odoo);
+    const viewedEmail = getViewedUserEmail(req);
+    const employee = await client.findEmployeeForShopFloorEmail(viewedEmail);
+    if (!employee) throw new Error('Your account is not linked to an Odoo employee.');
+
+    await client.pauseManufacturingOrder(moId, { createBackorder, qtyProduced }, employee.id);
+    manuallyPausedMoIds.add(moId);
+    shopFloorCache.clearPrefix('shop-floor-dashboard:');
+    await logEvent('info', 'Manufacturing order paused', { moId, actor: employee.name, createBackorder });
+    res.redirect('/shop-floor?message=' + encodeURIComponent('Manufacturing order paused successfully.') + '#manufacturing-orders');
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Could not pause the manufacturing order.';
+    res.redirect('/shop-floor?error=' + encodeURIComponent(message) + '#manufacturing-orders');
+  }
+});
+
 router.get('/shop-floor/operators/weekly-report.pdf', async (req: Request, res: Response) => {
   if (!canManageShopFloor(req)) { res.status(403).send('Administrator access required.'); return; }
   try {
-    const pdf = await renderWeeklyShopFloorReportPdf();
-    const filename = `shop-floor-wednesday-${new Date().toISOString().slice(0, 10)}.pdf`;
+    const fromDate = typeof req.query.fromDate === 'string' ? req.query.fromDate : undefined;
+    const toDate = typeof req.query.toDate === 'string' ? req.query.toDate : undefined;
+    const pdf = await renderWeeklyShopFloorReportPdf(undefined, { fromDate, toDate });
+    const filename = `shop-floor-weekly-${fromDate || 'report'}-to-${toDate || new Date().toISOString().slice(0, 10)}.pdf`;
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(pdf);
@@ -2059,9 +2108,10 @@ router.post('/shop-floor/receipts/:id/validate', async (req: Request, res: Respo
     if (!warehouseId) throw new Error('The Urban Vibe warehouse ID is not configured.');
     const actorName = req.authUser.displayName || req.authUser.email;
     await new OdooClient(settings.odoo).validateBoardReceipt(pickingId, actorName, warehouseId);
+    shopFloorCache.clearPrefix('shop-floor-dashboard:');
     void refreshStockMirror();
     await logEvent('info', 'Odoo board receipt validated', { pickingId, actor: actorName, actorEmail: req.authUser.email });
-    res.redirect('/shop-floor/receipts?message=' + encodeURIComponent('Receipt validated in Odoo.'));
+    res.redirect('/shop-floor/receipts?message=' + encodeURIComponent('Receipt validated in Odoo. Manufacturing Order readiness updated immediately.'));
   } catch (error) {
     res.redirect('/shop-floor/receipts?error=' + encodeURIComponent(error instanceof Error ? error.message : 'Receipt validation failed.'));
   }

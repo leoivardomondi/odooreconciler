@@ -52,15 +52,15 @@
         <ul class="navbar-nav main-nav ms-auto">
           <% if (canAccess && canAccess('GET', '/dashboard')) { %>
             <li class="nav-item">
-              <a class="nav-link <%= currentPath.startsWith('/dashboard') || currentPath === '/' ? 'active' : '' %>" href="/dashboard">Home</a>
+              <a class="nav-link <%= currentPath.startsWith('/dashboard') || currentPath === '/' ? 'active' : '' %>" href="/dashboard" data-instant-nav>Home</a>
             </li>
           <% } %>
           <% if (canAccess && canAccess('GET', '/shop-floor')) { %>
             <li class="nav-item">
-              <a class="nav-link <%= currentPath === '/shop-floor' ? 'active' : '' %>" href="/shop-floor">My Work</a>
+              <a class="nav-link <%= currentPath === '/shop-floor' ? 'active' : '' %>" href="/shop-floor" data-instant-nav>My Work</a>
             </li>
             <li class="nav-item">
-              <a class="nav-link <%= currentPath.startsWith('/shop-floor/boards') ? 'active' : '' %>" href="/shop-floor/boards">Board Reservations</a>
+              <a class="nav-link <%= currentPath.startsWith('/shop-floor/boards') ? 'active' : '' %>" href="/shop-floor/boards" data-instant-nav>Board Reservations</a>
             </li>
           <% } %>
           <% if (canAccess && canAccess('GET', '/sales-orders') || canAccess && canAccess('GET', '/purchase-orders') || canAccess && canAccess('GET', '/po-bill-automation') || canAccess && canAccess('GET', '/mpesa-reconciliation')) { %>
@@ -70,7 +70,7 @@
                 <% if (canAccess && canAccess('GET', '/mpesa-reconciliation')) { %>
                   <li>
                     <% const mpesaReviewCount = safeMpesaOpenReviewStatementCount; %>
-                    <a class="dropdown-item d-flex justify-content-between align-items-center" href="/mpesa-reconciliation">
+                    <a class="dropdown-item d-flex justify-content-between align-items-center" href="/mpesa-reconciliation" data-instant-nav>
                       M-Pesa Reconciliation
                       <% if (mpesaReviewCount > 0) { %>
                         <span class="badge rounded-pill bg-danger"><%= mpesaReviewCount > 99 ? '99+' : mpesaReviewCount %></span>
@@ -82,13 +82,13 @@
                   <li><a class="dropdown-item" href="/mpesa-reconciliation/transactions">M-Pesa Admin</a></li>
                 <% } %>
                 <% if (canAccess && canAccess('GET', '/sales-orders')) { %>
-                  <li><a class="dropdown-item" href="/sales-orders">Sales Orders</a></li>
+                  <li><a class="dropdown-item" href="/sales-orders" data-instant-nav>Sales Orders</a></li>
                 <% } %>
                 <% if (canAccess && canAccess('GET', '/purchase-orders')) { %>
-                  <li><a class="dropdown-item" href="/purchase-orders">Purchase Orders</a></li>
+                  <li><a class="dropdown-item" href="/purchase-orders" data-instant-nav>Purchase Orders</a></li>
                 <% } %>
                 <% if (canAccess && canAccess('GET', '/po-bill-automation')) { %>
-                  <li><a class="dropdown-item" href="/po-bill-automation">PO Bills</a></li>
+                  <li><a class="dropdown-item" href="/po-bill-automation" data-instant-nav>PO Bills</a></li>
                 <% } %>
               </ul>
             </li>
@@ -97,9 +97,9 @@
             <li class="nav-item dropdown">
               <a class="nav-link dropdown-toggle <%= currentPath.startsWith('/shop-floor/operators') || currentPath.startsWith('/settings') || currentPath.startsWith('/setup') ? 'active' : '' %>" href="#" role="button" data-bs-toggle="dropdown">People</a>
               <ul class="dropdown-menu">
-                <li><a class="dropdown-item" href="/shop-floor/operators">Operators</a></li>
+                <li><a class="dropdown-item" href="/shop-floor/operators" data-instant-nav>Operators</a></li>
                 <% if (canAccess && canAccess('GET', '/settings/access')) { %>
-                  <li><a class="dropdown-item" href="/settings/access">Access Control</a></li>
+                  <li><a class="dropdown-item" href="/settings/access" data-instant-nav>Access Control</a></li>
                 <% } %>
               </ul>
             </li>
@@ -108,9 +108,9 @@
             <li class="nav-item dropdown">
               <a class="nav-link dropdown-toggle <%= currentPath.startsWith('/settings') || currentPath.startsWith('/setup') ? 'active' : '' %>" href="#" role="button" data-bs-toggle="dropdown">Settings</a>
               <ul class="dropdown-menu">
-                <li><a class="dropdown-item" href="/settings">App Settings</a></li>
+                <li><a class="dropdown-item" href="/settings" data-instant-nav>App Settings</a></li>
                 <% if (canAccess && canAccess('GET', '/setup')) { %>
-                  <li><a class="dropdown-item" href="/setup">Setup</a></li>
+                  <li><a class="dropdown-item" href="/setup" data-instant-nav>Setup</a></li>
                 <% } %>
               </ul>
             </li>

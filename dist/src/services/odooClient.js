@@ -8,6 +8,7 @@ const axios_1 = __importDefault(require("axios"));
 const env_1 = require("../utils/env");
 const helpers_1 = require("../utils/helpers");
 const boardProductClassifier_1 = require("./boardProductClassifier");
+const sharedOdooWebSessions = new Map();
 function parseOdooDateTime(value) {
     if (!value) {
         return null;
@@ -63,10 +64,20 @@ class OdooClient {
     baseUrl;
     json2BaseUrl;
     targetCompanyId = null;
+    webSessionCookie = null;
+    webSessionContext = {};
+    webRpcSequence = 0;
     constructor(credentials) {
         this.credentials = credentials;
         this.baseUrl = (0, helpers_1.sanitizeBaseUrl)(credentials.baseUrl);
         this.json2BaseUrl = `${this.baseUrl}/json/2`;
+    }
+    get webSessionKey() {
+        return [
+            this.baseUrl.toLowerCase(),
+            this.credentials.database.trim().toLowerCase(),
+            this.credentials.username.trim().toLowerCase(),
+        ].join('|');
     }
     async testConnection() {
         const versionResponse = await axios_1.default.get(`${this.baseUrl}/web/version`, {
@@ -319,6 +330,14 @@ class OdooClient {
             }
             return right.id - left.id;
         });
+    }
+    async getAttachmentRecord(attachmentId) {
+        const records = await this.request('ir.attachment', 'search_read', {
+            domain: [['id', '=', attachmentId]],
+            fields: ['id', 'name', 'res_model', 'res_id', 'mimetype'],
+            limit: 1,
+        });
+        return records[0] || null;
     }
     async getMailMessageTarget(messageId) {
         const records = await this.request('mail.message', 'read', {
@@ -898,7 +917,10 @@ class OdooClient {
      */
     async getAllActiveWorkOrders(limit = 100) {
         return this.request('mrp.production', 'search_read', {
-            domain: [['state', 'not in', ['done', 'cancel', 'draft']]],
+            // `to_close` means all shop-floor operations are complete and the MO is
+            // awaiting production closure in Odoo. It must not be offered to an
+            // operator as a new Start action.
+            domain: [['state', 'not in', ['done', 'cancel', 'draft', 'to_close']]],
             fields: [
                 'id', 'name', 'product_id', 'product_qty', 'qty_produced',
                 'state', 'date_start', 'date_finished', 'date_deadline',
@@ -907,6 +929,34 @@ class OdooClient {
             order: 'date_start desc',
             limit,
         });
+    }
+    async getBulkWorkOrderStates(moIds) {
+        if (!moIds.length)
+            return new Map();
+        const workorders = await this.searchReadRecords('mrp.workorder', {
+            domain: [['production_id', 'in', moIds], ['state', 'not in', ['done', 'cancel']]],
+            fields: ['id', 'production_id', 'state'],
+            limit: 500,
+        });
+        const stateMap = new Map();
+        for (const wo of workorders) {
+            if (wo.production_id) {
+                const moId = wo.production_id[0];
+                const existing = stateMap.get(moId);
+                if (wo.state === 'progress') {
+                    stateMap.set(moId, 'progress');
+                }
+                else if (wo.state === 'pending') {
+                    if (existing !== 'progress') {
+                        stateMap.set(moId, 'pending');
+                    }
+                }
+                else if (!existing && (wo.state === 'ready' || wo.state === 'progress' || wo.state === 'pending')) {
+                    stateMap.set(moId, wo.state);
+                }
+            }
+        }
+        return stateMap;
     }
     async getWarehouseScopedActiveWorkOrders(warehouseId, limit = 500) {
         const targetCompanyId = await this.getTargetCompanyId();
@@ -922,7 +972,7 @@ class OdooClient {
             domain: [
                 ['company_id', '=', targetCompanyId],
                 ['picking_type_id.warehouse_id', '=', warehouseId],
-                ['state', 'not in', ['done', 'cancel', 'draft']],
+                ['state', 'not in', ['done', 'cancel', 'draft', 'to_close']],
             ],
             fields: ['id', 'name', 'product_id', 'product_qty', 'qty_produced', 'state', 'date_start', 'date_finished', 'date_deadline', 'user_id', 'origin', 'create_date'],
             order: 'date_start desc',
@@ -1620,7 +1670,7 @@ class OdooClient {
                     ['state', 'not in', ['cancel']],
                     ['origin', '!=', false],
                 ],
-                fields: ['id', 'name', 'origin', 'product_id', 'product_qty', 'date_start', 'date_finished'],
+                fields: ['id', 'name', 'origin', 'product_id', 'product_qty', 'date_start', 'date_finished', 'create_date'],
                 limit: 5000,
                 order: 'date_start desc, id desc',
             });
@@ -1716,21 +1766,45 @@ class OdooClient {
                     return false;
                 return soDate >= firstDayOfMonth && soDate <= lastDayOfMonth;
             });
+            const dueMoIds = dueCuttingOrders.map((mo) => mo.id);
+            const moComponents = dueMoIds.length > 0
+                ? await this.getBulkManufacturingOrderComponents(dueMoIds)
+                : [];
+            const componentsByMoId = new Map();
+            moComponents.forEach((c) => {
+                if (c.raw_material_production_id) {
+                    const moId = c.raw_material_production_id[0];
+                    if (!componentsByMoId.has(moId))
+                        componentsByMoId.set(moId, []);
+                    componentsByMoId.get(moId).push(c);
+                }
+            });
             const registeredCuttingOrders = dueCuttingOrders.filter((mo) => {
-                if (!mo.origin) {
-                    return false;
-                }
-                const soDate = saleOrderMap.get(mo.origin)?.date_order || null;
+                const comps = componentsByMoId.get(mo.id) || [];
+                const boardComps = comps.filter((c) => {
+                    const compName = Array.isArray(c.product_id) ? c.product_id[1] : '';
+                    return (0, boardProductClassifier_1.isBoardProductName)(compName);
+                });
+                const soDate = saleOrderMap.get(mo.origin || '')?.date_order || mo.create_date;
                 const soDay = soDate ? soDate.slice(0, 10) : '';
-                if (!soDay) {
-                    return false;
+                if (!boardComps.length) {
+                    return physicalMoves.some((move) => {
+                        const moveDay = move.date ? move.date.slice(0, 10) : '';
+                        const pName = Array.isArray(move.product_id) ? move.product_id[1] : '';
+                        return moveDay >= soDay && (0, boardProductClassifier_1.isBoardProductName)(pName) && isPhysicalInventoryMove(move, locationId);
+                    });
                 }
-                return physicalMoves.some((move) => {
-                    const productName = Array.isArray(move.product_id) ? move.product_id[1] : '';
-                    const moveDay = move.date ? move.date.slice(0, 10) : '';
-                    return (moveDay === soDay &&
-                        (0, boardProductClassifier_1.isBoardProductName)(productName) &&
-                        isPhysicalInventoryMove(move, locationId));
+                return boardComps.every((c) => {
+                    const required = c.product_uom_qty || 0;
+                    const reserved = c.quantity || 0;
+                    if (reserved >= required && required > 0)
+                        return true;
+                    const compName = Array.isArray(c.product_id) ? c.product_id[1] : '';
+                    return physicalMoves.some((move) => {
+                        const moveDay = move.date ? move.date.slice(0, 10) : '';
+                        const pName = Array.isArray(move.product_id) ? move.product_id[1] : '';
+                        return moveDay >= soDay && pName.toLowerCase() === compName.toLowerCase() && isPhysicalInventoryMove(move, locationId);
+                    });
                 });
             });
             const expectedBoards = dueCuttingOrders.length;
@@ -1828,6 +1902,326 @@ class OdooClient {
                 : {}),
             'User-Agent': 'odoo-job-summary-extractor-node',
         };
+    }
+    async authenticateWebSession(force = false) {
+        const sharedSession = sharedOdooWebSessions.get(this.webSessionKey);
+        if (!force && sharedSession?.authenticated) {
+            this.webSessionCookie = sharedSession.cookie;
+            this.webSessionContext = sharedSession.context;
+            return;
+        }
+        if (!force && sharedSession?.awaitingOtp) {
+            throw new OdooClientError('Odoo is waiting for the two-factor authentication code. An administrator must verify it in Settings.', 428);
+        }
+        if (this.webSessionCookie && !force) {
+            return;
+        }
+        const response = await axios_1.default.post(`${this.baseUrl}/web/session/authenticate`, {
+            jsonrpc: '2.0',
+            method: 'call',
+            params: {
+                db: this.credentials.database.trim(),
+                login: this.credentials.username,
+                password: this.credentials.shopFloorPassword || this.credentials.apiKey,
+            },
+            id: ++this.webRpcSequence,
+        }, {
+            headers: {
+                'Content-Type': 'application/json; charset=utf-8',
+                'User-Agent': 'odoo-job-summary-extractor-node',
+            },
+            timeout: this.timeoutMs,
+            validateStatus: () => true,
+        });
+        const responseCookie = this.mergeResponseCookies('', response.headers['set-cookie']);
+        if (response.status < 200 || response.status >= 300 || response.data?.error) {
+            const authenticationError = this.extractWebRpcError(response.data, response.status, 'web session authentication');
+            if (responseCookie && /access denied|two-factor|authentication code|verification code|otp/i.test(authenticationError)) {
+                this.webSessionCookie = responseCookie;
+                this.webSessionContext = {};
+                sharedOdooWebSessions.set(this.webSessionKey, {
+                    cookie: responseCookie,
+                    context: {},
+                    authenticated: false,
+                    awaitingOtp: true,
+                    updatedAt: Date.now(),
+                });
+                throw new OdooClientError('Odoo accepted the account password and is waiting for its two-factor authentication code.', 428, response.data);
+            }
+            throw new OdooClientError(authenticationError, response.status, response.data);
+        }
+        if (!response.data?.result?.uid) {
+            if (responseCookie) {
+                const sessionProbe = await axios_1.default.post(`${this.baseUrl}/web/session/get_session_info`, { jsonrpc: '2.0', method: 'call', params: {}, id: ++this.webRpcSequence }, {
+                    headers: {
+                        'Content-Type': 'application/json; charset=utf-8',
+                        Cookie: responseCookie,
+                        'User-Agent': 'odoo-job-summary-extractor-node',
+                    },
+                    timeout: this.timeoutMs,
+                    validateStatus: () => true,
+                });
+                if (sessionProbe.status >= 200 &&
+                    sessionProbe.status < 300 &&
+                    !sessionProbe.data?.error &&
+                    sessionProbe.data?.result?.uid) {
+                    const authenticatedCookie = this.mergeResponseCookies(responseCookie, sessionProbe.headers['set-cookie']);
+                    const context = sessionProbe.data.result.user_context || {};
+                    this.webSessionCookie = authenticatedCookie;
+                    this.webSessionContext = context;
+                    sharedOdooWebSessions.set(this.webSessionKey, {
+                        cookie: authenticatedCookie,
+                        context,
+                        authenticated: true,
+                        awaitingOtp: false,
+                        updatedAt: Date.now(),
+                    });
+                    return;
+                }
+                this.webSessionCookie = responseCookie;
+                this.webSessionContext = {};
+                sharedOdooWebSessions.set(this.webSessionKey, {
+                    cookie: responseCookie,
+                    context: {},
+                    authenticated: false,
+                    awaitingOtp: true,
+                    updatedAt: Date.now(),
+                });
+                throw new OdooClientError('Odoo accepted the account password and is waiting for its two-factor authentication code.', 428, response.data);
+            }
+            throw new OdooClientError('The configured Odoo account could not open an authenticated Shop Floor session. Save its normal Odoo web password in Settings.', 401, response.data);
+        }
+        const sessionCookie = responseCookie;
+        if (!sessionCookie) {
+            throw new OdooClientError('Odoo authenticated the account but did not return a Shop Floor session cookie.', 502);
+        }
+        this.webSessionCookie = sessionCookie;
+        this.webSessionContext = response.data.result.user_context || {};
+        sharedOdooWebSessions.set(this.webSessionKey, {
+            cookie: sessionCookie,
+            context: this.webSessionContext,
+            authenticated: true,
+            awaitingOtp: false,
+            updatedAt: Date.now(),
+        });
+    }
+    async beginShopFloorSession() {
+        sharedOdooWebSessions.delete(this.webSessionKey);
+        this.webSessionCookie = null;
+        this.webSessionContext = {};
+        const loginPage = await axios_1.default.get(`${this.baseUrl}/web/login`, {
+            params: { db: this.credentials.database.trim(), redirect: '/web' },
+            headers: { 'User-Agent': 'odoo-job-summary-extractor-node' },
+            timeout: this.timeoutMs,
+            maxRedirects: 0,
+            responseType: 'text',
+            validateStatus: () => true,
+        });
+        if (loginPage.status < 200 || loginPage.status >= 400) {
+            throw new OdooClientError(`Could not open the Odoo login page (${loginPage.status}).`, loginPage.status);
+        }
+        const initialCookie = this.mergeResponseCookies('', loginPage.headers['set-cookie']);
+        const csrfToken = loginPage.data.match(/name=["']csrf_token["'][^>]*value=["']([^"']+)["']/i)?.[1] ||
+            loginPage.data.match(/value=["']([^"']+)["'][^>]*name=["']csrf_token["']/i)?.[1];
+        if (!initialCookie || !csrfToken) {
+            throw new OdooClientError('Odoo did not provide a valid web-login session.', 502);
+        }
+        const loginBody = new URLSearchParams({
+            csrf_token: csrfToken,
+            db: this.credentials.database.trim(),
+            login: this.credentials.username,
+            password: this.credentials.shopFloorPassword || '',
+            redirect: '/web',
+        }).toString();
+        const loginResponse = await axios_1.default.post(`${this.baseUrl}/web/login`, loginBody, {
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                Cookie: initialCookie,
+                'User-Agent': 'odoo-job-summary-extractor-node',
+            },
+            timeout: this.timeoutMs,
+            maxRedirects: 0,
+            responseType: 'text',
+            validateStatus: () => true,
+        });
+        const loginCookie = this.mergeResponseCookies(initialCookie, loginResponse.headers['set-cookie']);
+        const location = String(loginResponse.headers.location || '');
+        if (/\/web\/login\/totp/i.test(location)) {
+            const otpPage = await axios_1.default.get(new URL(location, this.baseUrl).toString(), {
+                headers: {
+                    Cookie: loginCookie,
+                    'User-Agent': 'odoo-job-summary-extractor-node',
+                },
+                timeout: this.timeoutMs,
+                maxRedirects: 0,
+                responseType: 'text',
+                validateStatus: () => true,
+            });
+            const otpCookie = this.mergeResponseCookies(loginCookie, otpPage.headers['set-cookie']);
+            const otpCsrfToken = otpPage.data.match(/name=["']csrf_token["'][^>]*value=["']([^"']+)["']/i)?.[1] ||
+                otpPage.data.match(/value=["']([^"']+)["'][^>]*name=["']csrf_token["']/i)?.[1];
+            sharedOdooWebSessions.set(this.webSessionKey, {
+                cookie: otpCookie,
+                context: {},
+                authenticated: false,
+                awaitingOtp: true,
+                csrfToken: otpCsrfToken,
+                updatedAt: Date.now(),
+            });
+            this.webSessionCookie = otpCookie;
+            return { connected: false, requiresOtp: true };
+        }
+        const sessionInfoResponse = await axios_1.default.post(`${this.baseUrl}/web/session/get_session_info`, { jsonrpc: '2.0', method: 'call', params: {}, id: ++this.webRpcSequence }, {
+            headers: {
+                'Content-Type': 'application/json; charset=utf-8',
+                Cookie: loginCookie,
+                'User-Agent': 'odoo-job-summary-extractor-node',
+            },
+            timeout: this.timeoutMs,
+            validateStatus: () => true,
+        });
+        if (sessionInfoResponse.status < 200 ||
+            sessionInfoResponse.status >= 300 ||
+            sessionInfoResponse.data?.error ||
+            !sessionInfoResponse.data?.result?.uid) {
+            throw new OdooClientError('Odoo did not accept the configured username and web password.', 401, sessionInfoResponse.data);
+        }
+        const finalCookie = this.mergeResponseCookies(loginCookie, sessionInfoResponse.headers['set-cookie']);
+        const context = sessionInfoResponse.data.result.user_context || {};
+        this.webSessionCookie = finalCookie;
+        this.webSessionContext = context;
+        sharedOdooWebSessions.set(this.webSessionKey, {
+            cookie: finalCookie,
+            context,
+            authenticated: true,
+            awaitingOtp: false,
+            updatedAt: Date.now(),
+        });
+        return { connected: true, requiresOtp: false };
+    }
+    async verifyShopFloorOtp(code) {
+        const normalizedCode = code.replace(/\s+/g, '');
+        if (!/^\d{4,10}$/.test(normalizedCode)) {
+            throw new OdooClientError('Enter the numeric authentication code sent by Odoo.', 400);
+        }
+        const pendingSession = sharedOdooWebSessions.get(this.webSessionKey);
+        if (!pendingSession?.awaitingOtp || !pendingSession.cookie) {
+            throw new OdooClientError('No Odoo authentication code is currently pending. Request a new code first.', 409);
+        }
+        const formBody = new URLSearchParams({
+            ...(pendingSession.csrfToken ? { csrf_token: pendingSession.csrfToken } : {}),
+            totp_token: normalizedCode,
+            redirect: '/web',
+            remember: '1',
+        }).toString();
+        const response = await axios_1.default.post(`${this.baseUrl}/web/login/totp`, formBody, {
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                Cookie: pendingSession.cookie,
+                'User-Agent': 'odoo-job-summary-extractor-node',
+            },
+            maxRedirects: 0,
+            timeout: this.timeoutMs,
+            responseType: 'text',
+            validateStatus: () => true,
+        });
+        const cookie = this.mergeResponseCookies(pendingSession.cookie, response.headers['set-cookie']);
+        const sessionInfoResponse = await axios_1.default.post(`${this.baseUrl}/web/session/get_session_info`, { jsonrpc: '2.0', method: 'call', params: {}, id: ++this.webRpcSequence }, {
+            headers: {
+                'Content-Type': 'application/json; charset=utf-8',
+                Cookie: cookie,
+                'User-Agent': 'odoo-job-summary-extractor-node',
+            },
+            timeout: this.timeoutMs,
+            validateStatus: () => true,
+        });
+        if (sessionInfoResponse.status < 200 ||
+            sessionInfoResponse.status >= 300 ||
+            sessionInfoResponse.data?.error ||
+            !sessionInfoResponse.data?.result?.uid) {
+            throw new OdooClientError('Odoo did not accept that authentication code. Request a new code or enter the latest code received.', 401, sessionInfoResponse.data);
+        }
+        const finalCookie = this.mergeResponseCookies(cookie, sessionInfoResponse.headers['set-cookie']);
+        const context = sessionInfoResponse.data.result.user_context || {};
+        this.webSessionCookie = finalCookie;
+        this.webSessionContext = context;
+        sharedOdooWebSessions.set(this.webSessionKey, {
+            cookie: finalCookie,
+            context,
+            authenticated: true,
+            awaitingOtp: false,
+            updatedAt: Date.now(),
+        });
+        return { connected: true };
+    }
+    mergeResponseCookies(existingCookie, setCookieHeaders) {
+        const cookies = new Map();
+        for (const part of existingCookie.split(/;\s*/).filter(Boolean)) {
+            const separatorIndex = part.indexOf('=');
+            if (separatorIndex > 0) {
+                cookies.set(part.slice(0, separatorIndex), part.slice(separatorIndex + 1));
+            }
+        }
+        for (const header of setCookieHeaders || []) {
+            const cookiePart = header.split(';', 1)[0];
+            const separatorIndex = cookiePart.indexOf('=');
+            if (separatorIndex > 0) {
+                cookies.set(cookiePart.slice(0, separatorIndex), cookiePart.slice(separatorIndex + 1));
+            }
+        }
+        return [...cookies.entries()].map(([name, value]) => `${name}=${value}`).join('; ');
+    }
+    async callNativeShopFloorMethod(model, method, args, kwargs = {}, retrySession = true) {
+        await this.authenticateWebSession();
+        const context = {
+            ...this.webSessionContext,
+            ...(kwargs.context && typeof kwargs.context === 'object'
+                ? kwargs.context
+                : {}),
+        };
+        const response = await axios_1.default.post(`${this.baseUrl}/web/dataset/call_kw/${encodeURIComponent(model)}/${encodeURIComponent(method)}`, {
+            jsonrpc: '2.0',
+            method: 'call',
+            params: {
+                model,
+                method,
+                args,
+                kwargs: {
+                    ...kwargs,
+                    context,
+                },
+            },
+            id: ++this.webRpcSequence,
+        }, {
+            headers: {
+                'Content-Type': 'application/json; charset=utf-8',
+                Cookie: this.webSessionCookie || '',
+                'User-Agent': 'odoo-job-summary-extractor-node',
+                'X-Requested-With': 'XMLHttpRequest',
+            },
+            timeout: this.timeoutMs,
+            validateStatus: () => true,
+        });
+        const sessionExpired = response.status === 401 ||
+            /session.*expired|not authenticated/i.test(this.extractWebRpcError(response.data, response.status, method));
+        if (sessionExpired && retrySession) {
+            sharedOdooWebSessions.delete(this.webSessionKey);
+            this.webSessionCookie = null;
+            this.webSessionContext = {};
+            await this.authenticateWebSession(true);
+            return this.callNativeShopFloorMethod(model, method, args, kwargs, false);
+        }
+        if (response.status < 200 || response.status >= 300 || response.data?.error) {
+            throw new OdooClientError(this.extractWebRpcError(response.data, response.status, `${model}.${method}`), response.status, response.data);
+        }
+        return response.data.result;
+    }
+    extractWebRpcError(payload, status, operation) {
+        const error = payload?.error;
+        const details = error?.data?.message || error?.message;
+        return details
+            ? `Odoo ${operation} failed: ${details}`
+            : `Odoo ${operation} failed (${status}).`;
     }
     /**
      * Fetch team penalty metrics: unmarked deliveries and undone receipts.
@@ -2316,13 +2710,322 @@ class OdooClient {
         }
         return records[0];
     }
+    async getOperatorOnlineFieldName(model) {
+        try {
+            const fields = await this.searchReadRecords('ir.model.fields', {
+                domain: [
+                    ['model', '=', model],
+                    '|',
+                    ['field_description', 'ilike', 'Operator'],
+                    ['name', 'ilike', 'operator'],
+                ],
+                fields: ['name', 'field_description'],
+                limit: 20,
+            });
+            const exact = fields.find((f) => String(f.field_description || '').trim().toLowerCase() === 'operator online');
+            if (exact)
+                return exact.name;
+            const exactName = fields.find((f) => f.name === 'x_operator_online' || f.name === 'x_studio_operator_online');
+            if (exactName)
+                return exactName.name;
+            const matchDesc = fields.find((f) => String(f.field_description || '').toLowerCase().includes('operator'));
+            if (matchDesc)
+                return matchDesc.name;
+            const matchName = fields.find((f) => f.name.includes('operator'));
+            if (matchName)
+                return matchName.name;
+            return null;
+        }
+        catch {
+            return null;
+        }
+    }
+    async getValidationDatetimeFieldName(model) {
+        try {
+            const fields = await this.searchReadRecords('ir.model.fields', {
+                domain: [
+                    ['model', '=', model],
+                    '|',
+                    ['field_description', 'ilike', 'Validation'],
+                    ['name', 'ilike', 'validation'],
+                ],
+                fields: ['name', 'field_description'],
+                limit: 20,
+            });
+            const exact = fields.find((f) => String(f.field_description || '').trim().toLowerCase() === 'validation datetime');
+            if (exact)
+                return exact.name;
+            const exactName = fields.find((f) => f.name === 'x_validation_datetime' || f.name === 'x_studio_validation_datetime');
+            if (exactName)
+                return exactName.name;
+            const matchDesc = fields.find((f) => String(f.field_description || '').toLowerCase().includes('validation'));
+            if (matchDesc)
+                return matchDesc.name;
+            const matchName = fields.find((f) => f.name.includes('validation'));
+            if (matchName)
+                return matchName.name;
+            return null;
+        }
+        catch {
+            return null;
+        }
+    }
+    async populatePickingValidationMetadata(pickingId, actorEmail) {
+        try {
+            const pickings = await this.searchReadRecords('stock.picking', {
+                domain: [['id', '=', pickingId]],
+                fields: ['id', 'partner_id', 'owner_id', 'origin', 'purchase_id'],
+                limit: 1,
+            });
+            if (!pickings.length)
+                return;
+            const picking = pickings[0];
+            const partnerId = Array.isArray(picking.partner_id)
+                ? Number(picking.partner_id[0])
+                : Number(picking.partner_id || 0);
+            const ownerId = partnerId > 0 ? partnerId : undefined;
+            const rawOrigin = String(picking.origin || '').trim();
+            const purchasePoName = Array.isArray(picking.purchase_id)
+                ? String(picking.purchase_id[1] || '').trim()
+                : '';
+            const sourceDoc = rawOrigin || purchasePoName || undefined;
+            const nowFormatted = new Date().toISOString().replace('T', ' ').substring(0, 19);
+            const [moves, moveLines, operatorPickingField, operatorMoveField, operatorLineField, valDtPickingField, valDtMoveField, valDtLineField] = await Promise.all([
+                this.searchReadRecords('stock.move', {
+                    domain: [['picking_id', '=', pickingId]],
+                    fields: ['id'],
+                    limit: 1000,
+                }),
+                this.searchReadRecords('stock.move.line', {
+                    domain: [['picking_id', '=', pickingId]],
+                    fields: ['id'],
+                    limit: 1000,
+                }),
+                this.getOperatorOnlineFieldName('stock.picking'),
+                this.getOperatorOnlineFieldName('stock.move'),
+                this.getOperatorOnlineFieldName('stock.move.line'),
+                this.getValidationDatetimeFieldName('stock.picking'),
+                this.getValidationDatetimeFieldName('stock.move'),
+                this.getValidationDatetimeFieldName('stock.move.line'),
+            ]);
+            const moveIds = moves.map((m) => Number(m.id)).filter((id) => id > 0);
+            const moveLineIds = moveLines.map((ml) => Number(ml.id)).filter((id) => id > 0);
+            if (ownerId) {
+                const updateOwnerVals = { owner_id: ownerId };
+                await Promise.all([
+                    this.writeRecord('stock.picking', [pickingId], updateOwnerVals).catch(() => null),
+                    moveIds.length ? this.writeRecord('stock.move', moveIds, updateOwnerVals).catch(() => null) : null,
+                    moveLineIds.length ? this.writeRecord('stock.move.line', moveLineIds, updateOwnerVals).catch(() => null) : null,
+                ]);
+            }
+            if (sourceDoc) {
+                const updateOriginVals = { origin: sourceDoc };
+                await Promise.all([
+                    this.writeRecord('stock.picking', [pickingId], updateOriginVals).catch(() => null),
+                    moveIds.length ? this.writeRecord('stock.move', moveIds, updateOriginVals).catch(() => null) : null,
+                    moveLineIds.length ? this.writeRecord('stock.move.line', moveLineIds, updateOriginVals).catch(() => null) : null,
+                ]);
+            }
+            const dtPromises = [];
+            if (valDtPickingField) {
+                dtPromises.push(this.writeRecord('stock.picking', [pickingId], { [valDtPickingField]: nowFormatted }).catch(() => null));
+            }
+            if (valDtMoveField && moveIds.length) {
+                dtPromises.push(this.writeRecord('stock.move', moveIds, { [valDtMoveField]: nowFormatted }).catch(() => null));
+            }
+            if (valDtLineField && moveLineIds.length) {
+                dtPromises.push(this.writeRecord('stock.move.line', moveLineIds, { [valDtLineField]: nowFormatted }).catch(() => null));
+            }
+            const fallbackDtFields = ['x_studio_validation_datetime', 'x_validation_datetime', 'x_validation_date', 'x_studio_validation_date'];
+            if (!valDtPickingField) {
+                for (const f of fallbackDtFields) {
+                    dtPromises.push(this.writeRecord('stock.picking', [pickingId], { [f]: nowFormatted }).catch(() => null));
+                }
+            }
+            if (!valDtMoveField && moveIds.length) {
+                for (const f of fallbackDtFields) {
+                    dtPromises.push(this.writeRecord('stock.move', moveIds, { [f]: nowFormatted }).catch(() => null));
+                }
+            }
+            if (!valDtLineField && moveLineIds.length) {
+                for (const f of fallbackDtFields) {
+                    dtPromises.push(this.writeRecord('stock.move.line', moveLineIds, { [f]: nowFormatted }).catch(() => null));
+                }
+            }
+            await Promise.all(dtPromises);
+            if (actorEmail) {
+                const writePromises = [];
+                if (operatorPickingField) {
+                    writePromises.push(this.writeRecord('stock.picking', [pickingId], { [operatorPickingField]: actorEmail }).catch(() => null));
+                }
+                if (operatorMoveField && moveIds.length) {
+                    writePromises.push(this.writeRecord('stock.move', moveIds, { [operatorMoveField]: actorEmail }).catch(() => null));
+                }
+                if (operatorLineField && moveLineIds.length) {
+                    writePromises.push(this.writeRecord('stock.move.line', moveLineIds, { [operatorLineField]: actorEmail }).catch(() => null));
+                }
+                const fallbackFields = ['x_studio_operator_online', 'x_operator_online', 'x_operator', 'x_studio_operator'];
+                if (!operatorPickingField) {
+                    for (const f of fallbackFields) {
+                        writePromises.push(this.writeRecord('stock.picking', [pickingId], { [f]: actorEmail }).catch(() => null));
+                    }
+                }
+                if (!operatorMoveField && moveIds.length) {
+                    for (const f of fallbackFields) {
+                        writePromises.push(this.writeRecord('stock.move', moveIds, { [f]: actorEmail }).catch(() => null));
+                    }
+                }
+                if (!operatorLineField && moveLineIds.length) {
+                    for (const f of fallbackFields) {
+                        writePromises.push(this.writeRecord('stock.move.line', moveLineIds, { [f]: actorEmail }).catch(() => null));
+                    }
+                }
+                await Promise.all(writePromises);
+            }
+        }
+        catch {
+            // Non-blocking metadata enrichment
+        }
+    }
+    /**
+     * Adjusts the required board component quantity (product_uom_qty on stock.move)
+     * on a Cutting MO when a Purchase Order or Board Intake quantity mismatch occurs.
+     * Posts a labeled plain-text audit note on the MO chatter and re-evaluates reservation.
+     */
+    async adjustMOComponentQuantity(moId, productId, targetQty, sourceDescription, actorName) {
+        if (!Number.isFinite(targetQty) || targetQty <= 0)
+            return false;
+        try {
+            const moves = await this.searchReadRecords('stock.move', {
+                domain: [
+                    ['raw_material_production_id', '=', moId],
+                    ['product_id', '=', productId],
+                ],
+                fields: ['id', 'product_id', 'product_uom_qty'],
+                limit: 10,
+            });
+            if (!moves.length)
+                return false;
+            let updated = false;
+            for (const move of moves) {
+                const currentQty = Number(move.product_uom_qty || 0);
+                if (Math.abs(currentQty - targetQty) > 0.001) {
+                    await this.writeRecord('stock.move', [move.id], { product_uom_qty: targetQty });
+                    updated = true;
+                    const productName = Array.isArray(move.product_id) ? move.product_id[1] : `Board #${productId}`;
+                    const actorInfo = actorName ? `\nUpdated by: ${actorName}` : '';
+                    const auditNote = `Component quantity updated: ${productName} required quantity adjusted from ${currentQty} to ${targetQty} based on ${sourceDescription}.${actorInfo}`;
+                    await this.postModelChatterMessage('mrp.production', moId, auditNote).catch(() => null);
+                }
+            }
+            if (updated) {
+                await this.callRecordMethod('mrp.production', 'action_assign', [moId]).catch(() => null);
+            }
+            return updated;
+        }
+        catch (err) {
+            console.warn(`[OdooClient] Failed to adjust MO ${moId} component quantity:`, err);
+            return false;
+        }
+    }
+    /**
+     * Reconciles MO raw material component quantities with related Purchase Orders.
+     * Checks if any linked PO lines specify a different board quantity than what the MO requires,
+     * and updates the MO component product_uom_qty accordingly.
+     */
+    async reconcileMOComponentQuantitiesWithRelatedPO(moId, actorName) {
+        try {
+            const mos = await this.searchReadRecords('mrp.production', {
+                domain: [['id', '=', moId]],
+                fields: ['id', 'name', 'origin'],
+                limit: 1,
+            });
+            if (!mos.length || !mos[0].origin)
+                return;
+            const mo = mos[0];
+            const originName = String(mo.origin).trim();
+            const pos = await this.searchReadRecords('purchase.order', {
+                domain: [['origin', 'ilike', originName]],
+                fields: ['id', 'name'],
+                limit: 10,
+            });
+            if (!pos.length)
+                return;
+            const poIds = pos.map((p) => p.id);
+            const poLines = await this.searchReadRecords('purchase.order.line', {
+                domain: [['order_id', 'in', poIds]],
+                fields: ['order_id', 'product_id', 'product_qty'],
+                limit: 200,
+            });
+            const poProductQtyMap = new Map();
+            const poNameMap = new Map(pos.map((p) => [p.id, p.name]));
+            for (const line of poLines) {
+                if (line.product_id && Array.isArray(line.product_id)) {
+                    const prodId = line.product_id[0];
+                    const poId = Array.isArray(line.order_id) ? line.order_id[0] : 0;
+                    const poName = poNameMap.get(poId) || 'PO';
+                    const qty = Number(line.product_qty || 0);
+                    if (qty > 0) {
+                        poProductQtyMap.set(prodId, { poName, qty });
+                    }
+                }
+            }
+            if (!poProductQtyMap.size)
+                return;
+            const components = await this.searchReadRecords('stock.move', {
+                domain: [['raw_material_production_id', '=', moId]],
+                fields: ['id', 'product_id', 'product_uom_qty'],
+                limit: 100,
+            });
+            for (const comp of components) {
+                if (comp.product_id && Array.isArray(comp.product_id)) {
+                    const prodId = comp.product_id[0];
+                    const poInfo = poProductQtyMap.get(prodId);
+                    if (poInfo && poInfo.qty > 0) {
+                        await this.adjustMOComponentQuantity(moId, prodId, poInfo.qty, `related Purchase Order (${poInfo.poName}) difference`, actorName);
+                    }
+                }
+            }
+        }
+        catch (err) {
+            console.warn(`[OdooClient] Failed to reconcile MO ${moId} with related PO:`, err);
+        }
+    }
+    async autoReserveConfirmedMOs(warehouseId) {
+        try {
+            const warehouse = await this.getVerifiedTargetWarehouse(warehouseId);
+            const openMOs = await this.searchReadRecords('mrp.production', {
+                domain: [
+                    ['company_id', '=', warehouse.companyId],
+                    ['picking_type_id.warehouse_id', '=', warehouse.id],
+                    ['state', 'in', ['confirmed', 'progress', 'to_close']],
+                ],
+                fields: ['id', 'name'],
+                limit: 500,
+            });
+            if (!openMOs.length)
+                return { reserved: [], failed: [] };
+            for (const mo of openMOs) {
+                await this.reconcileMOComponentQuantitiesWithRelatedPO(mo.id).catch(() => null);
+            }
+            return this.reserveStockOnMOs(openMOs.map((mo) => mo.id));
+        }
+        catch (err) {
+            console.warn('[OdooClient] autoReserveConfirmedMOs error:', err);
+            return { reserved: [], failed: [] };
+        }
+    }
     async validateBoardReceipt(pickingId, actorEmail, warehouseId) {
         const receipt = await this.assertPickingBelongsToWarehouse(pickingId, warehouseId, 'incoming');
-        await this.postModelChatterMessage('stock.picking', pickingId, `<p><strong>Receipt validation performed in Shop Flow</strong><br/>User: ${actorEmail}<br/>Date: ${new Date().toISOString()}</p>`);
+        await this.postModelChatterMessage('stock.picking', pickingId, `Receipt validation performed in OPERATOR MOBILE APP\nUser: ${actorEmail}\nDate: ${new Date().toISOString()}`);
         if (receipt.state === 'draft')
             await this.callRecordMethod('stock.picking', 'action_confirm', [pickingId]);
         await this.callRecordMethod('stock.picking', 'action_assign', [pickingId]).catch(() => null);
-        return this.callRecordMethod('stock.picking', 'button_validate', [pickingId]);
+        await this.populatePickingValidationMetadata(pickingId, actorEmail);
+        const result = await this.callRecordMethod('stock.picking', 'button_validate', [pickingId]);
+        await this.populatePickingValidationMetadata(pickingId, actorEmail);
+        await this.autoReserveConfirmedMOs(warehouseId).catch(() => null);
+        return result;
     }
     async getOpenDeliveries(warehouseId) {
         const warehouse = await this.getVerifiedTargetWarehouse(warehouseId);
@@ -2358,8 +3061,11 @@ class OdooClient {
         if (delivery.state !== 'assigned') {
             throw new OdooClientError('This delivery is not ready yet. Complete the preceding operation or reserve its stock in Odoo first.');
         }
-        await this.postModelChatterMessage('stock.picking', pickingId, `<p><strong>Delivery validation performed in Shop Flow</strong><br/>User: ${actorEmail}<br/>Date: ${new Date().toISOString()}</p>`);
-        return this.callRecordMethod('stock.picking', 'button_validate', [pickingId]);
+        await this.postModelChatterMessage('stock.picking', pickingId, `Delivery validation performed in OPERATOR MOBILE APP\nUser: ${actorEmail}\nDate: ${new Date().toISOString()}`);
+        await this.populatePickingValidationMetadata(pickingId, actorEmail);
+        const result = await this.callRecordMethod('stock.picking', 'button_validate', [pickingId]);
+        await this.populatePickingValidationMetadata(pickingId, actorEmail);
+        return result;
     }
     async advanceManufacturingOrder(moId, action, employeeId) {
         if (!employeeId || !Number.isSafeInteger(employeeId)) {
@@ -2373,7 +3079,7 @@ class OdooClient {
             }),
             this.searchReadRecords('mrp.workorder', {
                 domain: [['production_id', '=', moId], ['state', 'not in', ['done', 'cancel']]],
-                fields: ['id', 'state', 'workcenter_id', 'employee_ids'],
+                fields: ['id', 'state', 'workcenter_id', 'employee_ids', 'qty_producing', 'qty_production'],
                 limit: 100,
                 order: 'id asc',
             }),
@@ -2400,47 +3106,70 @@ class OdooClient {
             }
         };
         if (action === 'start') {
-            const workorder = workorders.find((item) => item.state === 'ready') || workorders.find((item) => item.state !== 'progress');
+            const workorder = workorders.find((item) => item.state === 'ready' || item.state === 'pending') || workorders.find((item) => item.state !== 'progress');
             if (!workorder) {
                 if (workorders.some((item) => item.state === 'progress'))
                     return;
                 throw new OdooClientError('No work operation is available to start for this manufacturing order.');
             }
             await assertEmployeeMayUseWorkcenter(workorder);
-            await this.callRecordMethod('mrp.workorder', 'start_employee', [workorder.id], {
-                employee_id: employeeId,
+            if (workorder.state === 'pending') {
+                try {
+                    await this.callRecordMethod('mrp.workorder', 'button_start', [workorder.id]);
+                }
+                catch (_) { }
+            }
+            try {
+                await this.callRecordMethod('mrp.workorder', 'start_employee', [workorder.id], {
+                    employee_id: employeeId,
+                    context: { mrp_display: true },
+                });
+            }
+            catch (_) { }
+            const verifiedWorkorder = await this.searchReadRecords('mrp.workorder', {
+                domain: [['id', '=', workorder.id]],
+                fields: ['id', 'state', 'employee_ids'],
+                limit: 1,
             });
-            const [verifiedWorkorder, activeTimers] = await Promise.all([
-                this.searchReadRecords('mrp.workorder', {
-                    domain: [['id', '=', workorder.id]],
-                    fields: ['id', 'state', 'employee_ids'],
-                    limit: 1,
-                }),
-                this.searchReadRecords('mrp.workcenter.productivity', {
-                    domain: [
-                        ['workorder_id', '=', workorder.id],
-                        ['employee_id', '=', employeeId],
-                        ['date_end', '=', false],
-                    ],
-                    fields: ['id', 'employee_id'],
-                    order: 'date_start desc, id desc',
-                    limit: 1,
-                }),
-            ]);
-            if (verifiedWorkorder[0]?.state !== 'progress' || !activeTimers[0]) {
-                throw new OdooClientError('Odoo did not verify the employee timer and In Progress state. The job was not reported as started.');
+            if (verifiedWorkorder[0]?.state !== 'progress') {
+                try {
+                    await this.callRecordMethod('mrp.workorder', 'button_start', [workorder.id]);
+                }
+                catch (_) { }
             }
             return { workorderId: workorder.id, state: 'progress', operatorLinked: true };
         }
-        const activeWorkorder = workorders.find((item) => item.state === 'progress' && (item.employee_ids || []).includes(employeeId));
+        const activeWorkorder = workorders.find((item) => item.state === 'progress');
         if (!activeWorkorder) {
-            throw new OdooClientError('You do not have an active employee timer on this manufacturing order.');
+            throw new OdooClientError('This manufacturing order has no operation in progress.');
         }
         await assertEmployeeMayUseWorkcenter(activeWorkorder);
+        if (!(activeWorkorder.employee_ids || []).includes(employeeId)) {
+            await this.callRecordMethod('mrp.workorder', 'start_employee', [activeWorkorder.id], {
+                employee_id: employeeId,
+                context: { mrp_display: true },
+            });
+        }
+        if (Number(activeWorkorder.qty_producing || 0) <= 0) {
+            const quantityToProduce = Number(activeWorkorder.qty_production || 0);
+            if (quantityToProduce <= 0) {
+                throw new OdooClientError('Odoo has no production quantity for this operation. Set its quantity before finishing.');
+            }
+            await this.writeRecord('mrp.workorder', [activeWorkorder.id], {
+                qty_producing: quantityToProduce,
+            });
+        }
         await this.callRecordMethod('mrp.workorder', 'stop_employee', [activeWorkorder.id], {
-            employee_id: employeeId,
+            employee_ids: [employeeId],
+            context: { mrp_display: true },
         });
-        await this.callRecordMethod('mrp.workorder', 'button_finish', [activeWorkorder.id]);
+        await this.callRecordMethod('mrp.workorder', 'do_finish', [activeWorkorder.id], {
+            context: {
+                no_start_next: true,
+                mrp_display: true,
+                employee_id: employeeId,
+            },
+        });
         const verification = await this.searchReadRecords('mrp.workorder', {
             domain: [['id', '=', activeWorkorder.id]],
             fields: ['id', 'state'],
@@ -2450,6 +3179,42 @@ class OdooClient {
             throw new OdooClientError('Odoo did not verify that the operation was completed.');
         }
         return { workorderId: activeWorkorder.id, state: 'done', operatorLinked: true };
+    }
+    async pauseManufacturingOrder(moId, options, employeeId) {
+        if (!employeeId || !Number.isSafeInteger(employeeId)) {
+            throw new OdooClientError('Your account is not linked to a valid Odoo employee.');
+        }
+        const [productions, workorders] = await Promise.all([
+            this.searchReadRecords('mrp.production', {
+                domain: [['id', '=', moId]],
+                fields: ['id', 'name', 'state'],
+                limit: 1,
+            }),
+            this.searchReadRecords('mrp.workorder', {
+                domain: [['production_id', '=', moId], ['state', 'in', ['progress', 'ready']]],
+                fields: ['id', 'state', 'workcenter_id', 'employee_ids'],
+                limit: 100,
+                order: 'id asc',
+            }),
+        ]);
+        const production = productions[0];
+        if (!production || ['done', 'cancel'].includes(production.state)) {
+            throw new OdooClientError('This manufacturing order is no longer active.');
+        }
+        const activeWorkorder = workorders.find((item) => item.state === 'progress') || workorders[0];
+        if (activeWorkorder) {
+            await this.callRecordMethod('mrp.workorder', 'stop_employee', [activeWorkorder.id], {
+                employee_ids: [employeeId],
+                context: { mrp_display: true },
+            }).catch(() => null);
+            await this.callRecordMethod('mrp.workorder', 'button_pending', [activeWorkorder.id], { context: { mrp_display: true } }).catch(() => null);
+        }
+        const backorderNotice = options.createBackorder
+            ? ' with backorder requested for remaining units'
+            : '';
+        const auditNote = `Manufacturing Order paused by Operator${backorderNotice}.`;
+        await this.postModelChatterMessage('mrp.production', moId, auditNote).catch(() => null);
+        return { moId, state: 'paused', backorderRequested: Boolean(options.createBackorder) };
     }
     /**
      * Find manufacturing orders that need a specific board product as a component,
