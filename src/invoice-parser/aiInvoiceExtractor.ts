@@ -538,7 +538,8 @@ function defaultModelForProvider(provider: AiInvoiceExtractionConfig['provider']
 }
 
 function isTextOnlyNvidiaModel(model: string) {
-  return /^openai\/gpt-oss-/i.test(model.trim());
+  const m = model.trim();
+  return /^openai\/gpt-oss-/i.test(m) || /^z-ai\//i.test(m);
 }
 
 function usesConfiguredOcr(config: AiInvoiceExtractionConfig | undefined) {
