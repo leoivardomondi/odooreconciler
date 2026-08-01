@@ -32,6 +32,51 @@
           <a class="btn btn-outline-primary" href="/settings#po-bill-scheduler-settings">Adjust scheduler interval</a>
         </div>
 
+        <% if (queueDiagnostics.runStats) { %>
+          <div class="row g-3 mb-3">
+            <div class="col-6 col-md-3">
+              <div class="border rounded-3 p-3 h-100 bg-body-tertiary">
+                <div class="small text-secondary">Successful Runs</div>
+                <div class="h3 mb-0 text-success"><%= queueDiagnostics.runStats.completedRuns %></div>
+                <div class="form-text small">Out of <%= queueDiagnostics.runStats.totalRuns %> tracked cycles</div>
+              </div>
+            </div>
+            <div class="col-6 col-md-3">
+              <div class="border rounded-3 p-3 h-100 bg-body-tertiary">
+                <div class="small text-secondary">Failed Runs</div>
+                <div class="h3 mb-0 text-danger"><%= queueDiagnostics.runStats.failedRuns %></div>
+                <div class="form-text small">Errors isolated</div>
+              </div>
+            </div>
+            <div class="col-6 col-md-3">
+              <div class="border rounded-3 p-3 h-100 bg-body-tertiary">
+                <div class="small text-secondary">Skipped Runs</div>
+                <div class="h3 mb-0 text-warning"><%= queueDiagnostics.runStats.skippedRuns %></div>
+                <div class="form-text small">Throttled / lock active</div>
+              </div>
+            </div>
+            <div class="col-6 col-md-3">
+              <div class="border rounded-3 p-3 h-100 bg-primary bg-opacity-10 border-primary">
+                <div class="small text-primary fw-bold">Next Scheduled Run</div>
+                <div class="h3 mb-0 text-primary">
+                  <% if (queueDiagnostics.runStats.nextRunInMinutes !== null) { %>
+                    <%= queueDiagnostics.runStats.nextRunInMinutes === 0 ? 'Due Now' : `In ~${queueDiagnostics.runStats.nextRunInMinutes}m` %>
+                  <% } else { %>
+                    Cron Scheduled
+                  <% } %>
+                </div>
+                <div class="form-text small">
+                  <% if (queueDiagnostics.runStats.nextRunAt) { %>
+                    At <%= formatDateTime(queueDiagnostics.runStats.nextRunAt) %>
+                  <% } else { %>
+                    Every <%= queueDiagnostics.configuredIntervalMinutes %> mins
+                  <% } %>
+                </div>
+              </div>
+            </div>
+          </div>
+        <% } %>
+
         <div class="row g-3 mb-4">
           <div class="col-6 col-md-2"><div class="border rounded-3 p-3 h-100"><div class="small text-secondary">Not checked</div><div class="h3 mb-0"><%= queueDiagnostics.counts.new %></div></div></div>
           <div class="col-6 col-md-2"><div class="border rounded-3 p-3 h-100"><div class="small text-secondary">Due again</div><div class="h3 mb-0 text-primary"><%= queueDiagnostics.counts.due %></div></div></div>

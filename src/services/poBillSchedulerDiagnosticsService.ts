@@ -228,6 +228,33 @@ export async function buildPoBillSchedulerDiagnostics(documents: AttachmentInfo[
     recommendations.push(`${historical.repeatsUnder12Percent}% of historical repeat checks happened within 12 hours. Avoid repeated manual checks until the document or matching PO data changes; preserve the 12/24/48-hour retry backoff.`);
   }
 
+  const completedRunCount = runs.filter((r) => r.status === 'completed').length;
+  const failedRunCount = runs.filter((r) => r.status === 'failed').length;
+  const skippedRunCount = runs.filter((r) => r.status === 'skipped').length;
+  const lastRun = runs.find((r) => r.startedAt);
+
+  let nextRunAt: string | null = null;
+  let nextRunInMinutes: number | null = null;
+
+  if (lastRun && lastRun.startedAt) {
+    const lastMs = Date.parse(lastRun.startedAt);
+    const intervalMs = (settings.poBillScheduler.intervalMinutes || 15) * 60 * 1000;
+    const nextMs = lastMs + intervalMs;
+    const nowMs = Date.now();
+    nextRunInMinutes = Math.max(0, Math.ceil((nextMs - nowMs) / (60 * 1000)));
+    nextRunAt = new Date(nextMs).toISOString();
+  }
+
+  const runStats = {
+    completedRuns: completedRunCount,
+    failedRuns: failedRunCount,
+    skippedRuns: skippedRunCount,
+    totalRuns: runs.length,
+    lastRunAt: lastRun?.startedAt || null,
+    nextRunAt,
+    nextRunInMinutes,
+  };
+
   return {
     queue: attention.sort((a, b) => {
       const order: Record<PoBillQueueState, number> = { new: 0, due: 1, cooldown: 2, exhausted: 3, stable_skip: 4, processed: 5 };
@@ -237,6 +264,7 @@ export async function buildPoBillSchedulerDiagnostics(documents: AttachmentInfo[
       counts[item.state] += 1;
       return counts;
     }, { new: 0, due: 0, cooldown: 0, exhausted: 0, stable_skip: 0, processed: 0 }),
+    runStats,
     reasonCounts,
     recommendations,
     configuredIntervalMinutes: settings.poBillScheduler.intervalMinutes,
