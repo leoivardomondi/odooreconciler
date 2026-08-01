@@ -45,14 +45,26 @@
               <div class="border rounded-3 p-3 h-100 bg-body-tertiary">
                 <div class="small text-secondary">Failed Runs</div>
                 <div class="h3 mb-0 text-danger"><%= queueDiagnostics.runStats.failedRuns %></div>
-                <div class="form-text small">Errors isolated</div>
+                <div class="form-text small">
+                  <% if (queueDiagnostics.runStats.earliestFailedRetryAt) { %>
+                    Next retry: In ~<%= queueDiagnostics.runStats.earliestFailedRetryInMinutes %>m
+                  <% } else { %>
+                    Errors isolated
+                  <% } %>
+                </div>
               </div>
             </div>
             <div class="col-6 col-md-3">
               <div class="border rounded-3 p-3 h-100 bg-body-tertiary">
                 <div class="small text-secondary">Skipped Runs</div>
                 <div class="h3 mb-0 text-warning"><%= queueDiagnostics.runStats.skippedRuns %></div>
-                <div class="form-text small">Throttled / lock active</div>
+                <div class="form-text small">
+                  <% if (queueDiagnostics.runStats.earliestSkippedRecheckAt) { %>
+                    Next recheck: In ~<%= queueDiagnostics.runStats.earliestSkippedRecheckInDays %>d
+                  <% } else { %>
+                    Throttled / lock active
+                  <% } %>
+                </div>
               </div>
             </div>
             <div class="col-6 col-md-3">
@@ -78,12 +90,24 @@
         <% } %>
 
         <div class="row g-3 mb-4">
-          <div class="col-6 col-md-2"><div class="border rounded-3 p-3 h-100"><div class="small text-secondary">Not checked</div><div class="h3 mb-0"><%= queueDiagnostics.counts.new %></div></div></div>
-          <div class="col-6 col-md-2"><div class="border rounded-3 p-3 h-100"><div class="small text-secondary">Due again</div><div class="h3 mb-0 text-primary"><%= queueDiagnostics.counts.due %></div></div></div>
-          <div class="col-6 col-md-2"><div class="border rounded-3 p-3 h-100"><div class="small text-secondary">Cooling down</div><div class="h3 mb-0 text-warning"><%= queueDiagnostics.counts.cooldown %></div></div></div>
-          <div class="col-6 col-md-2"><div class="border rounded-3 p-3 h-100"><div class="small text-secondary">Retry limit</div><div class="h3 mb-0 text-danger"><%= queueDiagnostics.counts.exhausted %></div></div></div>
-          <div class="col-6 col-md-2"><div class="border rounded-3 p-3 h-100"><div class="small text-secondary">Non-bills</div><div class="h3 mb-0"><%= queueDiagnostics.counts.stable_skip %></div></div></div>
-          <div class="col-6 col-md-2"><div class="border rounded-3 p-3 h-100"><div class="small text-secondary">Completed</div><div class="h3 mb-0 text-success"><%= queueDiagnostics.counts.processed %></div></div></div>
+          <div class="col-6 col-md-2"><div class="border rounded-3 p-3 h-100"><div class="small text-secondary">Not checked</div><div class="h3 mb-0"><%= queueDiagnostics.counts.new %></div><div class="form-text small">Next run</div></div></div>
+          <div class="col-6 col-md-2"><div class="border rounded-3 p-3 h-100"><div class="small text-secondary">Due again</div><div class="h3 mb-0 text-primary"><%= queueDiagnostics.counts.due %></div><div class="form-text small">Next run</div></div></div>
+          <div class="col-6 col-md-2">
+            <div class="border rounded-3 p-3 h-100">
+              <div class="small text-secondary">Cooling down</div>
+              <div class="h3 mb-0 text-warning"><%= queueDiagnostics.counts.cooldown %></div>
+              <div class="form-text small"><%= queueDiagnostics.runStats.earliestFailedRetryInMinutes !== null ? `Retry: in ~${queueDiagnostics.runStats.earliestFailedRetryInMinutes}m` : 'Cooldown' %></div>
+            </div>
+          </div>
+          <div class="col-6 col-md-2"><div class="border rounded-3 p-3 h-100"><div class="small text-secondary">Retry limit</div><div class="h3 mb-0 text-danger"><%= queueDiagnostics.counts.exhausted %></div><div class="form-text small">Manual review</div></div></div>
+          <div class="col-6 col-md-2">
+            <div class="border rounded-3 p-3 h-100">
+              <div class="small text-secondary">Non-bills</div>
+              <div class="h3 mb-0"><%= queueDiagnostics.counts.stable_skip %></div>
+              <div class="form-text small"><%= queueDiagnostics.runStats.earliestSkippedRecheckInDays !== null ? `Recheck: in ~${queueDiagnostics.runStats.earliestSkippedRecheckInDays}d` : 'Periodic' %></div>
+            </div>
+          </div>
+          <div class="col-6 col-md-2"><div class="border rounded-3 p-3 h-100"><div class="small text-secondary">Completed</div><div class="h3 mb-0 text-success"><%= queueDiagnostics.counts.processed %></div><div class="form-text small">Done</div></div></div>
         </div>
 
         <div class="row g-3 mb-4">

@@ -245,6 +245,22 @@ export async function buildPoBillSchedulerDiagnostics(documents: AttachmentInfo[
     nextRunAt = new Date(nextMs).toISOString();
   }
 
+  // Find earliest retry timestamp for failed / cooling-down items
+  const coolingItems = queue.filter((i) => (i.state === 'cooldown' || i.state === 'due') && i.retryAt);
+  coolingItems.sort((a, b) => Date.parse(a.retryAt!) - Date.parse(b.retryAt!));
+  const earliestFailedRetryAt = coolingItems[0]?.retryAt || null;
+  const earliestFailedRetryInMinutes = earliestFailedRetryAt
+    ? Math.max(0, Math.ceil((Date.parse(earliestFailedRetryAt) - Date.now()) / 60000))
+    : null;
+
+  // Find earliest recheck timestamp for stable-skip (non-bill) items
+  const skippedItems = queue.filter((i) => i.state === 'stable_skip' && i.retryAt);
+  skippedItems.sort((a, b) => Date.parse(a.retryAt!) - Date.parse(b.retryAt!));
+  const earliestSkippedRecheckAt = skippedItems[0]?.retryAt || null;
+  const earliestSkippedRecheckInDays = earliestSkippedRecheckAt
+    ? Math.max(0, Math.ceil((Date.parse(earliestSkippedRecheckAt) - Date.now()) / (24 * 60 * 60000)))
+    : null;
+
   const runStats = {
     completedRuns: completedRunCount,
     failedRuns: failedRunCount,
@@ -253,6 +269,10 @@ export async function buildPoBillSchedulerDiagnostics(documents: AttachmentInfo[
     lastRunAt: lastRun?.startedAt || null,
     nextRunAt,
     nextRunInMinutes,
+    earliestFailedRetryAt,
+    earliestFailedRetryInMinutes,
+    earliestSkippedRecheckAt,
+    earliestSkippedRecheckInDays,
   };
 
   return {
