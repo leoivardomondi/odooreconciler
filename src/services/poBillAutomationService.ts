@@ -948,12 +948,41 @@ async function findFinanceDocumentFolderIds(
   return [];
 }
 
+interface DocumentPdfsCacheEntry {
+  items: AttachmentInfo[];
+  fetchedAt: number;
+}
+
+let globalDocumentPdfsCache: DocumentPdfsCacheEntry | null = null;
+const DOCUMENT_PDFS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+export function clearDocumentPdfsCache() {
+  globalDocumentPdfsCache = null;
+}
+
 export async function getRecentDocumentPdfs(
   client: OdooClient,
   limit = 25,
   offset = 0,
+  forceRefresh = false,
 ): Promise<AttachmentInfo[]> {
+  const now = Date.now();
+  if (
+    !forceRefresh &&
+    globalDocumentPdfsCache &&
+    now - globalDocumentPdfsCache.fetchedAt < DOCUMENT_PDFS_CACHE_TTL_MS &&
+    globalDocumentPdfsCache.items.length >= limit
+  ) {
+    return globalDocumentPdfsCache.items.slice(offset, offset + limit);
+  }
+
   const page = await getRecentDocumentPdfsPage(client, { page: Math.floor(offset / limit) + 1, pageSize: limit });
+  if (offset === 0) {
+    globalDocumentPdfsCache = {
+      items: page.items,
+      fetchedAt: now,
+    };
+  }
   return page.items;
 }
 

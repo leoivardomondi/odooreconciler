@@ -961,42 +961,132 @@
             <div class="col-md-4">
               <label class="form-label">Model</label>
               <select class="form-select" name="aiModelPreset">
-                <option value="openai/gpt-oss-20b" <%= form.aiModel === 'openai/gpt-oss-20b' ? 'selected' : '' %>>
+                <option data-provider="nvidia" value="z-ai/glm-5.2" <%= form.aiModel === 'z-ai/glm-5.2' ? 'selected' : '' %>>
+                  NVIDIA Z-AI GLM 5.2
+                </option>
+                <option data-provider="nvidia" value="openai/gpt-oss-120b" <%= form.aiModel === 'openai/gpt-oss-120b' ? 'selected' : '' %>>
+                  NVIDIA GPT-OSS 120B
+                </option>
+                <option data-provider="nvidia" value="openai/gpt-oss-20b" <%= form.aiModel === 'openai/gpt-oss-20b' ? 'selected' : '' %>>
                   NVIDIA OpenAI GPT-OSS 20B
                 </option>
-                <option value="openai/gpt-oss-120b" <%= form.aiModel === 'openai/gpt-oss-120b' ? 'selected' : '' %>>
-                  NVIDIA OpenAI GPT-OSS 120B
-                </option>
-                <option value="nvidia/llama-3.1-nemotron-nano-vl-8b-v1" <%= form.aiModel === 'nvidia/llama-3.1-nemotron-nano-vl-8b-v1' || !form.aiModel ? 'selected' : '' %>>
+                <option data-provider="nvidia" value="nvidia/llama-3.1-nemotron-nano-vl-8b-v1" <%= form.aiModel === 'nvidia/llama-3.1-nemotron-nano-vl-8b-v1' || !form.aiModel ? 'selected' : '' %>>
                   NVIDIA Nemotron Nano VL 8B
                 </option>
-                <option value="meta/llama-3.2-90b-vision-instruct" <%= form.aiModel === 'meta/llama-3.2-90b-vision-instruct' ? 'selected' : '' %>>
+                <option data-provider="nvidia" value="meta/llama-3.2-90b-vision-instruct" <%= form.aiModel === 'meta/llama-3.2-90b-vision-instruct' ? 'selected' : '' %>>
                   Llama 3.2 90B Vision
                 </option>
-                <option value="meta/llama-3.2-11b-vision-instruct" <%= form.aiModel === 'meta/llama-3.2-11b-vision-instruct' ? 'selected' : '' %>>
+                <option data-provider="nvidia" value="meta/llama-3.2-11b-vision-instruct" <%= form.aiModel === 'meta/llama-3.2-11b-vision-instruct' ? 'selected' : '' %>>
                   Llama 3.2 11B Vision
                 </option>
-                <option value="gemini-flash-latest" <%= form.aiModel === 'gemini-flash-latest' ? 'selected' : '' %>>
-                  Google Gemini Flash Latest
+                <option data-provider="gemini" value="gemini-3.6-flash" <%= form.aiModel === 'gemini-3.6-flash' ? 'selected' : '' %>>
+                  Google Gemini 3.6 Flash
                 </option>
-                <option value="gemini-2.5-pro" <%= form.aiModel === 'gemini-2.5-pro' ? 'selected' : '' %>>
+                <option data-provider="gemini" value="gemini-3.5-flash" <%= form.aiModel === 'gemini-3.5-flash' ? 'selected' : '' %>>
+                  Google Gemini 3.5 Flash
+                </option>
+                <option data-provider="gemini" value="gemini-3.1-pro" <%= form.aiModel === 'gemini-3.1-pro' ? 'selected' : '' %>>
+                  Google Gemini 3.1 Pro
+                </option>
+                <option data-provider="gemini" value="gemini-2.5-pro" <%= form.aiModel === 'gemini-2.5-pro' ? 'selected' : '' %>>
                   Google Gemini 2.5 Pro
                 </option>
-                <option value="gemini-2.5-flash" <%= form.aiModel === 'gemini-2.5-flash' ? 'selected' : '' %>>
+                <option data-provider="gemini" value="gemini-2.5-flash" <%= form.aiModel === 'gemini-2.5-flash' ? 'selected' : '' %>>
                   Google Gemini 2.5 Flash
                 </option>
-                <option value="gemini-1.5-pro" <%= form.aiModel === 'gemini-1.5-pro' ? 'selected' : '' %>>
+                <option data-provider="gemini" value="gemini-2.0-flash" <%= form.aiModel === 'gemini-2.0-flash' ? 'selected' : '' %>>
+                  Google Gemini 2.0 Flash
+                </option>
+                <option data-provider="gemini" value="gemini-2.0-flash-lite" <%= form.aiModel === 'gemini-2.0-flash-lite' ? 'selected' : '' %>>
+                  Google Gemini 2.0 Flash Lite
+                </option>
+                <option data-provider="gemini" value="gemini-2.0-pro-exp-02-05" <%= form.aiModel === 'gemini-2.0-pro-exp-02-05' ? 'selected' : '' %>>
+                  Google Gemini 2.0 Pro Experimental
+                </option>
+                <option data-provider="gemini" value="gemini-1.5-pro" <%= form.aiModel === 'gemini-1.5-pro' ? 'selected' : '' %>>
                   Google Gemini 1.5 Pro
                 </option>
-                <option value="gpt-4.1" <%= form.aiModel === 'gpt-4.1' ? 'selected' : '' %>>
+                <option data-provider="gemini" value="gemini-1.5-flash" <%= form.aiModel === 'gemini-1.5-flash' ? 'selected' : '' %>>
+                  Google Gemini 1.5 Flash
+                </option>
+                <option data-provider="gemini" value="gemini-flash-latest" <%= form.aiModel === 'gemini-flash-latest' ? 'selected' : '' %>>
+                  Google Gemini Flash Latest
+                </option>
+                <option data-provider="gemini" value="gemini-pro-latest" <%= form.aiModel === 'gemini-pro-latest' ? 'selected' : '' %>>
+                  Google Gemini Pro Latest
+                </option>
+                <option data-provider="anthropic" value="claude-sonnet-4.6" <%= form.aiModel === 'claude-sonnet-4.6' || form.aiModel === 'claude-sonnet-4-6-thinking' ? 'selected' : '' %>>
+                  Anthropic Claude Sonnet 4.6 (Thinking)
+                </option>
+                <option data-provider="anthropic" value="claude-opus-4.6" <%= form.aiModel === 'claude-opus-4.6' || form.aiModel === 'claude-opus-4-6-thinking' ? 'selected' : '' %>>
+                  Anthropic Claude Opus 4.6 (Thinking)
+                </option>
+                <option data-provider="openai" value="gpt-4.1" <%= form.aiModel === 'gpt-4.1' ? 'selected' : '' %>>
                   OpenAI GPT-4.1
                 </option>
-                <option value="custom" <%= form.aiModel && !['openai/gpt-oss-20b', 'openai/gpt-oss-120b', 'nvidia/llama-3.1-nemotron-nano-vl-8b-v1', 'meta/llama-3.2-90b-vision-instruct', 'meta/llama-3.2-11b-vision-instruct', 'gemini-flash-latest', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-1.5-pro', 'gpt-4.1'].includes(form.aiModel) ? 'selected' : '' %>>
+                <option data-provider="all" value="custom" <%= form.aiModel && !['z-ai/glm-5.2', 'openai/gpt-oss-20b', 'openai/gpt-oss-120b', 'nvidia/llama-3.1-nemotron-nano-vl-8b-v1', 'meta/llama-3.2-90b-vision-instruct', 'meta/llama-3.2-11b-vision-instruct', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.1-pro', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-2.0-pro-exp-02-05', 'gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-flash-latest', 'gemini-pro-latest', 'claude-sonnet-4.6', 'claude-opus-4.6', 'claude-sonnet-4-6-thinking', 'claude-opus-4-6-thinking', 'gpt-4.1'].includes(form.aiModel) ? 'selected' : '' %>>
                   Custom model
                 </option>
               </select>
               <input type="text" class="form-control font-monospace mt-2" name="aiModel" value="<%= form.aiModel %>" placeholder="Custom model ID" />
             </div>
+
+            <script>
+              document.addEventListener('DOMContentLoaded', function () {
+                var providerSelect = document.querySelector('select[name="aiProvider"]');
+                var modelSelect = document.querySelector('select[name="aiModelPreset"]');
+                var modelInput = document.querySelector('input[name="aiModel"]');
+
+                if (!providerSelect || !modelSelect) return;
+
+                function filterModelsByProvider() {
+                  var selectedProvider = providerSelect.value;
+                  var options = Array.from(modelSelect.querySelectorAll('option'));
+                  var firstVisibleOption = null;
+                  var currentIsVisible = false;
+
+                  options.forEach(function (option) {
+                    var provider = option.getAttribute('data-provider');
+                    var shouldShow = !provider || provider === 'all' || provider === selectedProvider || selectedProvider === 'disabled';
+
+                    if (shouldShow) {
+                      option.hidden = false;
+                      option.disabled = false;
+                      option.style.display = '';
+                      if (!firstVisibleOption && option.value !== 'custom') {
+                        firstVisibleOption = option;
+                      }
+                      if (option.selected) {
+                        currentIsVisible = true;
+                      }
+                    } else {
+                      option.hidden = true;
+                      option.disabled = true;
+                      option.style.display = 'none';
+                      if (option.selected) {
+                        option.selected = false;
+                      }
+                    }
+                  });
+
+                  if (!currentIsVisible && firstVisibleOption && selectedProvider !== 'disabled') {
+                    firstVisibleOption.selected = true;
+                    if (modelInput) {
+                      modelInput.value = firstVisibleOption.value;
+                    }
+                  }
+                }
+
+                providerSelect.addEventListener('change', filterModelsByProvider);
+                modelSelect.addEventListener('change', function () {
+                  if (modelSelect.value !== 'custom' && modelInput) {
+                    modelInput.value = modelSelect.value;
+                  }
+                });
+
+                filterModelsByProvider();
+              });
+            </script>
             <div class="col-md-4">
               <label class="form-label">Max Images</label>
               <input type="number" min="1" max="10" class="form-control" name="aiMaxImages" value="<%= form.aiMaxImages %>" />
@@ -1048,6 +1138,11 @@
               <div class="form-check mt-2">
                 <input class="form-check-input" type="checkbox" name="clearOpenrouterApiKey" id="clearOpenrouterApiKey" />
                 <label class="form-check-label small" for="clearOpenrouterApiKey">Clear saved OpenRouter key</label>
+              </div>
+            </div>
+            <div class="col-12 mt-2">
+              <div class="small text-secondary border rounded bg-body-tertiary p-2">
+                <strong>Multi-Provider Fallback Active:</strong> If your selected primary provider (e.g. <code><%= form.aiProvider %></code>) hits rate limits or quota errors, the system automatically attempts any other API keys provided above before falling back to local OCR.
               </div>
             </div>
           </div>

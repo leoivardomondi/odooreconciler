@@ -726,18 +726,34 @@ router.get('/jobs/run-scheduler', async (req, res) => {
       };
     }
 
-    const result = await runSchedulerCycle('cron');
-    res.json({
+    const syncMode = req.query.sync === '1' || req.query.sync === 'true';
+    if (syncMode) {
+      const result = await runSchedulerCycle('cron');
+      return res.json({
+        ok: true,
+        runId: result.run.id,
+        status: result.run.status,
+        summary: result.run.summary,
+        scannedCount: result.scannedCount,
+        processedCount: result.processedCount,
+        skippedCount: result.skippedCount,
+        failedCount: result.failedCount,
+        throttled: Boolean(result.throttled),
+        throttleMinutes: result.throttleMinutes || null,
+        mpesaNotification,
+      });
+    }
+
+    void runSchedulerCycle('cron').catch(async (error) => {
+      await logEvent('error', 'Cron Sales Order scheduler background run failed', {
+        error: error instanceof Error ? error.message : 'Unknown failure in background Sales Order scheduler.',
+      });
+    });
+
+    return res.json({
       ok: true,
-      runId: result.run.id,
-      status: result.run.status,
-      summary: result.run.summary,
-      scannedCount: result.scannedCount,
-      processedCount: result.processedCount,
-      skippedCount: result.skippedCount,
-      failedCount: result.failedCount,
-      throttled: Boolean(result.throttled),
-      throttleMinutes: result.throttleMinutes || null,
+      status: 'initiated',
+      message: 'Sales Order scheduler run initiated in background.',
       mpesaNotification,
     });
   } catch (error) {
@@ -766,18 +782,34 @@ router.get('/jobs/run-po-bill-scheduler', async (req, res) => {
       };
     }
 
-    const result = await runPoBillSchedulerCycle('cron');
-    res.json({
+    const syncMode = req.query.sync === '1' || req.query.sync === 'true';
+    if (syncMode) {
+      const result = await runPoBillSchedulerCycle('cron');
+      return res.json({
+        ok: true,
+        runId: result.run.id,
+        status: result.run.status,
+        summary: result.run.summary,
+        scannedCount: result.scannedCount,
+        processedCount: result.processedCount,
+        skippedCount: result.skippedCount,
+        failedCount: result.failedCount,
+        throttled: Boolean(result.throttled),
+        throttleMinutes: result.throttleMinutes || null,
+        mpesaNotification,
+      });
+    }
+
+    void runPoBillSchedulerCycle('cron').catch(async (error) => {
+      await logEvent('error', 'Cron PO bill scheduler background run failed', {
+        error: error instanceof Error ? error.message : 'Unknown failure in background PO bill scheduler.',
+      });
+    });
+
+    return res.json({
       ok: true,
-      runId: result.run.id,
-      status: result.run.status,
-      summary: result.run.summary,
-      scannedCount: result.scannedCount,
-      processedCount: result.processedCount,
-      skippedCount: result.skippedCount,
-      failedCount: result.failedCount,
-      throttled: Boolean(result.throttled),
-      throttleMinutes: result.throttleMinutes || null,
+      status: 'initiated',
+      message: 'PO bill scheduler run initiated in background.',
       mpesaNotification,
     });
   } catch (error) {

@@ -1036,12 +1036,29 @@ export async function acquireSchedulerRunLock(runId: string): Promise<boolean> {
   return result.affectedRows > 0;
 }
 
+export async function markOrphanedStartedRunsAsFailed() {
+  const staleCutoff = appDateTimeFromNow(-getSchedulerLockStaleMs());
+  await execute(
+    `
+      UPDATE scheduler_runs
+      SET
+        status = 'failed',
+        summary = 'Scheduler run timed out or was interrupted (lock expired after 10 minutes).',
+        error_message = 'Scheduler lock expired while run was in started state.',
+        finished_at = CURRENT_TIMESTAMP
+      WHERE status = 'started' AND started_at <= ?
+    `,
+    [staleCutoff],
+  );
+}
+
 export async function clearStaleSchedulerRunLock(): Promise<SchedulerRuntimeState | null> {
   const current = await getSchedulerRuntimeState();
   const acquiredAt = current.lockAcquiredAt ? Date.parse(current.lockAcquiredAt) : 0;
   const isStale = current.lockRunId && (!acquiredAt || acquiredAt < Date.now() - getSchedulerLockStaleMs());
 
   if (!current.lockRunId) {
+    await markOrphanedStartedRunsAsFailed();
     return null;
   }
 
@@ -1061,7 +1078,23 @@ export async function clearStaleSchedulerRunLock(): Promise<SchedulerRuntimeStat
   const runIsNotActive = !activeRun || activeRun.status !== 'started' || Boolean(activeRun.finished_at);
 
   if (!isStale && !runIsNotActive) {
+    await markOrphanedStartedRunsAsFailed();
     return null;
+  }
+
+  if (activeRun && activeRun.status === 'started') {
+    await execute(
+      `
+        UPDATE scheduler_runs
+        SET
+          status = 'failed',
+          summary = 'Scheduler run timed out or was interrupted (lock expired after 10 minutes).',
+          error_message = 'Scheduler lock expired while run was in started state.',
+          finished_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND status = 'started'
+      `,
+      [activeRun.id],
+    );
   }
 
   await execute(
@@ -1076,8 +1109,11 @@ export async function clearStaleSchedulerRunLock(): Promise<SchedulerRuntimeStat
     [current.lockRunId],
   );
 
+  await markOrphanedStartedRunsAsFailed();
+
   return current;
 }
+
 
 export async function touchSchedulerRunLock(runId: string) {
   await execute(

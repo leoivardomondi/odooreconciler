@@ -227,32 +227,43 @@ export async function parseSupplierInvoice(input: ParseSupplierInvoiceInput): Pr
         aiImagePaths = rendered.images.map((image) => image.imagePath);
       }
 
-      const aiResult = await extractInvoiceWithAi({
-        imagePaths: aiImagePaths,
-        ocrText,
-        pdfText: pdfTextResult.text,
-        originalFilename: input.originalFilename,
-        config: input.aiConfig,
-      });
+      try {
+        const aiResult = await extractInvoiceWithAi({
+          imagePaths: aiImagePaths,
+          ocrText,
+          pdfText: pdfTextResult.text,
+          originalFilename: input.originalFilename,
+          config: input.aiConfig,
+        });
 
-      finalInvoice = {
-        ...finalInvoice,
-        warnings: [...finalInvoice.warnings, ...aiResult.warnings],
-      };
-
-      if (aiResult.extraction) {
-        const merged = mergeAiInvoiceExtraction(finalInvoice, aiResult.extraction);
-        let normalizedMerged = normalizeInvoiceTotals(merged);
-        normalizedMerged = recoverHandwrittenInvoiceItems(normalizedMerged);
-        normalizedMerged = normalizeInvoiceTotals(normalizedMerged);
-        finalInvoice = {
-          ...normalizedMerged,
-          confidence: computeConfidence(normalizedMerged),
-          warnings: removeResolvedValidationWarnings(normalizedMerged.warnings),
-        };
         finalInvoice = {
           ...finalInvoice,
-          warnings: validateInvoice(finalInvoice),
+          warnings: [...finalInvoice.warnings, ...aiResult.warnings],
+        };
+
+        if (aiResult.extraction) {
+          const merged = mergeAiInvoiceExtraction(finalInvoice, aiResult.extraction);
+          let normalizedMerged = normalizeInvoiceTotals(merged);
+          normalizedMerged = recoverHandwrittenInvoiceItems(normalizedMerged);
+          normalizedMerged = normalizeInvoiceTotals(normalizedMerged);
+          finalInvoice = {
+            ...normalizedMerged,
+            confidence: computeConfidence(normalizedMerged),
+            warnings: removeResolvedValidationWarnings(normalizedMerged.warnings),
+          };
+          finalInvoice = {
+            ...finalInvoice,
+            warnings: validateInvoice(finalInvoice),
+          };
+        }
+      } catch (aiError) {
+        const errorMessage = aiError instanceof Error ? aiError.message : 'AI API request failed.';
+        warnings.push(
+          `AI API extraction skipped or quota exceeded (${errorMessage}). Falling back to local pdf-parse / OCR extraction.`,
+        );
+        finalInvoice = {
+          ...finalInvoice,
+          warnings: [...finalInvoice.warnings, ...warnings],
         };
       }
     }
