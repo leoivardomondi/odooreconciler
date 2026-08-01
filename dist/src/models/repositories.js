@@ -11,6 +11,7 @@ exports.getSchedulerRunById = getSchedulerRunById;
 exports.getRecentSchedulerRuns = getRecentSchedulerRuns;
 exports.getSchedulerRuntimeState = getSchedulerRuntimeState;
 exports.acquireSchedulerRunLock = acquireSchedulerRunLock;
+exports.markOrphanedStartedRunsAsFailed = markOrphanedStartedRunsAsFailed;
 exports.clearStaleSchedulerRunLock = clearStaleSchedulerRunLock;
 exports.touchSchedulerRunLock = touchSchedulerRunLock;
 exports.releaseSchedulerRunLock = releaseSchedulerRunLock;
@@ -874,11 +875,24 @@ async function acquireSchedulerRunLock(runId) {
     `, [runId, runId]);
     return result.affectedRows > 0;
 }
+async function markOrphanedStartedRunsAsFailed() {
+    const staleCutoff = (0, dateTime_1.appDateTimeFromNow)(-getSchedulerLockStaleMs());
+    await (0, db_1.execute)(`
+      UPDATE scheduler_runs
+      SET
+        status = 'failed',
+        summary = 'Scheduler run timed out or was interrupted (lock expired after 10 minutes).',
+        error_message = 'Scheduler lock expired while run was in started state.',
+        finished_at = CURRENT_TIMESTAMP
+      WHERE status = 'started' AND started_at <= ?
+    `, [staleCutoff]);
+}
 async function clearStaleSchedulerRunLock() {
     const current = await getSchedulerRuntimeState();
     const acquiredAt = current.lockAcquiredAt ? Date.parse(current.lockAcquiredAt) : 0;
     const isStale = current.lockRunId && (!acquiredAt || acquiredAt < Date.now() - getSchedulerLockStaleMs());
     if (!current.lockRunId) {
+        await markOrphanedStartedRunsAsFailed();
         return null;
     }
     const activeRun = await (0, db_1.queryOne)(`
@@ -888,7 +902,19 @@ async function clearStaleSchedulerRunLock() {
     `, [current.lockRunId]);
     const runIsNotActive = !activeRun || activeRun.status !== 'started' || Boolean(activeRun.finished_at);
     if (!isStale && !runIsNotActive) {
+        await markOrphanedStartedRunsAsFailed();
         return null;
+    }
+    if (activeRun && activeRun.status === 'started') {
+        await (0, db_1.execute)(`
+        UPDATE scheduler_runs
+        SET
+          status = 'failed',
+          summary = 'Scheduler run timed out or was interrupted (lock expired after 10 minutes).',
+          error_message = 'Scheduler lock expired while run was in started state.',
+          finished_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND status = 'started'
+      `, [activeRun.id]);
     }
     await (0, db_1.execute)(`
       UPDATE scheduler_runtime_state
@@ -898,6 +924,7 @@ async function clearStaleSchedulerRunLock() {
         updated_at = CURRENT_TIMESTAMP
       WHERE id = 1 AND lock_run_id = ?
     `, [current.lockRunId]);
+    await markOrphanedStartedRunsAsFailed();
     return current;
 }
 async function touchSchedulerRunLock(runId) {

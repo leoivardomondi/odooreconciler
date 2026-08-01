@@ -463,7 +463,8 @@ function defaultModelForProvider(provider) {
     }
 }
 function isTextOnlyNvidiaModel(model) {
-    return /^openai\/gpt-oss-/i.test(model.trim());
+    const m = model.trim();
+    return /^openai\/gpt-oss-/i.test(m) || /^z-ai\//i.test(m);
 }
 function usesConfiguredOcr(config) {
     return Boolean(config?.ocr?.enabled && config.ocr.provider !== 'disabled' && config.ocr.apiKey);
@@ -514,6 +515,7 @@ async function callOpenAiCompatibleInvoiceAi(input) {
     }
     const response = await fetch(endpoint, {
         method: 'POST',
+        signal: AbortSignal.timeout(30000),
         headers: {
             Authorization: `Bearer ${input.apiKey}`,
             'Content-Type': 'application/json',
@@ -542,6 +544,7 @@ async function callGeminiInvoiceAi(input) {
     const endpoint = `${baseUrl}/models/${encodeURIComponent(input.model)}:generateContent`;
     const response = await fetch(endpoint, {
         method: 'POST',
+        signal: AbortSignal.timeout(30000),
         headers: {
             'Content-Type': 'application/json',
             'X-goog-api-key': input.apiKey,
@@ -579,6 +582,7 @@ async function callAnthropicInvoiceAi(input) {
         : ANTHROPIC_MESSAGES_URL;
     const response = await fetch(endpoint, {
         method: 'POST',
+        signal: AbortSignal.timeout(30000),
         headers: {
             'x-api-key': input.apiKey,
             'anthropic-version': '2023-06-01',
@@ -691,78 +695,118 @@ async function extractInvoiceWithAi(input) {
     }
 }
 async function extractInvoiceWithConfiguredAi(input) {
-    const provider = input.config.provider || 'disabled';
-    if (!input.config.enabled || provider === 'disabled') {
+    const primaryProvider = input.config.provider || 'disabled';
+    if (!input.config.enabled || primaryProvider === 'disabled') {
         return { extraction: null, warnings: ['AI invoice extraction skipped because it is disabled in Settings.'] };
     }
-    const apiKey = input.config.apiKeys?.[provider];
-    if (!apiKey) {
-        return { extraction: null, warnings: [`AI invoice extraction skipped because the ${provider} API key is not configured.`] };
+    const allSupportedProviders = [
+        'gemini',
+        'openai',
+        'openrouter',
+        'nvidia',
+        'anthropic',
+    ];
+    const candidateProviders = [];
+    if (input.config.apiKeys?.[primaryProvider]) {
+        candidateProviders.push(primaryProvider);
     }
-    const configuredMaxImages = Number(input.config.maxImages || 0);
-    const imageLimit = configuredMaxImages > 0
-        ? Math.max(configuredMaxImages, input.imagePaths.length)
-        : input.imagePaths.length;
-    const imagePaths = input.imagePaths.slice(0, imageLimit);
-    const model = input.config.model?.trim() || defaultModelForProvider(provider);
-    const canRunTextOnly = provider === 'nvidia' && isTextOnlyNvidiaModel(model);
-    if (imagePaths.length === 0 && !canRunTextOnly) {
-        return { extraction: null, warnings: ['AI invoice extraction skipped because no rendered invoice image was available.'] };
+    for (const p of allSupportedProviders) {
+        if (p !== primaryProvider && Boolean(input.config.apiKeys?.[p])) {
+            candidateProviders.push(p);
+        }
     }
-    try {
-        const prompt = buildExtractionPrompt(input);
-        let outputText = '';
-        const accumulatedWarnings = [];
-        if (provider === 'openai' || provider === 'nvidia' || provider === 'openrouter') {
-            if (provider === 'nvidia' && canRunTextOnly) {
-                outputText = await callOpenAiCompatibleInvoiceAi({
-                    provider,
-                    apiKey,
-                    model,
-                    baseUrl: input.config.baseUrl,
-                    images: [],
-                    prompt,
-                });
-                const textOnlyParsed = parseConfiguredAiOutputText(outputText, provider, model);
-                accumulatedWarnings.push(...textOnlyParsed.warnings);
-                if (!aiExtractionNeedsVisionFallback(textOnlyParsed.extraction) || imagePaths.length === 0) {
-                    return textOnlyParsed;
-                }
-                const visionModel = nvidiaVisionFallbackModel(model);
-                const outputs = [];
-                for (const imagePath of imagePaths) {
-                    const images = await readImagesForAi([imagePath]);
-                    outputs.push(await callOpenAiCompatibleInvoiceAi({
+    if (candidateProviders.length === 0) {
+        return {
+            extraction: null,
+            warnings: [`AI invoice extraction skipped because no API key is configured for selected provider "${primaryProvider}".`],
+        };
+    }
+    const overallWarnings = [];
+    for (const provider of candidateProviders) {
+        const apiKey = input.config.apiKeys?.[provider];
+        if (!apiKey) {
+            continue;
+        }
+        const configuredMaxImages = Number(input.config.maxImages || 0);
+        const imageLimit = configuredMaxImages > 0
+            ? Math.max(configuredMaxImages, input.imagePaths.length)
+            : input.imagePaths.length;
+        const imagePaths = input.imagePaths.slice(0, imageLimit);
+        const model = provider === primaryProvider && input.config.model?.trim()
+            ? input.config.model.trim()
+            : defaultModelForProvider(provider);
+        const canRunTextOnly = provider === 'nvidia' && isTextOnlyNvidiaModel(model);
+        if (imagePaths.length === 0 && !canRunTextOnly) {
+            continue;
+        }
+        try {
+            const prompt = buildExtractionPrompt(input);
+            let outputText = '';
+            const accumulatedWarnings = [];
+            if (provider === 'openai' || provider === 'nvidia' || provider === 'openrouter') {
+                if (provider === 'nvidia' && canRunTextOnly) {
+                    outputText = await callOpenAiCompatibleInvoiceAi({
                         provider,
                         apiKey,
-                        model: visionModel,
+                        model,
                         baseUrl: input.config.baseUrl,
-                        images,
+                        images: [],
                         prompt,
-                    }));
+                    });
+                    const textOnlyParsed = parseConfiguredAiOutputText(outputText, provider, model);
+                    accumulatedWarnings.push(...textOnlyParsed.warnings);
+                    if (!aiExtractionNeedsVisionFallback(textOnlyParsed.extraction) || imagePaths.length === 0) {
+                        return {
+                            extraction: textOnlyParsed.extraction,
+                            warnings: [...overallWarnings, ...accumulatedWarnings, ...textOnlyParsed.warnings],
+                        };
+                    }
+                    const visionModel = nvidiaVisionFallbackModel(model);
+                    const outputs = [];
+                    for (const imagePath of imagePaths) {
+                        const images = await readImagesForAi([imagePath]);
+                        outputs.push(await callOpenAiCompatibleInvoiceAi({
+                            provider,
+                            apiKey,
+                            model: visionModel,
+                            baseUrl: input.config.baseUrl,
+                            images,
+                            prompt,
+                        }));
+                    }
+                    outputText = outputs.join('\n\n');
+                    accumulatedWarnings.push(`AI invoice extraction retried with NVIDIA vision model ${visionModel} because text-only OCR interpretation missed items or total.`);
                 }
-                outputText = outputs.join('\n\n');
-                accumulatedWarnings.push(`AI invoice extraction retried with NVIDIA vision model ${visionModel} because text-only OCR interpretation missed items or total.`);
-            }
-            else if (provider === 'nvidia') {
-                const outputs = [];
-                for (const imagePath of imagePaths) {
-                    const images = await readImagesForAi([imagePath]);
-                    outputs.push(await callOpenAiCompatibleInvoiceAi({
+                else if (provider === 'nvidia') {
+                    const outputs = [];
+                    for (const imagePath of imagePaths) {
+                        const images = await readImagesForAi([imagePath]);
+                        outputs.push(await callOpenAiCompatibleInvoiceAi({
+                            provider,
+                            apiKey,
+                            model,
+                            baseUrl: input.config.baseUrl,
+                            images,
+                            prompt,
+                        }));
+                    }
+                    outputText = outputs.join('\n\n');
+                }
+                else {
+                    const images = await readImagesForAi(imagePaths);
+                    outputText = await callOpenAiCompatibleInvoiceAi({
                         provider,
                         apiKey,
                         model,
                         baseUrl: input.config.baseUrl,
                         images,
                         prompt,
-                    }));
+                    });
                 }
-                outputText = outputs.join('\n\n');
             }
-            else {
+            else if (provider === 'gemini') {
                 const images = await readImagesForAi(imagePaths);
-                outputText = await callOpenAiCompatibleInvoiceAi({
-                    provider,
+                outputText = await callGeminiInvoiceAi({
                     apiKey,
                     model,
                     baseUrl: input.config.baseUrl,
@@ -770,36 +814,33 @@ async function extractInvoiceWithConfiguredAi(input) {
                     prompt,
                 });
             }
+            else if (provider === 'anthropic') {
+                const images = await readImagesForAi(imagePaths);
+                outputText = await callAnthropicInvoiceAi({
+                    apiKey,
+                    model,
+                    baseUrl: input.config.baseUrl,
+                    images,
+                    prompt,
+                });
+            }
+            const parsed = parseConfiguredAiOutputText(outputText, provider, model);
+            if (parsed.extraction) {
+                return {
+                    extraction: parsed.extraction,
+                    warnings: [...overallWarnings, ...accumulatedWarnings, ...parsed.warnings],
+                };
+            }
         }
-        else if (provider === 'gemini') {
-            const images = await readImagesForAi(imagePaths);
-            outputText = await callGeminiInvoiceAi({
-                apiKey,
-                model,
-                baseUrl: input.config.baseUrl,
-                images,
-                prompt,
-            });
+        catch (error) {
+            const msg = error instanceof Error ? error.message : String(error);
+            overallWarnings.push(`AI provider "${provider}" (${model}) failed: ${msg}. Attempting fallback provider...`);
         }
-        else if (provider === 'anthropic') {
-            const images = await readImagesForAi(imagePaths);
-            outputText = await callAnthropicInvoiceAi({
-                apiKey,
-                model,
-                baseUrl: input.config.baseUrl,
-                images,
-                prompt,
-            });
-        }
-        const parsed = parseConfiguredAiOutputText(outputText, provider, model);
-        return { extraction: parsed.extraction, warnings: [...accumulatedWarnings, ...parsed.warnings] };
     }
-    catch (error) {
-        return {
-            extraction: null,
-            warnings: [`AI invoice extraction failed: ${error instanceof Error ? error.message : String(error)}`],
-        };
-    }
+    return {
+        extraction: null,
+        warnings: [...overallWarnings, 'All configured AI provider API keys failed or were exhausted.'],
+    };
 }
 function parseConfiguredAiOutputText(outputText, provider, model) {
     if (!outputText) {

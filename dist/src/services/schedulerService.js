@@ -14,6 +14,7 @@ const logService_1 = require("./logService");
 const odooClient_1 = require("./odooClient");
 const poBillAutomationService_1 = require("./poBillAutomationService");
 const stockProcessingService_1 = require("./stockProcessingService");
+const tempCleanup_1 = require("../utils/tempCleanup");
 let schedulerRunning = false;
 let schedulerIntervalHandle = null;
 let poBillSchedulerIntervalHandle = null;
@@ -26,12 +27,12 @@ const SO_SCHEDULER_ROUTINE_DEPRIORITIZE_RUNS = 20;
 const SO_SCHEDULER_ADAPTIVE_LOOKBACK_STEP_HOURS = 24;
 const SO_SCHEDULER_ADAPTIVE_LOOKBACK_MAX_HOURS = 24 * 90;
 const PO_BILL_SCHEDULER_BATCH_SIZE = 1;
-const PO_BILL_SCHEDULER_DOCUMENT_LOOKAHEAD = 250;
-const PO_BILL_SCHEDULER_DOCUMENT_LOOKAHEAD_MAX = 500;
+const PO_BILL_SCHEDULER_DOCUMENT_LOOKAHEAD = 50;
+const PO_BILL_SCHEDULER_DOCUMENT_LOOKAHEAD_MAX = 100;
 const PO_BILL_RETRY_COOLDOWN_HOURS = 12;
 const PO_BILL_TRANSIENT_RETRY_COOLDOWN_HOURS = 2;
 const PO_BILL_STABLE_SKIP_RETRY_COOLDOWN_HOURS = 24 * 14;
-const PO_BILL_ADAPTIVE_LOOKAHEAD_STEP = 250;
+const PO_BILL_ADAPTIVE_LOOKAHEAD_STEP = 25;
 const PO_BILL_ADAPTIVE_LOOKAHEAD_RUNS = 7;
 const MAX_PO_BILL_RETRY_ATTEMPTS = 5;
 const SALES_ORDER_SCHEDULER_JOB_TYPE = 'sales_order_processing';
@@ -758,6 +759,7 @@ async function runPoBillSchedulerCycle(trigger = 'manual') {
     finally {
         schedulerRunning = false;
         await (0, repositories_1.releaseSchedulerRunLock)(run.id);
+        await (0, tempCleanup_1.cleanupStaleTempFiles)().catch(() => undefined);
     }
 }
 async function runSchedulerCycle(trigger = 'manual') {

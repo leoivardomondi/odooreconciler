@@ -143,7 +143,7 @@ async function parseSupplierInvoice(input) {
                 tempFilesToClean.add(processed.imagePath);
                 return { pageNumber: image.pageNumber, imagePath: processed.imagePath };
             }));
-            const ocr = await (0, ocrEngine_1.runOcr)(preprocessed, preferredOcr, input.aiConfig?.ocr);
+            const ocr = await (0, ocrEngine_1.runOcr)(preprocessed, preferredOcr, input.aiConfig?.ocr, input.aiConfig?.apiKeys?.gemini);
             warnings.push(...ocr.warnings);
             ocrText = (0, normalizeText_1.normalizeText)(ocr.pages.map((page) => page.text).join('\n\n'));
             rawPages = ocr.pages.map((page) => ({
@@ -214,30 +214,40 @@ async function parseSupplierInvoice(input) {
                 };
                 aiImagePaths = rendered.images.map((image) => image.imagePath);
             }
-            const aiResult = await (0, aiInvoiceExtractor_1.extractInvoiceWithAi)({
-                imagePaths: aiImagePaths,
-                ocrText,
-                pdfText: pdfTextResult.text,
-                originalFilename: input.originalFilename,
-                config: input.aiConfig,
-            });
-            finalInvoice = {
-                ...finalInvoice,
-                warnings: [...finalInvoice.warnings, ...aiResult.warnings],
-            };
-            if (aiResult.extraction) {
-                const merged = (0, aiInvoiceExtractor_1.mergeAiInvoiceExtraction)(finalInvoice, aiResult.extraction);
-                let normalizedMerged = (0, normalizeTotals_1.normalizeInvoiceTotals)(merged);
-                normalizedMerged = (0, recoverHandwrittenItems_1.recoverHandwrittenInvoiceItems)(normalizedMerged);
-                normalizedMerged = (0, normalizeTotals_1.normalizeInvoiceTotals)(normalizedMerged);
-                finalInvoice = {
-                    ...normalizedMerged,
-                    confidence: (0, confidence_1.computeConfidence)(normalizedMerged),
-                    warnings: removeResolvedValidationWarnings(normalizedMerged.warnings),
-                };
+            try {
+                const aiResult = await (0, aiInvoiceExtractor_1.extractInvoiceWithAi)({
+                    imagePaths: aiImagePaths,
+                    ocrText,
+                    pdfText: pdfTextResult.text,
+                    originalFilename: input.originalFilename,
+                    config: input.aiConfig,
+                });
                 finalInvoice = {
                     ...finalInvoice,
-                    warnings: (0, validateInvoice_1.validateInvoice)(finalInvoice),
+                    warnings: [...finalInvoice.warnings, ...aiResult.warnings],
+                };
+                if (aiResult.extraction) {
+                    const merged = (0, aiInvoiceExtractor_1.mergeAiInvoiceExtraction)(finalInvoice, aiResult.extraction);
+                    let normalizedMerged = (0, normalizeTotals_1.normalizeInvoiceTotals)(merged);
+                    normalizedMerged = (0, recoverHandwrittenItems_1.recoverHandwrittenInvoiceItems)(normalizedMerged);
+                    normalizedMerged = (0, normalizeTotals_1.normalizeInvoiceTotals)(normalizedMerged);
+                    finalInvoice = {
+                        ...normalizedMerged,
+                        confidence: (0, confidence_1.computeConfidence)(normalizedMerged),
+                        warnings: removeResolvedValidationWarnings(normalizedMerged.warnings),
+                    };
+                    finalInvoice = {
+                        ...finalInvoice,
+                        warnings: (0, validateInvoice_1.validateInvoice)(finalInvoice),
+                    };
+                }
+            }
+            catch (aiError) {
+                const errorMessage = aiError instanceof Error ? aiError.message : 'AI API request failed.';
+                warnings.push(`AI API extraction skipped or quota exceeded (${errorMessage}). Falling back to local pdf-parse / OCR extraction.`);
+                finalInvoice = {
+                    ...finalInvoice,
+                    warnings: [...finalInvoice.warnings, ...warnings],
                 };
             }
         }

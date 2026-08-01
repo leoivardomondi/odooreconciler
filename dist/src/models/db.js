@@ -11,6 +11,7 @@ exports.ensureDatabase = ensureDatabase;
 exports.queryAll = queryAll;
 exports.queryOne = queryOne;
 exports.execute = execute;
+exports.ensureDatabaseIndexes = ensureDatabaseIndexes;
 const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
 const promise_1 = __importDefault(require("mysql2/promise"));
@@ -1205,4 +1206,33 @@ async function execute(sql, params = []) {
     }
     const db = await getSqliteDb();
     return sqliteRun(db, sql, params);
+}
+async function ensureDatabaseIndexes() {
+    await ensureDatabase();
+    const dialect = getDatabaseDialect();
+    if (dialect === 'mysql') {
+        const pool = await getMysqlPool();
+        const mysqlIndexes = [
+            { table: 'scheduler_runs', name: 'idx_scheduler_runs_started_at', column: 'started_at' },
+            { table: 'po_bill_processed_documents', name: 'idx_po_bill_processed_status', column: 'status, processed_at' },
+        ];
+        for (const idx of mysqlIndexes) {
+            try {
+                await pool.query(`CREATE INDEX ${idx.name} ON ${idx.table} (${idx.column})`);
+            }
+            catch {
+                // Index already exists in MySQL
+            }
+        }
+    }
+    else {
+        const db = await getSqliteDb();
+        const sqliteIndexes = [
+            'CREATE INDEX IF NOT EXISTS idx_scheduler_runs_started_at ON scheduler_runs(started_at)',
+            'CREATE INDEX IF NOT EXISTS idx_po_bill_processed_status ON po_bill_processed_documents(status, processed_at)',
+        ];
+        for (const sql of sqliteIndexes) {
+            await sqliteExec(db, sql).catch(() => undefined);
+        }
+    }
 }

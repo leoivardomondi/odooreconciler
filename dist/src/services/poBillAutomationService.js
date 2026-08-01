@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.PO_BILL_SUPPORTED_MIMETYPES = void 0;
 exports.isSupportedPoBillMimetype = isSupportedPoBillMimetype;
+exports.clearDocumentPdfsCache = clearDocumentPdfsCache;
 exports.getRecentDocumentPdfs = getRecentDocumentPdfs;
 exports.getRecentDocumentPdfsPage = getRecentDocumentPdfsPage;
 exports.markPoBillDocumentSkipped = markPoBillDocumentSkipped;
@@ -679,8 +680,26 @@ async function findFinanceDocumentFolderIds(client, targetCompanyId) {
     }
     return [];
 }
-async function getRecentDocumentPdfs(client, limit = 25, offset = 0) {
+let globalDocumentPdfsCache = null;
+const DOCUMENT_PDFS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+function clearDocumentPdfsCache() {
+    globalDocumentPdfsCache = null;
+}
+async function getRecentDocumentPdfs(client, limit = 25, offset = 0, forceRefresh = false) {
+    const now = Date.now();
+    if (!forceRefresh &&
+        globalDocumentPdfsCache &&
+        now - globalDocumentPdfsCache.fetchedAt < DOCUMENT_PDFS_CACHE_TTL_MS &&
+        globalDocumentPdfsCache.items.length >= limit) {
+        return globalDocumentPdfsCache.items.slice(offset, offset + limit);
+    }
     const page = await getRecentDocumentPdfsPage(client, { page: Math.floor(offset / limit) + 1, pageSize: limit });
+    if (offset === 0) {
+        globalDocumentPdfsCache = {
+            items: page.items,
+            fetchedAt: now,
+        };
+    }
     return page.items;
 }
 async function getRecentDocumentPdfsPage(client, options = {}) {

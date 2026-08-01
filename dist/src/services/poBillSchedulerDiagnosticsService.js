@@ -204,6 +204,47 @@ async function buildPoBillSchedulerDiagnostics(documents) {
     if (historical.repeatsUnder12Percent >= 25) {
         recommendations.push(`${historical.repeatsUnder12Percent}% of historical repeat checks happened within 12 hours. Avoid repeated manual checks until the document or matching PO data changes; preserve the 12/24/48-hour retry backoff.`);
     }
+    const completedRunCount = runs.filter((r) => r.status === 'completed').length;
+    const failedRunCount = runs.filter((r) => r.status === 'failed').length;
+    const skippedRunCount = runs.filter((r) => r.status === 'skipped').length;
+    const lastRun = runs.find((r) => r.startedAt);
+    let nextRunAt = null;
+    let nextRunInMinutes = null;
+    if (lastRun && lastRun.startedAt) {
+        const lastMs = Date.parse(lastRun.startedAt);
+        const intervalMs = (settings.poBillScheduler.intervalMinutes || 15) * 60 * 1000;
+        const nextMs = lastMs + intervalMs;
+        const nowMs = Date.now();
+        nextRunInMinutes = Math.max(0, Math.ceil((nextMs - nowMs) / (60 * 1000)));
+        nextRunAt = new Date(nextMs).toISOString();
+    }
+    // Find earliest retry timestamp for failed / cooling-down items
+    const coolingItems = queue.filter((i) => (i.state === 'cooldown' || i.state === 'due') && i.retryAt);
+    coolingItems.sort((a, b) => Date.parse(a.retryAt) - Date.parse(b.retryAt));
+    const earliestFailedRetryAt = coolingItems[0]?.retryAt || null;
+    const earliestFailedRetryInMinutes = earliestFailedRetryAt
+        ? Math.max(0, Math.ceil((Date.parse(earliestFailedRetryAt) - Date.now()) / 60000))
+        : null;
+    // Find earliest recheck timestamp for stable-skip (non-bill) items
+    const skippedItems = queue.filter((i) => i.state === 'stable_skip' && i.retryAt);
+    skippedItems.sort((a, b) => Date.parse(a.retryAt) - Date.parse(b.retryAt));
+    const earliestSkippedRecheckAt = skippedItems[0]?.retryAt || null;
+    const earliestSkippedRecheckInDays = earliestSkippedRecheckAt
+        ? Math.max(0, Math.ceil((Date.parse(earliestSkippedRecheckAt) - Date.now()) / (24 * 60 * 60000)))
+        : null;
+    const runStats = {
+        completedRuns: completedRunCount,
+        failedRuns: failedRunCount,
+        skippedRuns: skippedRunCount,
+        totalRuns: runs.length,
+        lastRunAt: lastRun?.startedAt || null,
+        nextRunAt,
+        nextRunInMinutes,
+        earliestFailedRetryAt,
+        earliestFailedRetryInMinutes,
+        earliestSkippedRecheckAt,
+        earliestSkippedRecheckInDays,
+    };
     return {
         queue: attention.sort((a, b) => {
             const order = { new: 0, due: 1, cooldown: 2, exhausted: 3, stable_skip: 4, processed: 5 };
@@ -213,6 +254,7 @@ async function buildPoBillSchedulerDiagnostics(documents) {
             counts[item.state] += 1;
             return counts;
         }, { new: 0, due: 0, cooldown: 0, exhausted: 0, stable_skip: 0, processed: 0 }),
+        runStats,
         reasonCounts,
         recommendations,
         configuredIntervalMinutes: settings.poBillScheduler.intervalMinutes,

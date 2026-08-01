@@ -11,15 +11,41 @@ const helpers_1 = require("../utils/helpers");
 const shopFloorReporting_1 = require("../utils/shopFloorReporting");
 const router = (0, express_1.Router)();
 const NVIDIA_AI_MODELS = [
+    'z-ai/glm-5.2',
     'openai/gpt-oss-20b',
     'openai/gpt-oss-120b',
     'nvidia/llama-3.1-nemotron-nano-vl-8b-v1',
     'meta/llama-3.2-90b-vision-instruct',
     'meta/llama-3.2-11b-vision-instruct',
 ];
-const GEMINI_AI_MODELS = ['gemini-flash-latest', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-1.5-pro'];
-const OPENAI_AI_MODELS = ['gpt-4.1', 'gpt-4.1-mini', 'gpt-4o'];
-const KNOWN_PROVIDER_MODELS = [...NVIDIA_AI_MODELS, ...GEMINI_AI_MODELS, ...OPENAI_AI_MODELS];
+const GEMINI_AI_MODELS = [
+    'gemini-3.6-flash',
+    'gemini-3.5-flash',
+    'gemini-3.1-pro',
+    'gemini-2.5-pro',
+    'gemini-2.5-flash',
+    'gemini-2.0-flash',
+    'gemini-2.0-flash-lite',
+    'gemini-2.0-pro-exp-02-05',
+    'gemini-1.5-pro',
+    'gemini-1.5-flash',
+    'gemini-flash-latest',
+    'gemini-pro-latest',
+];
+const ANTHROPIC_AI_MODELS = [
+    'claude-sonnet-4.6',
+    'claude-opus-4.6',
+    'claude-sonnet-4-6-thinking',
+    'claude-opus-4-6-thinking',
+    'claude-3-5-sonnet-latest',
+];
+const OPENAI_AI_MODELS = ['gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'openai/gpt-oss-120b', 'openai/gpt-oss-20b'];
+const KNOWN_PROVIDER_MODELS = [
+    ...NVIDIA_AI_MODELS,
+    ...GEMINI_AI_MODELS,
+    ...OPENAI_AI_MODELS,
+    ...ANTHROPIC_AI_MODELS,
+];
 function normalizeAiModelForProvider(provider, model) {
     const trimmed = model.trim();
     if (provider === 'gemini' && (!trimmed || NVIDIA_AI_MODELS.includes(trimmed) || OPENAI_AI_MODELS.includes(trimmed))) {
@@ -984,8 +1010,8 @@ router.post('/settings', validators, async (req, res) => {
                 },
                 ocr: {
                     provider: req.body.ocrProvider?.trim() || 'disabled',
-                    enabled: req.body.ocrEnabled === 'on' || req.body.ocrProvider === 'nvidia_nemoretriever',
-                    model: req.body.ocrModel?.trim() || 'nvidia/nemotron-ocr-v2',
+                    enabled: req.body.ocrEnabled === 'on' || ['nvidia_nemoretriever', 'gemini_vision', 'google'].includes(req.body.ocrProvider),
+                    model: req.body.ocrModel?.trim() || (req.body.ocrProvider === 'gemini_vision' ? 'gemini-flash-latest' : 'nvidia/nemotron-ocr-v2'),
                     endpoint: req.body.ocrEndpoint?.trim() ||
                         'https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr-v2',
                     apiKey: req.body.ocrApiKey?.trim() || '',
