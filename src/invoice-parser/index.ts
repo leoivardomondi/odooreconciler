@@ -147,7 +147,12 @@ export async function parseSupplierInvoice(input: ParseSupplierInvoiceInput): Pr
         }),
       );
 
-      const ocr = await runOcr(preprocessed, preferredOcr, input.aiConfig?.ocr);
+      const ocr = await runOcr(
+        preprocessed,
+        preferredOcr,
+        input.aiConfig?.ocr,
+        input.aiConfig?.apiKeys?.gemini,
+      );
       warnings.push(...ocr.warnings);
       ocrText = normalizeText(ocr.pages.map((page) => page.text).join('\n\n'));
       rawPages = ocr.pages.map((page) => ({

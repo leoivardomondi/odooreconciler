@@ -59,7 +59,7 @@ export interface AiExtractionConfig {
   maxImages: number;
   apiKeys: AiProviderApiKeys;
   ocr: {
-    provider: 'disabled' | 'nvidia_nemoretriever';
+    provider: 'disabled' | 'nvidia_nemoretriever' | 'gemini_vision' | 'google';
     enabled: boolean;
     model: string;
     endpoint: string;

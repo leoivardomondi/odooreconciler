@@ -14,7 +14,7 @@ export type DocumentType =
   | 'mixed'
   | 'unknown';
 
-export type PreferredOcr = 'google' | 'tesseract' | 'auto';
+export type PreferredOcr = 'google' | 'tesseract' | 'nvidia_nemoretriever' | 'gemini_vision' | 'auto';
 export type AiInvoiceProvider = 'disabled' | 'openai' | 'nvidia' | 'gemini' | 'anthropic' | 'openrouter';
 
 export interface AiInvoiceExtractionConfig {
@@ -32,7 +32,7 @@ export interface AiInvoiceExtractionConfig {
     openrouter: string;
   };
   ocr?: {
-    provider: 'disabled' | 'nvidia_nemoretriever';
+    provider: 'disabled' | 'nvidia_nemoretriever' | 'gemini_vision' | 'google';
     enabled: boolean;
     model: string;
     endpoint: string;
@@ -49,6 +49,8 @@ export interface ParsedInvoiceItem {
   vat_rate?: number | null;
   raw_text?: string;
   confidence?: number;
+  color?: string | null;
+  grain?: string | null;
 }
 
 export interface ParsedInvoice {
@@ -112,7 +114,7 @@ export interface OcrPageResult {
   text: string;
   confidence: number | null;
   imagePath: string;
-  engine: 'google' | 'tesseract' | 'nvidia_nemoretriever';
+  engine: 'google' | 'tesseract' | 'nvidia_nemoretriever' | 'gemini_vision';
 }
 
 export interface ParserContext {

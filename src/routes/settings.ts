@@ -1229,8 +1229,8 @@ router.post('/settings', validators, async (req: Request, res: Response) => {
         },
         ocr: {
           provider: req.body.ocrProvider?.trim() || 'disabled',
-          enabled: req.body.ocrEnabled === 'on' || req.body.ocrProvider === 'nvidia_nemoretriever',
-          model: req.body.ocrModel?.trim() || 'nvidia/nemotron-ocr-v2',
+          enabled: req.body.ocrEnabled === 'on' || ['nvidia_nemoretriever', 'gemini_vision', 'google'].includes(req.body.ocrProvider),
+          model: req.body.ocrModel?.trim() || (req.body.ocrProvider === 'gemini_vision' ? 'gemini-flash-latest' : 'nvidia/nemotron-ocr-v2'),
           endpoint:
             req.body.ocrEndpoint?.trim() ||
             'https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr-v2',

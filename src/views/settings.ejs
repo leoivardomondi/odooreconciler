@@ -1168,7 +1168,9 @@
               <label class="form-label">OCR Provider</label>
               <select class="form-select" name="ocrProvider">
                 <option value="disabled" <%= form.ocrProvider === 'disabled' ? 'selected' : '' %>>Disabled</option>
+                <option value="gemini_vision" <%= form.ocrProvider === 'gemini_vision' ? 'selected' : '' %>>Google Gemini Vision OCR</option>
                 <option value="nvidia_nemoretriever" <%= form.ocrProvider === 'nvidia_nemoretriever' ? 'selected' : '' %>>NVIDIA Nemotron OCR v2</option>
+                <option value="google" <%= form.ocrProvider === 'google' ? 'selected' : '' %>>Google Cloud Vision API</option>
               </select>
             </div>
             <div class="col-md-4">
