@@ -15,6 +15,7 @@ const odooClient_1 = require("./odooClient");
 const poBillAutomationService_1 = require("./poBillAutomationService");
 const stockProcessingService_1 = require("./stockProcessingService");
 const tempCleanup_1 = require("../utils/tempCleanup");
+const campaignReportService_1 = require("./campaignReportService");
 let schedulerRunning = false;
 let schedulerIntervalHandle = null;
 let poBillSchedulerIntervalHandle = null;
@@ -409,9 +410,31 @@ async function runPoBillSchedulerCycle(trigger = 'manual') {
     const recentRunsForCooldown = await (0, repositories_1.getRecentSchedulerRuns)(20);
     const recentRun = getRecentRunForJobType(recentRunsForCooldown, PO_BILL_SCHEDULER_JOB_TYPE);
     const cooldownMinutes = getConfiguredSchedulerCooldownMinutes(PO_BILL_SCHEDULER_JOB_TYPE, settings);
-    const fromDate = settings.poBillScheduler.fromDate || '2026-01-01 00:00:00';
+    const fromDate = settings.poBillScheduler.fromDate || campaignReportService_1.CAMPAIGN_START_DATE;
     const toDate = (0, helpers_1.formatOdooDateTime)(new Date());
-    const batchSize = PO_BILL_SCHEDULER_BATCH_SIZE;
+    const batchSize = Math.max(1, Number(settings.poBillScheduler.batchSize || campaignReportService_1.CAMPAIGN_BATCH_SIZE));
+    const todayStr = new Date().toISOString().slice(0, 10);
+    const recentRunsToday = await (0, repositories_1.getRecentSchedulerRuns)(200);
+    const todayScanned = recentRunsToday
+        .filter((r) => r.context?.jobType === PO_BILL_SCHEDULER_JOB_TYPE && (r.startedAt || '').startsWith(todayStr))
+        .reduce((sum, r) => sum + Number(r.scannedCount || 0), 0);
+    if (trigger !== 'manual' && todayScanned >= campaignReportService_1.CAMPAIGN_DAILY_LIMIT) {
+        const run = await (0, repositories_1.insertSchedulerRun)({
+            status: 'skipped',
+            trigger,
+            summary: `PO bill scheduler paused: Daily campaign ceiling of ${campaignReportService_1.CAMPAIGN_DAILY_LIMIT} scanned documents reached for today (${todayScanned} scanned today).`,
+            context: {
+                jobType: PO_BILL_SCHEDULER_JOB_TYPE,
+                schedulerName: 'PO Bill Scheduler',
+                fromDate,
+                toDate,
+                batchSize,
+                todayScanned,
+                dailyLimit: campaignReportService_1.CAMPAIGN_DAILY_LIMIT,
+            },
+        });
+        return { run, scannedCount: 0, processedCount: 0, skippedCount: 0, failedCount: 0, throttled: true, throttleMinutes: 60 };
+    }
     if (!settings.poBillScheduler.enabled) {
         const run = await (0, repositories_1.insertSchedulerRun)({
             status: 'skipped',
@@ -730,6 +753,17 @@ async function runPoBillSchedulerCycle(trigger = 'manual') {
             },
             finished: true,
         });
+        try {
+            const campaignMetrics = await (0, campaignReportService_1.computeMayCampaignMetrics)(client, settings.odoo.baseUrl);
+            if (campaignMetrics.unprocessedRemaining === 0) {
+                await (0, campaignReportService_1.notifyDbAdminCampaignReport)(client);
+            }
+        }
+        catch (reportErr) {
+            await (0, logService_1.logEvent)('error', 'Non-fatal error generating May campaign completion report', {
+                error: reportErr instanceof Error ? reportErr.message : 'Unknown error',
+            });
+        }
         return { run: finalRun, scannedCount, processedCount, skippedCount, failedCount };
     }
     catch (error) {
