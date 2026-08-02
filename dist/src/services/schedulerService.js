@@ -169,7 +169,7 @@ function getPoBillRetryClass(pdf, policy) {
     if (!status) {
         return 'fresh';
     }
-    if (/\b(job summary|maxcut|max cut|not a vendor bill|not a supplier invoice)\b/i.test(summary)) {
+    if (/\b(job summary|maxcut|max cut|not a vendor bill|not a supplier invoice|already invoiced|invoiced in odoo)\b/i.test(summary)) {
         return 'stable_skip';
     }
     if (/\b(timeout|network|rate limit|api key|ai extraction|ocr|upload failed|could not download|failed to parse|unknown po bill scheduler error)\b/i.test(summary)) {
