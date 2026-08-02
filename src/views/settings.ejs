@@ -111,6 +111,7 @@
         <div class="mobile-settings-pills">
           <a class="btn btn-sm btn-outline-primary active" href="#section-payroll-bridge">💳 Payroll</a>
           <a class="btn btn-sm btn-outline-primary" href="#section-outgoing-mail">✉️ Mail</a>
+          <a class="btn btn-sm btn-outline-primary" href="#section-email-automation">📧 Automations</a>
           <a class="btn btn-sm btn-outline-primary" href="#section-odoo-credentials">🔐 Credentials</a>
           <a class="btn btn-sm btn-outline-primary" href="#section-field-mappings">📋 Mappings</a>
           <a class="btn btn-sm btn-outline-primary" href="#section-ai-parser">🤖 AI Parser</a>
@@ -135,6 +136,9 @@
             </a>
             <a class="nav-link" href="#section-outgoing-mail">
               <span>✉️</span> Outgoing Mail
+            </a>
+            <a class="nav-link" href="#section-email-automation">
+              <span>📧</span> Email Automations
             </a>
             <a class="nav-link" href="#section-odoo-credentials">
               <span>🔐</span> Odoo Credentials
@@ -397,7 +401,7 @@
         </div>
 
         <hr class="my-4" />
-        <div class="automation-shell">
+        <div class="automation-shell" id="section-email-automation">
         <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-3">
           <div>
             <h3 class="h4 mb-1">Email Automation</h3>
@@ -1117,10 +1121,37 @@
                 <option data-provider="anthropic" value="claude-opus-4.6" <%= form.aiModel === 'claude-opus-4.6' || form.aiModel === 'claude-opus-4-6-thinking' ? 'selected' : '' %>>
                   Anthropic Claude Opus 4.6 (Thinking)
                 </option>
+                <option data-provider="anthropic" value="claude-3-5-sonnet-latest" <%= form.aiModel === 'claude-3-5-sonnet-latest' ? 'selected' : '' %>>
+                  Anthropic Claude 3.5 Sonnet
+                </option>
+                <option data-provider="anthropic" value="claude-3-5-haiku-latest" <%= form.aiModel === 'claude-3-5-haiku-latest' ? 'selected' : '' %>>
+                  Anthropic Claude 3.5 Haiku
+                </option>
+                <option data-provider="openai" value="gpt-4o" <%= form.aiModel === 'gpt-4o' ? 'selected' : '' %>>
+                  OpenAI GPT-4o (Vision)
+                </option>
+                <option data-provider="openai" value="gpt-4o-mini" <%= form.aiModel === 'gpt-4o-mini' ? 'selected' : '' %>>
+                  OpenAI GPT-4o Mini
+                </option>
+                <option data-provider="openai" value="o3-mini" <%= form.aiModel === 'o3-mini' ? 'selected' : '' %>>
+                  OpenAI o3-mini Reasoning
+                </option>
+                <option data-provider="openai" value="o1" <%= form.aiModel === 'o1' ? 'selected' : '' %>>
+                  OpenAI o1 Reasoning
+                </option>
                 <option data-provider="openai" value="gpt-4.1" <%= form.aiModel === 'gpt-4.1' ? 'selected' : '' %>>
                   OpenAI GPT-4.1
                 </option>
-                <option data-provider="all" value="custom" <%= form.aiModel && !['z-ai/glm-5.2', 'openai/gpt-oss-20b', 'openai/gpt-oss-120b', 'nvidia/llama-3.1-nemotron-nano-vl-8b-v1', 'meta/llama-3.2-90b-vision-instruct', 'meta/llama-3.2-11b-vision-instruct', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.1-pro', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-2.0-pro-exp-02-05', 'gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-flash-latest', 'gemini-pro-latest', 'claude-sonnet-4.6', 'claude-opus-4.6', 'claude-sonnet-4-6-thinking', 'claude-opus-4-6-thinking', 'gpt-4.1'].includes(form.aiModel) ? 'selected' : '' %>>
+                <option data-provider="openrouter" value="deepseek/deepseek-r1" <%= form.aiModel === 'deepseek/deepseek-r1' ? 'selected' : '' %>>
+                  OpenRouter DeepSeek R1
+                </option>
+                <option data-provider="openrouter" value="meta-llama/llama-3.3-70b-instruct" <%= form.aiModel === 'meta-llama/llama-3.3-70b-instruct' ? 'selected' : '' %>>
+                  OpenRouter Llama 3.3 70B Instruct
+                </option>
+                <option data-provider="openrouter" value="qwen/qwen-2.5-72b-instruct" <%= form.aiModel === 'qwen/qwen-2.5-72b-instruct' ? 'selected' : '' %>>
+                  OpenRouter Qwen 2.5 72B Instruct
+                </option>
+                <option data-provider="all" value="custom" <%= form.aiModel && !['z-ai/glm-5.2', 'openai/gpt-oss-20b', 'openai/gpt-oss-120b', 'nvidia/llama-3.1-nemotron-nano-vl-8b-v1', 'meta/llama-3.2-90b-vision-instruct', 'meta/llama-3.2-11b-vision-instruct', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.1-pro', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-2.0-pro-exp-02-05', 'gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-flash-latest', 'gemini-pro-latest', 'claude-sonnet-4.6', 'claude-opus-4.6', 'claude-sonnet-4-6-thinking', 'claude-opus-4-6-thinking', 'claude-3-5-sonnet-latest', 'claude-3-5-haiku-latest', 'gpt-4o', 'gpt-4o-mini', 'o3-mini', 'o1', 'gpt-4.1', 'deepseek/deepseek-r1', 'meta-llama/llama-3.3-70b-instruct', 'qwen/qwen-2.5-72b-instruct'].includes(form.aiModel) ? 'selected' : '' %>>
                   Custom model
                 </option>
               </select>

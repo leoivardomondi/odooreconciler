@@ -38,13 +38,22 @@ const ANTHROPIC_AI_MODELS = [
     'claude-sonnet-4-6-thinking',
     'claude-opus-4-6-thinking',
     'claude-3-5-sonnet-latest',
+    'claude-3-5-haiku-latest',
+    'claude-3-opus-latest',
 ];
-const OPENAI_AI_MODELS = ['gpt-4.1', 'gpt-4.1-mini', 'gpt-4o', 'openai/gpt-oss-120b', 'openai/gpt-oss-20b'];
+const OPENAI_AI_MODELS = ['gpt-4o', 'gpt-4o-mini', 'o3-mini', 'o1', 'gpt-4.1', 'gpt-4.1-mini', 'openai/gpt-oss-120b', 'openai/gpt-oss-20b'];
+const OPENROUTER_AI_MODELS = [
+    'deepseek/deepseek-r1',
+    'meta-llama/llama-3.3-70b-instruct',
+    'qwen/qwen-2.5-72b-instruct',
+    'google/gemini-2.0-flash-001',
+];
 const KNOWN_PROVIDER_MODELS = [
     ...NVIDIA_AI_MODELS,
     ...GEMINI_AI_MODELS,
     ...OPENAI_AI_MODELS,
     ...ANTHROPIC_AI_MODELS,
+    ...OPENROUTER_AI_MODELS,
 ];
 function normalizeAiModelForProvider(provider, model) {
     const trimmed = model.trim();
