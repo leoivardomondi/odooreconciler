@@ -512,6 +512,8 @@ export interface PurchaseOrderSummary {
   invoice_status?: string | null;
   user_id?: [number, string] | false | null;
   picking_ids?: number[] | false | null;
+  invoice_ids?: number[] | false | null;
+  invoice_count?: number | null;
 }
 
 export interface PurchaseOrderLine {

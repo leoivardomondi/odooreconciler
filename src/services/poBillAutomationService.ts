@@ -7,6 +7,7 @@ import {
   PoBillAutomationCheck,
   PoBillAutomationCandidate,
   PoBillAutomationResult,
+  PoBillProcessedDocumentEntry,
   PurchaseOrderLine,
   PurchaseOrderSummary,
 } from '../models/types';
@@ -14,6 +15,7 @@ import {
   acquirePoBillProcessingLock,
   getPoBillProcessedDocumentsByInvoiceFingerprint,
   getPoBillProcessedDocumentsByAttachmentIds,
+  getLatestPoBillProcessedDocumentsByPurchaseOrderIds,
   releasePoBillProcessingLock,
   upsertPoBillProcessedDocument,
 } from '../models/repositories';
@@ -193,19 +195,46 @@ function isApprovablePurchaseOrderState(state: string | null | undefined) {
   return state === 'to approve';
 }
 
-function isSchedulerEligiblePurchaseOrder(order: PurchaseOrderSummary) {
-  return (
-    (isConfirmedPurchaseOrderState(order.state) || isApprovablePurchaseOrderState(order.state)) &&
-    order.invoice_status !== 'invoiced'
-  );
+function isSchedulerEligiblePurchaseOrder(
+  order: PurchaseOrderSummary,
+  hasExistingProcessedRecord = false,
+) {
+  if (!(isConfirmedPurchaseOrderState(order.state) || isApprovablePurchaseOrderState(order.state))) {
+    return false;
+  }
+  if (order.invoice_status === 'invoiced') {
+    return false;
+  }
+  if (Array.isArray(order.invoice_ids) && order.invoice_ids.length > 0) {
+    return false;
+  }
+  if (typeof order.invoice_count === 'number' && order.invoice_count > 0) {
+    return false;
+  }
+  if (hasExistingProcessedRecord) {
+    return false;
+  }
+  return true;
 }
 
-function describeSchedulerEligibility(order: PurchaseOrderSummary) {
+function describeSchedulerEligibility(
+  order: PurchaseOrderSummary,
+  hasExistingProcessedRecord = false,
+) {
   if (!(isConfirmedPurchaseOrderState(order.state) || isApprovablePurchaseOrderState(order.state))) {
     return `state is "${order.state || 'unknown'}"`;
   }
   if (order.invoice_status === 'invoiced') {
     return 'it is already invoiced in Odoo';
+  }
+  if (
+    (Array.isArray(order.invoice_ids) && order.invoice_ids.length > 0) ||
+    (typeof order.invoice_count === 'number' && order.invoice_count > 0)
+  ) {
+    return 'it already has a vendor bill attached in Odoo';
+  }
+  if (hasExistingProcessedRecord) {
+    return 'a match was already found and vendor bill attached for this PO';
   }
   return `invoice status is "${order.invoice_status || 'unknown'}"`;
 }
@@ -1228,13 +1257,27 @@ export async function findPurchaseOrderCandidates(
       'invoice_status',
       'user_id',
       'picking_ids',
+      'invoice_ids',
+      'invoice_count',
     ],
     limit: 100,
     order: 'date_order desc, id desc',
   });
 
+  const orderIds = orders.map((order) => order.id);
+  const processedByPo: Record<number, PoBillProcessedDocumentEntry> = await getLatestPoBillProcessedDocumentsByPurchaseOrderIds(orderIds).catch(() => ({}));
+
+  let filteredOrders = orders;
+  if (options.onlyUnbilled) {
+    filteredOrders = orders.filter((order) => {
+      const processed = processedByPo[order.id];
+      const hasProcessed = Boolean(processed && ['processed', 'processed_with_warnings'].includes(processed.status));
+      return isSchedulerEligiblePurchaseOrder(order, hasProcessed);
+    });
+  }
+
   const candidates = await Promise.all(
-    orders.map(async (order) => {
+    filteredOrders.map(async (order) => {
       const lines = await getPurchaseOrderLines(client, order.id).catch(() => []);
       return buildCandidate(order, lines, parsedInvoice);
     }),
@@ -1578,6 +1621,31 @@ async function createVendorBillFromPurchaseOrder(
   attachmentId?: number,
 ) {
   return createVendorBillFromPurchaseOrders(client, [purchaseOrder], parsedInvoice, attachmentId);
+}
+
+async function confirmVendorBill(
+  client: OdooClient,
+  vendorBillId: number,
+): Promise<VendorBillSummary | null> {
+  try {
+    await client.callRecordMethod<unknown>('account.move', 'action_post', [vendorBillId]);
+    const bills = await client.readRecords<VendorBillSummary>('account.move', [vendorBillId], [
+      'id',
+      'name',
+      'ref',
+      'state',
+      'invoice_date',
+      'invoice_origin',
+      'amount_total',
+    ]);
+    return bills[0] || null;
+  } catch (error) {
+    console.warn(
+      `[po-bills] Could not confirm vendor bill ${vendorBillId} in Odoo:`,
+      error instanceof Error ? error.message : error,
+    );
+    return null;
+  }
 }
 
 async function validatePurchaseOrderReceipts(client: OdooClient, purchaseOrder: PurchaseOrderSummary) {
@@ -2280,6 +2348,28 @@ export async function runPoBillAutomation(
         'pass',
         `Vendor bill ${vendorBill.name || vendorBill.id} was created by Odoo's upload action and linked to ${matchedPurchaseOrders.map((order) => order.name).join(', ')}.`,
       );
+
+      if (vendorBill && vendorBill.state !== 'posted') {
+        const confirmed = await confirmVendorBill(client, vendorBill.id);
+        if (confirmed && confirmed.state === 'posted') {
+          vendorBill = confirmed;
+          actionsTaken.push(`Confirmed vendor bill ${vendorBill.name || vendorBill.id} (posted state in Odoo).`);
+          addCheck(
+            checks,
+            'Vendor Bill Confirmation',
+            'pass',
+            `Vendor bill ${vendorBill.name || vendorBill.id} was posted/confirmed in Odoo.`,
+          );
+        } else {
+          actionsTaken.push(`Vendor bill ${vendorBill.name || vendorBill.id} was created in draft state.`);
+          addCheck(
+            checks,
+            'Vendor Bill Confirmation',
+            'info',
+            `Vendor bill ${vendorBill.name || vendorBill.id} remains in draft state in Odoo.`,
+          );
+        }
+      }
       const evidenceMessageIds = [];
       for (const order of matchedPurchaseOrders) {
         evidenceMessageIds.push(await postVendorBillCreatedEvidence(client, {
@@ -2397,19 +2487,28 @@ export async function runPoBillAutomation(
     }
   } else {
     actionsPending.push('Auto mode stopped because one or more gates failed.');
-    try {
-      const activityId = await createPurchaseOrderActivity(client, purchaseOrder, 'Review PO bill automation', [
-        `Invoice PDF: ${attachment.name}`,
-        `POs: ${matchedPurchaseOrders.map((order) => order.name).join(', ')}`,
-        `Failed checks: ${checks
-          .filter((check) => check.status === 'fail')
-          .map((check) => `${check.label}: ${check.detail}`)
-          .join(' | ') || 'No failed checks were recorded.'}`,
-      ]);
-      actionsTaken.push(`Created PO review activity ${activityId}.`);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown activity creation error.';
-      actionsPending.push(`Review activity creation failed: ${message}`);
+    const processedByPo: Record<number, PoBillProcessedDocumentEntry> = await getLatestPoBillProcessedDocumentsByPurchaseOrderIds([purchaseOrder.id]).catch(() => ({}));
+    const existingProcessed = processedByPo[purchaseOrder.id];
+    const hasProcessed = Boolean(existingProcessed && ['processed', 'processed_with_warnings'].includes(existingProcessed.status));
+    const isEligibleForReviewActivity = isSchedulerEligiblePurchaseOrder(purchaseOrder, hasProcessed);
+
+    if (isEligibleForReviewActivity) {
+      try {
+        const activityId = await createPurchaseOrderActivity(client, purchaseOrder, 'Review PO bill automation', [
+          `Invoice PDF: ${attachment.name}`,
+          `POs: ${matchedPurchaseOrders.map((order) => order.name).join(', ')}`,
+          `Failed checks: ${checks
+            .filter((check) => check.status === 'fail')
+            .map((check) => `${check.label}: ${check.detail}`)
+            .join(' | ') || 'No failed checks were recorded.'}`,
+        ]);
+        actionsTaken.push(`Created PO review activity ${activityId}.`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown activity creation error.';
+        actionsPending.push(`Review activity creation failed: ${message}`);
+      }
+    } else {
+      actionsTaken.push(`Skipped review activity creation on ${purchaseOrder.name} because a match was already found and vendor bill attached or PO is not eligible.`);
     }
   }
 

@@ -110,16 +110,37 @@ function isConfirmedPurchaseOrderState(state) {
 function isApprovablePurchaseOrderState(state) {
     return state === 'to approve';
 }
-function isSchedulerEligiblePurchaseOrder(order) {
-    return ((isConfirmedPurchaseOrderState(order.state) || isApprovablePurchaseOrderState(order.state)) &&
-        order.invoice_status !== 'invoiced');
+function isSchedulerEligiblePurchaseOrder(order, hasExistingProcessedRecord = false) {
+    if (!(isConfirmedPurchaseOrderState(order.state) || isApprovablePurchaseOrderState(order.state))) {
+        return false;
+    }
+    if (order.invoice_status === 'invoiced') {
+        return false;
+    }
+    if (Array.isArray(order.invoice_ids) && order.invoice_ids.length > 0) {
+        return false;
+    }
+    if (typeof order.invoice_count === 'number' && order.invoice_count > 0) {
+        return false;
+    }
+    if (hasExistingProcessedRecord) {
+        return false;
+    }
+    return true;
 }
-function describeSchedulerEligibility(order) {
+function describeSchedulerEligibility(order, hasExistingProcessedRecord = false) {
     if (!(isConfirmedPurchaseOrderState(order.state) || isApprovablePurchaseOrderState(order.state))) {
         return `state is "${order.state || 'unknown'}"`;
     }
     if (order.invoice_status === 'invoiced') {
         return 'it is already invoiced in Odoo';
+    }
+    if ((Array.isArray(order.invoice_ids) && order.invoice_ids.length > 0) ||
+        (typeof order.invoice_count === 'number' && order.invoice_count > 0)) {
+        return 'it already has a vendor bill attached in Odoo';
+    }
+    if (hasExistingProcessedRecord) {
+        return 'a match was already found and vendor bill attached for this PO';
     }
     return `invoice status is "${order.invoice_status || 'unknown'}"`;
 }
@@ -906,11 +927,23 @@ async function findPurchaseOrderCandidates(client, parsedInvoice, options = {}) 
             'invoice_status',
             'user_id',
             'picking_ids',
+            'invoice_ids',
+            'invoice_count',
         ],
         limit: 100,
         order: 'date_order desc, id desc',
     });
-    const candidates = await Promise.all(orders.map(async (order) => {
+    const orderIds = orders.map((order) => order.id);
+    const processedByPo = await (0, repositories_1.getLatestPoBillProcessedDocumentsByPurchaseOrderIds)(orderIds).catch(() => ({}));
+    let filteredOrders = orders;
+    if (options.onlyUnbilled) {
+        filteredOrders = orders.filter((order) => {
+            const processed = processedByPo[order.id];
+            const hasProcessed = Boolean(processed && ['processed', 'processed_with_warnings'].includes(processed.status));
+            return isSchedulerEligiblePurchaseOrder(order, hasProcessed);
+        });
+    }
+    const candidates = await Promise.all(filteredOrders.map(async (order) => {
         const lines = await getPurchaseOrderLines(client, order.id).catch(() => []);
         return buildCandidate(order, lines, parsedInvoice);
     }));
@@ -1159,6 +1192,25 @@ async function createVendorBillFromPurchaseOrders(client, purchaseOrders, parsed
 }
 async function createVendorBillFromPurchaseOrder(client, purchaseOrder, parsedInvoice, attachmentId) {
     return createVendorBillFromPurchaseOrders(client, [purchaseOrder], parsedInvoice, attachmentId);
+}
+async function confirmVendorBill(client, vendorBillId) {
+    try {
+        await client.callRecordMethod('account.move', 'action_post', [vendorBillId]);
+        const bills = await client.readRecords('account.move', [vendorBillId], [
+            'id',
+            'name',
+            'ref',
+            'state',
+            'invoice_date',
+            'invoice_origin',
+            'amount_total',
+        ]);
+        return bills[0] || null;
+    }
+    catch (error) {
+        console.warn(`[po-bills] Could not confirm vendor bill ${vendorBillId} in Odoo:`, error instanceof Error ? error.message : error);
+        return null;
+    }
 }
 async function validatePurchaseOrderReceipts(client, purchaseOrder) {
     const order = (await client.readRecords('purchase.order', [purchaseOrder.id], [
@@ -1707,6 +1759,18 @@ async function runPoBillAutomation(client, input) {
                 vendorBill = await createVendorBillFromPurchaseOrders(client, matchedPurchaseOrders, parsedInvoice, uploadAttachmentId);
                 actionsTaken.push(`Odoo created vendor bill ${vendorBill.name || vendorBill.id}${vendorBill.ref ? ` with reference ${vendorBill.ref}` : ''}.`);
                 addCheck(checks, 'Vendor Bill', 'pass', `Vendor bill ${vendorBill.name || vendorBill.id} was created by Odoo's upload action and linked to ${matchedPurchaseOrders.map((order) => order.name).join(', ')}.`);
+                if (vendorBill && vendorBill.state !== 'posted') {
+                    const confirmed = await confirmVendorBill(client, vendorBill.id);
+                    if (confirmed && confirmed.state === 'posted') {
+                        vendorBill = confirmed;
+                        actionsTaken.push(`Confirmed vendor bill ${vendorBill.name || vendorBill.id} (posted state in Odoo).`);
+                        addCheck(checks, 'Vendor Bill Confirmation', 'pass', `Vendor bill ${vendorBill.name || vendorBill.id} was posted/confirmed in Odoo.`);
+                    }
+                    else {
+                        actionsTaken.push(`Vendor bill ${vendorBill.name || vendorBill.id} was created in draft state.`);
+                        addCheck(checks, 'Vendor Bill Confirmation', 'info', `Vendor bill ${vendorBill.name || vendorBill.id} remains in draft state in Odoo.`);
+                    }
+                }
                 const evidenceMessageIds = [];
                 for (const order of matchedPurchaseOrders) {
                     evidenceMessageIds.push(await postVendorBillCreatedEvidence(client, {
@@ -1814,20 +1878,29 @@ async function runPoBillAutomation(client, input) {
     }
     else {
         actionsPending.push('Auto mode stopped because one or more gates failed.');
-        try {
-            const activityId = await createPurchaseOrderActivity(client, purchaseOrder, 'Review PO bill automation', [
-                `Invoice PDF: ${attachment.name}`,
-                `POs: ${matchedPurchaseOrders.map((order) => order.name).join(', ')}`,
-                `Failed checks: ${checks
-                    .filter((check) => check.status === 'fail')
-                    .map((check) => `${check.label}: ${check.detail}`)
-                    .join(' | ') || 'No failed checks were recorded.'}`,
-            ]);
-            actionsTaken.push(`Created PO review activity ${activityId}.`);
+        const processedByPo = await (0, repositories_1.getLatestPoBillProcessedDocumentsByPurchaseOrderIds)([purchaseOrder.id]).catch(() => ({}));
+        const existingProcessed = processedByPo[purchaseOrder.id];
+        const hasProcessed = Boolean(existingProcessed && ['processed', 'processed_with_warnings'].includes(existingProcessed.status));
+        const isEligibleForReviewActivity = isSchedulerEligiblePurchaseOrder(purchaseOrder, hasProcessed);
+        if (isEligibleForReviewActivity) {
+            try {
+                const activityId = await createPurchaseOrderActivity(client, purchaseOrder, 'Review PO bill automation', [
+                    `Invoice PDF: ${attachment.name}`,
+                    `POs: ${matchedPurchaseOrders.map((order) => order.name).join(', ')}`,
+                    `Failed checks: ${checks
+                        .filter((check) => check.status === 'fail')
+                        .map((check) => `${check.label}: ${check.detail}`)
+                        .join(' | ') || 'No failed checks were recorded.'}`,
+                ]);
+                actionsTaken.push(`Created PO review activity ${activityId}.`);
+            }
+            catch (error) {
+                const message = error instanceof Error ? error.message : 'Unknown activity creation error.';
+                actionsPending.push(`Review activity creation failed: ${message}`);
+            }
         }
-        catch (error) {
-            const message = error instanceof Error ? error.message : 'Unknown activity creation error.';
-            actionsPending.push(`Review activity creation failed: ${message}`);
+        else {
+            actionsTaken.push(`Skipped review activity creation on ${purchaseOrder.name} because a match was already found and vendor bill attached or PO is not eligible.`);
         }
     }
     return {
