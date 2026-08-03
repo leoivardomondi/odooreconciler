@@ -19,5 +19,9 @@
 ## Key Business Logic & Decisions
 - **PO Bill Automation**:
   - Automatically posts (`action_post` on `account.move`) vendor bills created via `createVendorBillFromPurchaseOrders` to move them to `posted` state and update the Purchase Order `invoice_status` to `invoiced`.
+  - Automatically registers payment on confirmed vendor bills:
+    - If PIN status is `NO PIN`, registers payment from the **MPESA** journal.
+    - If PIN status is `ETR`, registers payment from the **001215001007459** journal.
+    - The payment date strictly matches the vendor bill / invoice date (`invoice_date` from vendor).
   - Excludes Purchase Orders from candidate matching if a vendor bill has already been matched/attached in Odoo (`invoice_ids`, `invoice_count`, `invoice_status = 'invoiced'`) or recorded in `po_bill_processed_documents`.
   - Skips creating redundant "Review PO bill automation" activities on POs that already have a matched vendor bill attached.
