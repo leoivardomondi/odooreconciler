@@ -7,9 +7,9 @@ import { getRecentDocumentPdfsPage } from './poBillAutomationService';
 import { env } from '../utils/env';
 
 export const CAMPAIGN_START_DATE = '2026-05-01 00:00:00';
-export const CAMPAIGN_BATCH_SIZE = 48;
-export const CAMPAIGN_DAILY_LIMIT = 72;
-export const CAMPAIGN_DURATION_DAYS = 7;
+export const CAMPAIGN_BATCH_SIZE = 31;
+export const CAMPAIGN_DAILY_LIMIT = 62;
+export const CAMPAIGN_DURATION_DAYS = 5;
 
 export function buildOdooDocumentUrl(
   odooBaseUrl: string,

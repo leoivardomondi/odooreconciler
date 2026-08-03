@@ -17,9 +17,9 @@ const logService_1 = require("./logService");
 const poBillAutomationService_1 = require("./poBillAutomationService");
 const env_1 = require("../utils/env");
 exports.CAMPAIGN_START_DATE = '2026-05-01 00:00:00';
-exports.CAMPAIGN_BATCH_SIZE = 48;
-exports.CAMPAIGN_DAILY_LIMIT = 72;
-exports.CAMPAIGN_DURATION_DAYS = 7;
+exports.CAMPAIGN_BATCH_SIZE = 31;
+exports.CAMPAIGN_DAILY_LIMIT = 62;
+exports.CAMPAIGN_DURATION_DAYS = 5;
 function buildOdooDocumentUrl(odooBaseUrl, documentId, attachmentId) {
     const baseUrl = (odooBaseUrl || '').replace(/\/+$/, '');
     if (documentId && documentId > 0) {
