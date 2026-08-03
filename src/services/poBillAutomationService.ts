@@ -1648,6 +1648,140 @@ async function confirmVendorBill(
   }
 }
 
+async function findJournalByNameOrCode(
+  client: OdooClient,
+  ...searchTerms: string[]
+): Promise<{ id: number; name: string; code: string } | null> {
+  for (const term of searchTerms) {
+    const journals = await client
+      .searchReadRecords<{ id: number; name: string; code: string }>('account.journal', {
+        domain: ['|', ['name', 'ilike', term], ['code', 'ilike', term]],
+        fields: ['id', 'name', 'code'],
+        limit: 1,
+      })
+      .catch(() => []);
+    if (journals[0]) {
+      return journals[0];
+    }
+  }
+  return null;
+}
+
+async function registerPaymentForVendorBill(
+  client: OdooClient,
+  vendorBill: VendorBillSummary,
+  pinNote: 'ETR' | 'NO PIN',
+  parsedInvoiceDate?: string | null,
+): Promise<{ success: boolean; message: string; paymentId?: number }> {
+  const paymentDate =
+    vendorBill.invoice_date ||
+    (parsedInvoiceDate ? normalizeInvoiceDateForOdoo(parsedInvoiceDate) : null) ||
+    formatDateOnly(new Date());
+
+  let targetJournal: { id: number; name: string; code: string } | null = null;
+  if (pinNote === 'NO PIN') {
+    targetJournal = await findJournalByNameOrCode(client, 'MPESA', 'M-PESA');
+  } else if (pinNote === 'ETR') {
+    targetJournal = await findJournalByNameOrCode(client, '001215001007459');
+  }
+
+  if (!targetJournal) {
+    const journalSearchTerm = pinNote === 'NO PIN' ? 'MPESA' : '001215001007459';
+    return {
+      success: false,
+      message: `Could not register payment: Journal "${journalSearchTerm}" was not found in Odoo for PIN status ${pinNote}.`,
+    };
+  }
+
+  const paymentAmount = vendorBill.amount_total ?? 0;
+  if (paymentAmount <= 0) {
+    return {
+      success: false,
+      message: `Skipped payment registration for vendor bill ${vendorBill.name || vendorBill.id} because bill total is 0.`,
+    };
+  }
+
+  const ref = vendorBill.ref || vendorBill.name || `Bill-${vendorBill.id}`;
+
+  try {
+    const wizardContext = await client.callRecordMethod<{
+      res_id?: number;
+      context?: Record<string, unknown>;
+    } | false>('account.move', 'action_register_payment', [vendorBill.id]);
+
+    const wizardContextData =
+      wizardContext && typeof wizardContext === 'object' && wizardContext.context
+        ? wizardContext.context
+        : {};
+
+    const wizardPayload: Record<string, unknown> = {
+      amount: paymentAmount,
+      payment_date: paymentDate,
+      journal_id: targetJournal.id,
+      payment_type: 'outbound',
+      partner_type: 'supplier',
+      communication: ref,
+    };
+
+    if (wizardContextData.default_payment_method_line_id) {
+      wizardPayload.payment_method_line_id = wizardContextData.default_payment_method_line_id;
+    }
+
+    const wizardId = await client.createRecord('account.payment.register', wizardPayload);
+
+    if (wizardId) {
+      await client.callRecordMethod<unknown>(
+        'account.payment.register',
+        'action_create_payments',
+        [wizardId],
+        {
+          context: {
+            active_model: 'account.move',
+            active_ids: [vendorBill.id],
+            ...wizardContextData,
+          },
+        },
+      );
+
+      return {
+        success: true,
+        message: `Registered payment on vendor bill ${vendorBill.name || vendorBill.id} for ${paymentAmount} on date ${paymentDate} via journal ${targetJournal.name} (${targetJournal.code}) [PIN status: ${pinNote}].`,
+      };
+    }
+  } catch (wizardError) {
+    console.warn(
+      `[po-bills] account.payment.register wizard failed for bill ${vendorBill.id}, attempting direct account.payment:`,
+      wizardError instanceof Error ? wizardError.message : wizardError,
+    );
+  }
+
+  try {
+    const paymentValues: Record<string, unknown> = {
+      payment_type: 'outbound',
+      partner_type: 'supplier',
+      amount: paymentAmount,
+      date: paymentDate,
+      ref,
+      journal_id: targetJournal.id,
+    };
+
+    const paymentId = await client.createRecord('account.payment', paymentValues);
+    await client.callRecordMethod<unknown>('account.payment', 'action_post', [paymentId]);
+
+    return {
+      success: true,
+      paymentId,
+      message: `Created & posted payment ${paymentId} for vendor bill ${vendorBill.name || vendorBill.id} for ${paymentAmount} on date ${paymentDate} via journal ${targetJournal.name} (${targetJournal.code}) [PIN status: ${pinNote}].`,
+    };
+  } catch (directError) {
+    const errMsg = directError instanceof Error ? directError.message : String(directError);
+    return {
+      success: false,
+      message: `Failed to register payment on vendor bill ${vendorBill.name || vendorBill.id}: ${errMsg}`,
+    };
+  }
+}
+
 async function validatePurchaseOrderReceipts(client: OdooClient, purchaseOrder: PurchaseOrderSummary) {
   const order = (
     await client.readRecords<PurchaseOrderSummary>('purchase.order', [purchaseOrder.id], [
@@ -2368,6 +2502,22 @@ export async function runPoBillAutomation(
             'info',
             `Vendor bill ${vendorBill.name || vendorBill.id} remains in draft state in Odoo.`,
           );
+        }
+      }
+
+      if (vendorBill && vendorBill.state === 'posted') {
+        const paymentResult = await registerPaymentForVendorBill(
+          client,
+          vendorBill,
+          parsedInvoice.pinNote,
+          parsedInvoice.invoiceDate,
+        );
+        if (paymentResult.success) {
+          actionsTaken.push(paymentResult.message);
+          addCheck(checks, 'Payment Registration', 'pass', paymentResult.message);
+        } else {
+          actionsPending.push(paymentResult.message);
+          addCheck(checks, 'Payment Registration', 'warn', paymentResult.message);
         }
       }
       const evidenceMessageIds = [];

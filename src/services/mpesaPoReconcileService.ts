@@ -211,8 +211,10 @@ async function registerPaymentOnBill(
   transaction: MpesaTransaction,
   purchaseOrderId: number,
 ): Promise<{ success: boolean; message: string }> {
-  const paymentAmount = transaction.amount || transaction.withdrawn || 0;
-  const paymentDate = transaction.transactionDate || new Date().toISOString().slice(0, 10);
+  const bills = await client.readRecords<VendorBillSummary>('account.move', [billId], ['id', 'invoice_date', 'amount_residual', 'amount_total']).catch(() => []);
+  const bill = bills[0];
+  const paymentAmount = transaction.amount || transaction.withdrawn || bill?.amount_residual || bill?.amount_total || 0;
+  const paymentDate = bill?.invoice_date || transaction.transactionDate || new Date().toISOString().slice(0, 10);
   const ref = transaction.receiptNumber || `MPesa-${transaction.id.slice(0, 8)}`;
 
   try {
