@@ -7,9 +7,7 @@ import { getRecentDocumentPdfsPage } from './poBillAutomationService';
 import { env } from '../utils/env';
 
 export const CAMPAIGN_START_DATE = '2026-05-01 00:00:00';
-export const CAMPAIGN_BATCH_SIZE = 31;
-export const CAMPAIGN_DAILY_LIMIT = 62;
-export const CAMPAIGN_DURATION_DAYS = 5;
+export const CAMPAIGN_BATCH_SIZE = 25;
 
 export function buildOdooDocumentUrl(
   odooBaseUrl: string,
@@ -133,7 +131,7 @@ export async function generateCampaignPdfReport(
 
     doc.fontSize(18).fillColor('#1e293b').text('PO Bill Automation Campaign Summary Report', { align: 'center' });
     doc.moveDown(0.5);
-    doc.fontSize(10).fillColor('#64748b').text(`Scope: Documents from May 1st, 2026 to Date | Batch Size: ${CAMPAIGN_BATCH_SIZE} | Daily Ceiling: ${CAMPAIGN_DAILY_LIMIT}`, { align: 'center' });
+    doc.fontSize(10).fillColor('#64748b').text(`Scope: Documents from May 1st, 2026 to Date | Batch Size: ${CAMPAIGN_BATCH_SIZE} per run | Mode: Continuous`, { align: 'center' });
     doc.moveDown(1);
 
     doc.fontSize(12).fillColor('#0f172a').text('Campaign Summary Metrics:', { underline: true });

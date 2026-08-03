@@ -413,28 +413,6 @@ async function runPoBillSchedulerCycle(trigger = 'manual') {
     const fromDate = settings.poBillScheduler.fromDate || campaignReportService_1.CAMPAIGN_START_DATE;
     const toDate = (0, helpers_1.formatOdooDateTime)(new Date());
     const batchSize = Math.max(1, Number(settings.poBillScheduler.batchSize || campaignReportService_1.CAMPAIGN_BATCH_SIZE));
-    const todayStr = new Date().toISOString().slice(0, 10);
-    const recentRunsToday = await (0, repositories_1.getRecentSchedulerRuns)(200);
-    const todayScanned = recentRunsToday
-        .filter((r) => r.context?.jobType === PO_BILL_SCHEDULER_JOB_TYPE && (r.startedAt || '').startsWith(todayStr))
-        .reduce((sum, r) => sum + Number(r.scannedCount || 0), 0);
-    if (trigger !== 'manual' && todayScanned >= campaignReportService_1.CAMPAIGN_DAILY_LIMIT) {
-        const run = await (0, repositories_1.insertSchedulerRun)({
-            status: 'skipped',
-            trigger,
-            summary: `PO bill scheduler paused: Daily campaign ceiling of ${campaignReportService_1.CAMPAIGN_DAILY_LIMIT} scanned documents reached for today (${todayScanned} scanned today).`,
-            context: {
-                jobType: PO_BILL_SCHEDULER_JOB_TYPE,
-                schedulerName: 'PO Bill Scheduler',
-                fromDate,
-                toDate,
-                batchSize,
-                todayScanned,
-                dailyLimit: campaignReportService_1.CAMPAIGN_DAILY_LIMIT,
-            },
-        });
-        return { run, scannedCount: 0, processedCount: 0, skippedCount: 0, failedCount: 0, throttled: true, throttleMinutes: 60 };
-    }
     if (!settings.poBillScheduler.enabled) {
         const run = await (0, repositories_1.insertSchedulerRun)({
             status: 'skipped',

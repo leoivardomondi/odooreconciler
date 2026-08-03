@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.CAMPAIGN_DURATION_DAYS = exports.CAMPAIGN_DAILY_LIMIT = exports.CAMPAIGN_BATCH_SIZE = exports.CAMPAIGN_START_DATE = void 0;
+exports.CAMPAIGN_BATCH_SIZE = exports.CAMPAIGN_START_DATE = void 0;
 exports.buildOdooDocumentUrl = buildOdooDocumentUrl;
 exports.isNonInvoiceSummary = isNonInvoiceSummary;
 exports.isAlreadyInvoicedSummary = isAlreadyInvoicedSummary;
@@ -17,9 +17,7 @@ const logService_1 = require("./logService");
 const poBillAutomationService_1 = require("./poBillAutomationService");
 const env_1 = require("../utils/env");
 exports.CAMPAIGN_START_DATE = '2026-05-01 00:00:00';
-exports.CAMPAIGN_BATCH_SIZE = 31;
-exports.CAMPAIGN_DAILY_LIMIT = 62;
-exports.CAMPAIGN_DURATION_DAYS = 5;
+exports.CAMPAIGN_BATCH_SIZE = 25;
 function buildOdooDocumentUrl(odooBaseUrl, documentId, attachmentId) {
     const baseUrl = (odooBaseUrl || '').replace(/\/+$/, '');
     if (documentId && documentId > 0) {
@@ -105,7 +103,7 @@ async function generateCampaignPdfReport(metrics, odooBaseUrl) {
         doc.on('error', (err) => reject(err));
         doc.fontSize(18).fillColor('#1e293b').text('PO Bill Automation Campaign Summary Report', { align: 'center' });
         doc.moveDown(0.5);
-        doc.fontSize(10).fillColor('#64748b').text(`Scope: Documents from May 1st, 2026 to Date | Batch Size: ${exports.CAMPAIGN_BATCH_SIZE} | Daily Ceiling: ${exports.CAMPAIGN_DAILY_LIMIT}`, { align: 'center' });
+        doc.fontSize(10).fillColor('#64748b').text(`Scope: Documents from May 1st, 2026 to Date | Batch Size: ${exports.CAMPAIGN_BATCH_SIZE} per run | Mode: Continuous`, { align: 'center' });
         doc.moveDown(1);
         doc.fontSize(12).fillColor('#0f172a').text('Campaign Summary Metrics:', { underline: true });
         doc.moveDown(0.5);
