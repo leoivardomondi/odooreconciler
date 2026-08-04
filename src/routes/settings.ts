@@ -977,7 +977,15 @@ router.post('/settings/mail', mailValidators, async (req: Request, res: Response
         })),
     });
 
-    return res.redirect('/settings?message=' + encodeURIComponent('Outgoing mail settings saved.'));
+    const requestedAutomationId = String(req.body.mailAutomationSave || '').trim();
+    const savedAutomation = requestedAutomationId
+      ? saved.mail.automations.find((automation) => automation.id === requestedAutomationId)
+      : null;
+    const confirmation = savedAutomation
+      ? `Email automation "${savedAutomation.name}" saved.`
+      : 'Outgoing mail settings saved.';
+    const anchor = requestedAutomationId ? '#section-email-automation' : '';
+    return res.redirect(`/settings?message=${encodeURIComponent(confirmation)}${anchor}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Could not save outgoing mail settings.';
     await logEvent('error', 'Outgoing mail settings update failed', { error: message }).catch(() => undefined);
