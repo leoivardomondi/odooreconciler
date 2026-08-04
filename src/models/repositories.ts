@@ -938,7 +938,7 @@ export async function getRecentSchedulerRuns(limit = 10): Promise<SchedulerRunEn
 
 function formatDbDateString(val: unknown): string | null {
   if (!val) return null;
-  if (val instanceof Date) return val.toISOString();
+  if (val instanceof Date) return Number.isFinite(val.getTime()) ? val.toISOString() : null;
   if (typeof val === 'string' && val.trim()) return val;
   return null;
 }
@@ -3642,7 +3642,10 @@ export async function getStockProductMirror(): Promise<StockProductMirrorEntry[]
     availableQty: Number(row.available_qty || 0), freeQty: Number(row.free_qty || 0),
     forecastQty: Number(row.forecast_qty || 0), incomingQty: Number(row.incoming_qty || 0),
     outgoingQty: Number(row.outgoing_qty || 0), warehouseId: row.warehouse_id == null ? null : Number(row.warehouse_id),
-    syncedAt: row.synced_at instanceof Date ? row.synced_at.toISOString() : row.synced_at ? String(row.synced_at) : null,
+    // MySQL/MariaDB may deserialize legacy zero dates as Invalid Date objects.
+    // Treat those as an absent sync timestamp so the stock mirror can refresh
+    // instead of failing the whole Board Intake page with "Invalid time value".
+    syncedAt: formatDbDateString(row.synced_at),
     syncStatus: String(row.sync_status || 'pending'),
     syncError: row.sync_error ? String(row.sync_error) : null,
   }));
