@@ -310,14 +310,17 @@ function aggregateItems(items: ParsedEdgingItem[]): AggregatedStockItem[] {
 function normalizeServiceProductName(value: string): string {
   const trimmed = value.replace(/\s+/g, ' ').trim();
   const lower = trimmed.toLowerCase();
-  const servicePattern = /^edge\s+band(?:ing)?\s+service\s+(.+)$/i;
+  // Odoo can prefix a product display name with an internal reference, for
+  // example "[EB-MARBLE] Edge Banding Service Marble". Find the service name
+  // inside the display value instead of requiring it to begin at character 1.
+  const servicePattern = /\bedge\s+band(?:ing)?\s+service\s+(.+)$/i;
   const serviceMatch = trimmed.match(servicePattern);
 
   if (serviceMatch) {
     return `edge banding service ${normalizeColor(serviceMatch[1].replace(/\b1mm\b|\b36mm\b/gi, '').trim())}`;
   }
 
-  const compactBandingMatch = lower.match(/^edge\s+banding\s+(.+?)\s+1mm$/i);
+  const compactBandingMatch = lower.match(/\bedge\s+banding\s+(.+?)\s+1mm$/i);
   if (compactBandingMatch) {
     return `edge banding service ${normalizeColor(compactBandingMatch[1])}`;
   }
@@ -325,19 +328,156 @@ function normalizeServiceProductName(value: string): string {
   return lower;
 }
 
+function getLineDescriptionCandidates(value: string): string[] {
+  return value
+    .split(/\r?\n/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function extractServiceColor(value: string): string | null {
+  const normalized = normalizeServiceProductName(value);
+  const prefix = 'edge banding service ';
+  return normalized.startsWith(prefix) ? normalized.slice(prefix.length).trim() || null : null;
+}
+
+function getLineServiceColors(line: SaleOrderLine): string[] {
+  const values = [
+    ...(Array.isArray(line.product_id) ? [line.product_id[1]] : []),
+    ...getLineDescriptionCandidates(line.name || ''),
+  ];
+  return [...new Set(values.map(extractServiceColor).filter((value): value is string => Boolean(value)))];
+}
+
+function levenshteinDistance(left: string, right: string): number {
+  const previous = Array.from({ length: right.length + 1 }, (_, index) => index);
+  for (let leftIndex = 1; leftIndex <= left.length; leftIndex += 1) {
+    const current = [leftIndex];
+    for (let rightIndex = 1; rightIndex <= right.length; rightIndex += 1) {
+      current[rightIndex] = Math.min(
+        current[rightIndex - 1] + 1,
+        previous[rightIndex] + 1,
+        previous[rightIndex - 1] + (left[leftIndex - 1] === right[rightIndex - 1] ? 0 : 1),
+      );
+    }
+    previous.splice(0, previous.length, ...current);
+  }
+  return previous[right.length];
+}
+
+function colorSimilarity(left: string, right: string): number {
+  const normalizedLeft = normalizeColor(left);
+  const normalizedRight = normalizeColor(right);
+  if (!normalizedLeft || !normalizedRight) return 0;
+  if (colorsAreEquivalent(normalizedLeft, normalizedRight)) return 1;
+
+  const leftWords = new Set(splitColorWords(normalizedLeft));
+  const rightWords = new Set(splitColorWords(normalizedRight));
+  const intersection = [...leftWords].filter((word) => rightWords.has(word)).length;
+  const union = new Set([...leftWords, ...rightWords]).size;
+  const tokenScore = union > 0 ? intersection / union : 0;
+  const editScore = 1 - levenshteinDistance(normalizedLeft, normalizedRight) /
+    Math.max(normalizedLeft.length, normalizedRight.length, 1);
+  const containsScore = normalizedLeft.includes(normalizedRight) || normalizedRight.includes(normalizedLeft)
+    ? 0.86
+    : 0;
+  return Math.max(tokenScore, editScore, containsScore);
+}
+
 export function matchSoLine(item: AggregatedStockItem, lines: SaleOrderLine[]): SaleOrderLine | null {
   const expectedNames = item.serviceNameCandidates.map((candidate) => normalizeServiceProductName(candidate));
 
-  return (
-    lines.find((line) => {
-      const candidates = [
-        Array.isArray(line.product_id) ? line.product_id[1] : '',
-        line.name || '',
-      ].filter(Boolean);
+  const matchesExpectedName = (candidate: string) =>
+    expectedNames.includes(normalizeServiceProductName(candidate));
 
-      return candidates.some((candidate) => expectedNames.includes(normalizeServiceProductName(candidate)));
-    }) || null
+  // The linked Odoo product is authoritative. The editable line description
+  // may contain a floor substitution (for example a Marble product whose note
+  // says White Marble), so it must not override a valid product match.
+  const productMatch = lines.find((line) => {
+    const productName = Array.isArray(line.product_id) ? line.product_id[1] : '';
+    return Boolean(productName && matchesExpectedName(productName));
+  });
+  if (productMatch) {
+    return productMatch;
+  }
+
+  // Some imported/manual lines have no linked product. Retain description
+  // matching as a fallback, evaluating each newline independently so an Odoo
+  // multi-line description does not turn one valid name into a false mismatch.
+  return (
+    lines.find((line) =>
+      getLineDescriptionCandidates(line.name || '').some(matchesExpectedName),
+    ) || null
   );
+}
+
+export function matchSoLines(
+  items: AggregatedStockItem[],
+  lines: SaleOrderLine[],
+): Map<AggregatedStockItem, SaleOrderLine> {
+  const matches = new Map<AggregatedStockItem, SaleOrderLine>();
+  const usedLineIds = new Set<number>();
+
+  // Preserve the deterministic exact matcher and prevent one SO line from
+  // satisfying multiple extracted materials.
+  for (const item of items) {
+    const exact = matchSoLine(item, lines.filter((line) => !usedLineIds.has(line.id)));
+    if (exact) {
+      matches.set(item, exact);
+      usedLineIds.add(exact.id);
+    }
+  }
+
+  const unmatchedItems = items.filter((item) => !matches.has(item));
+  const unmatchedLines = lines.filter(
+    (line) => !usedLineIds.has(line.id) && !line.display_type && getLineServiceColors(line).length > 0,
+  );
+
+  // Fuzzy matching is allowed only for a complete one-to-one remainder. This
+  // makes material count a safety gate and avoids guessing against extra SO
+  // edging lines that may represent unrelated or substituted products.
+  if (unmatchedItems.length === 0 || unmatchedItems.length !== unmatchedLines.length) {
+    return matches;
+  }
+
+  const scores = unmatchedItems.map((item) =>
+    unmatchedLines.map((line) =>
+      Math.max(0, ...getLineServiceColors(line).map((color) => colorSimilarity(item.normalizedColor, color))),
+    ),
+  );
+  const candidates: Array<{ itemIndex: number; lineIndex: number; score: number }> = [];
+
+  scores.forEach((row, itemIndex) => {
+    row.forEach((score, lineIndex) => {
+      if (score >= 0.72) candidates.push({ itemIndex, lineIndex, score });
+    });
+  });
+  candidates.sort((left, right) => right.score - left.score);
+
+  const usedItems = new Set<number>();
+  const usedLines = new Set<number>();
+  for (const candidate of candidates) {
+    if (usedItems.has(candidate.itemIndex) || usedLines.has(candidate.lineIndex)) continue;
+    const itemAlternatives = scores[candidate.itemIndex]
+      .filter((_score, index) => index !== candidate.lineIndex)
+      .sort((a, b) => b - a);
+    const lineAlternatives = scores
+      .map((row) => row[candidate.lineIndex])
+      .filter((_score, index) => index !== candidate.itemIndex)
+      .sort((a, b) => b - a);
+    const nextItemScore = itemAlternatives[0] || 0;
+    const nextLineScore = lineAlternatives[0] || 0;
+
+    // Close alternatives are ambiguous (for example Marble against both White
+    // Marble and Black Marble), so leave them unmatched for human review.
+    if (candidate.score - nextItemScore < 0.12 || candidate.score - nextLineScore < 0.12) continue;
+
+    matches.set(unmatchedItems[candidate.itemIndex], unmatchedLines[candidate.lineIndex]);
+    usedItems.add(candidate.itemIndex);
+    usedLines.add(candidate.lineIndex);
+  }
+
+  return matches;
 }
 
 function extractEdgeBandRollColor(value: string): string | null {
@@ -777,9 +917,10 @@ export async function processStockItem(
   signature: string,
   preview: boolean,
   processedVariantIds: Set<number>,
+  matchedLineOverride?: SaleOrderLine | null,
 ): Promise<StockProcessingItemResult> {
   const result = createBaseItemResult(item);
-  const matchedLine = matchSoLine(item, lines);
+  const matchedLine = matchedLineOverride === undefined ? matchSoLine(item, lines) : matchedLineOverride;
   if (!matchedLine) {
     result.status = 'skipped';
     result.skipReason = 'No matching Sales Order line';
@@ -936,6 +1077,7 @@ export async function processAllItems(
       ? null
       : await resolveAllowedNotificationRecipient(client, 'missing_component');
     const processedVariantIds = new Set<number>(await getProcessedStockVariantIds(orderId, run.signature));
+    const matchedLines = matchSoLines(run.items, lines);
     const results: StockProcessingItemResult[] = [];
     const missingSoProducts: string[] = [];
     const componentMissingMessages = new Set<string>();
@@ -950,6 +1092,7 @@ export async function processAllItems(
         run.signature,
         preview,
         processedVariantIds,
+        matchedLines.get(item) || null,
       );
 
       if (!preview && result.status === 'processed' && result.variantId) {

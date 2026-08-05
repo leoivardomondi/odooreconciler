@@ -8,6 +8,7 @@
     "dev": "tsx watch server.ts",
     "start": "node server.js",
     "check": "tsc --noEmit -p tsconfig.json",
+    "test": "tsx --test --test-force-exit src/**/*.test.ts",
     "export:mysql-dump": "tsx scripts/export-sqlite-to-mysql.ts"
   },
   "engines": {
