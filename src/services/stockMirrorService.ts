@@ -1,4 +1,4 @@
-import { getSettings, getStockProductMirror, markStockProductMirrorSyncFailed, StockProductMirrorEntry, upsertStockProductMirror } from '../models/repositories';
+import { getSettings, getStockProductMirror, markStockProductMirrorSyncFailed, removeStockProductsNotIn, StockProductMirrorEntry, upsertStockProductMirror } from '../models/repositories';
 import { env } from '../utils/env';
 import { hasOdooConfiguration } from '../utils/helpers';
 import { appDateTime } from '../utils/dateTime';
@@ -48,6 +48,9 @@ export async function refreshStockMirror() {
         warehouseId: warehouseId || null, syncedAt,
         syncStatus: 'current', syncError: null,
       })));
+      // Remove records left behind by the former broad name-based product
+      // search so they cannot continue appearing in the cached picker.
+      await removeStockProductsNotIn(products.map((product) => product.id));
       return getStockProductMirror();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

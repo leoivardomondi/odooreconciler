@@ -55,6 +55,9 @@ async function refreshStockMirror() {
                 warehouseId: warehouseId || null, syncedAt,
                 syncStatus: 'current', syncError: null,
             })));
+            // Remove records left behind by the former broad name-based product
+            // search so they cannot continue appearing in the cached picker.
+            await (0, repositories_1.removeStockProductsNotIn)(products.map((product) => product.id));
             return (0, repositories_1.getStockProductMirror)();
         }
         catch (error) {

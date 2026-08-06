@@ -3667,6 +3667,15 @@ export async function upsertStockProductMirror(entries: Array<Omit<StockProductM
   }
 }
 
+export async function removeStockProductsNotIn(productIds: number[]) {
+  if (!productIds.length) {
+    await execute(`DELETE FROM stock_product_mirror`);
+    return;
+  }
+  const placeholders = productIds.map(() => '?').join(', ');
+  await execute(`DELETE FROM stock_product_mirror WHERE product_id NOT IN (${placeholders})`, productIds);
+}
+
 export async function updateStockProductMirrorQuantity(productId: number, availableQty: number, productName?: string) {
   await execute(`UPDATE stock_product_mirror SET available_qty = ?, free_qty = ?, product_name = COALESCE(?, product_name), sync_status = 'current', sync_error = NULL, synced_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE product_id = ?`,
     [availableQty, availableQty, productName || null, productId]);

@@ -80,6 +80,7 @@ exports.getAppUserProfile = getAppUserProfile;
 exports.saveAppUserProfile = saveAppUserProfile;
 exports.getStockProductMirror = getStockProductMirror;
 exports.upsertStockProductMirror = upsertStockProductMirror;
+exports.removeStockProductsNotIn = removeStockProductsNotIn;
 exports.updateStockProductMirrorQuantity = updateStockProductMirrorQuantity;
 exports.markStockProductMirrorSyncFailed = markStockProductMirrorSyncFailed;
 exports.createStaffOnboardingApplication = createStaffOnboardingApplication;
@@ -2670,6 +2671,14 @@ async function upsertStockProductMirror(entries) {
         ON CONFLICT(product_id) DO UPDATE SET product_name=excluded.product_name, available_qty=excluded.available_qty, free_qty=excluded.free_qty, forecast_qty=excluded.forecast_qty, incoming_qty=excluded.incoming_qty, outgoing_qty=excluded.outgoing_qty, warehouse_id=excluded.warehouse_id, synced_at=excluded.synced_at, sync_status=excluded.sync_status, sync_error=excluded.sync_error, updated_at=CURRENT_TIMESTAMP`, params);
         }
     }
+}
+async function removeStockProductsNotIn(productIds) {
+    if (!productIds.length) {
+        await (0, db_1.execute)(`DELETE FROM stock_product_mirror`);
+        return;
+    }
+    const placeholders = productIds.map(() => '?').join(', ');
+    await (0, db_1.execute)(`DELETE FROM stock_product_mirror WHERE product_id NOT IN (${placeholders})`, productIds);
 }
 async function updateStockProductMirrorQuantity(productId, availableQty, productName) {
     await (0, db_1.execute)(`UPDATE stock_product_mirror SET available_qty = ?, free_qty = ?, product_name = COALESCE(?, product_name), sync_status = 'current', sync_error = NULL, synced_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE product_id = ?`, [availableQty, availableQty, productName || null, productId]);

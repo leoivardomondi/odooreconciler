@@ -3604,35 +3604,19 @@ export class OdooClient {
       console.warn('[OdooClient] Failed to fetch product category for boards:', err);
     }
 
+    if (categoryId === null) {
+      throw new Error('The Odoo product category "Goods / Boards" could not be found.');
+    }
+
+    // Board Logging must only offer products in Goods / Boards (including its
+    // child categories). Name-based fallbacks can leak unrelated products into
+    // the picker, so keep this domain deliberately strict.
     const domain: any[] = [
       ['active', '=', true],
       ['type', 'in', ['product', 'consu']],
+      ['categ_id', 'child_of', categoryId],
+      ['name', 'not ilike', 'Cutting%'],
     ];
-
-    if (categoryId !== null) {
-      domain.push(
-        '|', '|', '|', '|', '|', '|', '|',
-        ['categ_id', 'child_of', categoryId],
-        ['name', 'ilike', 'board'],
-        ['name', 'ilike', 'panel'],
-        ['name', 'ilike', 'mdf'],
-        ['name', 'ilike', 'plywood'],
-        ['name', 'ilike', 'chipboard'],
-        ['name', 'ilike', 'particle'],
-        ['name', 'ilike', 'marine']
-      );
-    } else {
-      domain.push(
-        '|', '|', '|', '|', '|', '|',
-        ['name', 'ilike', 'board'],
-        ['name', 'ilike', 'panel'],
-        ['name', 'ilike', 'mdf'],
-        ['name', 'ilike', 'plywood'],
-        ['name', 'ilike', 'chipboard'],
-        ['name', 'ilike', 'particle'],
-        ['name', 'ilike', 'marine']
-      );
-    }
 
     const products = await this.searchReadRecords<any>('product.product', {
       domain,
