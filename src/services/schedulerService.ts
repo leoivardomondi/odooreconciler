@@ -234,6 +234,27 @@ function getPoBillAttemptCount(pdf: AttachmentInfo) {
   return Math.max(0, Number(pdf.poBillAttemptCount || 0) || 0);
 }
 
+function getRecentlyFailedPoBillAttachmentIds(run: SchedulerRunEntry | null) {
+  const ids = new Set<number>();
+  const outcomes = run?.context.documentOutcomes;
+  if (!Array.isArray(outcomes)) {
+    return ids;
+  }
+
+  for (const outcome of outcomes) {
+    if (!isRecord(outcome) || !['skipped', 'failed'].includes(String(outcome.status || ''))) {
+      continue;
+    }
+
+    const attachmentId = Number(outcome.attachmentId);
+    if (Number.isSafeInteger(attachmentId) && attachmentId > 0) {
+      ids.add(attachmentId);
+    }
+  }
+
+  return ids;
+}
+
 function getPoBillRetryClass(pdf: AttachmentInfo, policy: PoBillSchedulerConfig): PoBillRetryClass {
   const status = String(pdf.poBillStatus || '');
   const summary = String(pdf.poBillSummary || '').toLowerCase();
@@ -711,7 +732,14 @@ export async function runPoBillSchedulerCycle(
     const queueCandidates: AttachmentInfo[] = [];
     let exhaustedCount = 0;
     let cooldownBlockedCount = 0;
+    let consecutiveRetryBlockedCount = 0;
+    const recentlyFailedAttachmentIds = getRecentlyFailedPoBillAttachmentIds(recentRun);
     for (const pdf of recentPdfs) {
+      if (recentlyFailedAttachmentIds.has(Number(pdf.id))) {
+        consecutiveRetryBlockedCount += 1;
+        continue;
+      }
+
       const status = String(pdf.poBillStatus || '');
       if (['processed', 'processed_with_warnings'].includes(status)) {
         continue;
@@ -874,7 +902,7 @@ export async function runPoBillSchedulerCycle(
       processedCount,
       skippedCount,
       failedCount,
-      summary: `PO bill scheduler scanned ${scannedCount} Finance document(s), processed ${processedCount}, skipped ${skippedCount}, failed ${failedCount}${exhaustedCount > 0 ? `, ${exhaustedCount} exhausted (permanently skipped after ${settings.poBillScheduler.maxRetryAttempts} attempts)` : ''}${cooldownBlockedCount > 0 ? `, ${cooldownBlockedCount} in cooldown` : ''}.`,
+      summary: `PO bill scheduler scanned ${scannedCount} Finance document(s), processed ${processedCount}, skipped ${skippedCount}, failed ${failedCount}${exhaustedCount > 0 ? `, ${exhaustedCount} exhausted (permanently skipped after ${settings.poBillScheduler.maxRetryAttempts} attempts)` : ''}${cooldownBlockedCount > 0 ? `, ${cooldownBlockedCount} in cooldown` : ''}${consecutiveRetryBlockedCount > 0 ? `, ${consecutiveRetryBlockedCount} held back after the previous run` : ''}.`,
       context: {
         jobType: PO_BILL_SCHEDULER_JOB_TYPE,
         schedulerName: 'PO Bill Scheduler',
@@ -884,6 +912,7 @@ export async function runPoBillSchedulerCycle(
         candidateFinancePdfCount: recentPdfs.length,
         exhaustedCount,
         cooldownBlockedCount,
+        consecutiveRetryBlockedCount,
         documentLookahead,
         trigger,
         documentOutcomes,
