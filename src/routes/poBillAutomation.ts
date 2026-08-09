@@ -12,6 +12,7 @@ import {
 } from '../services/poBillAutomationService';
 import { buildPoBillSchedulerDiagnostics } from '../services/poBillSchedulerDiagnosticsService';
 import { getSchedulerStatus, runPoBillSchedulerCycle } from '../services/schedulerService';
+import { logEvent } from '../services/logService';
 import { hasOdooConfiguration, sanitizeBaseUrl } from '../utils/helpers';
 
 const router = Router();
@@ -111,7 +112,11 @@ router.get('/po-bill-automation', async (req, res) => {
 
   try {
     await renderPage(res, {
-      status: null,
+      status: typeof req.query.message === 'string'
+        ? { type: 'info', message: req.query.message }
+        : typeof req.query.error === 'string'
+          ? { type: 'danger', message: req.query.error }
+          : null,
       form: {
         attachmentId: String(req.query.attachmentId || ''),
         pdfPage: String(requestedPdfPage),
@@ -226,26 +231,18 @@ router.post('/po-bill-automation/run', async (req, res) => {
 router.post('/po-bill-automation/run-scheduler', async (req, res) => {
   const pdfPage = String(req.body.pdfPage || '1');
   const loadRecentPdfs = req.body.loadPdfs === '1';
-  try {
-    const result = await runPoBillSchedulerCycle('manual');
-    await renderPage(res, {
-      status: {
-        type: result.failedCount > 0 ? 'warning' : 'success',
-        message: result.run.summary || 'PO bill scheduler completed.',
-      },
-      form: { mode: 'auto', pdfPage },
-      loadRecentPdfs,
+  void runPoBillSchedulerCycle('manual').catch(async (error) => {
+    await logEvent('error', 'Manual PO bill scheduler background run failed', {
+      error: error instanceof Error ? error.message : 'Unknown failure in manual PO bill scheduler.',
     });
-  } catch (error) {
-    await renderPage(res, {
-      status: {
-        type: 'danger',
-        message: error instanceof Error ? error.message : 'PO bill scheduler failed.',
-      },
-      form: { mode: 'auto', pdfPage },
-      loadRecentPdfs,
-    });
-  }
+  });
+
+  const query = new URLSearchParams({
+    message: 'PO bill scheduler run initiated in background.',
+    pdfPage,
+  });
+  if (loadRecentPdfs) query.set('loadPdfs', '1');
+  res.redirect(`/po-bill-automation?${query.toString()}`);
 });
 
 router.post('/po-bill-automation/stop-scheduler', async (req, res) => {
