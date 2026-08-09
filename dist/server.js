@@ -125,6 +125,25 @@ async function startServer() {
     const port = Number(env_1.env.PORT || 3000);
     const listenTarget = isPassengerRuntime ? 'passenger' : port;
     const server = http_1.default.createServer(app_1.default);
+    process.on('unhandledRejection', (reason) => {
+        const error = reason instanceof Error ? reason : new Error(String(reason));
+        console.error('[runtime-error] Unhandled promise rejection:', error);
+        writeStartupLog('Unhandled promise rejection.', error);
+        void (0, logService_1.logEvent)('error', 'Unhandled promise rejection', {
+            errorName: error.name,
+            errorMessage: error.message,
+            stack: error.stack || null,
+        }).catch((loggingError) => console.error('[runtime-error] Could not persist rejection:', loggingError));
+    });
+    process.on('uncaughtException', (error) => {
+        console.error('[runtime-error] Uncaught exception:', error);
+        writeStartupLog('Uncaught exception.', error);
+        void (0, logService_1.logEvent)('error', 'Uncaught exception', {
+            errorName: error.name,
+            errorMessage: error.message,
+            stack: error.stack || null,
+        }).catch((loggingError) => console.error('[runtime-error] Could not persist exception:', loggingError));
+    });
     server.on('error', (error) => {
         console.error('[startup] HTTP server failed to start:', error);
     });

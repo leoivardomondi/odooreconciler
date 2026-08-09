@@ -4,6 +4,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 const compression_1 = __importDefault(require("compression"));
+const crypto_1 = require("crypto");
 const express_1 = __importDefault(require("express"));
 const helmet_1 = __importDefault(require("helmet"));
 const http_1 = __importDefault(require("http"));
@@ -17,6 +18,7 @@ const helpers_1 = require("./src/utils/helpers");
 const paths_1 = require("./src/utils/paths");
 const startupState_1 = require("./src/services/startupState");
 const userIdentityService_1 = require("./src/services/userIdentityService");
+const logService_1 = require("./src/services/logService");
 const app = (0, express_1.default)();
 app.set('view engine', 'ejs');
 app.set('views', paths_1.viewsPath);
@@ -32,6 +34,12 @@ app.use((0, helmet_1.default)({
 app.use((0, compression_1.default)());
 app.use(express_1.default.urlencoded({ extended: true, limit: '2mb' }));
 app.use(express_1.default.json({ limit: '2mb' }));
+app.use((req, res, next) => {
+    const requestId = String(req.get('x-request-id') || (0, crypto_1.randomUUID)()).slice(0, 80);
+    res.setHeader('X-Request-ID', requestId);
+    res.locals.requestId = requestId;
+    next();
+});
 app.use((0, morgan_1.default)(env_1.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 app.use('/public', express_1.default.static(paths_1.publicPath));
 function proxyPayrollBridge(req, res, next) {
@@ -331,12 +339,44 @@ app.use((req, res) => {
         details: [],
     });
 });
-app.use((error, _req, res, _next) => {
+app.use((error, req, res, _next) => {
     const isDevelopment = env_1.env.NODE_ENV !== 'production';
+    const requestId = String(res.getHeader('X-Request-ID') || (0, crypto_1.randomUUID)());
+    const message = error?.message || 'Something went wrong.';
+    void (0, logService_1.logEvent)('error', 'Unhandled HTTP request error', {
+        requestId,
+        method: req.method,
+        path: req.originalUrl || req.path,
+        statusCode: 500,
+        userEmail: req.authUser?.email || null,
+        errorName: error?.name || 'Error',
+        errorMessage: message,
+        stack: error?.stack || null,
+    }).catch((loggingError) => {
+        console.error('[http-error] Could not persist unhandled request error:', loggingError);
+    });
+    console.error('[http-error]', {
+        requestId,
+        method: req.method,
+        path: req.originalUrl || req.path,
+        error,
+    });
+    if (req.path.startsWith('/api/') || req.path.startsWith('/jobs/') || req.xhr || req.accepts('json') === 'json') {
+        res.status(500).json({
+            ok: false,
+            error: isDevelopment ? message : 'Internal server error.',
+            requestId,
+        });
+        return;
+    }
     res.status(500).render('error', {
         pageTitle: 'Application Error',
-        errorMessage: error.message || 'Something went wrong.',
-        details: isDevelopment && error.stack ? error.stack.split('\n') : [],
+        errorMessage: isDevelopment ? message : `An unexpected error occurred. Please provide support with request ID ${requestId}.`,
+        details: [
+            `Request ID: ${requestId}`,
+            `Path: ${req.method} ${req.originalUrl || req.path}`,
+            ...(isDevelopment && error.stack ? error.stack.split('\n') : []),
+        ],
         csrfToken: null,
     });
 });

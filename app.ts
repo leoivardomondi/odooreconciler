@@ -1,4 +1,5 @@
 import compression from 'compression';
+import { randomUUID } from 'crypto';
 import express, { NextFunction, Request, Response } from 'express';
 import helmet from 'helmet';
 import http from 'http';
@@ -28,6 +29,7 @@ import {
 import { publicPath, viewsPath } from './src/utils/paths';
 import { getStartupState, markStartupFailedIfStale } from './src/services/startupState';
 import { resolveLocalUserDisplayName } from './src/services/userIdentityService';
+import { logEvent } from './src/services/logService';
 
 const app = express();
 
@@ -51,6 +53,12 @@ app.use(
 app.use(compression());
 app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 app.use(express.json({ limit: '2mb' }));
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const requestId = String(req.get('x-request-id') || randomUUID()).slice(0, 80);
+  res.setHeader('X-Request-ID', requestId);
+  res.locals.requestId = requestId;
+  next();
+});
 app.use(morgan(env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 app.use('/public', express.static(publicPath));
 
@@ -395,13 +403,48 @@ app.use((req: Request, res: Response) => {
   });
 });
 
-app.use((error: Error, _req: Request, res: Response, _next: NextFunction) => {
+app.use((error: Error, req: Request, res: Response, _next: NextFunction) => {
   const isDevelopment = env.NODE_ENV !== 'production';
+  const requestId = String(res.getHeader('X-Request-ID') || randomUUID());
+  const message = error?.message || 'Something went wrong.';
+
+  void logEvent('error', 'Unhandled HTTP request error', {
+    requestId,
+    method: req.method,
+    path: req.originalUrl || req.path,
+    statusCode: 500,
+    userEmail: req.authUser?.email || null,
+    errorName: error?.name || 'Error',
+    errorMessage: message,
+    stack: error?.stack || null,
+  }).catch((loggingError) => {
+    console.error('[http-error] Could not persist unhandled request error:', loggingError);
+  });
+
+  console.error('[http-error]', {
+    requestId,
+    method: req.method,
+    path: req.originalUrl || req.path,
+    error,
+  });
+
+  if (req.path.startsWith('/api/') || req.path.startsWith('/jobs/') || req.xhr || req.accepts('json') === 'json') {
+    res.status(500).json({
+      ok: false,
+      error: isDevelopment ? message : 'Internal server error.',
+      requestId,
+    });
+    return;
+  }
 
   res.status(500).render('error', {
     pageTitle: 'Application Error',
-    errorMessage: error.message || 'Something went wrong.',
-    details: isDevelopment && error.stack ? error.stack.split('\n') : [],
+    errorMessage: isDevelopment ? message : `An unexpected error occurred. Please provide support with request ID ${requestId}.`,
+    details: [
+      `Request ID: ${requestId}`,
+      `Path: ${req.method} ${req.originalUrl || req.path}`,
+      ...(isDevelopment && error.stack ? error.stack.split('\n') : []),
+    ],
     csrfToken: null,
   });
 });
