@@ -13,7 +13,6 @@ export function firstMatch(text: string, patterns: RegExp[]) {
 
   return null;
 }
-
 export function extractInvoiceNumber(text: string) {
   const value = firstMatch(text, [
     /invoice\s*(?:no|number|#)\.?\s*:?\s*([A-Z0-9/-]+)/i,
@@ -52,14 +51,60 @@ export function extractDateOfSupply(text: string) {
 export function extractGenericItems(text: string): ParsedInvoiceItem[] {
   const lines = text
     .split('\n')
-    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .map((line) =>
+      line
+        .replace(/[|[\]]/g, ' ')
+        .replace(/(\d),(\d{3})(?!\d)/g, '$1$2')
+        .replace(/\s+/g, ' ')
+        .trim(),
+    )
     .filter((line) => line.length > 6);
+
 
   return lines
     .map((line): ParsedInvoiceItem | null => {
       if (/\b(?:tel|phone|box|email|pin|date|invoice|delivery|note)\b/i.test(line)) {
         return null;
       }
+
+      // Pattern: DESCRIPTION QTY UNIT_PRICE DISC AMOUNT (discount column between price and total)
+      // Also handles optional leading CODE prefix (2–4 digit item code)
+      // e.g. "154 DESK PEN STAND 3.00 150.00 0 450.00"
+      // e.g. "PHOTOCOPY PAPER A4 AZHAR 3.00 480.00 0 1,440.00"
+      const discMatch = line.match(
+        /^(?:\d{2,4}\s+)?(.{3,80}?)\s+(\d{1,3}(?:\.\d{1,2})?)\s+([\d,]+(?:\.\d{1,2})?)\s+(\d{0,4}(?:[,.]\d{1,2})?)\s+([\d,]+(?:\.\d{1,2})?)$/i,
+      );
+      if (discMatch) {
+        const description = discMatch[1].trim();
+        const quantity = Number(discMatch[2]);
+        const rawUnitPrice = discMatch[3].replace(/,/g, '');
+        const unitPrice = Number(rawUnitPrice);
+        const discountRaw = discMatch[4].replace(/,/g, '');
+        const discount = Number(discountRaw) || 0;
+        const rawAmount = discMatch[5].replace(/,/g, '');
+        const amount = Number(rawAmount);
+        if (
+          Number.isFinite(quantity) && quantity > 0 &&
+          Number.isFinite(unitPrice) && unitPrice > 0 &&
+          Number.isFinite(amount) && amount > 0 &&
+          description.length >= 3
+        ) {
+          const computedAmount = Math.round((quantity * unitPrice - discount) * 100) / 100;
+          const tolerance = Math.max(2, amount * 0.03);
+          if (Math.abs(computedAmount - amount) <= tolerance) {
+            return {
+              description,
+              quantity,
+              unit: null,
+              unit_price: unitPrice,
+              net_amount: amount,
+              raw_text: line,
+              confidence: 0.75,
+            };
+          }
+        }
+      }
+
       const unitFirstMatch = line.match(/^(.+?)\s+(Piece|Pcs?|Roll|Nos?|Unit|M|Each)\s+(\d+(?:\.\d+)?)\s+([\d,]+(?:\.\d{1,2})?)\s+([\d,]+(?:\.\d{1,2})?)(?:\s+\d{1,2})?$/i);
       if (unitFirstMatch) {
         return {

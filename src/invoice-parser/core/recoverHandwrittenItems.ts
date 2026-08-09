@@ -24,8 +24,15 @@ function parseMoneyToken(value: string | null | undefined) {
 function candidateRowsFromLines(text: string): ParsedInvoiceItem[] {
   const rows = text
     .split('\n')
-    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .map((line) =>
+      line
+        .replace(/[|[\]]/g, ' ')
+        .replace(/(\d),(\d{3})(?!\d)/g, '$1$2') // strip thousand separators: 1,440 → 1440
+        .replace(/\s+/g, ' ')
+        .trim(),
+    )
     .filter((line) => line.length >= 8);
+
   const items: ParsedInvoiceItem[] = [];
 
   for (const line of rows) {
@@ -181,6 +188,71 @@ function sumItems(items: ParsedInvoiceItem[]) {
   return amounts.length > 0 ? roundMoney(amounts.reduce((sum, value) => sum + value, 0)) : null;
 }
 
+function candidateRowsWithDiscountColumn(text: string): ParsedInvoiceItem[] {
+  const rows = text
+    .split('\n')
+    .map((line) =>
+      line
+        .replace(/[|[\]]/g, ' ')
+        .replace(/(\d),(\d{3})(?!\d)/g, '$1$2') // strip thousand separators: 1,440 → 1440
+        .replace(/\s+/g, ' ')
+        .trim(),
+    )
+    .filter((line) => line.length >= 8);
+
+  const items: ParsedInvoiceItem[] = [];
+
+  for (const line of rows) {
+    // Optional leading item-code (2–4 digits) followed by description, then QTY UNIT_PRICE DISC AMOUNT
+    // e.g. "154 DESK PEN STAND 3.00 150.00 0 450.00"
+    // e.g. "PHOTOCOPY PAPER A4 AZHAR 3.00 480.00 0 1,440.00"
+    const match = line.match(
+      /^(?:\d{2,4}\s+)?(.{3,80}?)\s+(\d{1,3}(?:\.\d{1,2})?)\s+(\d{2,8}(?:[,.]\d{1,2})?)\s+(\d{0,4}(?:[,.]\d{1,2})?)\s+(\d{2,8}(?:[,.]\d{1,2})?)$/i,
+    );
+    if (!match) {
+      continue;
+    }
+
+    const description = cleanDescription(match[1]);
+    const quantity = Number(match[2]);
+    const unitPrice = parseMoneyToken(match[3]);
+    const discountRaw = parseMoneyToken(match[4]);
+    const amount = parseMoneyToken(match[5]);
+    const discount = discountRaw ?? 0;
+
+    if (
+      !Number.isFinite(quantity) ||
+      quantity <= 0 ||
+      unitPrice === null ||
+      amount === null ||
+      description.length < 3 ||
+      /\b(?:date|invoice|delivery|note|order|tel|box|pin|vat|total|sub|discount)\b/i.test(description)
+    ) {
+      continue;
+    }
+
+    // Validate: qty × unit_price − disc ≈ amount (within 3% or KES 2, whichever is greater)
+    const computedAmount = roundMoney(quantity * unitPrice - discount);
+    const tolerance = Math.max(2, amount * 0.03);
+    if (Math.abs(computedAmount - amount) > tolerance) {
+      continue;
+    }
+
+    items.push({
+      description,
+      quantity,
+      unit: null,
+      unit_price: unitPrice,
+      net_amount: amount,
+      raw_text: line,
+      confidence: 0.80,
+    });
+  }
+
+  return items;
+}
+
+
 export function recoverHandwrittenInvoiceItems(invoice: ParsedInvoice): ParsedInvoice {
   const text = [
     invoice.raw?.ocr_text,
@@ -198,7 +270,9 @@ export function recoverHandwrittenInvoiceItems(invoice: ParsedInvoice): ParsedIn
     ...recoverTiptopKnownHandwrittenPattern(text),
     ...candidateRowsFromLines(text),
     ...candidateRowsFromTokenWindows(text),
+    ...candidateRowsWithDiscountColumn(text),
   ]);
+
   if (recoveredItems.length === 0) {
     return invoice;
   }

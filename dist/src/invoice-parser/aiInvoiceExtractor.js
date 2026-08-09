@@ -429,6 +429,7 @@ function buildExtractionPrompt(input) {
         'Your first character must be { and your last character must be }.',
         'Use the invoice image as the authority when OCR text conflicts with the visible document.',
         'If this is a text-only model, use the OCR text as the authority and cross-check it against embedded PDF text.',
+        'The original filename may come from a scanner or Odoo Documents. Treat it only as a weak corroborating vendor hint: remove labels such as RECEIPT/INVOICE, dates, and scan numbers, and tolerate truncated names such as ENTERPRIS matching ENTERPRISES. Never let the filename override a clearly printed vendor name in the invoice body.',
         'For ETR/receipt documents, final payable amount is usually labelled TOTAL, CASH, PAID, AMOUNT DUE, or GRAND TOTAL. Do not add VAT again when TOTAL/CASH is already VAT-inclusive.',
         'For Kenya buyer/client PIN, prefer CLIENT PIN, BUYER PIN, CUSTOMER PIN, or a PIN near Urban Vibe over supplier PIN.',
         'For Comply Industries invoices, amount due is goods total plus VAT; the visible AMOUNT DUE box is the grand total.',
@@ -515,7 +516,7 @@ async function callOpenAiCompatibleInvoiceAi(input) {
     }
     const response = await fetch(endpoint, {
         method: 'POST',
-        signal: AbortSignal.timeout(30000),
+        signal: AbortSignal.timeout(60000),
         headers: {
             Authorization: `Bearer ${input.apiKey}`,
             'Content-Type': 'application/json',
@@ -544,7 +545,7 @@ async function callGeminiInvoiceAi(input) {
     const endpoint = `${baseUrl}/models/${encodeURIComponent(input.model)}:generateContent`;
     const response = await fetch(endpoint, {
         method: 'POST',
-        signal: AbortSignal.timeout(30000),
+        signal: AbortSignal.timeout(60000),
         headers: {
             'Content-Type': 'application/json',
             'X-goog-api-key': input.apiKey,
@@ -582,7 +583,7 @@ async function callAnthropicInvoiceAi(input) {
         : ANTHROPIC_MESSAGES_URL;
     const response = await fetch(endpoint, {
         method: 'POST',
-        signal: AbortSignal.timeout(30000),
+        signal: AbortSignal.timeout(60000),
         headers: {
             'x-api-key': input.apiKey,
             'anthropic-version': '2023-06-01',
@@ -699,6 +700,10 @@ async function extractInvoiceWithConfiguredAi(input) {
     if (!input.config.enabled || primaryProvider === 'disabled') {
         return { extraction: null, warnings: ['AI invoice extraction skipped because it is disabled in Settings.'] };
     }
+    // Only send full-page images to AI — crop variants (header/items/totals) are for OCR
+    // accuracy only and would cause redundant sequential API calls for a single PDF page.
+    const fullPageImagePaths = input.imagePaths.filter((p) => /-page-\d+\.[a-z]+$/i.test(p));
+    const aiImagePaths = fullPageImagePaths.length > 0 ? fullPageImagePaths : input.imagePaths;
     const allSupportedProviders = [
         'gemini',
         'openai',
@@ -729,9 +734,9 @@ async function extractInvoiceWithConfiguredAi(input) {
         }
         const configuredMaxImages = Number(input.config.maxImages || 0);
         const imageLimit = configuredMaxImages > 0
-            ? Math.max(configuredMaxImages, input.imagePaths.length)
-            : input.imagePaths.length;
-        const imagePaths = input.imagePaths.slice(0, imageLimit);
+            ? Math.min(configuredMaxImages, aiImagePaths.length)
+            : aiImagePaths.length;
+        const imagePaths = aiImagePaths.slice(0, imageLimit);
         const model = provider === primaryProvider && input.config.model?.trim()
             ? input.config.model.trim()
             : defaultModelForProvider(provider);

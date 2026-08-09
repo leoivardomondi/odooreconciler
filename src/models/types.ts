@@ -486,6 +486,7 @@ export interface ParsedVendorInvoiceLine {
 
 export interface ParsedVendorInvoiceResult {
   vendorName: string | null;
+  filenameVendorHint?: string | null;
   invoiceDate: string | null;
   invoiceNumber: string | null;
   orderNumber: string | null;

@@ -1045,9 +1045,14 @@ export class OdooClient {
     );
   }
 
-  async createRecord(model: string, values: Record<string, unknown>): Promise<number> {
+  async createRecord(
+    model: string,
+    values: Record<string, unknown>,
+    context: Record<string, unknown> = {},
+  ): Promise<number> {
     const result = await this.request<unknown>(model, 'create', {
       vals_list: [values],
+      ...(Object.keys(context).length > 0 ? { context } : {}),
     });
     const rawId = Array.isArray(result)
       ? result[0]

@@ -161,6 +161,22 @@ const VENDOR_LEGAL_SUFFIXES = new Set([
   'plc',
 ]);
 
+const GENERIC_VENDOR_WORDS = new Set([
+  ...VENDOR_LEGAL_SUFFIXES,
+  'enterprise',
+  'enterprises',
+  'trader',
+  'traders',
+  'supplier',
+  'suppliers',
+  'stationer',
+  'stationers',
+  'hardware',
+  'supermarket',
+  'store',
+  'stores',
+]);
+
 function normalizeVendorName(value: string | null | undefined) {
   const words = normalizeText(value)
     .split(' ')
@@ -170,6 +186,18 @@ function normalizeVendorName(value: string | null | undefined) {
     name: words.join(' '),
     compact: words.join(''),
   };
+}
+
+function extractFilenameVendorHint(value: string | null | undefined) {
+  const withoutExtension = path.basename(String(value || '')).replace(/\.[a-z0-9]{2,5}$/i, '');
+  const hint = normalizeText(withoutExtension)
+    .replace(/\b(?:receipt|invoice|bill|vendor|supplier|scan|scanned|copy|document)\b/g, ' ')
+    .replace(/\b20\d{2}[-_ ]\d{1,2}[-_ ]\d{1,2}\b/g, ' ')
+    .replace(/\b\d{6,}\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return hint && /[a-z]{4,}/.test(hint) ? hint : null;
 }
 
 function addCheck(
@@ -434,7 +462,22 @@ function correctSubtotalAsAmountDue(input: {
     .filter((value): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0)
     .reduce((sum, value) => sum + value, 0);
   const roundedItemNetTotal = itemNetTotal > 0 ? roundMoney(itemNetTotal) : null;
-  const { vat, amount_due: amountDue } = input.totals;
+  const { goods_total: goodsTotal, vat, amount_due: amountDue } = input.totals;
+
+  // Guard: if an explicit goods_total (SUB TOTAL) is already present and differs from
+  // amount_due, then amount_due is already the VAT-inclusive grand total — do NOT add VAT
+  // again. This prevents the false correction on invoices like Saradhy where items are
+  // VAT-inclusive and their sum equals TOTAL (KES), not the untaxed subtotal.
+  const hasExplicitSubtotal =
+    typeof goodsTotal === 'number' &&
+    Number.isFinite(goodsTotal) &&
+    goodsTotal > 0 &&
+    typeof amountDue === 'number' &&
+    !totalsMatch(goodsTotal, amountDue);
+
+  if (hasExplicitSubtotal) {
+    return input.totals;
+  }
 
   if (
     roundedItemNetTotal !== null &&
@@ -540,27 +583,61 @@ function daysBetween(left: Date | null, right: Date | null): number | null {
   return Number.isFinite(days) ? days : null;
 }
 
-function computeVendorScore(invoiceVendor: string | null, poVendor: string) {
+function vendorNamesMatch(left: string | null | undefined, right: string | null | undefined) {
+  const first = normalizeVendorName(left);
+  const second = normalizeVendorName(right);
+  if (!first.name || !second.name) return false;
+  if (
+    first.name === second.name ||
+    first.compact === second.compact ||
+    first.name.includes(second.name) ||
+    second.name.includes(first.name) ||
+    first.compact.includes(second.compact) ||
+    second.compact.includes(first.compact)
+  ) {
+    return true;
+  }
+
+  // Prefer distinctive identity words. Generic terms such as ENTERPRISES or
+  // LTD must never match two unrelated vendors by themselves.
+  const firstWords = first.name.split(' ').filter((word) => !GENERIC_VENDOR_WORDS.has(word));
+  const secondWords = second.name.split(' ').filter((word) => !GENERIC_VENDOR_WORDS.has(word));
+  if (firstWords.length === 0 || secondWords.length === 0) return false;
+
+  const shorter = firstWords.length <= secondWords.length ? firstWords : secondWords;
+  const longer = firstWords.length <= secondWords.length ? secondWords : firstWords;
+  return shorter.some((word) =>
+    word.length >= 5 &&
+    longer.some((candidate) => candidate === word || candidate.startsWith(word) || word.startsWith(candidate)),
+  );
+}
+
+function computeVendorScore(
+  invoiceVendor: string | null,
+  poVendor: string,
+  filenameVendorHint?: string | null,
+) {
   const invoice = normalizeVendorName(invoiceVendor);
   const po = normalizeVendorName(poVendor);
-
-  if (!invoice.name) {
-    return { score: 0, reason: `Invoice vendor was not readable; PO vendor is "${poVendor}".` };
-  }
+  const filename = normalizeVendorName(filenameVendorHint);
 
   if (!po.name) {
     return { score: 0, reason: `PO vendor was not readable; invoice vendor is "${invoiceVendor}".` };
   }
 
-  if (
-    invoice.name === po.name ||
-    invoice.compact === po.compact ||
-    invoice.name.includes(po.name) ||
-    po.name.includes(invoice.name) ||
-    invoice.compact.includes(po.compact) ||
-    po.compact.includes(invoice.compact)
-  ) {
+  if (vendorNamesMatch(invoiceVendor, poVendor)) {
     return { score: 40, reason: `Vendor matched "${invoiceVendor}" with "${poVendor}".` };
+  }
+
+  if (vendorNamesMatch(filenameVendorHint, poVendor)) {
+    return {
+      score: 32,
+      reason: `Filename vendor hint "${filenameVendorHint}" matched PO vendor "${poVendor}" after ignoring scanner labels, dates, and truncated suffixes.`,
+    };
+  }
+
+  if (!invoice.name && !filename.name) {
+    return { score: 0, reason: `Invoice vendor was not readable; PO vendor is "${poVendor}".` };
   }
 
   return { score: 0, reason: `Vendor did not match "${poVendor}".` };
@@ -722,7 +799,7 @@ function buildCandidate(
   parsedInvoice: PoBillAutomationResult['parsedInvoice'],
 ): PoBillAutomationCandidate {
   const poVendor = getRelationLabel(purchaseOrder.partner_id);
-  const vendor = computeVendorScore(parsedInvoice.vendorName, poVendor);
+  const vendor = computeVendorScore(parsedInvoice.vendorName, poVendor, parsedInvoice.filenameVendorHint);
   const total = computeTotalScore(
     parsedInvoice.grandTotal,
     purchaseOrder.amount_total,
@@ -1210,7 +1287,9 @@ export async function findPurchaseOrderCandidates(
 ): Promise<PoBillAutomationCandidate[]> {
   const invoiceDate = parseLooseDate(parsedInvoice.invoiceDate);
   const domain: unknown[] = [];
-  const hasReadableVendor = Boolean(normalizeVendorName(parsedInvoice.vendorName).name);
+  const hasReadableVendor = Boolean(
+    normalizeVendorName(parsedInvoice.vendorName).name || normalizeVendorName(parsedInvoice.filenameVendorHint).name,
+  );
 
   if (options.fromDate) {
     domain.push(['date_order', '>=', options.fromDate]);
@@ -1673,9 +1752,11 @@ async function registerPaymentForVendorBill(
   pinNote: 'ETR' | 'NO PIN',
   parsedInvoiceDate?: string | null,
 ): Promise<{ success: boolean; message: string; paymentId?: number }> {
+  // Vendor receipt date is the payment date for this workflow. Send it to Odoo
+  // as ISO YYYY-MM-DD; Odoo formats it for display in the Pay dialog locale.
   const paymentDate =
-    vendorBill.invoice_date ||
-    (parsedInvoiceDate ? normalizeInvoiceDateForOdoo(parsedInvoiceDate) : null) ||
+    normalizeInvoiceDateForOdoo(parsedInvoiceDate) ||
+    normalizeInvoiceDateForOdoo(vendorBill.invoice_date) ||
     formatDateOnly(new Date());
 
   let targetJournal: { id: number; name: string; code: string } | null = null;
@@ -1703,6 +1784,7 @@ async function registerPaymentForVendorBill(
 
   const ref = vendorBill.ref || vendorBill.name || `Bill-${vendorBill.id}`;
 
+  let wizardErrorMessage = '';
   try {
     const wizardContext = await client.callRecordMethod<{
       res_id?: number;
@@ -1727,7 +1809,11 @@ async function registerPaymentForVendorBill(
       wizardPayload.payment_method_line_id = wizardContextData.default_payment_method_line_id;
     }
 
-    const wizardId = await client.createRecord('account.payment.register', wizardPayload);
+    const wizardId = await client.createRecord('account.payment.register', wizardPayload, {
+      active_model: 'account.move',
+      active_ids: [vendorBill.id],
+      ...wizardContextData,
+    });
 
     if (wizardId) {
       await client.callRecordMethod<unknown>(
@@ -1749,37 +1835,17 @@ async function registerPaymentForVendorBill(
       };
     }
   } catch (wizardError) {
+    wizardErrorMessage = wizardError instanceof Error ? wizardError.message : String(wizardError);
     console.warn(
-      `[po-bills] account.payment.register wizard failed for bill ${vendorBill.id}, attempting direct account.payment:`,
-      wizardError instanceof Error ? wizardError.message : wizardError,
+      `[po-bills] account.payment.register wizard failed for bill ${vendorBill.id}:`,
+      wizardErrorMessage,
     );
   }
 
-  try {
-    const paymentValues: Record<string, unknown> = {
-      payment_type: 'outbound',
-      partner_type: 'supplier',
-      amount: paymentAmount,
-      date: paymentDate,
-      ref,
-      journal_id: targetJournal.id,
-    };
-
-    const paymentId = await client.createRecord('account.payment', paymentValues);
-    await client.callRecordMethod<unknown>('account.payment', 'action_post', [paymentId]);
-
-    return {
-      success: true,
-      paymentId,
-      message: `Created & posted payment ${paymentId} for vendor bill ${vendorBill.name || vendorBill.id} for ${paymentAmount} on date ${paymentDate} via journal ${targetJournal.name} (${targetJournal.code}) [PIN status: ${pinNote}].`,
-    };
-  } catch (directError) {
-    const errMsg = directError instanceof Error ? directError.message : String(directError);
-    return {
-      success: false,
-      message: `Failed to register payment on vendor bill ${vendorBill.name || vendorBill.id}: ${errMsg}`,
-    };
-  }
+  return {
+    success: false,
+    message: `Failed to create payment for vendor bill ${vendorBill.name || vendorBill.id} using the Odoo Pay dialog fields: ${wizardErrorMessage || 'Unknown payment wizard error.'}`,
+  };
 }
 
 async function validatePurchaseOrderReceipts(client: OdooClient, purchaseOrder: PurchaseOrderSummary) {
@@ -1969,6 +2035,7 @@ export async function runPoBillAutomation(
   const detectedPin = findUrbanVibeBuyerPin(allExtractedText);
   const parsedInvoice = {
     vendorName: supplierInvoice.supplier,
+    filenameVendorHint: extractFilenameVendorHint(attachment.name),
     invoiceDate: supplierInvoice.invoice_date,
     invoiceNumber: supplierInvoice.invoice_number,
     orderNumber: null,
@@ -2148,7 +2215,7 @@ export async function runPoBillAutomation(
   }
 
   const poVendor = getRelationLabel(purchaseOrder.partner_id);
-  const vendorMatch = computeVendorScore(parsedInvoice.vendorName, poVendor);
+  const vendorMatch = computeVendorScore(parsedInvoice.vendorName, poVendor, parsedInvoice.filenameVendorHint);
   const vendorMatches = !normalizeVendorName(parsedInvoice.vendorName).name || vendorMatch.score > 0;
   addCheck(
     checks,

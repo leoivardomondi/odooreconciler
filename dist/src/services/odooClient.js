@@ -662,9 +662,10 @@ class OdooClient {
             limit: fieldNames.length,
         });
     }
-    async createRecord(model, values) {
+    async createRecord(model, values, context = {}) {
         const result = await this.request(model, 'create', {
             vals_list: [values],
+            ...(Object.keys(context).length > 0 ? { context } : {}),
         });
         const rawId = Array.isArray(result)
             ? result[0]
