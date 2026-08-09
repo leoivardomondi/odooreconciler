@@ -2429,6 +2429,24 @@ export async function runPoBillAutomation(
   );
 
   const itemCountMatches = parsedInvoice.itemCount === 0 ? false : parsedInvoice.itemCount === poLines.length;
+  const hasValidInvoiceItem = parsedInvoice.items.some((item) =>
+    Boolean(item.description?.trim()) &&
+    (typeof item.amount === 'number' || (typeof item.quantity === 'number' && typeof item.unitPrice === 'number')),
+  );
+  const hasUnreliableAiOutput = parsedInvoice.logs.some((log) =>
+    /converted from markdown\/prose|malformed json|parsed from non-json ai response/i.test(log),
+  );
+  const extractionQualityPassed = hasValidInvoiceItem && !hasUnreliableAiOutput;
+  addCheck(
+    checks,
+    'Extraction Quality',
+    extractionQualityPassed ? 'pass' : 'fail',
+    extractionQualityPassed
+      ? 'Receipt contains at least one usable line item and AI output is structurally reliable.'
+      : hasUnreliableAiOutput
+        ? 'AI output was malformed or converted from prose; manual review is required.'
+        : 'No usable invoice line item was extracted; manual review is required.',
+  );
   addCheck(
     checks,
     'Item Count',
@@ -2451,6 +2469,7 @@ export async function runPoBillAutomation(
     (poStateReady || poStateApprovable) &&
     totalMatches &&
     vendorMatches &&
+    extractionQualityPassed &&
     coreMatchPassed &&
     (Boolean(overridePurchaseOrder) ||
       Boolean(orderNumberPurchaseOrder) ||

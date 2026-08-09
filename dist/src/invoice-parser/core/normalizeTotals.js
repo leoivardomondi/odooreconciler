@@ -201,9 +201,13 @@ function normalizeInvoiceTotals(invoice) {
         .filter(Boolean)
         .join('\n\n');
     const extracted = text ? (0, extractTotals_1.extractTotals)(text) : { goods_total: null, vat: null, amount_due: null };
-    const goodsTotal = positiveMoney(invoice.totals?.goods_total) ?? positiveMoney(extracted.goods_total) ?? sumLineNetAmounts(invoice);
-    const vat = positiveMoney(invoice.totals?.vat) ?? positiveMoney(extracted.vat);
     const currentAmountDue = positiveMoney(invoice.totals?.amount_due);
+    const extractedVat = positiveMoney(extracted.vat);
+    const suppliedVat = positiveMoney(invoice.totals?.vat);
+    const vat = suppliedVat !== null && currentAmountDue !== null && suppliedVat > currentAmountDue
+        ? extractedVat
+        : suppliedVat ?? extractedVat;
+    const goodsTotal = positiveMoney(invoice.totals?.goods_total) ?? positiveMoney(extracted.goods_total) ?? sumLineNetAmounts(invoice);
     const labelledAmountDue = text ? findLabelledAmountDue(text) : null;
     const strongFinalTotal = text ? findStrongFinalTotal(text) : null;
     const weakPaymentTotal = text ? findWeakPaymentTotal(text) : null;
@@ -272,8 +276,12 @@ function normalizeInvoiceTotals(invoice) {
     return {
         ...invoice,
         totals: recovered,
-        warnings: changed
-            ? [...invoice.warnings, 'Invoice totals were normalized from labels, VAT, line totals, or OCR fallback.']
-            : invoice.warnings,
+        warnings: [
+            ...invoice.warnings,
+            ...(suppliedVat !== null && currentAmountDue !== null && suppliedVat > currentAmountDue
+                ? ['AI VAT exceeded the invoice total and was discarded in favor of VAT found in the receipt text.']
+                : []),
+            ...(changed ? ['Invoice totals were normalized from labels, VAT, line totals, or OCR fallback.'] : []),
+        ],
     };
 }

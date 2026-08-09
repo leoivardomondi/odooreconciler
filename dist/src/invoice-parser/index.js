@@ -112,6 +112,23 @@ function selectFullPageImagePaths(pages) {
     const fullPageImages = imagePaths.filter((imagePath) => /-page-\d+\.[a-z]+$/i.test(imagePath));
     return fullPageImages.length > 0 ? fullPageImages : imagePaths;
 }
+function sanitizeInvoiceNumberFromAddress(value, text) {
+    const candidate = String(value || '').trim();
+    if (!candidate)
+        return null;
+    const normalizedCandidate = (0, normalizeText_1.normalizeText)(candidate).replace(/\s+/g, ' ');
+    const normalizedText = (0, normalizeText_1.normalizeText)(text).replace(/\s+/g, ' ');
+    const escaped = normalizedCandidate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // A scanner/AI can mistake a PO Box such as "835-40100" for an invoice
+    // number. Keep it only when the same value is clearly labelled as an invoice,
+    // receipt, or serial number.
+    if (new RegExp(`\\b(?:p\\s*o|po)\\s+box\\s+${escaped}\\b`, 'i').test(normalizedText)) {
+        const labelled = new RegExp(`\\b(?:invoice|receipt|serial)(?:\\s+number|\\s+no|\\s+#)?\\s*[:#-]?\\s*${escaped}\\b`, 'i');
+        if (!labelled.test(normalizedText))
+            return null;
+    }
+    return candidate;
+}
 async function parseSupplierInvoice(input) {
     const warnings = [];
     const tempFilesToClean = new Set();
@@ -172,7 +189,10 @@ async function parseSupplierInvoice(input) {
         const withSupplier = {
             ...parsed,
             supplier: parsed.supplier || supplier.supplier,
-            invoice_date: parsed.invoice_date || (0, extractDates_1.extractIsoDateFromFilename)(input.originalFilename),
+            // Receipt/invoice text always outranks scanner/Odoo filename metadata.
+            invoice_date: parsed.invoice_date ||
+                (0, extractDates_1.extractDateNear)(combinedText, ['invoice date', 'receipt date', 'date issued', 'date']) ||
+                (0, extractDates_1.extractIsoDateFromFilename)(input.originalFilename),
             raw: {
                 ...parsed.raw,
                 pdf_text: pdfTextResult.text,
@@ -250,6 +270,14 @@ async function parseSupplierInvoice(input) {
                     warnings: [...finalInvoice.warnings, ...warnings],
                 };
             }
+        }
+        const safeInvoiceNumber = sanitizeInvoiceNumberFromAddress(finalInvoice.invoice_number, combinedText);
+        if (finalInvoice.invoice_number && !safeInvoiceNumber) {
+            finalInvoice = {
+                ...finalInvoice,
+                invoice_number: null,
+                warnings: [...finalInvoice.warnings, 'A PO Box/address value was rejected as an invoice number.'],
+            };
         }
         return finalInvoice;
     }

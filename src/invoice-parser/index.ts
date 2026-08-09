@@ -2,7 +2,7 @@ import path from 'path';
 import fs from 'fs/promises';
 import { detectDocumentType } from './core/detectDocumentType';
 import { detectSupplier } from './core/detectSupplier';
-import { extractIsoDateFromFilename } from './core/extractDates';
+import { extractDateNear, extractIsoDateFromFilename } from './core/extractDates';
 import { looksReadableInvoiceText, normalizeText } from './core/normalizeText';
 import { normalizeInvoiceTotals } from './core/normalizeTotals';
 import { recoverHandwrittenInvoiceItems } from './core/recoverHandwrittenItems';
@@ -106,6 +106,25 @@ function selectFullPageImagePaths(pages: ParsedInvoice['raw']['pages']) {
   return fullPageImages.length > 0 ? fullPageImages : imagePaths;
 }
 
+function sanitizeInvoiceNumberFromAddress(value: string | null | undefined, text: string) {
+  const candidate = String(value || '').trim();
+  if (!candidate) return null;
+
+  const normalizedCandidate = normalizeText(candidate).replace(/\s+/g, ' ');
+  const normalizedText = normalizeText(text).replace(/\s+/g, ' ');
+  const escaped = normalizedCandidate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  // A scanner/AI can mistake a PO Box such as "835-40100" for an invoice
+  // number. Keep it only when the same value is clearly labelled as an invoice,
+  // receipt, or serial number.
+  if (new RegExp(`\\b(?:p\\s*o|po)\\s+box\\s+${escaped}\\b`, 'i').test(normalizedText)) {
+    const labelled = new RegExp(`\\b(?:invoice|receipt|serial)(?:\\s+number|\\s+no|\\s+#)?\\s*[:#-]?\\s*${escaped}\\b`, 'i');
+    if (!labelled.test(normalizedText)) return null;
+  }
+
+  return candidate;
+}
+
 export async function parseSupplierInvoice(input: ParseSupplierInvoiceInput): Promise<ParsedInvoice> {
   const warnings: string[] = [];
   const tempFilesToClean = new Set<string>();
@@ -183,7 +202,11 @@ export async function parseSupplierInvoice(input: ParseSupplierInvoiceInput): Pr
     const withSupplier = {
       ...parsed,
       supplier: parsed.supplier || supplier.supplier,
-      invoice_date: parsed.invoice_date || extractIsoDateFromFilename(input.originalFilename),
+      // Receipt/invoice text always outranks scanner/Odoo filename metadata.
+      invoice_date:
+        parsed.invoice_date ||
+        extractDateNear(combinedText, ['invoice date', 'receipt date', 'date issued', 'date']) ||
+        extractIsoDateFromFilename(input.originalFilename),
       raw: {
         ...parsed.raw,
         pdf_text: pdfTextResult.text,
@@ -271,6 +294,15 @@ export async function parseSupplierInvoice(input: ParseSupplierInvoiceInput): Pr
           warnings: [...finalInvoice.warnings, ...warnings],
         };
       }
+    }
+
+    const safeInvoiceNumber = sanitizeInvoiceNumberFromAddress(finalInvoice.invoice_number, combinedText);
+    if (finalInvoice.invoice_number && !safeInvoiceNumber) {
+      finalInvoice = {
+        ...finalInvoice,
+        invoice_number: null,
+        warnings: [...finalInvoice.warnings, 'A PO Box/address value was rejected as an invoice number.'],
+      };
     }
 
     return finalInvoice;
