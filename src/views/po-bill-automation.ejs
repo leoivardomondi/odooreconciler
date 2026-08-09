@@ -191,7 +191,7 @@
     <div class="col-lg-5">
       <div class="card shadow-sm border-0 app-card">
         <div class="card-body p-4">
-          <form method="post" action="/po-bill-automation/run" class="vstack gap-3" data-disable-submit="true" data-loading-message="Running PO bill check...">
+          <form method="post" action="/po-bill-automation/run" class="vstack gap-3" data-disable-submit="true" data-no-loading="true" data-loading-message="Running PO bill check...">
             <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
 
             <div>

@@ -10,6 +10,7 @@ const odooClient_1 = require("../services/odooClient");
 const poBillAutomationService_1 = require("../services/poBillAutomationService");
 const poBillSchedulerDiagnosticsService_1 = require("../services/poBillSchedulerDiagnosticsService");
 const schedulerService_1 = require("../services/schedulerService");
+const logService_1 = require("../services/logService");
 const helpers_1 = require("../utils/helpers");
 const router = (0, express_1.Router)();
 const RECENT_PDFS_PAGE_SIZE = 25;
@@ -84,7 +85,11 @@ router.get('/po-bill-automation', async (req, res) => {
     const loadRecentPdfs = req.query.loadPdfs === '1' || requestedPdfPage > 1 || Boolean(String(req.query.attachmentId || '').trim());
     try {
         await renderPage(res, {
-            status: null,
+            status: typeof req.query.message === 'string'
+                ? { type: 'info', message: req.query.message }
+                : typeof req.query.error === 'string'
+                    ? { type: 'danger', message: req.query.error }
+                    : null,
             form: {
                 attachmentId: String(req.query.attachmentId || ''),
                 pdfPage: String(requestedPdfPage),
@@ -191,27 +196,18 @@ router.post('/po-bill-automation/run', async (req, res) => {
 router.post('/po-bill-automation/run-scheduler', async (req, res) => {
     const pdfPage = String(req.body.pdfPage || '1');
     const loadRecentPdfs = req.body.loadPdfs === '1';
-    try {
-        const result = await (0, schedulerService_1.runPoBillSchedulerCycle)('manual');
-        await renderPage(res, {
-            status: {
-                type: result.failedCount > 0 ? 'warning' : 'success',
-                message: result.run.summary || 'PO bill scheduler completed.',
-            },
-            form: { mode: 'auto', pdfPage },
-            loadRecentPdfs,
+    void (0, schedulerService_1.runPoBillSchedulerCycle)('manual').catch(async (error) => {
+        await (0, logService_1.logEvent)('error', 'Manual PO bill scheduler background run failed', {
+            error: error instanceof Error ? error.message : 'Unknown failure in manual PO bill scheduler.',
         });
-    }
-    catch (error) {
-        await renderPage(res, {
-            status: {
-                type: 'danger',
-                message: error instanceof Error ? error.message : 'PO bill scheduler failed.',
-            },
-            form: { mode: 'auto', pdfPage },
-            loadRecentPdfs,
-        });
-    }
+    });
+    const query = new URLSearchParams({
+        message: 'PO bill scheduler run initiated in background.',
+        pdfPage,
+    });
+    if (loadRecentPdfs)
+        query.set('loadPdfs', '1');
+    res.redirect(`/po-bill-automation?${query.toString()}`);
 });
 router.post('/po-bill-automation/stop-scheduler', async (req, res) => {
     const pdfPage = String(req.body.pdfPage || '1');

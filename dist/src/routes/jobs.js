@@ -165,14 +165,15 @@ router.post('/jobs/run-scheduler', async (_req, res) => {
     }
 });
 router.post('/jobs/run-po-bill-scheduler', async (_req, res) => {
-    try {
-        const result = await (0, schedulerService_1.runPoBillSchedulerCycle)('manual');
-        res.redirect(`/dashboard?message=${encodeURIComponent(result.run.summary || 'PO bill scheduler completed.')}`);
-    }
-    catch (error) {
-        const message = error instanceof Error ? error.message : 'PO bill scheduler failed.';
-        res.redirect(`/dashboard?error=${encodeURIComponent(message)}`);
-    }
+    // Keep the browser request short. The PO cycle can perform OCR and several
+    // Odoo calls, so waiting for it here leaves the frontend behind a loading
+    // overlay (and can exceed the production proxy/Passenger timeout).
+    void (0, schedulerService_1.runPoBillSchedulerCycle)('manual').catch(async (error) => {
+        await (0, logService_1.logEvent)('error', 'Manual PO bill scheduler background run failed', {
+            error: error instanceof Error ? error.message : 'Unknown failure in manual PO bill scheduler.',
+        });
+    });
+    res.redirect(`/dashboard?message=${encodeURIComponent('PO bill scheduler run initiated in background.')}`);
 });
 router.get('/jobs/send-shop-floor-task-reminders', async (req, res) => {
     if (!(await isAuthorizedCronRequest(getWebhookToken(req)))) {

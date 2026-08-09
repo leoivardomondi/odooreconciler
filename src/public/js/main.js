@@ -214,9 +214,10 @@ document.addEventListener('submit', (event) => {
   const loadingMessage = submitter?.getAttribute('data-loading-message') || form.getAttribute('data-loading-message') || 'Submitting, please wait...';
   if (!loadingDisabled) {
     showAppLoading(loadingMessage);
-    if (submitter) {
-      markSubmitterLoading(submitter, loadingMessage);
-    }
+  }
+  // Keep long-running forms visible when they opt out of the full-screen overlay.
+  if (submitter) {
+    markSubmitterLoading(submitter, loadingMessage);
   }
 
   if (form.getAttribute('data-disable-submit') === 'true') {
