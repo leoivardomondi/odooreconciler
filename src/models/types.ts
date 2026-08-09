@@ -715,6 +715,7 @@ export interface SchedulerRunEntry {
 export interface SchedulerRuntimeState {
   lockRunId: string | null;
   lockAcquiredAt: string | null;
+  stopRequestedAt: string | null;
   lastSuccessfulRunId: string | null;
   lastSuccessfulFinishedAt: string | null;
   lastCheckpointAt: string | null;

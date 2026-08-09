@@ -48,6 +48,7 @@ async function renderPage(res, options) {
     const requestedPdfPage = parsePositiveInteger(options.form?.pdfPage, 1);
     let recentPdfsPage = emptyRecentPdfsPage(requestedPdfPage);
     let queueDiagnostics = null;
+    const schedulerStatus = await (0, schedulerService_1.getSchedulerStatus)().catch(() => null);
     const recentPdfsLoaded = Boolean(options.loadRecentPdfs);
     if (recentPdfsLoaded) {
         const { client } = await buildClient();
@@ -68,6 +69,7 @@ async function renderPage(res, options) {
         recentPdfsPage,
         recentPdfsLoaded,
         queueDiagnostics,
+        schedulerStatus,
         result: options.result || null,
         form: {
             attachmentId: options.form?.attachmentId || '',
@@ -205,6 +207,34 @@ router.post('/po-bill-automation/run-scheduler', async (req, res) => {
             status: {
                 type: 'danger',
                 message: error instanceof Error ? error.message : 'PO bill scheduler failed.',
+            },
+            form: { mode: 'auto', pdfPage },
+            loadRecentPdfs,
+        });
+    }
+});
+router.post('/po-bill-automation/stop-scheduler', async (req, res) => {
+    const pdfPage = String(req.body.pdfPage || '1');
+    const loadRecentPdfs = req.body.loadPdfs === '1';
+    try {
+        const runtimeState = await (0, repositories_1.getSchedulerRuntimeState)();
+        const requested = await (0, repositories_1.requestSchedulerStop)(runtimeState.lockRunId);
+        await renderPage(res, {
+            status: {
+                type: requested ? 'warning' : 'info',
+                message: requested
+                    ? 'Stop requested. The scheduler will stop after the current document finishes.'
+                    : 'No active PO bill scheduler run was found.',
+            },
+            form: { mode: 'auto', pdfPage },
+            loadRecentPdfs,
+        });
+    }
+    catch (error) {
+        await renderPage(res, {
+            status: {
+                type: 'danger',
+                message: error instanceof Error ? error.message : 'Could not request scheduler stop.',
             },
             form: { mode: 'auto', pdfPage },
             loadRecentPdfs,

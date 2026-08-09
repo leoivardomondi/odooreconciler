@@ -1,6 +1,6 @@
 import path from 'path';
 import { Response, Router } from 'express';
-import { getSettings } from '../models/repositories';
+import { getSchedulerRuntimeState, getSettings, requestSchedulerStop } from '../models/repositories';
 import { PoBillAutomationResult } from '../models/types';
 import { OdooClient } from '../services/odooClient';
 import {
@@ -11,7 +11,7 @@ import {
   runPoBillAutomation,
 } from '../services/poBillAutomationService';
 import { buildPoBillSchedulerDiagnostics } from '../services/poBillSchedulerDiagnosticsService';
-import { runPoBillSchedulerCycle } from '../services/schedulerService';
+import { getSchedulerStatus, runPoBillSchedulerCycle } from '../services/schedulerService';
 import { hasOdooConfiguration, sanitizeBaseUrl } from '../utils/helpers';
 
 const router = Router();
@@ -70,6 +70,7 @@ async function renderPage(
   const requestedPdfPage = parsePositiveInteger(options.form?.pdfPage, 1);
   let recentPdfsPage = emptyRecentPdfsPage(requestedPdfPage);
   let queueDiagnostics: Awaited<ReturnType<typeof buildPoBillSchedulerDiagnostics>> | null = null;
+  const schedulerStatus = await getSchedulerStatus().catch(() => null);
   const recentPdfsLoaded = Boolean(options.loadRecentPdfs);
 
   if (recentPdfsLoaded) {
@@ -92,6 +93,7 @@ async function renderPage(
     recentPdfsPage,
     recentPdfsLoaded,
     queueDiagnostics,
+    schedulerStatus,
     result: options.result || null,
     form: {
       attachmentId: options.form?.attachmentId || '',
@@ -239,6 +241,35 @@ router.post('/po-bill-automation/run-scheduler', async (req, res) => {
       status: {
         type: 'danger',
         message: error instanceof Error ? error.message : 'PO bill scheduler failed.',
+      },
+      form: { mode: 'auto', pdfPage },
+      loadRecentPdfs,
+    });
+  }
+});
+
+router.post('/po-bill-automation/stop-scheduler', async (req, res) => {
+  const pdfPage = String(req.body.pdfPage || '1');
+  const loadRecentPdfs = req.body.loadPdfs === '1';
+
+  try {
+    const runtimeState = await getSchedulerRuntimeState();
+    const requested = await requestSchedulerStop(runtimeState.lockRunId);
+    await renderPage(res, {
+      status: {
+        type: requested ? 'warning' : 'info',
+        message: requested
+          ? 'Stop requested. The scheduler will stop after the current document finishes.'
+          : 'No active PO bill scheduler run was found.',
+      },
+      form: { mode: 'auto', pdfPage },
+      loadRecentPdfs,
+    });
+  } catch (error) {
+    await renderPage(res, {
+      status: {
+        type: 'danger',
+        message: error instanceof Error ? error.message : 'Could not request scheduler stop.',
       },
       form: { mode: 'auto', pdfPage },
       loadRecentPdfs,

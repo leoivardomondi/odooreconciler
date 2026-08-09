@@ -299,6 +299,19 @@ async function touchActiveSchedulerRunLock(runId) {
         }).catch(() => undefined);
     }
 }
+async function isSchedulerStopRequested(runId) {
+    try {
+        const runtimeState = await (0, repositories_1.getSchedulerRuntimeState)();
+        return runtimeState.lockRunId === runId && Boolean(runtimeState.stopRequestedAt);
+    }
+    catch (error) {
+        await (0, logService_1.logEvent)('warn', 'Could not read scheduler stop request', {
+            schedulerRunId: runId,
+            error: error instanceof Error ? error.message : String(error),
+        }).catch(() => undefined);
+        return false;
+    }
+}
 async function describeActiveSchedulerLock(runtimeState) {
     if (!runtimeState.lockRunId) {
         return null;
@@ -560,6 +573,7 @@ async function runPoBillSchedulerCycle(trigger = 'manual') {
     let processedCount = 0;
     let skippedCount = 0;
     let failedCount = 0;
+    let stopRequested = false;
     const documentOutcomes = [];
     try {
         await touchActiveSchedulerRunLock(run.id);
@@ -623,6 +637,10 @@ async function runPoBillSchedulerCycle(trigger = 'manual') {
         })
             .slice(0, batchSize);
         for (const pdf of queue) {
+            if (await isSchedulerStopRequested(run.id)) {
+                stopRequested = true;
+                break;
+            }
             scannedCount += 1;
             await touchActiveSchedulerRunLock(run.id);
             try {
@@ -726,19 +744,19 @@ async function runPoBillSchedulerCycle(trigger = 'manual') {
             }
             await touchActiveSchedulerRunLock(run.id);
         }
-        if (failedCount === 0) {
+        if (!stopRequested && failedCount === 0) {
             await (0, repositories_1.markSchedulerRunSucceeded)(run.id, runtimeState.lastCheckpointAt);
         }
-        else {
+        else if (!stopRequested) {
             await (0, repositories_1.markSchedulerRunFailed)(run.id, `PO bill scheduler completed with ${failedCount} failed document(s).`);
         }
         const finalRun = await (0, repositories_1.updateSchedulerRun)(run.id, {
-            status: failedCount > 0 ? 'completed_with_errors' : 'completed',
+            status: stopRequested ? 'completed' : failedCount > 0 ? 'completed_with_errors' : 'completed',
             scannedCount,
             processedCount,
             skippedCount,
             failedCount,
-            summary: `PO bill scheduler scanned ${scannedCount} Finance document(s), processed ${processedCount}, skipped ${skippedCount}, failed ${failedCount}${exhaustedCount > 0 ? `, ${exhaustedCount} exhausted (permanently skipped after ${settings.poBillScheduler.maxRetryAttempts} attempts)` : ''}${cooldownBlockedCount > 0 ? `, ${cooldownBlockedCount} in cooldown` : ''}${consecutiveRetryBlockedCount > 0 ? `, ${consecutiveRetryBlockedCount} held back after the previous run` : ''}.`,
+            summary: `${stopRequested ? 'PO bill scheduler stopped by operator. ' : ''}PO bill scheduler scanned ${scannedCount} Finance document(s), processed ${processedCount}, skipped ${skippedCount}, failed ${failedCount}${exhaustedCount > 0 ? `, ${exhaustedCount} exhausted (permanently skipped after ${settings.poBillScheduler.maxRetryAttempts} attempts)` : ''}${cooldownBlockedCount > 0 ? `, ${cooldownBlockedCount} in cooldown` : ''}${consecutiveRetryBlockedCount > 0 ? `, ${consecutiveRetryBlockedCount} held back after the previous run` : ''}.`,
             context: {
                 jobType: PO_BILL_SCHEDULER_JOB_TYPE,
                 schedulerName: 'PO Bill Scheduler',
@@ -749,6 +767,7 @@ async function runPoBillSchedulerCycle(trigger = 'manual') {
                 exhaustedCount,
                 cooldownBlockedCount,
                 consecutiveRetryBlockedCount,
+                stopRequested,
                 documentLookahead,
                 trigger,
                 documentOutcomes,

@@ -244,6 +244,10 @@
               <input type="hidden" name="loadPdfs" value="1" />
             <% } %>
             <button type="submit" class="btn btn-outline-primary">Run PO Matching Scheduler</button>
+            <% if (schedulerStatus && schedulerStatus.isRunning) { %>
+              <button type="submit" formaction="/po-bill-automation/stop-scheduler" class="btn btn-outline-danger" data-disable-submit="true" data-loading-message="Requesting scheduler stop...">Stop Active Scheduler Run</button>
+              <div class="form-text text-warning">A stop request lets the current document finish, then releases the scheduler lock safely.</div>
+            <% } %>
             <div class="form-text">Scans new Finance PDFs and images one at a time, matches unbilled POs from 2026-01-01 to today, and skips documents that are not bills.</div>
           </form>
         </div>

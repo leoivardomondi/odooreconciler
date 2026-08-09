@@ -388,6 +388,7 @@ async function ensureSqliteDatabase(config) {
       id INTEGER PRIMARY KEY CHECK (id = 1),
       lock_run_id TEXT,
       lock_acquired_at TEXT,
+      stop_requested_at TEXT,
       last_successful_run_id TEXT,
       last_successful_finished_at TEXT,
       last_checkpoint_at TEXT,
@@ -684,6 +685,7 @@ async function ensureSqliteDatabase(config) {
     await ensureColumnSqlite(db, 'auth_approved_users', 'password_hash', 'TEXT');
     await ensureColumnSqlite(db, 'auth_approved_users', 'apps', 'TEXT');
     await ensureColumnSqlite(db, 'scheduler_runtime_state', 'last_checkpoint_at', 'TEXT');
+    await ensureColumnSqlite(db, 'scheduler_runtime_state', 'stop_requested_at', 'TEXT');
     await ensureColumnSqlite(db, 'scheduler_runtime_state', 'last_error_run_id', 'TEXT');
     await ensureColumnSqlite(db, 'scheduler_runtime_state', 'last_error_message', 'TEXT');
     await ensureColumnSqlite(db, 'po_bill_processed_documents', 'attempt_count', 'INTEGER NOT NULL DEFAULT 1');
@@ -830,6 +832,7 @@ async function ensureMysqlDatabase(config) {
       id INT PRIMARY KEY,
       lock_run_id VARCHAR(64) NULL,
       lock_acquired_at DATETIME NULL,
+      stop_requested_at DATETIME NULL,
       last_successful_run_id VARCHAR(64) NULL,
       last_successful_finished_at DATETIME NULL,
       last_checkpoint_at DATETIME NULL,
@@ -1133,6 +1136,7 @@ async function ensureMysqlDatabase(config) {
     await ensureColumnMysql(pool, 'auth_approved_users', 'password_hash', 'VARCHAR(255) NULL', config.mysqlDatabase);
     await ensureColumnMysql(pool, 'auth_approved_users', 'apps', 'TEXT NULL', config.mysqlDatabase);
     await ensureColumnMysql(pool, 'scheduler_runtime_state', 'last_checkpoint_at', 'DATETIME NULL', config.mysqlDatabase);
+    await ensureColumnMysql(pool, 'scheduler_runtime_state', 'stop_requested_at', 'DATETIME NULL', config.mysqlDatabase);
     await ensureColumnMysql(pool, 'scheduler_runtime_state', 'last_error_run_id', 'VARCHAR(64) NULL', config.mysqlDatabase);
     await ensureColumnMysql(pool, 'scheduler_runtime_state', 'last_error_message', 'TEXT NULL', config.mysqlDatabase);
     await ensureColumnMysql(pool, 'mpesa_transactions', 'ai_notes', 'LONGTEXT NULL', config.mysqlDatabase);

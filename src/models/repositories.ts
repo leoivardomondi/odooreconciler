@@ -946,6 +946,7 @@ function formatDbDateString(val: unknown): string | null {
 function mapSchedulerRuntimeState(row: {
   lock_run_id: string | null;
   lock_acquired_at: unknown;
+  stop_requested_at: unknown;
   last_successful_run_id: string | null;
   last_successful_finished_at: unknown;
   last_checkpoint_at: unknown;
@@ -956,6 +957,7 @@ function mapSchedulerRuntimeState(row: {
   return {
     lockRunId: row.lock_run_id,
     lockAcquiredAt: formatDbDateString(row.lock_acquired_at),
+    stopRequestedAt: formatDbDateString(row.stop_requested_at),
     lastSuccessfulRunId: row.last_successful_run_id,
     lastSuccessfulFinishedAt: formatDbDateString(row.last_successful_finished_at),
     lastCheckpointAt: formatDbDateString(row.last_checkpoint_at),
@@ -969,6 +971,7 @@ export async function getSchedulerRuntimeState(): Promise<SchedulerRuntimeState>
   const row = await queryOne<{
     lock_run_id: string | null;
     lock_acquired_at: string | null;
+    stop_requested_at: string | null;
     last_successful_run_id: string | null;
     last_successful_finished_at: string | null;
     last_checkpoint_at: string | null;
@@ -980,6 +983,7 @@ export async function getSchedulerRuntimeState(): Promise<SchedulerRuntimeState>
       SELECT
         lock_run_id,
         lock_acquired_at,
+        stop_requested_at,
         last_successful_run_id,
         last_successful_finished_at,
         last_checkpoint_at,
@@ -1014,6 +1018,7 @@ export async function acquireSchedulerRunLock(runId: string): Promise<boolean> {
         SET
           lock_run_id = NULL,
           lock_acquired_at = NULL,
+          stop_requested_at = NULL,
           updated_at = CURRENT_TIMESTAMP
         WHERE id = 1
       `,
@@ -1026,6 +1031,7 @@ export async function acquireSchedulerRunLock(runId: string): Promise<boolean> {
       SET
         lock_run_id = ?,
         lock_acquired_at = CURRENT_TIMESTAMP,
+        stop_requested_at = NULL,
         updated_at = CURRENT_TIMESTAMP
       WHERE id = 1
         AND (lock_run_id IS NULL OR lock_run_id = ? OR lock_acquired_at IS NULL)
@@ -1103,6 +1109,7 @@ export async function clearStaleSchedulerRunLock(): Promise<SchedulerRuntimeStat
       SET
         lock_run_id = NULL,
         lock_acquired_at = NULL,
+        stop_requested_at = NULL,
         updated_at = CURRENT_TIMESTAMP
       WHERE id = 1 AND lock_run_id = ?
     `,
@@ -1135,11 +1142,31 @@ export async function releaseSchedulerRunLock(runId: string) {
       SET
         lock_run_id = NULL,
         lock_acquired_at = NULL,
+        stop_requested_at = NULL,
         updated_at = CURRENT_TIMESTAMP
       WHERE id = 1 AND lock_run_id = ?
     `,
     [runId],
   );
+}
+
+export async function requestSchedulerStop(runId: string | null) {
+  if (!runId) {
+    return false;
+  }
+
+  const result = await execute(
+    `
+      UPDATE scheduler_runtime_state
+      SET
+        stop_requested_at = CURRENT_TIMESTAMP,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = 1 AND lock_run_id = ?
+    `,
+    [runId],
+  );
+
+  return result.affectedRows > 0;
 }
 
 export async function markSchedulerRunSucceeded(runId: string, checkpointAt: string | null) {
