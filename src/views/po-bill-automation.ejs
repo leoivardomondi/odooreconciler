@@ -597,6 +597,7 @@
         window.setInterval(updateElapsed, 1000);
       }
       const nextUrl = new URL(window.location.href);
+      nextUrl.pathname = '/po-bill-automation';
       nextUrl.searchParams.set('jobId', manualJobCard.dataset.manualJobId || '');
       window.history.replaceState({}, '', nextUrl);
       window.setTimeout(() => window.location.reload(), 5000);
