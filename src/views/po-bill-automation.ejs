@@ -235,6 +235,12 @@
             </div>
 
             <button type="submit" class="btn btn-primary">Run Check</button>
+            <% if (status && status.message) { %>
+              <div class="alert alert-<%= status.type === 'danger' ? 'danger' : status.type === 'success' ? 'success' : 'info' %> mb-0" role="status">
+                <strong>Single-document status:</strong>
+                <%= status.message %>
+              </div>
+            <% } %>
           </form>
           <hr class="my-4" />
           <form method="post" action="/po-bill-automation/run-scheduler" class="vstack gap-2" data-disable-submit="true" data-loading-message="Running PO matching scheduler...">
