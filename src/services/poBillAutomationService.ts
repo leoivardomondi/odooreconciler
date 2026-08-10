@@ -27,7 +27,7 @@ const TOTAL_TOLERANCE = 1;
 const AUTO_MATCH_THRESHOLD = 90;
 const CORE_MATCH_THRESHOLD = 90;
 const DOCUMENT_FOLDER_NAME = 'Finance';
-const RECENT_DOCUMENT_PDFS_SINCE = '2026-01-01 00:00:00';
+const RECENT_DOCUMENT_PDFS_SINCE = '2026-05-01 00:00:00';
 export const PO_BILL_SUPPORTED_MIMETYPES = [
   'application/pdf',
   'image/png',

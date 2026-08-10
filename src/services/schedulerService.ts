@@ -51,12 +51,12 @@ const SO_SCHEDULER_ROUTINE_DEPRIORITIZE_RUNS = 20;
 const SO_SCHEDULER_ADAPTIVE_LOOKBACK_STEP_HOURS = 24;
 const SO_SCHEDULER_ADAPTIVE_LOOKBACK_MAX_HOURS = 24 * 90;
 const PO_BILL_SCHEDULER_BATCH_SIZE = 1;
-const PO_BILL_SCHEDULER_DOCUMENT_LOOKAHEAD = 50;
-const PO_BILL_SCHEDULER_DOCUMENT_LOOKAHEAD_MAX = 100;
+const PO_BILL_SCHEDULER_DOCUMENT_LOOKAHEAD = 1000;
+const PO_BILL_SCHEDULER_DOCUMENT_LOOKAHEAD_MAX = 1000;
 const PO_BILL_RETRY_COOLDOWN_HOURS = 12;
 const PO_BILL_TRANSIENT_RETRY_COOLDOWN_HOURS = 2;
 const PO_BILL_STABLE_SKIP_RETRY_COOLDOWN_HOURS = 24 * 14;
-const PO_BILL_ADAPTIVE_LOOKAHEAD_STEP = 25;
+const PO_BILL_ADAPTIVE_LOOKAHEAD_STEP = 0;
 const PO_BILL_ADAPTIVE_LOOKAHEAD_RUNS = 7;
 const MAX_PO_BILL_RETRY_ATTEMPTS = 5;
 const SALES_ORDER_SCHEDULER_JOB_TYPE = 'sales_order_processing';
@@ -292,15 +292,12 @@ function getPoBillRetryCooldownHours(
     case 'transient':
       return Math.max(1, Number(policy.transientRetryHours || PO_BILL_TRANSIENT_RETRY_COOLDOWN_HOURS));
     case 'changeable': {
-      // 7-day (168h) retry interval per attempt
-      const escalationSteps = policy.retryBackoffHours?.length
-        ? policy.retryBackoffHours
-        : [168, 168, 168, 168, 168, 168, 168, 168, 168, 168];
-      const index = Math.min(attemptCount, escalationSteps.length - 1);
-      return escalationSteps[index];
+      // Campaign reset: retry previously failed matches immediately so older
+      // documents are not hidden behind the former seven-day backoff policy.
+      return 0;
     }
     case 'stable_skip':
-      return Math.max(1, Number(policy.stableSkipRetryDays || 14)) * 24;
+      return Math.max(0, Number(policy.stableSkipRetryDays ?? 0)) * 24;
     case 'exhausted':
     case 'processed':
     default:

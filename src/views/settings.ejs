@@ -1421,7 +1421,7 @@
             <div class="col-md-6">
               <label class="form-label">Match POs From Date</label>
               <input type="text" class="form-control font-monospace" name="poBillSchedulerFromDate" value="<%= form.poBillSchedulerFromDate %>" />
-              <div class="form-text">Use <code>2026-01-01 00:00:00</code> to match unbilled POs from January 1, 2026 onward.</div>
+              <div class="form-text">Use <code>2026-05-01 00:00:00</code> to match unbilled POs from May 1, 2026 onward.</div>
             </div>
             <div class="col-md-8">
               <label class="form-label">PO Bill Cron Token</label>
@@ -1462,7 +1462,7 @@
                   <div class="col-md-3">
                     <label class="form-label" for="poBillSchedulerStableSkipRetryDays">Non-bill Recheck</label>
                     <div class="input-group">
-                      <input id="poBillSchedulerStableSkipRetryDays" type="number" min="1" max="365" class="form-control" name="poBillSchedulerStableSkipRetryDays" value="<%= form.poBillSchedulerStableSkipRetryDays %>" />
+                      <input id="poBillSchedulerStableSkipRetryDays" type="number" min="0" max="365" class="form-control" name="poBillSchedulerStableSkipRetryDays" value="<%= form.poBillSchedulerStableSkipRetryDays %>" />
                       <span class="input-group-text">days</span>
                     </div>
                     <div class="form-text">For Job Summary or non-vendor documents.</div>
@@ -1470,11 +1470,11 @@
                   <div class="col-md-3">
                     <label class="form-label" for="poBillSchedulerRetryBackoffHours">PO Match Backoff</label>
                     <input id="poBillSchedulerRetryBackoffHours" type="text" class="form-control font-monospace" name="poBillSchedulerRetryBackoffHours" value="<%= form.poBillSchedulerRetryBackoffHours %>" placeholder="168, 168, 168, 168, 168" />
-                    <div class="form-text">Hours after consecutive failed match attempts.</div>
+                    <div class="form-text">Campaign reset currently retries failed PO matches immediately.</div>
                   </div>
                 </div>
                 <div class="alert alert-warning border-0 small mt-3 mb-0">
-                  Recommended: scheduler every <strong>15–45 minutes</strong>; OCR/API retry after <strong>2 hours</strong>; PO matching backoff <strong>168 hours (7 days per attempt)</strong>; non-bills every <strong>14 days</strong>. Manual “Check now” can still run immediately.
+                  Current campaign mode: documents and POs from <strong>May 1, 2026</strong> onward; stable non-bill documents are eligible on every cycle when this value is <strong>0</strong>. Manual “Check now” can still run immediately.
                 </div>
               </div>
             </div>

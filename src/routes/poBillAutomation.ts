@@ -32,7 +32,7 @@ function emptyRecentPdfsPage(page = 1): RecentDocumentPdfsPage {
     totalPages: 1,
     from: 0,
     to: 0,
-    sinceDate: '2026-01-01 00:00:00',
+    sinceDate: '2026-05-01 00:00:00',
   };
 }
 

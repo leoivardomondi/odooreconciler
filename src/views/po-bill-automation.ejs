@@ -248,7 +248,7 @@
               <button type="submit" formaction="/po-bill-automation/stop-scheduler" class="btn btn-outline-danger" data-disable-submit="true" data-loading-message="Requesting scheduler stop...">Stop Active Scheduler Run</button>
               <div class="form-text text-warning">A stop request lets the current document finish, then releases the scheduler lock safely.</div>
             <% } %>
-            <div class="form-text">Scans new Finance PDFs and images one at a time, matches unbilled POs from 2026-01-01 to today, and skips documents that are not bills.</div>
+            <div class="form-text">Scans Finance PDFs and images from 2026-05-01 onward, one at a time, and matches unbilled POs.</div>
           </form>
         </div>
       </div>
@@ -260,7 +260,7 @@
               <h2 class="h5 mb-1">Recent Finance Documents</h2>
               <p class="text-secondary small mb-0">
                 <% if (recentPdfsLoaded) { %>
-                  Showing <%= recentPdfsPage.from %>-<%= recentPdfsPage.to %> of <%= recentPdfsPage.total %> supported documents from 2026-01-01 in the Documents app Finance folder for Urban Vibe only.
+              Showing <%= recentPdfsPage.from %>-<%= recentPdfsPage.to %> of <%= recentPdfsPage.total %> supported documents from 2026-05-01 in the Documents app Finance folder for Urban Vibe only.
                 <% } else { %>
                   Recent PDFs and images are loaded only when needed so this page opens quickly.
                 <% } %>

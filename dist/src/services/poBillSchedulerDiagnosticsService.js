@@ -44,9 +44,8 @@ function retryHours(pdf, stable, transient, policy) {
     if (transient)
         return policy?.transientRetryHours || TRANSIENT_RETRY_HOURS;
     if (stable)
-        return (policy?.stableSkipRetryDays || 14) * 24;
-    const steps = policy?.retryBackoffHours?.length ? policy.retryBackoffHours : [168, 168, 168, 168, 168, 168, 168, 168, 168, 168];
-    return steps[Math.min(attemptCount(pdf), steps.length - 1)];
+        return Math.max(0, Number(policy?.stableSkipRetryDays ?? 0)) * 24;
+    return 0;
 }
 function describePoBillQueueDocument(pdf, now = Date.now(), policy) {
     const status = String(pdf.poBillStatus || '');
