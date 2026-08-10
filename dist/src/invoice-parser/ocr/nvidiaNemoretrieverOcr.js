@@ -250,12 +250,14 @@ async function nvidiaNemoretrieverOcr(images, config) {
                 warnings.push(`NVIDIA Nemotron OCR failed on page ${image.pageNumber}: ${lastFailure || 'no readable text returned'}`);
             }
         }
+        const physicalPageCount = new Set(images.map((image) => image.pageNumber)).size;
+        const extractedPhysicalPageCount = new Set(pages.map((page) => page.pageNumber)).size;
         return {
             pages,
             warnings: [
                 ...warnings,
-                pages.length > 0
-                    ? `NVIDIA Nemotron OCR extracted text from ${pages.length}/${images.length} page(s).`
+                extractedPhysicalPageCount > 0
+                    ? `NVIDIA Nemotron OCR extracted text from ${extractedPhysicalPageCount}/${physicalPageCount} physical page(s) using ${images.length} page/crop image(s).`
                     : 'NVIDIA Nemotron OCR returned no readable text.',
             ],
         };
