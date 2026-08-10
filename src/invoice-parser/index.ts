@@ -211,11 +211,13 @@ export async function parseSupplierInvoice(input: ParseSupplierInvoiceInput): Pr
         image_variants: preprocessed[index]?.imageVariants,
       }));
 
-      const gemmaImages = preprocessed.flatMap((page, index) => [
-        fullPageImages[index].imagePath,
-        page.imagePath,
-        ...page.imageVariants,
-      ]);
+      // Put one original image for every physical PDF page first. The AI
+      // extractor applies Max Images after this list is built, so a small
+      // budget still covers all pages before spending slots on variants.
+      const gemmaImages = [
+        ...fullPageImages.map((image) => image.imagePath),
+        ...preprocessed.flatMap((page) => [page.imagePath, ...page.imageVariants]),
+      ];
       const gemmaResult = await extractInvoiceWithAi({
         imagePaths: gemmaImages,
         ocrText: '',

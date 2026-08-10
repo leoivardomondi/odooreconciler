@@ -1225,7 +1225,7 @@
             <div class="col-md-4">
               <label class="form-label">Max Images</label>
               <input type="number" min="1" max="10" class="form-control" name="aiMaxImages" value="<%= form.aiMaxImages %>" />
-              <div class="form-text">Invoice AI reads every rendered PDF page; this value remains a lower bound for older single-page settings.</div>
+              <div class="form-text">Gemma prioritizes one original image per PDF page, then uses remaining slots for enhanced variants.</div>
             </div>
             <div class="col-md-8">
               <label class="form-label">Custom Base URL</label>
