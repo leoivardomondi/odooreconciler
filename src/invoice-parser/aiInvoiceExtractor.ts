@@ -588,26 +588,28 @@ async function callOpenAiCompatibleInvoiceAi(input: {
   const endpoint = input.baseUrl
     ? `${input.baseUrl.replace(/\/+$/, '')}/chat/completions`
     : defaultUrl;
+  const isGemmaVision = input.provider === 'nvidia' && input.model === 'google/gemma-4-31b-it';
+  const multimodalContent = [
+    ...input.images.map((image) => ({
+      type: 'image_url',
+      image_url: {
+        url: `data:${image.mediaType};base64,${image.base64}`,
+        detail: input.provider === 'nvidia' ? 'auto' : 'high',
+      },
+    })),
+    { type: 'text', text: input.prompt },
+  ];
   const body: Record<string, unknown> = {
     model: input.model,
-    temperature: 0,
+    temperature: isGemmaVision ? 1.0 : 0,
     max_tokens: input.provider === 'nvidia' && input.model === 'google/gemma-4-31b-it' ? 16384 : 4000,
     messages: [
+      ...(isGemmaVision ? [{ role: 'system', content: '<|think|>' }] : []),
       {
         role: 'user',
-        content:
-          input.provider === 'nvidia' && isTextOnlyNvidiaModel(input.model)
-            ? input.prompt
-            : [
-                { type: 'text', text: input.prompt },
-                ...input.images.map((image) => ({
-                  type: 'image_url',
-                  image_url: {
-                    url: `data:${image.mediaType};base64,${image.base64}`,
-                    detail: input.provider === 'nvidia' ? 'auto' : 'high',
-                  },
-                })),
-              ],
+        content: input.provider === 'nvidia' && isTextOnlyNvidiaModel(input.model)
+          ? input.prompt
+          : multimodalContent,
       },
     ],
   };
@@ -615,9 +617,13 @@ async function callOpenAiCompatibleInvoiceAi(input: {
   if (input.provider !== 'nvidia' || input.model === 'google/gemma-4-31b-it') {
     body.response_format = { type: 'json_object' };
   }
-  if (input.provider === 'nvidia' && input.model === 'google/gemma-4-31b-it') {
+  if (isGemmaVision) {
     body.top_p = 0.95;
-    body.chat_template_kwargs = { enable_thinking: true };
+    body.top_k = 64;
+    body.chat_template_kwargs = {
+      enable_thinking: true,
+      visual_token_budget: 1120,
+    };
   }
 
   const response = await fetch(endpoint, {
