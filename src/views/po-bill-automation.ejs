@@ -402,6 +402,15 @@
               <dt class="col-sm-4">Invoice Total</dt>
               <dd class="col-sm-8"><%= result.parsedInvoice.grandTotal ?? 'Unreadable' %></dd>
             </dl>
+            <% if (result.parsedInvoice.handwriting && result.parsedInvoice.handwriting.detected) { %>
+              <div class="alert alert-warning mt-4 mb-0">
+                <strong>Handwriting detected.</strong>
+                Confidence: <%= Math.round((result.parsedInvoice.handwriting.confidence || 0) * 100) %>%.
+                <% if (result.parsedInvoice.handwriting.reasons && result.parsedInvoice.handwriting.reasons.length) { %>
+                  <div class="small mt-1"><%= result.parsedInvoice.handwriting.reasons.join('; ') %>.</div>
+                <% } %>
+              </div>
+            <% } %>
           </div>
         </div>
 
@@ -422,6 +431,8 @@
               },
               itemCount: result.parsedInvoice.itemCount,
               items: result.parsedInvoice.items,
+              confidence: result.parsedInvoice.confidence,
+              handwriting: result.parsedInvoice.handwriting,
               logs: result.parsedInvoice.logs,
               rawTextPreview: result.parsedInvoice.rawText ? result.parsedInvoice.rawText.slice(0, 3000) : '',
             }, null, 2) %></code></pre>

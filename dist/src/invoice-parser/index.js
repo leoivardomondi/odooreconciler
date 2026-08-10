@@ -108,9 +108,35 @@ function removeResolvedValidationWarnings(warnings) {
     return warnings.filter((warning) => !resolvedWarnings.has(warning));
 }
 function selectFullPageImagePaths(pages) {
-    const imagePaths = pages.flatMap((page) => (page.image_path ? [page.image_path] : []));
-    const fullPageImages = imagePaths.filter((imagePath) => /-page-\d+\.[a-z]+$/i.test(imagePath));
+    const imagePaths = pages.flatMap((page) => [
+        ...(page.image_path ? [page.image_path] : []),
+        ...(page.image_variants || []),
+    ]);
+    const fullPageImages = imagePaths.filter((imagePath) => /-page-\d+(?:-[a-z]+)*\.[a-z]+$/i.test(imagePath));
     return fullPageImages.length > 0 ? fullPageImages : imagePaths;
+}
+function assessHandwriting(input) {
+    const reasons = [];
+    const normalized = input.ocrText.replace(/\s+/g, ' ').trim();
+    const alphaNumericCount = (normalized.match(/[a-z0-9]/gi) || []).length;
+    const suspiciousMarks = (normalized.match(/[|_~`{}<>]/g) || []).length;
+    const lowTextSignal = normalized.length > 0 && alphaNumericCount < Math.max(35, normalized.length * 0.38);
+    const recoveredRows = input.invoice.warnings.some((warning) => /handwritten invoice rows were recovered/i.test(warning));
+    const lowConfidence = input.invoice.confidence.overall < 0.68;
+    if (recoveredRows)
+        reasons.push('handwritten line-item recovery was required');
+    if (lowTextSignal)
+        reasons.push('OCR returned sparse or fragmented text');
+    if (suspiciousMarks >= 3)
+        reasons.push('OCR returned handwriting-like noise');
+    if (lowConfidence)
+        reasons.push('overall extraction confidence is low');
+    const confidence = Number(((recoveredRows ? 0.45 : 0) +
+        (lowTextSignal ? 0.25 : 0) +
+        (suspiciousMarks >= 3 ? 0.15 : 0) +
+        (lowConfidence ? 0.15 : 0)).toFixed(2));
+    const detected = confidence >= 0.35;
+    return { detected, confidence, reviewRequired: detected && confidence >= 0.55, reasons };
 }
 function sanitizeInvoiceNumberFromAddress(value, text) {
     const candidate = String(value || '').trim();
@@ -158,16 +184,24 @@ async function parseSupplierInvoice(input) {
                 const processed = await (0, imagePreprocess_1.preprocessImage)(image.imagePath);
                 warnings.push(...processed.warnings);
                 tempFilesToClean.add(processed.imagePath);
-                return { pageNumber: image.pageNumber, imagePath: processed.imagePath };
+                for (const variantPath of processed.variantPaths || [])
+                    tempFilesToClean.add(variantPath);
+                return {
+                    pageNumber: image.pageNumber,
+                    imagePath: processed.imagePath,
+                    imageVariants: processed.variantPaths,
+                };
             }));
             const ocr = await (0, ocrEngine_1.runOcr)(preprocessed, preferredOcr, input.aiConfig?.ocr, input.aiConfig?.apiKeys?.gemini);
             warnings.push(...ocr.warnings);
             ocrText = (0, normalizeText_1.normalizeText)(ocr.pages.map((page) => page.text).join('\n\n'));
+            const imageVariantsByPage = new Map(preprocessed.map((page) => [page.pageNumber, page.imageVariants || []]));
             rawPages = ocr.pages.map((page) => ({
                 page_number: page.pageNumber,
                 text: page.text,
                 ocr_used: true,
                 image_path: page.imagePath,
+                image_variants: imageVariantsByPage.get(page.pageNumber),
             }));
         }
         const combinedText = (0, normalizeText_1.normalizeText)([ocrText, pdfTextResult.text].filter(Boolean).join('\n\n'));
@@ -205,12 +239,16 @@ async function parseSupplierInvoice(input) {
         finalInvoice = (0, normalizeTotals_1.normalizeInvoiceTotals)(finalInvoice);
         finalInvoice = {
             ...finalInvoice,
+            handwriting: assessHandwriting({ ocrText, invoice: finalInvoice }),
+        };
+        finalInvoice = {
+            ...finalInvoice,
             warnings: (0, validateInvoice_1.validateInvoice)(finalInvoice),
         };
         if (input.forceAi
             ? input.aiConfig?.enabled && input.aiConfig.provider !== 'disabled'
             : input.aiConfig
-                ? (0, aiInvoiceExtractor_1.shouldUseConfiguredAiInvoiceExtraction)(finalInvoice, input.aiConfig)
+                ? Boolean(finalInvoice.handwriting?.detected) || (0, aiInvoiceExtractor_1.shouldUseConfiguredAiInvoiceExtraction)(finalInvoice, input.aiConfig)
                 : (0, aiInvoiceExtractor_1.shouldUseAiInvoiceExtraction)(finalInvoice)) {
             if (input.aiConfig?.enabled && input.aiConfig.provider !== 'disabled') {
                 warnings.push(`AI interpretation configured: ${input.aiConfig.provider} ${input.aiConfig.model || ''} reads OCR/PDF text after OCR.`);

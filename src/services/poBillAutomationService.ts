@@ -2053,6 +2053,8 @@ export async function runPoBillAutomation(
     })),
     rawText: [invoiceRaw.ocr_text, invoiceRaw.pdf_text].filter(Boolean).join('\n\n'),
     logs: invoiceLogs,
+    confidence: supplierInvoice.confidence,
+    handwriting: supplierInvoice.handwriting,
   };
   const invoiceFingerprint = buildInvoiceFingerprint({
     attachmentContent: attachment.content,
@@ -2436,7 +2438,8 @@ export async function runPoBillAutomation(
   const hasUnreliableAiOutput = parsedInvoice.logs.some((log) =>
     /converted from markdown\/prose|malformed json|parsed from non-json ai response/i.test(log),
   );
-  const extractionQualityPassed = hasValidInvoiceItem && !hasUnreliableAiOutput;
+  const handwritingReviewRequired = Boolean(parsedInvoice.handwriting?.reviewRequired);
+  const extractionQualityPassed = hasValidInvoiceItem && !hasUnreliableAiOutput && !handwritingReviewRequired;
   addCheck(
     checks,
     'Extraction Quality',
@@ -2445,6 +2448,8 @@ export async function runPoBillAutomation(
       ? 'Receipt contains at least one usable line item and AI output is structurally reliable.'
       : hasUnreliableAiOutput
         ? 'AI output was malformed or converted from prose; manual review is required.'
+        : handwritingReviewRequired
+          ? `Handwriting confidence is ${Math.round((parsedInvoice.handwriting?.confidence || 0) * 100)}%; manual review is required before auto-processing.`
         : 'No usable invoice line item was extracted; manual review is required.',
   );
   addCheck(

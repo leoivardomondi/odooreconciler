@@ -86,6 +86,12 @@ export interface ParsedInvoice {
     totals: number;
     overall: number;
   };
+  handwriting?: {
+    detected: boolean;
+    confidence: number;
+    reviewRequired: boolean;
+    reasons: string[];
+  };
   warnings: string[];
   raw: {
     pdf_text?: string;
@@ -96,6 +102,7 @@ export interface ParsedInvoice {
       text: string;
       ocr_used: boolean;
       image_path?: string;
+      image_variants?: string[];
     }>;
   };
 }
@@ -114,6 +121,7 @@ export interface OcrPageResult {
   text: string;
   confidence: number | null;
   imagePath: string;
+  imageVariants?: string[];
   engine: 'google' | 'tesseract' | 'nvidia_nemoretriever' | 'gemini_vision';
 }
 

@@ -126,6 +126,7 @@ async function preprocessImage(imagePath) {
         const data = imageData.data;
         const contrast = Math.max(1, Number(process.env.OCR_CONTRAST || 1.35));
         const threshold = Math.max(0, Math.min(255, Number(process.env.OCR_THRESHOLD || 0)));
+        const thresholdData = new Uint8ClampedArray(data);
         for (let index = 0; index < data.length; index += 4) {
             const gray = data[index] * 0.299 + data[index + 1] * 0.587 + data[index + 2] * 0.114;
             let adjusted = clamp((gray - 128) * contrast + 128);
@@ -135,14 +136,25 @@ async function preprocessImage(imagePath) {
             data[index] = adjusted;
             data[index + 1] = adjusted;
             data[index + 2] = adjusted;
+            const handwritingThreshold = adjusted >= (threshold || 178) ? 255 : 0;
+            thresholdData[index] = handwritingThreshold;
+            thresholdData[index + 1] = handwritingThreshold;
+            thresholdData[index + 2] = handwritingThreshold;
         }
         context.putImageData(imageData, 0, 0);
         const parsed = path_1.default.parse(imagePath);
         const processedPath = path_1.default.join(parsed.dir, `${parsed.name}-ocr.png`);
         await promises_1.default.writeFile(processedPath, await canvas.encode('png'));
+        const thresholdCanvas = canvasModule.createCanvas(image.width, image.height);
+        const thresholdContext = thresholdCanvas.getContext('2d');
+        const thresholdImageData = thresholdContext.createImageData(image.width, image.height);
+        thresholdImageData.data.set(thresholdData);
+        thresholdContext.putImageData(thresholdImageData, 0, 0);
+        const handwritingPath = path_1.default.join(parsed.dir, `${parsed.name}-handwriting.png`);
+        await promises_1.default.writeFile(handwritingPath, await thresholdCanvas.encode('png'));
         const oriented = await autoOrientImage(processedPath);
         warnings.push(...oriented.warnings);
-        return { imagePath: oriented.imagePath, warnings };
+        return { imagePath: oriented.imagePath, variantPaths: [handwritingPath], warnings };
     }
     catch (error) {
         warnings.push(`Image preprocessing failed for ${path_1.default.basename(imagePath)}: ${error instanceof Error ? error.message : String(error)}`);

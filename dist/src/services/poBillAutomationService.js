@@ -1528,6 +1528,8 @@ async function runPoBillAutomation(client, input) {
         })),
         rawText: [invoiceRaw.ocr_text, invoiceRaw.pdf_text].filter(Boolean).join('\n\n'),
         logs: invoiceLogs,
+        confidence: supplierInvoice.confidence,
+        handwriting: supplierInvoice.handwriting,
     };
     const invoiceFingerprint = buildInvoiceFingerprint({
         attachmentContent: attachment.content,
@@ -1816,12 +1818,15 @@ async function runPoBillAutomation(client, input) {
     const hasValidInvoiceItem = parsedInvoice.items.some((item) => Boolean(item.description?.trim()) &&
         (typeof item.amount === 'number' || (typeof item.quantity === 'number' && typeof item.unitPrice === 'number')));
     const hasUnreliableAiOutput = parsedInvoice.logs.some((log) => /converted from markdown\/prose|malformed json|parsed from non-json ai response/i.test(log));
-    const extractionQualityPassed = hasValidInvoiceItem && !hasUnreliableAiOutput;
+    const handwritingReviewRequired = Boolean(parsedInvoice.handwriting?.reviewRequired);
+    const extractionQualityPassed = hasValidInvoiceItem && !hasUnreliableAiOutput && !handwritingReviewRequired;
     addCheck(checks, 'Extraction Quality', extractionQualityPassed ? 'pass' : 'fail', extractionQualityPassed
         ? 'Receipt contains at least one usable line item and AI output is structurally reliable.'
         : hasUnreliableAiOutput
             ? 'AI output was malformed or converted from prose; manual review is required.'
-            : 'No usable invoice line item was extracted; manual review is required.');
+            : handwritingReviewRequired
+                ? `Handwriting confidence is ${Math.round((parsedInvoice.handwriting?.confidence || 0) * 100)}%; manual review is required before auto-processing.`
+                : 'No usable invoice line item was extracted; manual review is required.');
     addCheck(checks, 'Item Count', itemCountMatches ? 'pass' : parsedInvoice.itemCount === 0 ? 'warn' : 'fail', `Invoice has ${parsedInvoice.itemCount} readable item(s); PO has ${poLines.length} item(s).`);
     const coreMatchScore = bestCandidate
         ? bestCandidate.vendorScore + (combinedMatch ? 40 : bestCandidate.totalScore) + bestCandidate.dateScore
