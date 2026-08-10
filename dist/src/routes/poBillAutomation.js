@@ -3,6 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+const node_crypto_1 = require("node:crypto");
 const path_1 = __importDefault(require("path"));
 const express_1 = require("express");
 const repositories_1 = require("../models/repositories");
@@ -14,6 +15,7 @@ const logService_1 = require("../services/logService");
 const helpers_1 = require("../utils/helpers");
 const router = (0, express_1.Router)();
 const RECENT_PDFS_PAGE_SIZE = 25;
+const manualPoCheckJobs = new Map();
 function parsePositiveInteger(value, fallback = 1) {
     const parsed = Number(value);
     return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
@@ -72,6 +74,7 @@ async function renderPage(res, options) {
         queueDiagnostics,
         schedulerStatus,
         result: options.result || null,
+        manualJob: options.manualJob || null,
         form: {
             attachmentId: options.form?.attachmentId || '',
             purchaseOrderSearch: options.form?.purchaseOrderSearch || '',
@@ -83,19 +86,27 @@ async function renderPage(res, options) {
 router.get('/po-bill-automation', async (req, res) => {
     const requestedPdfPage = parsePositiveInteger(req.query.pdfPage, 1);
     const loadRecentPdfs = req.query.loadPdfs === '1' || requestedPdfPage > 1 || Boolean(String(req.query.attachmentId || '').trim());
+    const manualJobId = String(req.query.jobId || '').trim();
+    const manualJob = manualJobId ? manualPoCheckJobs.get(manualJobId) || null : null;
     try {
         await renderPage(res, {
-            status: typeof req.query.message === 'string'
-                ? { type: 'info', message: req.query.message }
-                : typeof req.query.error === 'string'
-                    ? { type: 'danger', message: req.query.error }
-                    : null,
+            status: manualJob?.status === 'failed'
+                ? { type: 'danger', message: manualJob.error || 'PO bill check failed.' }
+                : manualJob?.status === 'completed'
+                    ? { type: 'success', message: 'PO bill check completed.' }
+                    : typeof req.query.message === 'string'
+                        ? { type: 'info', message: req.query.message }
+                        : typeof req.query.error === 'string'
+                            ? { type: 'danger', message: req.query.error }
+                            : null,
             form: {
                 attachmentId: String(req.query.attachmentId || ''),
                 purchaseOrderSearch: String(req.query.purchaseOrderSearch || ''),
                 mode: req.query.mode === 'auto' ? 'auto' : 'review',
                 pdfPage: String(requestedPdfPage),
             },
+            result: manualJob?.status === 'completed' ? manualJob.result : null,
+            manualJob: manualJob ? { id: manualJobId, status: manualJob.status } : null,
             loadRecentPdfs,
         });
     }
@@ -111,6 +122,7 @@ router.get('/po-bill-automation', async (req, res) => {
             recentPdfsLoaded: false,
             queueDiagnostics: null,
             result: null,
+            manualJob: null,
             form: {
                 attachmentId: String(req.query.attachmentId || ''),
                 purchaseOrderSearch: String(req.query.purchaseOrderSearch || ''),
@@ -160,6 +172,9 @@ router.post('/po-bill-automation/run', async (req, res) => {
     if (!Number.isFinite(attachmentId) || attachmentId <= 0) {
         return res.redirect(`/po-bill-automation?error=${encodeURIComponent('Enter a valid Odoo attachment ID.')}`);
     }
+    const jobId = (0, node_crypto_1.randomUUID)();
+    manualPoCheckJobs.set(jobId, { status: 'running', createdAt: Date.now() });
+    setTimeout(() => manualPoCheckJobs.delete(jobId), 30 * 60 * 1000);
     void (async () => {
         try {
             const { client, settings } = await buildClient();
@@ -169,6 +184,7 @@ router.post('/po-bill-automation/run', async (req, res) => {
                 mode,
                 aiConfig: settings.ai,
             });
+            manualPoCheckJobs.set(jobId, { status: 'completed', result, createdAt: Date.now() });
             await (0, logService_1.logEvent)('info', 'Manual PO bill check completed in background', {
                 attachmentId,
                 purchaseOrderSearch: purchaseOrderSearch || null,
@@ -179,16 +195,19 @@ router.post('/po-bill-automation/run', async (req, res) => {
             });
         }
         catch (error) {
+            const message = error instanceof Error ? error.message : 'Unknown PO bill automation failure.';
+            manualPoCheckJobs.set(jobId, { status: 'failed', error: message, createdAt: Date.now() });
             await (0, logService_1.logEvent)('error', 'Manual PO bill check failed in background', {
                 attachmentId,
                 purchaseOrderSearch: purchaseOrderSearch || null,
                 mode,
-                error: error instanceof Error ? error.message : 'Unknown PO bill automation failure.',
+                error: message,
             });
         }
     })();
     const query = new URLSearchParams({
-        message: `PO bill check for attachment ${attachmentId} started in background.`,
+        message: `PO bill check for attachment ${attachmentId} is running. This page will show the result when complete.`,
+        jobId,
         attachmentId: String(attachmentId),
         pdfPage: form.pdfPage,
     });
