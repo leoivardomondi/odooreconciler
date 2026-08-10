@@ -376,7 +376,7 @@
 
     <div class="col-lg-7">
       <% if (locals.manualJob) { %>
-        <div class="card shadow-sm border-0 app-card mb-4" data-manual-job-id="<%= locals.manualJob.id %>">
+        <div class="card shadow-sm border-0 app-card mb-4" data-manual-job-id="<%= locals.manualJob.id %>" data-manual-job-started-at="<%= locals.manualJob.startedAt %>" data-manual-job-finished-at="<%= locals.manualJob.finishedAt || '' %>">
           <div class="card-body p-4">
             <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
               <div>
@@ -387,6 +387,7 @@
                 <div class="text-secondary small">
                   Attachment <%= form.attachmentId || '—' %>. The result is shown below when processing completes.
                 </div>
+                <div class="small mt-2" id="manual-job-elapsed">Elapsed: calculating…</div>
               </div>
               <span class="badge text-bg-<%= locals.manualJob.status === 'running' ? 'primary' : locals.manualJob.status === 'completed' ? 'success' : 'danger' %>">
                 <%= locals.manualJob.status === 'running' ? 'Running' : locals.manualJob.status === 'completed' ? 'Completed' : 'Failed' %>
@@ -577,6 +578,24 @@
   <% if (locals.manualJob?.status === 'running') { %>
     const manualJobCard = document.querySelector('[data-manual-job-id]');
     if (manualJobCard) {
+      const elapsed = document.getElementById('manual-job-elapsed');
+      const startedAt = Number(manualJobCard.dataset.manualJobStartedAt || Date.now());
+      const finishedAt = Number(manualJobCard.dataset.manualJobFinishedAt || 0);
+      const formatElapsed = (milliseconds) => {
+        const totalSeconds = Math.max(0, Math.floor(milliseconds / 1000));
+        const minutes = Math.floor(totalSeconds / 60);
+        const seconds = totalSeconds % 60;
+        return `${minutes}m ${String(seconds).padStart(2, '0')}s`;
+      };
+      const updateElapsed = () => {
+        if (elapsed) {
+          elapsed.textContent = `Elapsed: ${formatElapsed((finishedAt || Date.now()) - startedAt)}`;
+        }
+      };
+      updateElapsed();
+      if (!finishedAt) {
+        window.setInterval(updateElapsed, 1000);
+      }
       const nextUrl = new URL(window.location.href);
       nextUrl.searchParams.set('jobId', manualJobCard.dataset.manualJobId || '');
       window.history.replaceState({}, '', nextUrl);

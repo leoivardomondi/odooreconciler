@@ -22,7 +22,8 @@ type ManualPoCheckJob = {
   status: 'running' | 'completed' | 'failed';
   result?: PoBillAutomationResult;
   error?: string;
-  createdAt: number;
+  startedAt: number;
+  finishedAt?: number;
 };
 const manualPoCheckJobs = new Map<string, ManualPoCheckJob>();
 
@@ -74,7 +75,7 @@ async function renderPage(
       pdfPage?: string;
     };
     loadRecentPdfs?: boolean;
-    manualJob?: { id: string; status: ManualPoCheckJob['status'] } | null;
+    manualJob?: { id: string; status: ManualPoCheckJob['status']; startedAt: number; finishedAt?: number } | null;
   },
 ) {
   const requestedPdfPage = parsePositiveInteger(options.form?.pdfPage, 1);
@@ -140,7 +141,7 @@ router.get('/po-bill-automation', async (req, res) => {
         pdfPage: String(requestedPdfPage),
       },
       result: manualJob?.status === 'completed' ? manualJob.result : null,
-      manualJob: manualJob ? { id: manualJobId, status: manualJob.status } : null,
+      manualJob: manualJob ? { id: manualJobId, status: manualJob.status, startedAt: manualJob.startedAt, finishedAt: manualJob.finishedAt } : null,
       loadRecentPdfs,
     });
   } catch (error) {
@@ -213,7 +214,8 @@ router.post('/po-bill-automation/run', async (req, res) => {
   }
 
   const jobId = randomUUID();
-  manualPoCheckJobs.set(jobId, { status: 'running', createdAt: Date.now() });
+  const startedAt = Date.now();
+  manualPoCheckJobs.set(jobId, { status: 'running', startedAt });
   setTimeout(() => manualPoCheckJobs.delete(jobId), 30 * 60 * 1000);
 
   void (async () => {
@@ -226,7 +228,7 @@ router.post('/po-bill-automation/run', async (req, res) => {
         aiConfig: settings.ai,
       });
 
-      manualPoCheckJobs.set(jobId, { status: 'completed', result, createdAt: Date.now() });
+      manualPoCheckJobs.set(jobId, { status: 'completed', result, startedAt, finishedAt: Date.now() });
 
       await logEvent('info', 'Manual PO bill check completed in background', {
         attachmentId,
@@ -238,7 +240,7 @@ router.post('/po-bill-automation/run', async (req, res) => {
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown PO bill automation failure.';
-      manualPoCheckJobs.set(jobId, { status: 'failed', error: message, createdAt: Date.now() });
+      manualPoCheckJobs.set(jobId, { status: 'failed', error: message, startedAt, finishedAt: Date.now() });
       await logEvent('error', 'Manual PO bill check failed in background', {
         attachmentId,
         purchaseOrderSearch: purchaseOrderSearch || null,
@@ -255,7 +257,7 @@ router.post('/po-bill-automation/run', async (req, res) => {
     },
     form,
     result: null,
-    manualJob: { id: jobId, status: 'running' },
+    manualJob: { id: jobId, status: 'running', startedAt },
     loadRecentPdfs,
   });
 });
