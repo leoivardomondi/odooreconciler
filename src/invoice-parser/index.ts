@@ -133,6 +133,15 @@ function assessHandwriting(input: { ocrText: string; invoice: ParsedInvoice }) {
   return { detected, confidence, reviewRequired: detected && confidence >= 0.55, reasons };
 }
 
+function isGemmaVisionConfigured(config?: ParseSupplierInvoiceInput['aiConfig']) {
+  return Boolean(
+    config?.enabled &&
+    config.provider === 'nvidia' &&
+    config.model.trim() === 'google/gemma-4-31b-it' &&
+    (config.apiKeys?.nvidia || process.env.NVIDIA_API_KEY),
+  );
+}
+
 function sanitizeInvoiceNumberFromAddress(value: string | null | undefined, text: string) {
   const candidate = String(value || '').trim();
   if (!candidate) return null;
@@ -161,11 +170,13 @@ export async function parseSupplierInvoice(input: ParseSupplierInvoiceInput): Pr
     warnings.push(...pdfTextResult.warnings);
     if (input.aiConfig?.ocr?.enabled && input.aiConfig.ocr.provider !== 'disabled') {
       warnings.push(
-        `OCR pipeline configured: ${input.aiConfig.ocr.model || input.aiConfig.ocr.provider} reads scanned pages before invoice AI.`,
+        `OCR fallback configured: ${input.aiConfig.ocr.model || input.aiConfig.ocr.provider} runs only if the primary invoice AI path fails or is below confidence threshold.`,
       );
     }
 
     let ocrText = '';
+    let gemmaFirstAttempted = false;
+    let gemmaFirstFailed = false;
     let rawPages: ParsedInvoice['raw']['pages'] = [
       {
         page_number: 1,
@@ -174,9 +185,73 @@ export async function parseSupplierInvoice(input: ParseSupplierInvoiceInput): Pr
       },
     ];
 
-    if (input.alwaysOcr || !looksReadableInvoiceText(pdfTextResult.text)) {
+    if (isGemmaVisionConfigured(input.aiConfig)) {
+      gemmaFirstAttempted = true;
+      const rendered = await renderPdfToImages(input.filePath);
+      warnings.push(...rendered.warnings);
+      rendered.images.forEach((image) => tempFilesToClean.add(image.imagePath));
+
+      const fullPageImages = rendered.images.filter((image) =>
+        /-page-\d+\.png$/i.test(image.imagePath) || rendered.images.length === 1,
+      );
+      const preprocessed = await Promise.all(
+        fullPageImages.map(async (image) => {
+          const processed = await preprocessImage(image.imagePath);
+          warnings.push(...processed.warnings);
+          tempFilesToClean.add(processed.imagePath);
+          for (const variantPath of processed.variantPaths || []) tempFilesToClean.add(variantPath);
+          return { pageNumber: image.pageNumber, imagePath: processed.imagePath, imageVariants: processed.variantPaths || [] };
+        }),
+      );
+      rawPages = fullPageImages.map((image, index) => ({
+        page_number: image.pageNumber,
+        text: '',
+        ocr_used: false,
+        image_path: image.imagePath,
+        image_variants: preprocessed[index]?.imageVariants,
+      }));
+
+      const gemmaImages = preprocessed.flatMap((page, index) => [
+        fullPageImages[index].imagePath,
+        page.imagePath,
+        ...page.imageVariants,
+      ]);
+      const gemmaResult = await extractInvoiceWithAi({
+        imagePaths: gemmaImages,
+        ocrText: '',
+        pdfText: pdfTextResult.text,
+        originalFilename: input.originalFilename,
+        config: input.aiConfig,
+      });
+      warnings.push(...gemmaResult.warnings);
+
+      const confidenceThreshold = Number(input.aiConfig?.confidenceThreshold || 0.75);
+      const gemmaConfidence = gemmaResult.extraction?.confidence ?? 0;
+      if (gemmaResult.extraction && gemmaConfidence >= confidenceThreshold) {
+        let gemmaInvoice = mergeAiInvoiceExtraction(emptyInvoice(input, warnings), gemmaResult.extraction);
+        gemmaInvoice = normalizeInvoiceTotals(gemmaInvoice);
+        gemmaInvoice = {
+          ...gemmaInvoice,
+          confidence: computeConfidence(gemmaInvoice),
+          raw: { ...gemmaInvoice.raw, pages: rawPages },
+          warnings: validateInvoice(gemmaInvoice),
+        };
+        return gemmaInvoice;
+      }
+
+      gemmaFirstFailed = true;
       warnings.push(
-        input.alwaysOcr
+        gemmaResult.extraction
+          ? `Gemma extraction confidence ${gemmaConfidence.toFixed(2)} was below the configured threshold ${confidenceThreshold.toFixed(2)}; OCR fallback started.`
+          : 'Gemma extraction returned no usable structured result; OCR fallback started.',
+      );
+    }
+
+    if (gemmaFirstFailed || input.alwaysOcr || !looksReadableInvoiceText(pdfTextResult.text)) {
+      warnings.push(
+        gemmaFirstFailed
+          ? 'Primary Gemma vision extraction failed or was below threshold, so OCR fallback was started.'
+          : input.alwaysOcr
           ? 'OCR was forced so scanned/garbled invoice pages can be cross-checked against embedded PDF text.'
           : 'Embedded PDF text was unreadable or suspicious, so OCR was attempted.',
       );
@@ -263,15 +338,17 @@ export async function parseSupplierInvoice(input: ParseSupplierInvoiceInput): Pr
     };
 
     if (
-      input.forceAi
+        !gemmaFirstAttempted && (input.forceAi
         ? input.aiConfig?.enabled && input.aiConfig.provider !== 'disabled'
         : input.aiConfig
         ? Boolean(finalInvoice.handwriting?.detected) || shouldUseConfiguredAiInvoiceExtraction(finalInvoice, input.aiConfig)
-        : shouldUseAiInvoiceExtraction(finalInvoice)
+        : shouldUseAiInvoiceExtraction(finalInvoice))
     ) {
       if (input.aiConfig?.enabled && input.aiConfig.provider !== 'disabled') {
         warnings.push(
-          `AI interpretation configured: ${input.aiConfig.provider} ${input.aiConfig.model || ''} reads OCR/PDF text after OCR.`,
+          isGemmaVisionConfigured(input.aiConfig)
+            ? `AI interpretation configured: ${input.aiConfig.provider} ${input.aiConfig.model || ''} reads original and enhanced invoice images first; OCR is fallback-only.`
+            : `AI interpretation configured: ${input.aiConfig.provider} ${input.aiConfig.model || ''} reads OCR/PDF text after OCR.`,
         );
       }
       let aiImagePaths = selectFullPageImagePaths(finalInvoice.raw.pages);

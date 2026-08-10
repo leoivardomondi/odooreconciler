@@ -1043,7 +1043,7 @@
             </button>
           </div>
           <div class="alert alert-light border small" role="alert">
-            Recommended pipeline: NVIDIA Nemotron OCR reads scanned PDF pages first, then the selected invoice AI model reads the OCR/PDF text, then PO matching gates decide whether a bill can be created.
+            With Gemma 4 selected, the AI reads original and enhanced invoice images first; Nemotron OCR is used only as fallback. Other AI models retain the OCR-first pipeline, followed by PO matching safety gates.
           </div>
           <div class="row g-3">
             <div class="col-12">
