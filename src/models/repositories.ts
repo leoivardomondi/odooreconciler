@@ -371,10 +371,12 @@ export async function getSettings(): Promise<AppSettings> {
     ...safeJsonParse(row.parser_config_json, {}),
   };
   const rawAi = safeJsonParse<Partial<typeof DEFAULT_AI_EXTRACTION_CONFIG>>(row.ai_config_json, {});
-  const encryptedApiKeys = safeJsonParse<Record<string, string>>(
+  const encryptedKeysPayload = safeJsonParse<Record<string, unknown>>(
     (rawAi as Record<string, unknown>).apiKeysEncryptedJson as string,
     {},
   );
+  const encryptedApiKeys = (encryptedKeysPayload.providers || encryptedKeysPayload) as Record<string, string>;
+  const encryptedNvidiaModelKeys = (encryptedKeysPayload.nvidiaModels || {}) as Record<string, string>;
   const rawAiOcr = ((rawAi as Record<string, unknown>).ocr || {}) as Partial<typeof DEFAULT_AI_EXTRACTION_CONFIG.ocr> & {
     apiKeyEncrypted?: string;
   };
@@ -397,6 +399,18 @@ export async function getSettings(): Promise<AppSettings> {
       aiApiKeys[key] = '';
     }
   });
+  const nvidiaModelKeys: Record<string, string> = {};
+  for (const [model, encrypted] of Object.entries(encryptedNvidiaModelKeys)) {
+    if (!encrypted) continue;
+    try {
+      nvidiaModelKeys[model] = decryptSecret(encrypted);
+    } catch (error) {
+      console.warn(
+        `[settings] Stored NVIDIA model API key for ${model} could not be decrypted.`,
+        error instanceof Error ? error.message : error,
+      );
+    }
+  }
   let aiOcrApiKey = '';
   if (rawAiOcr.apiKeyEncrypted) {
     try {
@@ -416,6 +430,7 @@ export async function getSettings(): Promise<AppSettings> {
     confidenceThreshold: Number(rawAi.confidenceThreshold || DEFAULT_AI_EXTRACTION_CONFIG.confidenceThreshold),
     maxImages: Number(rawAi.maxImages || DEFAULT_AI_EXTRACTION_CONFIG.maxImages),
     apiKeys: aiApiKeys,
+    nvidiaModelKeys,
     ocr: {
       ...DEFAULT_AI_EXTRACTION_CONFIG.ocr,
       ...rawAiOcr,
@@ -591,6 +606,8 @@ export async function saveSettings(input: {
   const submittedAi = input.ai || {};
   const submittedAiKeys = (submittedAi.apiKeys || {}) as Record<string, string>;
   const clearAiKeys = (submittedAi.clearApiKeys || {}) as Record<string, unknown>;
+  const submittedNvidiaModelKeys = (submittedAi.nvidiaModelKeys || {}) as Record<string, string>;
+  const clearNvidiaModelKeys = (submittedAi.clearNvidiaModelKeys || {}) as Record<string, unknown>;
   const aiApiKeys = { ...existing.ai.apiKeys };
   (Object.keys(aiApiKeys) as Array<keyof typeof aiApiKeys>).forEach((key) => {
     if (clearAiKeys[key]) {
@@ -602,9 +619,25 @@ export async function saveSettings(input: {
       aiApiKeys[key] = submitted;
     }
   });
-  const encryptedAiKeys = (Object.keys(aiApiKeys) as Array<keyof typeof aiApiKeys>).reduce<Record<string, string>>(
+  const nvidiaModelKeys = { ...(existing.ai.nvidiaModelKeys || {}) };
+  for (const model of new Set([...Object.keys(nvidiaModelKeys), ...Object.keys(submittedNvidiaModelKeys)])) {
+    if (clearNvidiaModelKeys[model]) {
+      delete nvidiaModelKeys[model];
+      continue;
+    }
+    const submitted = submittedNvidiaModelKeys[model]?.trim();
+    if (submitted) nvidiaModelKeys[model] = submitted;
+  }
+  const encryptedProviderKeys = (Object.keys(aiApiKeys) as Array<keyof typeof aiApiKeys>).reduce<Record<string, string>>(
     (accumulator, key) => {
       accumulator[key] = aiApiKeys[key] ? encryptSecret(aiApiKeys[key]) : '';
+      return accumulator;
+    },
+    {},
+  );
+  const encryptedNvidiaModelKeys = Object.entries(nvidiaModelKeys).reduce<Record<string, string>>(
+    (accumulator, [model, key]) => {
+      if (key) accumulator[model] = encryptSecret(key);
       return accumulator;
     },
     {},
@@ -612,6 +645,7 @@ export async function saveSettings(input: {
   const ai = {
     ...existing.ai,
     ...submittedAi,
+    nvidiaModelKeys,
     ocr: {
       ...existing.ai.ocr,
       ...((submittedAi.ocr || {}) as Record<string, unknown>),
@@ -623,10 +657,12 @@ export async function saveSettings(input: {
             ? encryptSecret(existing.ai.ocr.apiKey)
             : '',
     },
-    apiKeysEncryptedJson: JSON.stringify(encryptedAiKeys),
+    apiKeysEncryptedJson: JSON.stringify({ providers: encryptedProviderKeys, nvidiaModels: encryptedNvidiaModelKeys }),
   };
   delete (ai as Record<string, unknown>).apiKeys;
   delete (ai as Record<string, unknown>).clearApiKeys;
+  delete (ai as Record<string, unknown>).nvidiaModelKeys;
+  delete (ai as Record<string, unknown>).clearNvidiaModelKeys;
   delete ((ai as Record<string, unknown>).ocr as Record<string, unknown>).apiKey;
   delete ((ai as Record<string, unknown>).ocr as Record<string, unknown>).clearApiKey;
   const scheduler = {

@@ -71,6 +71,7 @@ exports.DEFAULT_AI_EXTRACTION_CONFIG = {
         anthropic: '',
         openrouter: '',
     },
+    nvidiaModelKeys: {},
     ocr: {
         provider: 'disabled',
         enabled: false,

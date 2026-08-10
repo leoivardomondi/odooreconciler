@@ -58,6 +58,7 @@ export interface AiExtractionConfig {
   confidenceThreshold: number;
   maxImages: number;
   apiKeys: AiProviderApiKeys;
+  nvidiaModelKeys: Record<string, string>;
   ocr: {
     provider: 'disabled' | 'nvidia_nemoretriever' | 'gemini_vision' | 'google';
     enabled: boolean;

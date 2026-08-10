@@ -79,6 +79,10 @@ const KNOWN_PROVIDER_MODELS = [
   ...OPENROUTER_AI_MODELS,
 ];
 
+function nvidiaModelFieldName(model: string) {
+  return `nvidiaModelKey_${model.replace(/[^a-zA-Z0-9]+/g, '_')}`;
+}
+
 function normalizeAiModelForProvider(provider: string, model: string) {
   const trimmed = model.trim();
   if (provider === 'gemini' && (!trimmed || NVIDIA_AI_MODELS.includes(trimmed) || OPENAI_AI_MODELS.includes(trimmed))) {
@@ -609,6 +613,12 @@ async function buildFormValues(
     hasGeminiApiKey: Boolean(resolvedExisting.ai.apiKeys.gemini),
     hasAnthropicApiKey: Boolean(resolvedExisting.ai.apiKeys.anthropic),
     hasOpenrouterApiKey: Boolean(resolvedExisting.ai.apiKeys.openrouter),
+    nvidiaModelKeys: Object.fromEntries(
+      NVIDIA_AI_MODELS.map((model) => [
+        model,
+        source[nvidiaModelFieldName(model)] ?? resolvedExisting.ai.nvidiaModelKeys?.[model] ?? '',
+      ]),
+    ),
     ocrProvider: source.ocrProvider ?? resolvedExisting.ai.ocr.provider,
     ocrEnabled:
       source.ocrEnabled === 'on' ||
@@ -1238,6 +1248,12 @@ router.post('/settings', validators, async (req: Request, res: Response) => {
           anthropic: req.body.anthropicApiKey?.trim() || '',
           openrouter: req.body.openrouterApiKey?.trim() || '',
         },
+        nvidiaModelKeys: Object.fromEntries(
+          NVIDIA_AI_MODELS.map((model) => [model, req.body[nvidiaModelFieldName(model)]?.trim() || '']),
+        ),
+        clearNvidiaModelKeys: Object.fromEntries(
+          NVIDIA_AI_MODELS.map((model) => [model, req.body[`clear_${nvidiaModelFieldName(model)}`] === 'on']),
+        ),
         clearApiKeys: {
           openai: req.body.clearOpenaiApiKey === 'on',
           nvidia: req.body.clearNvidiaApiKey === 'on',
@@ -1336,6 +1352,81 @@ router.post('/settings', validators, async (req: Request, res: Response) => {
     });
   }
 });
+
+router.post(
+  '/settings/test-ai-connection',
+  async (req: Request, res: Response) => {
+    const currentSettings = await getSettings();
+    const provider = req.body.aiProvider?.trim() || currentSettings.ai.provider;
+    const submittedPreset = req.body.aiModelPreset?.trim() || '';
+    const submittedModel = submittedPreset === 'custom'
+      ? req.body.aiModel?.trim() || ''
+      : submittedPreset || req.body.aiModel?.trim() || currentSettings.ai.model;
+    const model = normalizeAiModelForProvider(provider, submittedModel);
+    const modelKey = provider === 'nvidia' ? req.body[nvidiaModelFieldName(model)]?.trim() : '';
+    const providerKeyField = provider === 'nvidia' ? 'nvidiaApiKey' : `${provider}ApiKey`;
+    const storedProviderKey = provider !== 'disabled'
+      ? currentSettings.ai.apiKeys[provider as keyof typeof currentSettings.ai.apiKeys]
+      : '';
+    const apiKey = modelKey || req.body[providerKeyField]?.trim() ||
+      (provider === 'nvidia' ? currentSettings.ai.nvidiaModelKeys?.[model] || currentSettings.ai.apiKeys.nvidia : storedProviderKey);
+    const source = req.body as Record<string, string>;
+
+    if (provider === 'disabled') {
+      return renderSettingsPage(res, { existing: currentSettings, source, status: { type: 'danger', message: 'Select an AI provider before testing.' } });
+    }
+    if (!apiKey) {
+      return renderSettingsPage(res, { existing: currentSettings, source, status: { type: 'danger', message: `No API key is configured for ${provider} / ${model}.` } });
+    }
+
+    try {
+      const configuredBaseUrl = req.body.aiBaseUrl?.trim() || currentSettings.ai.baseUrl;
+      let endpoint = '';
+      let headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      let body: Record<string, unknown>;
+
+      if (provider === 'gemini') {
+        endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+        headers['x-goog-api-key'] = apiKey;
+        body = { contents: [{ role: 'user', parts: [{ text: 'Reply with the single word OK.' }] }] };
+      } else if (provider === 'anthropic') {
+        endpoint = 'https://api.anthropic.com/v1/messages';
+        headers['x-api-key'] = apiKey;
+        headers['anthropic-version'] = '2023-06-01';
+        body = { model, max_tokens: 8, messages: [{ role: 'user', content: 'Reply with the single word OK.' }] };
+      } else {
+        const defaultBaseUrl = provider === 'nvidia'
+          ? 'https://integrate.api.nvidia.com/v1'
+          : provider === 'openrouter'
+            ? 'https://openrouter.ai/api/v1'
+            : 'https://api.openai.com/v1';
+        const baseUrl = (configuredBaseUrl || defaultBaseUrl).replace(/\/+$/, '');
+        endpoint = baseUrl.endsWith('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`;
+        headers.Authorization = `Bearer ${apiKey}`;
+        body = { model, messages: [{ role: 'user', content: 'Reply with the single word OK.' }], max_tokens: 8, temperature: 0 };
+      }
+
+      const response = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(30000) });
+      const payload = await response.json().catch(() => null) as { error?: { message?: string }; candidates?: unknown[] } | null;
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${payload?.error?.message || 'provider rejected the test request'}`);
+      }
+
+      await renderSettingsPage(res, {
+        existing: currentSettings,
+        source,
+        status: { type: 'success', message: `API test succeeded for ${provider} / ${model}. The key and model are reachable.` },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'AI provider test failed.';
+      await renderSettingsPage(res, {
+        existing: currentSettings,
+        source,
+        status: { type: 'danger', message: `API test failed for ${provider} / ${model}: ${message}` },
+      });
+    }
+  },
+);
 
 router.post(
   '/settings/test-connection',

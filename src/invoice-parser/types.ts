@@ -31,6 +31,7 @@ export interface AiInvoiceExtractionConfig {
     anthropic: string;
     openrouter: string;
   };
+  nvidiaModelKeys?: Record<string, string>;
   ocr?: {
     provider: 'disabled' | 'nvidia_nemoretriever' | 'gemini_vision' | 'google';
     enabled: boolean;

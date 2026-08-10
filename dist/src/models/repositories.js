@@ -379,7 +379,9 @@ async function getSettings() {
         ...(0, helpers_1.safeJsonParse)(row.parser_config_json, {}),
     };
     const rawAi = (0, helpers_1.safeJsonParse)(row.ai_config_json, {});
-    const encryptedApiKeys = (0, helpers_1.safeJsonParse)(rawAi.apiKeysEncryptedJson, {});
+    const encryptedKeysPayload = (0, helpers_1.safeJsonParse)(rawAi.apiKeysEncryptedJson, {});
+    const encryptedApiKeys = (encryptedKeysPayload.providers || encryptedKeysPayload);
+    const encryptedNvidiaModelKeys = (encryptedKeysPayload.nvidiaModels || {});
     const rawAiOcr = (rawAi.ocr || {});
     const aiApiKeys = { ...helpers_1.DEFAULT_AI_EXTRACTION_CONFIG.apiKeys };
     Object.keys(aiApiKeys).forEach((key) => {
@@ -396,6 +398,17 @@ async function getSettings() {
             aiApiKeys[key] = '';
         }
     });
+    const nvidiaModelKeys = {};
+    for (const [model, encrypted] of Object.entries(encryptedNvidiaModelKeys)) {
+        if (!encrypted)
+            continue;
+        try {
+            nvidiaModelKeys[model] = (0, crypto_1.decryptSecret)(encrypted);
+        }
+        catch (error) {
+            console.warn(`[settings] Stored NVIDIA model API key for ${model} could not be decrypted.`, error instanceof Error ? error.message : error);
+        }
+    }
     let aiOcrApiKey = '';
     if (rawAiOcr.apiKeyEncrypted) {
         try {
@@ -413,6 +426,7 @@ async function getSettings() {
         confidenceThreshold: Number(rawAi.confidenceThreshold || helpers_1.DEFAULT_AI_EXTRACTION_CONFIG.confidenceThreshold),
         maxImages: Number(rawAi.maxImages || helpers_1.DEFAULT_AI_EXTRACTION_CONFIG.maxImages),
         apiKeys: aiApiKeys,
+        nvidiaModelKeys,
         ocr: {
             ...helpers_1.DEFAULT_AI_EXTRACTION_CONFIG.ocr,
             ...rawAiOcr,
@@ -550,6 +564,8 @@ async function saveSettings(input) {
     const submittedAi = input.ai || {};
     const submittedAiKeys = (submittedAi.apiKeys || {});
     const clearAiKeys = (submittedAi.clearApiKeys || {});
+    const submittedNvidiaModelKeys = (submittedAi.nvidiaModelKeys || {});
+    const clearNvidiaModelKeys = (submittedAi.clearNvidiaModelKeys || {});
     const aiApiKeys = { ...existing.ai.apiKeys };
     Object.keys(aiApiKeys).forEach((key) => {
         if (clearAiKeys[key]) {
@@ -561,13 +577,29 @@ async function saveSettings(input) {
             aiApiKeys[key] = submitted;
         }
     });
-    const encryptedAiKeys = Object.keys(aiApiKeys).reduce((accumulator, key) => {
+    const nvidiaModelKeys = { ...(existing.ai.nvidiaModelKeys || {}) };
+    for (const model of new Set([...Object.keys(nvidiaModelKeys), ...Object.keys(submittedNvidiaModelKeys)])) {
+        if (clearNvidiaModelKeys[model]) {
+            delete nvidiaModelKeys[model];
+            continue;
+        }
+        const submitted = submittedNvidiaModelKeys[model]?.trim();
+        if (submitted)
+            nvidiaModelKeys[model] = submitted;
+    }
+    const encryptedProviderKeys = Object.keys(aiApiKeys).reduce((accumulator, key) => {
         accumulator[key] = aiApiKeys[key] ? (0, crypto_1.encryptSecret)(aiApiKeys[key]) : '';
+        return accumulator;
+    }, {});
+    const encryptedNvidiaModelKeys = Object.entries(nvidiaModelKeys).reduce((accumulator, [model, key]) => {
+        if (key)
+            accumulator[model] = (0, crypto_1.encryptSecret)(key);
         return accumulator;
     }, {});
     const ai = {
         ...existing.ai,
         ...submittedAi,
+        nvidiaModelKeys,
         ocr: {
             ...existing.ai.ocr,
             ...(submittedAi.ocr || {}),
@@ -579,10 +611,12 @@ async function saveSettings(input) {
                         ? (0, crypto_1.encryptSecret)(existing.ai.ocr.apiKey)
                         : '',
         },
-        apiKeysEncryptedJson: JSON.stringify(encryptedAiKeys),
+        apiKeysEncryptedJson: JSON.stringify({ providers: encryptedProviderKeys, nvidiaModels: encryptedNvidiaModelKeys }),
     };
     delete ai.apiKeys;
     delete ai.clearApiKeys;
+    delete ai.nvidiaModelKeys;
+    delete ai.clearNvidiaModelKeys;
     delete ai.ocr.apiKey;
     delete ai.ocr.clearApiKey;
     const scheduler = {

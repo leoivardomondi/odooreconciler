@@ -544,7 +544,11 @@ function defaultModelForProvider(provider: AiInvoiceExtractionConfig['provider']
 function resolveConfiguredApiKey(
   config: AiInvoiceExtractionConfig,
   provider: AiInvoiceExtractionConfig['provider'],
+  model?: string,
 ) {
+  if (provider === 'nvidia' && model && config.nvidiaModelKeys?.[model]) {
+    return config.nvidiaModelKeys[model];
+  }
   if (provider === 'disabled') return '';
   return config.apiKeys?.[provider] || (provider === 'nvidia' ? process.env.NVIDIA_API_KEY || '' : '');
 }
@@ -890,11 +894,6 @@ async function extractInvoiceWithConfiguredAi(input: {
   const overallWarnings: string[] = [];
 
   for (const provider of candidateProviders) {
-    const apiKey = resolveConfiguredApiKey(input.config, provider);
-    if (!apiKey) {
-      continue;
-    }
-
     const configuredMaxImages = Number(input.config.maxImages || 0);
     const imageLimit = configuredMaxImages > 0
       ? Math.min(configuredMaxImages, aiImagePaths.length)
@@ -903,6 +902,10 @@ async function extractInvoiceWithConfiguredAi(input: {
     const model = provider === primaryProvider && input.config.model?.trim()
       ? input.config.model.trim()
       : defaultModelForProvider(provider);
+    const apiKey = resolveConfiguredApiKey(input.config, provider, model);
+    if (!apiKey) {
+      continue;
+    }
     const canRunTextOnly = provider === 'nvidia' && isTextOnlyNvidiaModel(model);
 
     if (imagePaths.length === 0 && !canRunTextOnly) {
