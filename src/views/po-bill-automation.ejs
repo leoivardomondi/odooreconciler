@@ -176,7 +176,13 @@
                   <td><%= item.retryAt ? formatDateTime(item.retryAt) : (item.state === 'new' || item.state === 'due' ? 'Next scheduler run' : 'Manual review') %></td>
                   <td class="text-end">
                     <a class="btn btn-sm btn-outline-secondary" href="/po-bill-automation/attachments/<%= pdf.id %>/preview" target="_blank" rel="noopener">Preview</a>
-                    <a class="btn btn-sm btn-outline-primary" href="/po-bill-automation?loadPdfs=1&attachmentId=<%= pdf.id %>">Check now</a>
+                    <form method="post" action="/po-bill-automation/run" class="d-inline" data-disable-submit="true" data-no-loading="true">
+                      <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+                      <input type="hidden" name="attachmentId" value="<%= pdf.id %>" />
+                      <input type="hidden" name="pdfPage" value="<%= recentPdfsPage.page || 1 %>" />
+                      <input type="hidden" name="loadPdfs" value="1" />
+                      <button type="submit" class="btn btn-sm btn-outline-primary">Check now</button>
+                    </form>
                   </td>
                 </tr>
               <% }) %>
