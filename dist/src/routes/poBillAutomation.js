@@ -92,6 +92,8 @@ router.get('/po-bill-automation', async (req, res) => {
                     : null,
             form: {
                 attachmentId: String(req.query.attachmentId || ''),
+                purchaseOrderSearch: String(req.query.purchaseOrderSearch || ''),
+                mode: req.query.mode === 'auto' ? 'auto' : 'review',
                 pdfPage: String(requestedPdfPage),
             },
             loadRecentPdfs,
@@ -111,8 +113,8 @@ router.get('/po-bill-automation', async (req, res) => {
             result: null,
             form: {
                 attachmentId: String(req.query.attachmentId || ''),
-                purchaseOrderSearch: '',
-                mode: 'review',
+                purchaseOrderSearch: String(req.query.purchaseOrderSearch || ''),
+                mode: req.query.mode === 'auto' ? 'auto' : 'review',
                 pdfPage: String(requestedPdfPage),
             },
         });
@@ -155,43 +157,48 @@ router.post('/po-bill-automation/run', async (req, res) => {
         pdfPage: String(req.body.pdfPage || '1'),
     };
     const loadRecentPdfs = req.body.loadPdfs === '1';
-    try {
-        if (!Number.isFinite(attachmentId) || attachmentId <= 0) {
-            throw new Error('Enter a valid Odoo attachment ID.');
+    if (!Number.isFinite(attachmentId) || attachmentId <= 0) {
+        return res.redirect(`/po-bill-automation?error=${encodeURIComponent('Enter a valid Odoo attachment ID.')}`);
+    }
+    void (async () => {
+        try {
+            const { client, settings } = await buildClient();
+            const result = await (0, poBillAutomationService_1.runPoBillAutomation)(client, {
+                attachmentId,
+                purchaseOrderSearch,
+                mode,
+                aiConfig: settings.ai,
+            });
+            await (0, logService_1.logEvent)('info', 'Manual PO bill check completed in background', {
+                attachmentId,
+                purchaseOrderSearch: purchaseOrderSearch || null,
+                mode,
+                canAutoProceed: result.canAutoProceed,
+                actionsTaken: result.actionsTaken,
+                actionsPending: result.actionsPending,
+            });
         }
-        const { client, settings } = await buildClient();
-        const result = await (0, poBillAutomationService_1.runPoBillAutomation)(client, {
-            attachmentId,
-            purchaseOrderSearch,
-            mode,
-            aiConfig: settings.ai,
-        });
-        await renderPage(res, {
-            status: {
-                type: result.canAutoProceed ? 'success' : mode === 'review' ? 'info' : 'warning',
-                message: mode === 'review'
-                    ? result.actionsTaken.some((action) => /^Logged (?:ETR|NO PIN) note on /i.test(action))
-                        ? 'Review completed. The PIN note was logged on the matched PO.'
-                        : 'Review completed. No PO note was logged because no bill-ready PO match was selected.'
-                    : result.canAutoProceed
-                        ? 'Auto gates passed. The app ran PO attachment, bill creation, receipt validation, and activity actions.'
-                        : 'Auto mode stopped before bill/receipt actions because one or more gates failed.',
-            },
-            result,
-            form,
-            loadRecentPdfs,
-        });
-    }
-    catch (error) {
-        await renderPage(res, {
-            status: {
-                type: 'danger',
-                message: error instanceof Error ? error.message : 'PO bill automation failed.',
-            },
-            form,
-            loadRecentPdfs,
-        });
-    }
+        catch (error) {
+            await (0, logService_1.logEvent)('error', 'Manual PO bill check failed in background', {
+                attachmentId,
+                purchaseOrderSearch: purchaseOrderSearch || null,
+                mode,
+                error: error instanceof Error ? error.message : 'Unknown PO bill automation failure.',
+            });
+        }
+    })();
+    const query = new URLSearchParams({
+        message: `PO bill check for attachment ${attachmentId} started in background.`,
+        attachmentId: String(attachmentId),
+        pdfPage: form.pdfPage,
+    });
+    if (purchaseOrderSearch)
+        query.set('purchaseOrderSearch', purchaseOrderSearch);
+    if (mode === 'auto')
+        query.set('mode', 'auto');
+    if (loadRecentPdfs)
+        query.set('loadPdfs', '1');
+    return res.redirect(`/po-bill-automation?${query.toString()}`);
 });
 router.post('/po-bill-automation/run-scheduler', async (req, res) => {
     const pdfPage = String(req.body.pdfPage || '1');
