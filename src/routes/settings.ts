@@ -33,6 +33,7 @@ import { normalizeShopFloorReportingStartDate } from '../utils/shopFloorReportin
 const router = Router();
 
 const NVIDIA_AI_MODELS = [
+  'google/gemma-4-31b-it',
   'z-ai/glm-5.2',
   'openai/gpt-oss-20b',
   'openai/gpt-oss-120b',
@@ -84,7 +85,7 @@ function normalizeAiModelForProvider(provider: string, model: string) {
     return 'gemini-flash-latest';
   }
   if (provider === 'nvidia' && (!trimmed || GEMINI_AI_MODELS.includes(trimmed) || OPENAI_AI_MODELS.includes(trimmed))) {
-    return 'openai/gpt-oss-20b';
+    return 'google/gemma-4-31b-it';
   }
   if (provider === 'openai' && (!trimmed || NVIDIA_AI_MODELS.includes(trimmed) || GEMINI_AI_MODELS.includes(trimmed))) {
     return 'gpt-4.1';

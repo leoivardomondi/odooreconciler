@@ -454,7 +454,7 @@ async function readImagesForAi(imagePaths) {
 function defaultModelForProvider(provider) {
     switch (provider) {
         case 'nvidia':
-            return 'openai/gpt-oss-20b';
+            return 'google/gemma-4-31b-it';
         case 'gemini':
             return 'gemini-flash-latest';
         case 'anthropic':
@@ -465,6 +465,11 @@ function defaultModelForProvider(provider) {
         default:
             return 'gpt-4.1';
     }
+}
+function resolveConfiguredApiKey(config, provider) {
+    if (provider === 'disabled')
+        return '';
+    return config.apiKeys?.[provider] || (provider === 'nvidia' ? process.env.NVIDIA_API_KEY || '' : '');
 }
 function isTextOnlyNvidiaModel(model) {
     const m = model.trim();
@@ -495,7 +500,7 @@ async function callOpenAiCompatibleInvoiceAi(input) {
     const body = {
         model: input.model,
         temperature: 0,
-        max_tokens: 4000,
+        max_tokens: input.provider === 'nvidia' && input.model === 'google/gemma-4-31b-it' ? 16384 : 4000,
         messages: [
             {
                 role: 'user',
@@ -514,8 +519,12 @@ async function callOpenAiCompatibleInvoiceAi(input) {
             },
         ],
     };
-    if (input.provider !== 'nvidia') {
+    if (input.provider !== 'nvidia' || input.model === 'google/gemma-4-31b-it') {
         body.response_format = { type: 'json_object' };
+    }
+    if (input.provider === 'nvidia' && input.model === 'google/gemma-4-31b-it') {
+        body.top_p = 0.95;
+        body.chat_template_kwargs = { enable_thinking: true };
     }
     const response = await fetch(endpoint, {
         method: 'POST',
@@ -715,11 +724,11 @@ async function extractInvoiceWithConfiguredAi(input) {
         'anthropic',
     ];
     const candidateProviders = [];
-    if (input.config.apiKeys?.[primaryProvider]) {
+    if (resolveConfiguredApiKey(input.config, primaryProvider)) {
         candidateProviders.push(primaryProvider);
     }
     for (const p of allSupportedProviders) {
-        if (p !== primaryProvider && Boolean(input.config.apiKeys?.[p])) {
+        if (p !== primaryProvider && Boolean(resolveConfiguredApiKey(input.config, p))) {
             candidateProviders.push(p);
         }
     }
@@ -731,7 +740,7 @@ async function extractInvoiceWithConfiguredAi(input) {
     }
     const overallWarnings = [];
     for (const provider of candidateProviders) {
-        const apiKey = input.config.apiKeys?.[provider];
+        const apiKey = resolveConfiguredApiKey(input.config, provider);
         if (!apiKey) {
             continue;
         }
