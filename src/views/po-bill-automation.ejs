@@ -369,6 +369,26 @@
     </div>
 
     <div class="col-lg-7">
+      <% if (locals.manualJob) { %>
+        <div class="card shadow-sm border-0 app-card mb-4">
+          <div class="card-body p-4">
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-3">
+              <div>
+                <p class="eyebrow mb-1">Single-document run</p>
+                <h2 class="h5 mb-1">
+                  <%= locals.manualJob.status === 'running' ? 'Processing document…' : locals.manualJob.status === 'completed' ? 'Processing complete' : 'Processing failed' %>
+                </h2>
+                <div class="text-secondary small">
+                  Attachment <%= form.attachmentId || '—' %>. The result is shown below when processing completes.
+                </div>
+              </div>
+              <span class="badge text-bg-<%= locals.manualJob.status === 'running' ? 'primary' : locals.manualJob.status === 'completed' ? 'success' : 'danger' %>">
+                <%= locals.manualJob.status === 'running' ? 'Running' : locals.manualJob.status === 'completed' ? 'Completed' : 'Failed' %>
+              </span>
+            </div>
+          </div>
+        </div>
+      <% } %>
       <% if (result) { %>
         <div class="card shadow-sm border-0 app-card mb-4">
           <div class="card-body p-4">
