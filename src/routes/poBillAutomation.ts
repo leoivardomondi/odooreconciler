@@ -248,16 +248,16 @@ router.post('/po-bill-automation/run', async (req, res) => {
     }
   })();
 
-  const query = new URLSearchParams({
-    message: `PO bill check for attachment ${attachmentId} is running. This page will show the result when complete.`,
-    jobId,
-    attachmentId: String(attachmentId),
-    pdfPage: form.pdfPage,
+  await renderPage(res, {
+    status: {
+      type: 'info',
+      message: `PO bill check for attachment ${attachmentId} is running.`,
+    },
+    form,
+    result: null,
+    manualJob: { id: jobId, status: 'running' },
+    loadRecentPdfs,
   });
-  if (purchaseOrderSearch) query.set('purchaseOrderSearch', purchaseOrderSearch);
-  if (mode === 'auto') query.set('mode', 'auto');
-  if (loadRecentPdfs) query.set('loadPdfs', '1');
-  return res.redirect(`/po-bill-automation?${query.toString()}`);
 });
 
 router.post('/po-bill-automation/run-scheduler', async (req, res) => {
