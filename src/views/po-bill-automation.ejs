@@ -343,7 +343,9 @@
                     <td><%= pdf.name %></td>
                     <td><%= pdf.folderName || 'Finance' %></td>
                     <td>
-                      <% if (pdf.poBillStatus === 'processed') { %>
+                      <% if (pdf.poBillStatus === 'delivery_note') { %>
+                        <span class="badge text-bg-info">Delivery Note</span>
+                      <% } else if (pdf.poBillStatus === 'processed') { %>
                         <span class="badge text-bg-success">Processed</span>
                       <% } else if (pdf.poBillStatus === 'processed_with_warnings') { %>
                         <span class="badge text-bg-warning">Processed with warnings</span>
@@ -504,10 +506,10 @@
                       <td><%= candidate.purchaseOrder.amount_total ?? '—' %></td>
                       <td>
                         <span class="badge text-bg-<%= candidate.score >= 90 ? 'success' : candidate.score >= 70 ? 'warning' : 'secondary' %>">
-                          <%= candidate.score %>/100
+                          <%= candidate.score %>/103
                         </span>
                         <div class="small text-secondary">
-                          V<%= candidate.vendorScore %> A<%= candidate.totalScore %> D<%= candidate.dateScore %> I<%= candidate.itemScore %>
+                          V<%= candidate.vendorScore %> A<%= candidate.totalScore %> D<%= candidate.dateScore %> I<%= candidate.itemScore %> R<%= candidate.receiptScore %>
                         </div>
                       </td>
                     </tr>

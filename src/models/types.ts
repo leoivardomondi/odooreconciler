@@ -418,6 +418,7 @@ export interface AttachmentInfo {
   poBillVendorBillName?: string | null;
   poBillAttemptCount?: number | null;
   poBillSummary?: string | null;
+  poBillValidated?: boolean;
 }
 
 export interface PoBillProcessedDocumentEntry {
@@ -434,7 +435,7 @@ export interface PoBillProcessedDocumentEntry {
   invoiceNumber?: string | null;
   invoiceVendor?: string | null;
   invoiceTotal?: number | null;
-  status: 'processed' | 'processed_with_warnings' | 'skipped' | 'failed';
+  status: 'processed' | 'processed_with_warnings' | 'delivery_note' | 'skipped' | 'failed';
   mode?: 'review' | 'auto' | string | null;
   summary?: string | null;
   processedAt?: string | null;
@@ -543,6 +544,7 @@ export interface PoBillAutomationCandidate {
   totalScore: number;
   dateScore: number;
   itemScore: number;
+  receiptScore: number;
   reasons: string[];
 }
 

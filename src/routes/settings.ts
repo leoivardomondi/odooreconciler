@@ -1403,13 +1403,74 @@ router.post(
         const baseUrl = (configuredBaseUrl || defaultBaseUrl).replace(/\/+$/, '');
         endpoint = baseUrl.endsWith('/chat/completions') ? baseUrl : `${baseUrl}/chat/completions`;
         headers.Authorization = `Bearer ${apiKey}`;
-        body = { model, messages: [{ role: 'user', content: 'Reply with the single word OK.' }], max_tokens: 8, temperature: 0 };
+        const isNvidia = provider === 'nvidia';
+        const isNvidiaGemma = isNvidia && model === 'google/gemma-4-31b-it';
+        body = {
+          model,
+          messages: [{ role: 'user', content: 'Reply with the single word OK.' }],
+          max_tokens: 8,
+          temperature: isNvidiaGemma ? 1 : 0,
+          stream: false,
+          ...(isNvidiaGemma ? { top_p: 0.95, top_k: 64 } : {}),
+          ...(isNvidiaGemma
+            ? { chat_template_kwargs: { enable_thinking: false } }
+            : {}),
+        };
+        if (isNvidia) {
+          headers.Accept = 'application/json';
+        }
       }
 
-      const response = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(30000) });
-      const payload = await response.json().catch(() => null) as { error?: { message?: string }; candidates?: unknown[] } | null;
+      // Hosted models can take several minutes to cold-start. Keep the test
+      // request small, but allow enough time for a real provider response.
+      const testTimeoutMs = 300000;
+      let response = await fetch(endpoint, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(testTimeoutMs),
+      });
+      let payload: any = await response.json().catch(() => null);
+
+      if (provider === 'nvidia' && response.status === 202) {
+        const requestId = payload?.requestId || payload?.request_id;
+        if (!requestId) {
+          throw new Error('NVIDIA returned HTTP 202 without a requestId for status polling.');
+        }
+
+        const statusEndpoint = `${endpoint.replace(/\/chat\/completions\/?$/i, '')}/status/${encodeURIComponent(String(requestId))}`;
+        const deadline = Date.now() + testTimeoutMs;
+        while (Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 1500));
+          const remainingMs = deadline - Date.now();
+          if (remainingMs <= 0) break;
+
+          const statusResponse = await fetch(statusEndpoint, {
+            method: 'GET',
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              Accept: 'application/json',
+            },
+            signal: AbortSignal.timeout(Math.min(30000, remainingMs)),
+          });
+          const statusPayload = await statusResponse.json().catch(() => null);
+          if (statusResponse.status === 202) continue;
+          response = statusResponse;
+          payload = statusPayload?.response || statusPayload;
+          break;
+        }
+
+        if (response.status === 202) {
+          throw new Error(`NVIDIA request ${requestId} remained pending for 300 seconds.`);
+        }
+      }
+
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${payload?.error?.message || 'provider rejected the test request'}`);
+      }
+
+      if (provider === 'nvidia' && !payload?.choices?.length) {
+        throw new Error('NVIDIA returned HTTP 200 without a chat completion result.');
       }
 
       await renderSettingsPage(res, {
@@ -1418,7 +1479,9 @@ router.post(
         status: { type: 'success', message: `API test succeeded for ${provider} / ${model}. The key and model are reachable.` },
       });
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'AI provider test failed.';
+      const message = error instanceof Error && /timeout|aborted/i.test(error.message)
+        ? 'Provider did not respond within 300 seconds.'
+        : error instanceof Error ? error.message : 'AI provider test failed.';
       await renderSettingsPage(res, {
         existing: currentSettings,
         source,

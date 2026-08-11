@@ -25,6 +25,9 @@ function reasonDetails(summaryValue: unknown) {
   const summary = String(summaryValue || '').trim();
   const lower = summary.toLowerCase();
   if (!summary) return { category: 'Not checked', reason: 'The scheduler has not checked this document yet.' };
+  if (/standalone delivery note|delivery note/.test(lower)) {
+    return { category: 'Delivery Note', reason: summary };
+  }
   if (/job summary|maxcut|max cut|not a vendor bill|not a supplier invoice/.test(lower)) {
     return { category: 'Not a vendor bill', reason: summary };
   }
@@ -71,6 +74,9 @@ export function describePoBillQueueDocument(
   const status = String(pdf.poBillStatus || '');
   const details = reasonDetails(pdf.poBillSummary);
   const attempts = attemptCount(pdf);
+  if (status === 'delivery_note') {
+    return { attachment: pdf, state: 'processed', label: 'Delivery Note', reason: details.reason, reasonCategory: details.category, retryAt: null, attemptCount: attempts };
+  }
   if (['processed', 'processed_with_warnings'].includes(status)) {
     return { attachment: pdf, state: 'processed', label: 'Completed', reason: details.reason, reasonCategory: details.category, retryAt: null, attemptCount: attempts };
   }

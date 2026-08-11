@@ -198,7 +198,7 @@ function getRecentlyAttemptedPoBillAttachmentIds(run) {
 function getPoBillRetryClass(pdf, policy) {
     const status = String(pdf.poBillStatus || '');
     const summary = String(pdf.poBillSummary || '').toLowerCase();
-    if (['processed', 'processed_with_warnings'].includes(status)) {
+    if (['processed', 'processed_with_warnings', 'delivery_note'].includes(status)) {
         return 'processed';
     }
     if (!status) {
@@ -617,7 +617,7 @@ async function runPoBillSchedulerCycle(trigger = 'manual') {
         const recentlyAttemptedAttachmentIds = getRecentlyAttemptedPoBillAttachmentIds(recentRun);
         for (const pdf of recentPdfs) {
             const status = String(pdf.poBillStatus || '');
-            if (['processed', 'processed_with_warnings'].includes(status)) {
+            if (['processed', 'processed_with_warnings', 'delivery_note'].includes(status)) {
                 continue;
             }
             const retryClass = getPoBillRetryClass(pdf, settings.poBillScheduler);
@@ -678,7 +678,7 @@ async function runPoBillSchedulerCycle(trigger = 'manual') {
                     onlyUnbilledPurchaseOrders: true,
                     sourceAttachment: pdf,
                 });
-                const processed = result.actionsTaken.some((action) => /marked .* as processed/i.test(action));
+                const processed = result.actionsTaken.some((action) => /marked .* as processed/i.test(action) || /(?:marked|recorded).*delivery note/i.test(action));
                 const diagnostics = {
                     checks: result.checks,
                     actionsTaken: result.actionsTaken,
@@ -713,7 +713,9 @@ async function runPoBillSchedulerCycle(trigger = 'manual') {
                         attachmentId: pdf.id,
                         attachmentName: pdf.name,
                         documentId: pdf.documentId || null,
-                        status: 'processed',
+                        status: result.actionsTaken.some((action) => /(?:marked|recorded).*delivery note/i.test(action))
+                            ? 'delivery_note'
+                            : 'processed',
                         purchaseOrder: result.purchaseOrder?.name || null,
                         summary: result.actionsTaken.join(' '),
                         diagnostics,

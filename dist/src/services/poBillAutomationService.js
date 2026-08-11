@@ -5,14 +5,18 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.PO_BILL_SUPPORTED_MIMETYPES = void 0;
 exports.isSupportedPoBillMimetype = isSupportedPoBillMimetype;
+exports.isStandaloneDeliveryNoteDocument = isStandaloneDeliveryNoteDocument;
 exports.clearDocumentPdfsCache = clearDocumentPdfsCache;
 exports.getRecentDocumentPdfs = getRecentDocumentPdfs;
 exports.getRecentDocumentPdfsPage = getRecentDocumentPdfsPage;
 exports.markPoBillDocumentSkipped = markPoBillDocumentSkipped;
+exports.markPoBillDocumentAsDeliveryNote = markPoBillDocumentAsDeliveryNote;
 exports.findPurchaseOrder = findPurchaseOrder;
 exports.findPurchaseOrderCandidates = findPurchaseOrderCandidates;
 exports.getPurchaseOrderLines = getPurchaseOrderLines;
+exports.isCompletedPoBillActivityNote = isCompletedPoBillActivityNote;
 exports.verifyPoBillProcessedEvidence = verifyPoBillProcessedEvidence;
+exports.selectExistingVendorBillForMatchedPurchaseOrders = selectExistingVendorBillForMatchedPurchaseOrders;
 exports.runPoBillAutomation = runPoBillAutomation;
 const promises_1 = __importDefault(require("fs/promises"));
 const path_1 = __importDefault(require("path"));
@@ -25,6 +29,7 @@ const TOTAL_TOLERANCE = 1;
 const AUTO_MATCH_THRESHOLD = 90;
 const CORE_MATCH_THRESHOLD = 90;
 const DOCUMENT_FOLDER_NAME = 'Finance';
+const DELIVERY_NOTE_DOCUMENT_TAG_NAME = 'Delivery Note';
 const RECENT_DOCUMENT_PDFS_SINCE = '2026-05-01 00:00:00';
 exports.PO_BILL_SUPPORTED_MIMETYPES = [
     'application/pdf',
@@ -277,6 +282,13 @@ function isJobSummaryDocument(input) {
         /\bmaxcut\b/.test(combined);
     return hasJobSummary && hasMaxCutSignals;
 }
+function isStandaloneDeliveryNoteDocument(input) {
+    const rawText = normalizeText(input.rawText);
+    const combined = normalizeText(`${input.attachmentName || ''}\n${input.rawText || ''}`);
+    const hasDeliveryNoteLabel = /\bdelivery\s+note\b/.test(rawText);
+    const hasInvoiceDocumentSignal = /\b(?:tax\s+invoice|invoice|vendor\s+bill|bill\s+(?:no|number)|receipt\s+(?:no|number))\b/.test(combined);
+    return hasDeliveryNoteLabel && !hasInvoiceDocumentSignal;
+}
 function totalsMatch(left, right) {
     if (typeof left !== 'number' || typeof right !== 'number') {
         return false;
@@ -480,6 +492,33 @@ function computeDateScore(invoiceDate, poDateValue) {
     }
     return { score: 0, reason: `Date is far apart by ${Math.round(days)} day(s).` };
 }
+async function findPurchaseOrderApprovalDates(client, purchaseOrderIds) {
+    const approvalDates = new Map();
+    if (purchaseOrderIds.length === 0) {
+        return approvalDates;
+    }
+    const messages = await client.searchReadRecords('mail.message', {
+        domain: [
+            ['model', '=', 'purchase.order'],
+            ['res_id', 'in', purchaseOrderIds],
+        ],
+        fields: ['id', 'res_id', 'body', 'date'],
+        limit: 2000,
+        order: 'date asc, id asc',
+    }).catch(() => []);
+    for (const message of messages) {
+        const purchaseOrderId = Number(message.res_id);
+        const body = String(message.body || '').replace(/<[^>]+>/g, ' ');
+        if (purchaseOrderIds.includes(purchaseOrderId) &&
+            !approvalDates.has(purchaseOrderId) &&
+            /\brfq\b/i.test(body) &&
+            /\bto approve\b/i.test(body) &&
+            message.date) {
+            approvalDates.set(purchaseOrderId, message.date);
+        }
+    }
+    return approvalDates;
+}
 function normalizeProductText(value) {
     return normalizeText(value)
         .replace(/\b\d+(?:\.\d+)?\s*mm\b/g, ' ')
@@ -564,20 +603,43 @@ function computeItemScore(invoiceItems, poLines) {
         reason: `Matched ${matched.length}/${invoiceItems.length} invoice item color/grain name(s): ${matched.slice(0, 4).join(', ')}.`,
     };
 }
-function buildCandidate(purchaseOrder, poLines, parsedInvoice) {
+function computeReceiptScore(poLines) {
+    const receivedQuantity = poLines.reduce((total, line) => {
+        const received = typeof line.qty_received === 'number' && Number.isFinite(line.qty_received)
+            ? line.qty_received
+            : 0;
+        return total + Math.max(0, received);
+    }, 0);
+    return receivedQuantity > 0
+        ? {
+            score: 8,
+            reason: `PO receipt history shows ${receivedQuantity} unit(s) received.`,
+        }
+        : {
+            score: 0,
+            reason: 'PO receipt history shows no received quantity yet.',
+        };
+}
+function buildCandidate(purchaseOrder, poLines, parsedInvoice, approvalDate) {
     const poVendor = (0, helpers_1.getRelationLabel)(purchaseOrder.partner_id);
     const vendor = computeVendorScore(parsedInvoice.vendorName, poVendor, parsedInvoice.filenameVendorHint);
     const total = computeTotalScore(parsedInvoice.grandTotal, purchaseOrder.amount_total, parsedInvoice.untaxedTotal, purchaseOrder.amount_untaxed);
-    const date = computeDateScore(parseLooseDate(parsedInvoice.invoiceDate), purchaseOrder.date_order);
+    const matchingPoDate = approvalDate || purchaseOrder.date_order;
+    const date = computeDateScore(parseLooseDate(parsedInvoice.invoiceDate), matchingPoDate);
     const itemScore = computeItemScore(parsedInvoice.items, poLines);
+    const receipt = computeReceiptScore(poLines);
+    const approvalDateReason = approvalDate
+        ? `RFQ → To Approve transition date ${approvalDate} was used instead of PO creation date ${purchaseOrder.date_order || 'unknown'}.`
+        : null;
     return {
         purchaseOrder,
-        score: vendor.score + total.score + date.score + itemScore.score,
+        score: vendor.score + total.score + date.score + itemScore.score + receipt.score,
         vendorScore: vendor.score,
         totalScore: total.score,
         dateScore: date.score,
         itemScore: itemScore.score,
-        reasons: [vendor.reason, total.reason, date.reason, itemScore.reason],
+        receiptScore: receipt.score,
+        reasons: [vendor.reason, total.reason, date.reason, approvalDateReason, itemScore.reason, receipt.reason].filter(Boolean),
     };
 }
 function sumPurchaseOrderTotals(orders) {
@@ -697,6 +759,29 @@ async function findOrCreateValidatedDocumentTag(client) {
     const tagId = await client.createRecord('documents.tag', { name: 'Validated' }).catch(() => null);
     return tagId ? { id: tagId, name: 'Validated' } : null;
 }
+async function findValidatedDocumentTagId(client) {
+    const fields = await getAvailableModelFieldNames(client, 'documents.tag', ['id', 'name']);
+    if (!fields.has('id') || !fields.has('name')) {
+        return null;
+    }
+    const tags = await client.searchReadRecords('documents.tag', {
+        domain: [['name', '=', 'Validated']],
+        fields: ['id', 'name'],
+        limit: 1,
+        order: 'id asc',
+    }).catch(() => []);
+    return tags[0]?.id || null;
+}
+async function hasValidatedSourceDocument(client, attachment) {
+    const tagId = await findValidatedDocumentTagId(client);
+    if (!tagId) {
+        return false;
+    }
+    const document = await findDocumentsDocumentForAttachment(client, attachment);
+    return Boolean(document?.tag_ids &&
+        Array.isArray(document.tag_ids) &&
+        document.tag_ids.some((value) => Number(value) === tagId));
+}
 async function markSourceDocumentValidated(client, attachment) {
     const fields = await getAvailableModelFieldNames(client, 'documents.document', ['id', 'tag_ids']);
     if (!fields.has('tag_ids')) {
@@ -733,6 +818,86 @@ async function markSourceDocumentValidated(client, attachment) {
     return {
         marked: true,
         message: `Marked source document ${document.name || document.id} as Validated in Odoo Documents.`,
+    };
+}
+async function findDeliveryNoteDocumentTagId(client) {
+    const fields = await getAvailableModelFieldNames(client, 'documents.tag', ['id', 'name']);
+    if (!fields.has('id') || !fields.has('name')) {
+        return null;
+    }
+    const tags = await client.searchReadRecords('documents.tag', {
+        domain: [['name', 'ilike', DELIVERY_NOTE_DOCUMENT_TAG_NAME]],
+        fields: ['id', 'name'],
+        limit: 10,
+        order: 'id asc',
+    }).catch(() => []);
+    const exact = tags.find((tag) => tag.name.trim().toLowerCase() === DELIVERY_NOTE_DOCUMENT_TAG_NAME.toLowerCase());
+    return (exact || tags[0])?.id || null;
+}
+async function findOrCreateDeliveryNoteDocumentTag(client) {
+    const fields = await getAvailableModelFieldNames(client, 'documents.tag', ['id', 'name']);
+    if (!fields.has('id') || !fields.has('name')) {
+        return null;
+    }
+    const existing = await client.searchReadRecords('documents.tag', {
+        domain: [['name', 'ilike', DELIVERY_NOTE_DOCUMENT_TAG_NAME]],
+        fields: ['id', 'name'],
+        limit: 10,
+        order: 'id asc',
+    }).catch(() => []);
+    const exact = existing.find((tag) => tag.name.trim().toLowerCase() === DELIVERY_NOTE_DOCUMENT_TAG_NAME.toLowerCase());
+    if (exact || existing[0]) {
+        return exact || existing[0];
+    }
+    const tagId = await client.createRecord('documents.tag', { name: DELIVERY_NOTE_DOCUMENT_TAG_NAME }).catch(() => null);
+    return tagId ? { id: tagId, name: DELIVERY_NOTE_DOCUMENT_TAG_NAME } : null;
+}
+async function hasDeliveryNoteSourceDocument(client, attachment) {
+    const tagId = await findDeliveryNoteDocumentTagId(client);
+    if (!tagId) {
+        return false;
+    }
+    const document = await findDocumentsDocumentForAttachment(client, attachment);
+    return Boolean(document?.tag_ids &&
+        Array.isArray(document.tag_ids) &&
+        document.tag_ids.some((value) => Number(value) === tagId));
+}
+async function markSourceDocumentDeliveryNote(client, attachment) {
+    const fields = await getAvailableModelFieldNames(client, 'documents.document', ['id', 'tag_ids']);
+    if (!fields.has('tag_ids')) {
+        return {
+            marked: false,
+            message: 'Odoo Documents does not expose tag_ids on documents.document, so the source document could not be tagged Delivery Note.',
+        };
+    }
+    const document = await findDocumentsDocumentForAttachment(client, attachment);
+    if (!document) {
+        return {
+            marked: false,
+            message: 'The source Odoo Documents record was not found for this attachment, so the Delivery Note tag could not be applied.',
+        };
+    }
+    const tag = await findOrCreateDeliveryNoteDocumentTag(client);
+    if (!tag) {
+        return {
+            marked: false,
+            message: 'The Odoo Documents tag "Delivery Note" was not found and could not be created.',
+        };
+    }
+    try {
+        await client.writeRecord('documents.document', [document.id], {
+            tag_ids: [[4, tag.id]],
+        });
+    }
+    catch (error) {
+        return {
+            marked: false,
+            message: `Could not tag source document ${document.name || document.id} as Delivery Note: ${error instanceof Error ? error.message : 'unknown Odoo error'}.`,
+        };
+    }
+    return {
+        marked: true,
+        message: `Marked source document ${document.name || document.id} as Delivery Note in Odoo Documents.`,
     };
 }
 async function findFinanceDocumentFolderIds(client, targetCompanyId) {
@@ -801,6 +966,7 @@ async function getRecentDocumentPdfsPage(client, options = {}) {
         'company_id',
         'mimetype',
         'type',
+        'tag_ids',
         'create_date',
         'write_date',
     ];
@@ -845,6 +1011,12 @@ async function getRecentDocumentPdfsPage(client, options = {}) {
         offset,
         order: 'write_date desc, create_date desc, id desc',
     });
+    const [validatedTagId, deliveryNoteTagId] = documents.length > 0
+        ? await Promise.all([
+            findValidatedDocumentTagId(client),
+            findDeliveryNoteDocumentTagId(client),
+        ])
+        : [null, null];
     const attachmentIds = documents.map((doc) => relationId(doc.attachment_id)).filter((id) => Boolean(id));
     const attachmentsById = new Map();
     if (attachmentIds.length > 0) {
@@ -871,6 +1043,19 @@ async function getRecentDocumentPdfsPage(client, options = {}) {
             return;
         }
         const processed = processedByAttachment[attachmentId];
+        const hasValidatedTag = Boolean(validatedTagId &&
+            Array.isArray(doc.tag_ids) &&
+            doc.tag_ids.some((tagId) => Number(tagId) === validatedTagId));
+        const hasDeliveryNoteTag = Boolean(deliveryNoteTagId &&
+            Array.isArray(doc.tag_ids) &&
+            doc.tag_ids.some((tagId) => Number(tagId) === deliveryNoteTagId));
+        const effectiveProcessedStatus = hasDeliveryNoteTag
+            ? 'delivery_note'
+            : hasValidatedTag
+                ? processed && ['processed', 'processed_with_warnings'].includes(processed.status)
+                    ? processed.status
+                    : 'processed_with_warnings'
+                : processed?.status || null;
         recentPdfs.push({
             ...attachment,
             documentId: typeof doc.id === 'number' ? doc.id : null,
@@ -879,14 +1064,21 @@ async function getRecentDocumentPdfsPage(client, options = {}) {
             write_date: attachment.write_date || (typeof doc.write_date === 'string' ? doc.write_date : null),
             folderName: folderField ? relationName(doc[folderField]) : null,
             companyName: relationName(doc.company_id),
-            poBillStatus: processed?.status || null,
-            poBillProcessedAt: processed?.processedAt || null,
+            poBillStatus: effectiveProcessedStatus,
+            poBillProcessedAt: processed?.processedAt || ((hasDeliveryNoteTag || hasValidatedTag)
+                ? String(doc.write_date || doc.create_date || '')
+                : null),
             poBillPurchaseOrderId: processed?.purchaseOrderId || null,
             poBillPurchaseOrderName: processed?.purchaseOrderName || null,
             poBillVendorBillId: processed?.vendorBillId || null,
             poBillVendorBillName: processed?.vendorBillName || null,
             poBillAttemptCount: processed?.attemptCount ?? null,
-            poBillSummary: processed?.summary || null,
+            poBillSummary: processed?.summary || (hasDeliveryNoteTag
+                ? 'Odoo Documents tag is Delivery Note; scheduler will permanently skip this document.'
+                : hasValidatedTag
+                    ? 'Odoo Documents tag is Validated; scheduler will skip this document.'
+                    : null),
+            poBillValidated: hasValidatedTag,
         });
     });
     return {
@@ -916,6 +1108,22 @@ async function markPoBillDocumentSkipped(input) {
         invoiceTotal: input.invoiceTotal ?? null,
         status: input.status,
         mode: 'auto',
+        summary: input.summary,
+    });
+}
+async function markPoBillDocumentAsDeliveryNote(input) {
+    await (0, repositories_1.upsertPoBillProcessedDocument)({
+        attachmentId: input.attachment.id,
+        attachmentName: input.attachment.name,
+        documentId: input.attachment.documentId || null,
+        folderName: input.attachment.folderName || null,
+        companyName: input.attachment.companyName || null,
+        invoiceFingerprint: input.invoiceFingerprint || null,
+        invoiceNumber: input.invoiceNumber || null,
+        invoiceVendor: input.invoiceVendor || null,
+        invoiceTotal: input.invoiceTotal ?? null,
+        status: 'delivery_note',
+        mode: input.mode || 'auto',
         summary: input.summary,
     });
 }
@@ -1006,9 +1214,10 @@ async function findPurchaseOrderCandidates(client, parsedInvoice, options = {}) 
             return isSchedulerEligiblePurchaseOrder(order, hasProcessed);
         });
     }
+    const approvalDates = await findPurchaseOrderApprovalDates(client, filteredOrders.map((order) => order.id));
     const candidates = await Promise.all(filteredOrders.map(async (order) => {
         const lines = await getPurchaseOrderLines(client, order.id).catch(() => []);
-        return buildCandidate(order, lines, parsedInvoice);
+        return buildCandidate(order, lines, parsedInvoice, approvalDates.get(order.id) || null);
     }));
     return candidates
         .filter((candidate) => !hasReadableVendor || candidate.vendorScore > 0)
@@ -1161,6 +1370,39 @@ async function findPoBillAutomationChatterEvidence(client, purchaseOrderId, inpu
         return expected.every((piece) => body.includes(piece));
     }) || null;
 }
+function isCompletedPoBillActivityNote(note, attachmentName) {
+    const content = normalizeText(note);
+    const filename = normalizeText(path_1.default.basename(attachmentName));
+    return Boolean(filename &&
+        content.includes(filename) &&
+        /\binvoice pdf\b/.test(content) &&
+        /\bvendor bill\b/.test(content) &&
+        !/\bvendor bill not created\b/.test(content) &&
+        /\bno follow up pending\b/.test(content));
+}
+async function findCompletedPoBillActivityEvidence(client, purchaseOrderId, attachmentName) {
+    const activities = await client.searchReadRecords('mail.activity', {
+        domain: [
+            ['res_model', '=', 'purchase.order'],
+            ['res_id', '=', purchaseOrderId],
+        ],
+        fields: ['id', 'res_id', 'res_model', 'summary', 'note', 'create_date'],
+        limit: 100,
+        order: 'create_date desc, id desc',
+    }).catch(() => []);
+    const activity = activities.find((entry) => isCompletedPoBillActivityNote(`${entry.summary || ''}\n${entry.note || ''}`, attachmentName));
+    if (!activity) {
+        return null;
+    }
+    const note = String(activity.note || '');
+    const billValue = note.match(/vendor\s+bill\s*:\s*([^<\r\n]+)/i)?.[1]?.trim() || null;
+    const billId = billValue?.match(/^\d+$/)?.[0];
+    return {
+        activity,
+        vendorBillId: billId ? Number(billId) : null,
+        vendorBillName: billValue,
+    };
+}
 async function verifyPoBillProcessedEvidence(client, attachment) {
     if (!attachment.poBillPurchaseOrderId || !attachment.poBillPurchaseOrderName) {
         return {
@@ -1211,6 +1453,133 @@ async function postVendorBillCreatedEvidence(client, input) {
         `<p>Vendor Bill: ${escapeHtml(vendorBillName)}</p>`,
         input.vendorBill.ref ? `<p>Vendor Bill Ref: ${escapeHtml(input.vendorBill.ref)}</p>` : '',
     ].filter(Boolean).join(''));
+}
+function selectExistingVendorBillForMatchedPurchaseOrders(bills, purchaseOrders, parsedInvoice) {
+    const activeBills = bills.filter((bill) => String(bill.state || '').toLowerCase() !== 'cancel');
+    if (activeBills.length === 0) {
+        return null;
+    }
+    // A readable invoice total matching a bill whose invoice_origin is this PO
+    // is strong evidence that billing already happened, even when the local
+    // automation marker was lost or contains an obsolete bill ID.
+    const totalMatch = activeBills.find((bill) => totalsMatch(bill.amount_total, parsedInvoice.grandTotal));
+    if (totalMatch) {
+        return totalMatch;
+    }
+    const invoiceNumber = normalizeFingerprintPart(parsedInvoice.invoiceNumber);
+    const referenceMatch = invoiceNumber
+        ? activeBills.find((bill) => normalizeFingerprintPart(bill.ref) === invoiceNumber ||
+            normalizeFingerprintPart(bill.name) === invoiceNumber)
+        : null;
+    if (referenceMatch) {
+        return referenceMatch;
+    }
+    // If Odoo itself says the PO is invoiced and there is exactly one active
+    // bill for it, use that bill as the recovery evidence when the invoice
+    // parser could not read a reliable total or number.
+    const purchaseOrderShowsBilling = purchaseOrders.some((order) => order.invoice_status === 'invoiced' ||
+        Boolean(Array.isArray(order.invoice_ids) && order.invoice_ids.length > 0) ||
+        Number(order.invoice_count || 0) > 0);
+    return purchaseOrderShowsBilling && activeBills.length === 1 ? activeBills[0] : null;
+}
+async function findExistingVendorBillForMatchedPurchaseOrders(client, purchaseOrders, parsedInvoice, knownVendorBillIds = []) {
+    const purchaseOrderNames = purchaseOrders.map((order) => order.name);
+    const linkedBillIds = [...purchaseOrders
+            .flatMap((order) => (Array.isArray(order.invoice_ids) ? order.invoice_ids : []))
+            .filter((id) => typeof id === 'number' && id > 0), ...knownVendorBillIds]
+        .filter((id, index, ids) => ids.indexOf(id) === index);
+    const linkedBills = linkedBillIds.length > 0
+        ? await client.readRecords('account.move', linkedBillIds, [
+            'id',
+            'name',
+            'ref',
+            'state',
+            'invoice_date',
+            'invoice_origin',
+            'amount_total',
+        ]).catch(() => [])
+        : [];
+    const billsById = new Map();
+    [...linkedBills, ...(await findVendorBillsForPurchaseOrders(client, purchaseOrderNames))].forEach((bill) => {
+        billsById.set(bill.id, bill);
+    });
+    return selectExistingVendorBillForMatchedPurchaseOrders([...billsById.values()], purchaseOrders, parsedInvoice);
+}
+async function repairAlreadyMatchedPoBillDocument(client, input) {
+    const completionActivity = await findCompletedPoBillActivityEvidence(client, input.purchaseOrders[0].id, input.attachment.name);
+    const vendorBillFromPo = await findExistingVendorBillForMatchedPurchaseOrders(client, input.purchaseOrders, input.parsedInvoice, completionActivity?.vendorBillId ? [completionActivity.vendorBillId] : []);
+    const vendorBill = vendorBillFromPo || (completionActivity?.vendorBillId
+        ? {
+            id: completionActivity.vendorBillId,
+            name: completionActivity.vendorBillName || String(completionActivity.vendorBillId),
+            ref: null,
+            state: null,
+            invoice_origin: input.purchaseOrders[0].name,
+            amount_total: input.parsedInvoice.grandTotal,
+        }
+        : null);
+    if (!vendorBill) {
+        return null;
+    }
+    const primaryPurchaseOrder = input.purchaseOrders[0];
+    const purchaseOrderName = input.purchaseOrders.map((order) => order.name).join(', ');
+    let chatter = await findPoBillAutomationChatterEvidence(client, primaryPurchaseOrder.id, {
+        attachmentId: input.attachment.id,
+        documentId: input.attachment.documentId || null,
+        vendorBillId: vendorBill.id,
+        vendorBillName: vendorBill.name || null,
+    });
+    let chatterMessage = null;
+    if (!chatter && input.mode === 'auto') {
+        try {
+            chatterMessage = await postVendorBillCreatedEvidence(client, {
+                purchaseOrder: primaryPurchaseOrder,
+                attachment: input.attachment,
+                uploadAttachmentId: null,
+                vendorBill,
+            });
+            chatter = await findPoBillAutomationChatterEvidence(client, primaryPurchaseOrder.id, {
+                attachmentId: input.attachment.id,
+                documentId: input.attachment.documentId || null,
+                vendorBillId: vendorBill.id,
+                vendorBillName: vendorBill.name || null,
+            });
+        }
+        catch {
+            // The durable local marker below is still useful; the next run will
+            // retry the chatter repair without creating another vendor bill.
+        }
+    }
+    const documentValidation = input.mode === 'auto'
+        ? await markSourceDocumentValidated(client, input.attachment)
+        : { marked: false, message: 'Document tag repair is only applied in auto mode.' };
+    const summary = [
+        `Recovered existing vendor bill ${vendorBill.name || vendorBill.id} for ${purchaseOrderName}; no duplicate bill was created.`,
+        completionActivity ? `Completed PO activity evidence was found on activity ${completionActivity.activity.id}.` : '',
+        chatter ? 'PO chatter evidence is present.' : 'PO chatter evidence is still pending repair.',
+        documentValidation.marked ? documentValidation.message : documentValidation.message,
+    ].filter(Boolean).join(' ');
+    if (input.mode === 'auto') {
+        await (0, repositories_1.upsertPoBillProcessedDocument)({
+            attachmentId: input.attachment.id,
+            attachmentName: input.attachment.name,
+            documentId: input.attachment.documentId || null,
+            folderName: input.attachment.folderName || null,
+            companyName: input.attachment.companyName || null,
+            purchaseOrderId: primaryPurchaseOrder.id,
+            purchaseOrderName,
+            vendorBillId: vendorBill.id,
+            vendorBillName: vendorBill.name || String(vendorBill.id),
+            invoiceFingerprint: input.invoiceFingerprint,
+            invoiceNumber: input.parsedInvoice.invoiceNumber || null,
+            invoiceVendor: input.parsedInvoice.vendorName || null,
+            invoiceTotal: input.parsedInvoice.grandTotal ?? null,
+            status: 'processed_with_warnings',
+            mode: input.mode,
+            summary,
+        });
+    }
+    return { vendorBill, chatter, chatterMessage, documentValidation, summary };
 }
 async function createVendorBillFromPurchaseOrders(client, purchaseOrders, parsedInvoice, attachmentId) {
     const primaryPurchaseOrder = purchaseOrders[0];
@@ -1537,10 +1906,58 @@ async function runPoBillAutomation(client, input) {
         invoiceNumber: parsedInvoice.invoiceNumber,
         grandTotal: parsedInvoice.grandTotal,
     });
+    const isStandaloneDeliveryNote = isStandaloneDeliveryNoteDocument({
+        attachmentName: attachment.name,
+        rawText: parsedInvoice.rawText,
+    });
     const isNonBillJobSummary = isJobSummaryDocument({
         attachmentName: attachment.name,
         rawText: parsedInvoice.rawText,
     });
+    if (isStandaloneDeliveryNote) {
+        const deliveryNoteSummary = 'Standalone Delivery Note detected. No invoice document was found; PO matching and billing were not attempted. Future scheduler runs will skip this document.';
+        const checksForDeliveryNote = [];
+        const actionsForDeliveryNote = [];
+        const pendingForDeliveryNote = [];
+        addCheck(checksForDeliveryNote, 'Document Type', 'pass', 'This document contains a Delivery Note and no invoice document signal.');
+        addCheck(checksForDeliveryNote, 'Purchase Order', 'info', 'PO matching was not attempted because this is a standalone Delivery Note, not a vendor bill.');
+        const documentTag = await markSourceDocumentDeliveryNote(client, attachment);
+        if (documentTag.marked) {
+            actionsForDeliveryNote.push(documentTag.message);
+            addCheck(checksForDeliveryNote, 'Documents', 'pass', documentTag.message);
+        }
+        else {
+            pendingForDeliveryNote.push(documentTag.message);
+            addCheck(checksForDeliveryNote, 'Documents', 'warn', documentTag.message);
+        }
+        await markPoBillDocumentAsDeliveryNote({
+            attachment,
+            summary: deliveryNoteSummary,
+            invoiceFingerprint,
+            invoiceNumber: parsedInvoice.invoiceNumber,
+            invoiceVendor: parsedInvoice.vendorName,
+            invoiceTotal: parsedInvoice.grandTotal,
+            mode: input.mode,
+        });
+        actionsForDeliveryNote.push(`Recorded ${attachment.name} as a Delivery Note; future scheduler runs will skip it.`);
+        addCheck(checksForDeliveryNote, 'Processed Signature', 'pass', 'A dedicated Delivery Note signature was saved locally and will prevent repeated PO matching.');
+        return {
+            mode: input.mode,
+            attachmentId: attachment.id,
+            attachmentName: attachment.name,
+            purchaseOrder: null,
+            purchaseOrders: [],
+            candidates: [],
+            parsedInvoice: {
+                ...parsedInvoice,
+                logs: [...parsedInvoice.logs, deliveryNoteSummary],
+            },
+            checks: checksForDeliveryNote,
+            canAutoProceed: false,
+            actionsTaken: actionsForDeliveryNote,
+            actionsPending: pendingForDeliveryNote,
+        };
+    }
     if (isNonBillJobSummary) {
         const checksForNonBill = [];
         const actionsPendingForNonBill = [
@@ -1579,6 +1996,25 @@ async function runPoBillAutomation(client, input) {
             actionsPending: actionsPendingForNonBill,
         };
     }
+    if (input.mode === 'auto' && await hasValidatedSourceDocument(client, attachment)) {
+        addCheck(checks, 'Documents', 'pass', 'This source document already has the Odoo Documents tag "Validated".');
+        addCheck(checks, 'Processed Signature', 'pass', 'The Odoo Validated tag is being used as the durable processed signature; duplicate PO matching was skipped.');
+        actionsTaken.push(`Skipped ${attachment.name} because its Odoo Documents record is already tagged Validated.`);
+        actionsPending.push('Auto mode stopped because the source document already has a durable Validated signature.');
+        return {
+            mode: input.mode,
+            attachmentId: attachment.id,
+            attachmentName: attachment.name,
+            purchaseOrder: null,
+            purchaseOrders: [],
+            candidates: [],
+            parsedInvoice,
+            checks,
+            canAutoProceed: false,
+            actionsTaken,
+            actionsPending,
+        };
+    }
     const overrideSearch = input.purchaseOrderSearch?.trim() || '';
     const overridePurchaseOrder = overrideSearch ? await findPurchaseOrder(client, overrideSearch) : null;
     const orderNumberPurchaseOrder = !overridePurchaseOrder && parsedInvoice.orderNumber
@@ -1603,6 +2039,48 @@ async function runPoBillAutomation(client, input) {
     const bestEligibleCandidate = candidates[0] || null;
     const bestOverallWasExcluded = Boolean(input.onlyUnbilledPurchaseOrders && bestOverallCandidate) &&
         !candidates.some((candidate) => candidate.purchaseOrder.id === bestOverallCandidate?.purchaseOrder.id);
+    // A PO can be filtered out as already invoiced even though the local
+    // attachment marker/tag is missing. Recover that durable Odoo evidence
+    // before allowing the scheduler to continue with a weaker PO candidate.
+    if (input.mode === 'auto' && input.onlyUnbilledPurchaseOrders && bestOverallCandidate && bestOverallWasExcluded) {
+        const recovered = await repairAlreadyMatchedPoBillDocument(client, {
+            attachment,
+            purchaseOrders: [bestOverallCandidate.purchaseOrder],
+            parsedInvoice,
+            invoiceFingerprint,
+            mode: input.mode,
+        });
+        if (recovered) {
+            addCheck(checks, 'Existing Odoo Match', 'pass', recovered.summary);
+            if (recovered.documentValidation.marked) {
+                actionsTaken.push(recovered.documentValidation.message);
+                addCheck(checks, 'Documents', 'pass', recovered.documentValidation.message);
+            }
+            else {
+                actionsPending.push(recovered.documentValidation.message);
+                addCheck(checks, 'Documents', 'warn', recovered.documentValidation.message);
+            }
+            if (recovered.chatterMessage) {
+                actionsTaken.push(`Repaired PO chatter evidence for existing vendor bill ${recovered.vendorBill.name || recovered.vendorBill.id}.`);
+            }
+            actionsTaken.push(`Repaired the processed signature for ${attachment.name}; future scheduler runs will skip this document.`);
+            addCheck(checks, 'Processed Signature', 'pass', 'Existing PO/vendor-bill evidence was recorded locally to prevent duplicate processing.');
+            actionsPending.push('Auto mode stopped because this document was already matched and billed in Odoo.');
+            return {
+                mode: input.mode,
+                attachmentId: attachment.id,
+                attachmentName: attachment.name,
+                purchaseOrder: bestOverallCandidate.purchaseOrder,
+                purchaseOrders: [bestOverallCandidate.purchaseOrder],
+                candidates: broadCandidates || candidates,
+                parsedInvoice,
+                checks,
+                canAutoProceed: false,
+                actionsTaken,
+                actionsPending,
+            };
+        }
+    }
     if (bestOverallCandidate &&
         bestOverallWasExcluded &&
         bestOverallCandidate.score >= AUTO_MATCH_THRESHOLD &&
@@ -1739,6 +2217,45 @@ async function runPoBillAutomation(client, input) {
     if (existingProcessed && !processedEvidence?.valid && input.mode === 'auto') {
         actionsTaken.push('Local processed marker was ignored because Odoo vendor bill/chatter evidence could not be verified.');
     }
+    if (input.mode === 'auto') {
+        const recovered = await repairAlreadyMatchedPoBillDocument(client, {
+            attachment,
+            purchaseOrders: matchedPurchaseOrders,
+            parsedInvoice,
+            invoiceFingerprint,
+            mode: input.mode,
+        });
+        if (recovered) {
+            addCheck(checks, 'Existing Odoo Match', 'pass', recovered.summary);
+            if (recovered.documentValidation.marked) {
+                actionsTaken.push(recovered.documentValidation.message);
+                addCheck(checks, 'Documents', 'pass', recovered.documentValidation.message);
+            }
+            else {
+                actionsPending.push(recovered.documentValidation.message);
+                addCheck(checks, 'Documents', 'warn', recovered.documentValidation.message);
+            }
+            if (recovered.chatterMessage) {
+                actionsTaken.push(`Repaired PO chatter evidence for existing vendor bill ${recovered.vendorBill.name || recovered.vendorBill.id}.`);
+            }
+            actionsTaken.push(`Repaired the processed signature for ${attachment.name}; future scheduler runs will skip this document.`);
+            addCheck(checks, 'Processed Signature', 'pass', 'Existing PO/vendor-bill evidence was recorded locally to prevent duplicate processing.');
+            actionsPending.push('Auto mode stopped because this document was already matched and billed in Odoo.');
+            return {
+                mode: input.mode,
+                attachmentId: attachment.id,
+                attachmentName: attachment.name,
+                purchaseOrder,
+                purchaseOrders: matchedPurchaseOrders,
+                candidates,
+                parsedInvoice,
+                checks,
+                canAutoProceed: false,
+                actionsTaken,
+                actionsPending,
+            };
+        }
+    }
     const fingerprintMatches = await (0, repositories_1.getPoBillProcessedDocumentsByInvoiceFingerprint)(invoiceFingerprint);
     for (const match of fingerprintMatches) {
         if (match.attachmentId === attachment.id || !['processed', 'processed_with_warnings'].includes(match.status)) {
@@ -1829,10 +2346,10 @@ async function runPoBillAutomation(client, input) {
                 : 'No usable invoice line item was extracted; manual review is required.');
     addCheck(checks, 'Item Count', itemCountMatches ? 'pass' : parsedInvoice.itemCount === 0 ? 'warn' : 'fail', `Invoice has ${parsedInvoice.itemCount} readable item(s); PO has ${poLines.length} item(s).`);
     const coreMatchScore = bestCandidate
-        ? bestCandidate.vendorScore + (combinedMatch ? 40 : bestCandidate.totalScore) + bestCandidate.dateScore
+        ? bestCandidate.vendorScore + (combinedMatch ? 40 : bestCandidate.totalScore) + bestCandidate.dateScore + bestCandidate.receiptScore
         : (vendorMatches ? 40 : 0) + (totalMatches ? 40 : 0) + 0;
     const coreMatchPassed = coreMatchScore >= CORE_MATCH_THRESHOLD;
-    addCheck(checks, 'Core Match', coreMatchPassed ? 'pass' : 'fail', `Vendor, total due, and date scored ${coreMatchScore}/95. Auto mode requires ${CORE_MATCH_THRESHOLD}/95 or better.`);
+    addCheck(checks, 'Core Match', coreMatchPassed ? 'pass' : 'fail', `Vendor, total due, date, and receipt evidence scored ${coreMatchScore}/103. Auto mode requires ${CORE_MATCH_THRESHOLD}/103 or better.`);
     const canAutoProceed = (poStateReady || poStateApprovable) &&
         totalMatches &&
         vendorMatches &&

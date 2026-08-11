@@ -233,6 +233,15 @@ function extractChatOutputText(response) {
     }
     return '';
 }
+function stripNvidiaControlTokens(value) {
+    return value
+        // Gemma 4 can emit an empty thought channel even when thinking is disabled.
+        .replace(/<\|channel>thought[\s\S]*?<channel\|>/gi, '')
+        .replace(/<\|(?:think|analysis)\|>[\s\S]*?<\|\/(?:think|analysis)\|>/gi, '')
+        .replace(/<\|(?:channel|message|eot_id|end_of_text|endoftext)\|>/gi, '')
+        .replace(/<\|(?:start|end)_of_text\|>/gi, '')
+        .trim();
+}
 function extractGeminiOutputText(response) {
     return (response?.candidates?.[0]?.content?.parts || [])
         .map((part) => (typeof part?.text === 'string' ? part.text : ''))
@@ -497,8 +506,11 @@ async function callOpenAiCompatibleInvoiceAi(input) {
         : input.provider === 'openrouter'
             ? OPENROUTER_CHAT_URL
             : OPENAI_CHAT_URL;
-    const endpoint = input.baseUrl
-        ? `${input.baseUrl.replace(/\/+$/, '')}/chat/completions`
+    const configuredBaseUrl = input.baseUrl.replace(/\/+$/, '');
+    const endpoint = configuredBaseUrl
+        ? /\/chat\/completions$/i.test(configuredBaseUrl)
+            ? configuredBaseUrl
+            : `${configuredBaseUrl}/chat/completions`
         : defaultUrl;
     const isGemmaVision = input.provider === 'nvidia' && input.model === 'google/gemma-4-31b-it';
     const multimodalContent = [
@@ -514,9 +526,9 @@ async function callOpenAiCompatibleInvoiceAi(input) {
     const body = {
         model: input.model,
         temperature: isGemmaVision ? 1.0 : 0,
-        max_tokens: input.provider === 'nvidia' && input.model === 'google/gemma-4-31b-it' ? 16384 : 4000,
+        max_tokens: isGemmaVision ? 4096 : 4000,
+        stream: false,
         messages: [
-            ...(isGemmaVision ? [{ role: 'system', content: '<|think|>' }] : []),
             {
                 role: 'user',
                 content: input.provider === 'nvidia' && isTextOnlyNvidiaModel(input.model)
@@ -525,33 +537,75 @@ async function callOpenAiCompatibleInvoiceAi(input) {
             },
         ],
     };
-    if (input.provider !== 'nvidia' || input.model === 'google/gemma-4-31b-it') {
+    // NVIDIA's Gemma endpoint documents the OpenAI-compatible chat fields but
+    // does not document response_format. Keep the strict JSON instruction in
+    // the prompt and let the parser handle a fenced/annotated response.
+    if (input.provider !== 'nvidia') {
         body.response_format = { type: 'json_object' };
     }
     if (isGemmaVision) {
         body.top_p = 0.95;
         body.top_k = 64;
         body.chat_template_kwargs = {
-            enable_thinking: true,
+            enable_thinking: false,
             visual_token_budget: 1120,
         };
     }
-    const response = await fetch(endpoint, {
+    const requestTimeoutMs = isGemmaVision ? 300000 : 60000;
+    const headers = {
+        Authorization: `Bearer ${input.apiKey}`,
+        'Content-Type': 'application/json',
+        ...(input.provider === 'nvidia' ? { Accept: 'application/json' } : {}),
+        ...(input.provider === 'openrouter'
+            ? {
+                'HTTP-Referer': 'https://app.urbanvibeinteriordesign.co.ke',
+                'X-Title': 'PO Bill Automation',
+            }
+            : {}),
+    };
+    let response = await fetch(endpoint, {
         method: 'POST',
-        signal: AbortSignal.timeout(60000),
-        headers: {
-            Authorization: `Bearer ${input.apiKey}`,
-            'Content-Type': 'application/json',
-            ...(input.provider === 'openrouter'
-                ? {
-                    'HTTP-Referer': 'https://app.urbanvibeinteriordesign.co.ke',
-                    'X-Title': 'PO Bill Automation',
-                }
-                : {}),
-        },
+        signal: AbortSignal.timeout(requestTimeoutMs),
+        headers,
         body: JSON.stringify(body),
     });
-    const responseJson = await response.json().catch(() => null);
+    let responseJson = await response.json().catch(() => null);
+    // NVIDIA may accept a request asynchronously with HTTP 202. Poll the
+    // documented status endpoint until the same request is fulfilled or the
+    // original Gemma timeout budget is exhausted.
+    if (input.provider === 'nvidia' && response.status === 202) {
+        const requestId = responseJson?.requestId || responseJson?.request_id;
+        if (!requestId) {
+            throw new Error('nvidia API returned HTTP 202 without a requestId for status polling.');
+        }
+        const statusBaseUrl = endpoint.replace(/\/chat\/completions\/?$/i, '');
+        const statusEndpoint = `${statusBaseUrl}/status/${encodeURIComponent(String(requestId))}`;
+        const deadline = Date.now() + requestTimeoutMs;
+        while (Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 1500));
+            const remainingMs = deadline - Date.now();
+            if (remainingMs <= 0)
+                break;
+            const statusResponse = await fetch(statusEndpoint, {
+                method: 'GET',
+                signal: AbortSignal.timeout(Math.min(30000, remainingMs)),
+                headers: {
+                    Authorization: `Bearer ${input.apiKey}`,
+                    Accept: 'application/json',
+                },
+            });
+            const statusJson = await statusResponse.json().catch(() => null);
+            if (statusResponse.status === 202) {
+                continue;
+            }
+            response = statusResponse;
+            responseJson = statusJson?.response || statusJson;
+            break;
+        }
+        if (response.status === 202) {
+            throw new Error(`nvidia API request ${requestId} remained pending for ${Math.round(requestTimeoutMs / 1000)} seconds.`);
+        }
+    }
     if (!response.ok) {
         const message = responseJson?.error?.message ||
             responseJson?.detail ||
@@ -560,7 +614,8 @@ async function callOpenAiCompatibleInvoiceAi(input) {
             `${input.provider} API returned HTTP ${response.status}.`;
         throw new Error(`${input.provider} API returned HTTP ${response.status}: ${message}`);
     }
-    return extractChatOutputText(responseJson);
+    const outputText = extractChatOutputText(responseJson);
+    return input.provider === 'nvidia' ? stripNvidiaControlTokens(outputText) : outputText;
 }
 async function callGeminiInvoiceAi(input) {
     const baseUrl = input.baseUrl.replace(/\/+$/, '') || GEMINI_BASE_URL;
@@ -805,19 +860,18 @@ async function extractInvoiceWithConfiguredAi(input) {
                     accumulatedWarnings.push(`AI invoice extraction retried with NVIDIA vision model ${visionModel} because text-only OCR interpretation missed items or total.`);
                 }
                 else if (provider === 'nvidia') {
-                    const outputs = [];
-                    for (const imagePath of imagePaths) {
-                        const images = await readImagesForAi([imagePath]);
-                        outputs.push(await callOpenAiCompatibleInvoiceAi({
-                            provider,
-                            apiKey,
-                            model,
-                            baseUrl: input.config.baseUrl,
-                            images,
-                            prompt,
-                        }));
-                    }
-                    outputText = outputs.join('\n\n');
+                    // Gemma is multimodal and accepts multiple image parts in one user
+                    // message. One request keeps page context together and avoids a
+                    // serial model call (and timeout risk) for every physical page.
+                    const images = await readImagesForAi(imagePaths);
+                    outputText = await callOpenAiCompatibleInvoiceAi({
+                        provider,
+                        apiKey,
+                        model,
+                        baseUrl: input.config.baseUrl,
+                        images,
+                        prompt,
+                    });
                 }
                 else {
                     const images = await readImagesForAi(imagePaths);
