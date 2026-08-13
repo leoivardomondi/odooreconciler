@@ -1515,7 +1515,7 @@ class OdooClient {
             else if (percentage >= 50)
                 color = 'orange';
             // Build a human-readable detail string
-            const details = `Real rate: ${percentage}% | Avg finish: ${avgDays.toFixed(1)} days from SO confirmation | On-time qty: ${Math.round(onTimeWeight)} | Same-day qty: ${Math.round(sameDayWeight)} | Low-qty same-day: ${Math.round(lowQtySameDayWeight)} | Late qty: ${Math.round(lateCompletedWeight)} | Open backlog: ${overduePendingMos} MO, ${overduePendingWos} WO | Low-qty slow: ${slowLowQty}`;
+            const details = `Period: 5 Aug 2026 to ${reportDay} | Real rate: ${percentage}% | Avg finish: ${avgDays.toFixed(1)} days from SO confirmation | On-time qty: ${Math.round(onTimeWeight)} | Same-day qty: ${Math.round(sameDayWeight)} | Low-qty same-day: ${Math.round(lowQtySameDayWeight)} | Late qty: ${Math.round(lateCompletedWeight)} | Open backlog: ${overduePendingMos} MO, ${overduePendingWos} WO | Low-qty slow: ${slowLowQty}`;
             return {
                 percentage,
                 color,

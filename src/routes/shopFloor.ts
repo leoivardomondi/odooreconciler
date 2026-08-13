@@ -446,7 +446,7 @@ async function fetchSalaryAdvances(employeeName: string): Promise<Array<{ employ
   return salaryAdvances;
 }
 
-async function buildOperatorDashboard(
+export async function buildOperatorDashboard(
   client: OdooClient,
   userEmail: string,
   req: Request,
@@ -770,11 +770,13 @@ async function buildOperatorDashboard(
       // 8. Failed Checkouts
       client.getFailedCheckouts(employee.id),
       // 9. Work Center Performance
-      getDailyManufacturingAnalytics('performance-rate', () => client.getWorkCenterPerformance(employee.id, employee.name)),
+      // Version the cache key whenever the performance baseline changes so a
+      // running process cannot serve a pre-baseline result.
+      getDailyManufacturingAnalytics('performance-rate-2026-08-05-v2', () => client.getWorkCenterPerformance(employee.id, employee.name)),
       // 10. Manufacturing timing summary
-      getDailyManufacturingAnalytics('timing-summary', () => client.getManufacturingTimingSummary(employee.id, employee.name)),
+      getDailyManufacturingAnalytics('timing-summary-v2', () => client.getManufacturingTimingSummary(employee.id, employee.name)),
       // 11. Manufacturing timeline data for charting
-      getDailyManufacturingAnalytics('timeline-data', () => client.getManufacturingTimelineData(employee.id, employee.name)),
+      getDailyManufacturingAnalytics('timeline-data-v2', () => client.getManufacturingTimelineData(employee.id, employee.name)),
       // 12. Board registration summary from physical inventory
       // 12. Board registration summary from physical inventory
       client.getBoardRegistrationSummary(stockScope),
@@ -1015,9 +1017,10 @@ router.get('/shop-floor', async (req: Request, res: Response) => {
   }
 
   const viewedEmail = getViewedUserEmail(req);
-  const cacheKey = `shop-floor-dashboard:v2:${viewedEmail.toLowerCase()}`;
+  const cacheKey = `shop-floor-dashboard:v3:${viewedEmail.toLowerCase()}`;
   if (req.query.refresh === 'true') {
     shopFloorCache.delete(cacheKey);
+    dailyManufacturingAnalytics.clear();
   }
 
   try {
