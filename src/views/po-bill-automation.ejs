@@ -423,7 +423,7 @@
                 <% const selectedPoNames = result.purchaseOrders && result.purchaseOrders.length ? result.purchaseOrders.map((po) => po.name).join(', ') : (result.purchaseOrder ? result.purchaseOrder.name : 'No match'); %>
                 <%= selectedPoNames %>
                 <% if (result.candidates && result.candidates.length > 0) { %>
-                  <span class="text-secondary small">Best score: <%= result.candidates[0].score %>/100</span>
+                  <span class="text-secondary small">Best score: <%= result.candidates[0].score %>/113</span>
                 <% } %>
               </dd>
               <dt class="col-sm-4">Vendor</dt>
@@ -468,6 +468,8 @@
               items: result.parsedInvoice.items,
               confidence: result.parsedInvoice.confidence,
               handwriting: result.parsedInvoice.handwriting,
+              runDurationMs: result.runDurationMs,
+              runDurationSeconds: result.runDurationSeconds,
               logs: result.parsedInvoice.logs,
               rawTextPreview: result.parsedInvoice.rawText ? result.parsedInvoice.rawText.slice(0, 3000) : '',
             }, null, 2) %></code></pre>
@@ -502,11 +504,19 @@
                         <div class="small text-secondary"><%= candidate.purchaseOrder.state || 'unknown' %></div>
                       </td>
                       <td><%= getRelationLabel(candidate.purchaseOrder.partner_id) %></td>
-                      <td><%= formatDateTime(candidate.purchaseOrder.date_order) %></td>
+                      <td>
+                        <%= formatDateTime(candidate.matchingDate || candidate.purchaseOrder.date_order) %>
+                        <div class="small text-secondary">
+                          <%= candidate.matchingDate ? 'Approval date used' : 'PO date used' %>
+                        </div>
+                        <% if (candidate.purchaseOrder.create_date) { %>
+                          <div class="small text-secondary">Created <%= formatDateTime(candidate.purchaseOrder.create_date) %></div>
+                        <% } %>
+                      </td>
                       <td><%= candidate.purchaseOrder.amount_total ?? '—' %></td>
                       <td>
                         <span class="badge text-bg-<%= candidate.score >= 90 ? 'success' : candidate.score >= 70 ? 'warning' : 'secondary' %>">
-                          <%= candidate.score %>/103
+                          <%= candidate.score %>/113
                         </span>
                         <div class="small text-secondary">
                           V<%= candidate.vendorScore %> A<%= candidate.totalScore %> D<%= candidate.dateScore %> I<%= candidate.itemScore %> R<%= candidate.receiptScore %>

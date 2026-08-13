@@ -3,6 +3,7 @@ import test from 'node:test';
 import { ParsedVendorInvoiceResult, PurchaseOrderLine, PurchaseOrderSummary } from '../models/types';
 import {
   computeItemScore,
+  comparePoBillCandidates,
   isCompletedPoBillActivityNote,
   isPurchaseOrderApprovalMessage,
   isReliablePoBillCandidate,
@@ -203,4 +204,65 @@ test('does not treat a wrong-total low-score candidate as reliable', () => {
     receiptScore: 8,
     reasons: [],
   }), true);
+});
+
+test('ranks the closer approval date before a higher PO id when score bands tie', () => {
+  const olderAndCloser = {
+    purchaseOrder: { id: 590, name: 'P00590', create_date: '2026-05-26 06:51:29' },
+    score: 110,
+    vendorScore: 40,
+    totalScore: 40,
+    dateScore: 12,
+    itemScore: 10,
+    receiptScore: 8,
+    matchingDate: '2026-05-29 12:25:47',
+    dateDistanceDays: 3,
+    creationDateDistanceDays: 0,
+    reasons: [],
+  };
+  const newerAndFurther = {
+    purchaseOrder: { id: 574, name: 'P00574', create_date: '2026-05-20 06:45:45' },
+    score: 110,
+    vendorScore: 40,
+    totalScore: 40,
+    dateScore: 12,
+    itemScore: 10,
+    receiptScore: 8,
+    matchingDate: '2026-05-21 13:55:15',
+    dateDistanceDays: 5,
+    creationDateDistanceDays: 6,
+    reasons: [],
+  };
+
+  assert.ok(comparePoBillCandidates(olderAndCloser, newerAndFurther) < 0);
+  assert.ok(comparePoBillCandidates(newerAndFurther, olderAndCloser) > 0);
+});
+
+test('uses PO creation-date proximity when approval-date distances tie', () => {
+  const createdOnInvoiceDate = {
+    purchaseOrder: { id: 590, name: 'P00590' },
+    score: 110,
+    vendorScore: 40,
+    totalScore: 40,
+    dateScore: 12,
+    itemScore: 10,
+    receiptScore: 8,
+    dateDistanceDays: 3,
+    creationDateDistanceDays: 0,
+    reasons: [],
+  };
+  const createdLater = {
+    purchaseOrder: { id: 700, name: 'P00700' },
+    score: 110,
+    vendorScore: 40,
+    totalScore: 40,
+    dateScore: 12,
+    itemScore: 10,
+    receiptScore: 8,
+    dateDistanceDays: 3,
+    creationDateDistanceDays: 8,
+    reasons: [],
+  };
+
+  assert.ok(comparePoBillCandidates(createdOnInvoiceDate, createdLater) < 0);
 });

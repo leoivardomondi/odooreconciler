@@ -8,6 +8,7 @@ exports.isSupportedPoBillMimetype = isSupportedPoBillMimetype;
 exports.isStandaloneDeliveryNoteDocument = isStandaloneDeliveryNoteDocument;
 exports.isPurchaseOrderApprovalMessage = isPurchaseOrderApprovalMessage;
 exports.computeItemScore = computeItemScore;
+exports.comparePoBillCandidates = comparePoBillCandidates;
 exports.isReliablePoBillCandidate = isReliablePoBillCandidate;
 exports.clearDocumentPdfsCache = clearDocumentPdfsCache;
 exports.getRecentDocumentPdfs = getRecentDocumentPdfs;
@@ -34,6 +35,8 @@ const aiCredentialFailureNotificationService_1 = require("./aiCredentialFailureN
 const TOTAL_TOLERANCE = 1;
 const AUTO_MATCH_THRESHOLD = 90;
 const CORE_MATCH_THRESHOLD = 90;
+const PO_CANDIDATE_MAX_SCORE = 113;
+const CORE_MATCH_MAX_SCORE = 103;
 const PURCHASE_ORDER_SEARCH_PAGE_SIZE = 100;
 const DOCUMENT_FOLDER_NAME = 'Finance';
 const DELIVERY_NOTE_DOCUMENT_TAG_NAME = 'Delivery Note';
@@ -488,18 +491,18 @@ function computeDateScore(invoiceDate, poDateValue) {
     const poDate = parseLooseDate(poDateValue);
     const days = daysBetween(invoiceDate, poDate);
     if (days === null) {
-        return { score: 0, reason: 'Invoice date or PO date was not readable.' };
+        return { score: 0, days: null, reason: 'Invoice date or PO date was not readable.' };
     }
     if (days <= 1) {
-        return { score: 15, reason: `Date matched within ${Math.round(days)} day(s).` };
+        return { score: 15, days, reason: `Date matched within ${Math.round(days)} day(s).` };
     }
     if (days <= 7) {
-        return { score: 12, reason: `Date is close within ${Math.round(days)} day(s).` };
+        return { score: 12, days, reason: `Date is close within ${Math.round(days)} day(s).` };
     }
     if (days <= 30) {
-        return { score: 8, reason: `Date is within ${Math.round(days)} day(s).` };
+        return { score: 8, days, reason: `Date is within ${Math.round(days)} day(s).` };
     }
-    return { score: 0, reason: `Date is far apart by ${Math.round(days)} day(s).` };
+    return { score: 0, days, reason: `Date is far apart by ${Math.round(days)} day(s).` };
 }
 async function findPurchaseOrderApprovalDates(client, purchaseOrderIds) {
     const approvalDates = new Map();
@@ -645,6 +648,7 @@ function buildCandidate(purchaseOrder, poLines, parsedInvoice, approvalDate) {
     const total = computeTotalScore(parsedInvoice.grandTotal, purchaseOrder.amount_total, parsedInvoice.untaxedTotal, purchaseOrder.amount_untaxed);
     const matchingPoDate = approvalDate || purchaseOrder.date_order;
     const date = computeDateScore(parseLooseDate(parsedInvoice.invoiceDate), matchingPoDate);
+    const creationDateDistanceDays = daysBetween(parseLooseDate(parsedInvoice.invoiceDate), parseLooseDate(purchaseOrder.create_date || purchaseOrder.date_order));
     const itemScore = computeItemScore(parsedInvoice.items, poLines);
     const receipt = computeReceiptScore(poLines);
     const approvalDateReason = approvalDate
@@ -658,8 +662,17 @@ function buildCandidate(purchaseOrder, poLines, parsedInvoice, approvalDate) {
         dateScore: date.score,
         itemScore: itemScore.score,
         receiptScore: receipt.score,
+        matchingDate: matchingPoDate || null,
+        dateDistanceDays: date.days,
+        creationDateDistanceDays,
         reasons: [vendor.reason, total.reason, date.reason, approvalDateReason, itemScore.reason, receipt.reason].filter(Boolean),
     };
+}
+function comparePoBillCandidates(left, right) {
+    return right.score - left.score ||
+        (left.dateDistanceDays ?? Number.POSITIVE_INFINITY) - (right.dateDistanceDays ?? Number.POSITIVE_INFINITY) ||
+        (left.creationDateDistanceDays ?? Number.POSITIVE_INFINITY) - (right.creationDateDistanceDays ?? Number.POSITIVE_INFINITY) ||
+        right.purchaseOrder.id - left.purchaseOrder.id;
 }
 function isReliablePoBillCandidate(candidate) {
     return candidate.vendorScore > 0 &&
@@ -1207,6 +1220,7 @@ async function findPurchaseOrder(client, searchTerm) {
             'id',
             'name',
             'state',
+            'create_date',
             'date_order',
             'amount_total',
             'amount_untaxed',
@@ -1265,6 +1279,7 @@ async function findPurchaseOrderCandidates(client, parsedInvoice, options = {}) 
         'id',
         'name',
         'state',
+        'create_date',
         'date_order',
         'amount_total',
         'amount_untaxed',
@@ -1294,7 +1309,7 @@ async function findPurchaseOrderCandidates(client, parsedInvoice, options = {}) 
     return candidates
         .filter((candidate) => !hasReadableVendor || candidate.vendorScore > 0)
         .filter((candidate) => candidate.score > 0)
-        .sort((left, right) => right.score - left.score || right.purchaseOrder.id - left.purchaseOrder.id)
+        .sort(comparePoBillCandidates)
         .slice(0, 10);
 }
 async function getPurchaseOrderLines(client, purchaseOrderId) {
@@ -1320,6 +1335,7 @@ async function refreshPurchaseOrder(client, purchaseOrderId) {
         'id',
         'name',
         'state',
+        'create_date',
         'date_order',
         'amount_total',
         'amount_untaxed',
@@ -1901,7 +1917,7 @@ async function createPurchaseOrderActivity(client, purchaseOrder, summary, noteL
     };
     return client.createRecord('mail.activity', values);
 }
-async function runPoBillAutomation(client, input) {
+async function runPoBillAutomationInternal(client, input) {
     const checks = [];
     const actionsTaken = [];
     const actionsPending = [];
@@ -2208,7 +2224,7 @@ async function runPoBillAutomation(client, input) {
         bestOverallCandidate.score >= AUTO_MATCH_THRESHOLD &&
         (!bestEligibleCandidate || bestEligibleCandidate.score < bestOverallCandidate.score)) {
         const reason = describeSchedulerEligibility(bestOverallCandidate.purchaseOrder);
-        addCheck(checks, 'Best Overall Match', 'warn', `${bestOverallCandidate.purchaseOrder.name} scored ${bestOverallCandidate.score}/100, but scheduler did not select it because ${reason}.`);
+        addCheck(checks, 'Best Overall Match', 'warn', `${bestOverallCandidate.purchaseOrder.name} scored ${bestOverallCandidate.score}/${PO_CANDIDATE_MAX_SCORE}, but scheduler did not select it because ${reason}.`);
         addCheck(checks, 'Scheduler Eligibility', 'fail', `Skipped weaker candidate matching because the strongest PO match ${bestOverallCandidate.purchaseOrder.name} is not scheduler-eligible: ${reason}.`);
         actionsPending.push(`Scheduler skipped this PDF because the strongest match ${bestOverallCandidate.purchaseOrder.name} is not scheduler-eligible (${reason}); a weaker PO will not be used.`);
         return {
@@ -2235,7 +2251,7 @@ async function runPoBillAutomation(client, input) {
     if (!combinedMatch && !explicitPurchaseOrder && !reliableCandidate) {
         const strongestCandidate = candidates[0] || null;
         addCheck(checks, 'PO Match Score', strongestCandidate ? 'warn' : 'fail', strongestCandidate
-            ? `No reliable PO match reached ${AUTO_MATCH_THRESHOLD}/100 with a matching total. Strongest candidate ${strongestCandidate.purchaseOrder.name} scored ${strongestCandidate.score}/100.`
+            ? `No reliable PO match reached ${AUTO_MATCH_THRESHOLD}/${PO_CANDIDATE_MAX_SCORE} with a matching total. Strongest candidate ${strongestCandidate.purchaseOrder.name} scored ${strongestCandidate.score}/${PO_CANDIDATE_MAX_SCORE}.`
             : 'No PO candidates were found for the extracted vendor and invoice date.');
         addCheck(checks, 'Purchase Order', 'fail', 'No Purchase Order was selected because low-confidence or wrong-total candidates cannot be used as matches.');
         actionsPending.push(strongestCandidate
@@ -2288,7 +2304,7 @@ async function runPoBillAutomation(client, input) {
     addCheck(checks, 'PO Match Score', combinedMatch ? 'pass' : bestCandidate && bestCandidate.score >= AUTO_MATCH_THRESHOLD ? 'pass' : bestCandidate ? 'warn' : 'info', combinedMatch
         ? `${matchedPurchaseOrders.map((order) => order.name).join(' + ')} combined total ${combinedTotal} matched invoice total ${parsedInvoice.grandTotal}.`
         : bestCandidate
-            ? `${purchaseOrder.name} scored ${bestCandidate.score}/100 from extracted vendor, date, amount, and item count.`
+            ? `${purchaseOrder.name} scored ${bestCandidate.score}/${PO_CANDIDATE_MAX_SCORE} from extracted vendor, date, amount, item, and receipt evidence.`
             : overridePurchaseOrder
                 ? `${purchaseOrder.name} was selected from the manual override.`
                 : `${purchaseOrder.name} was selected from the invoice order number.`);
@@ -2496,7 +2512,7 @@ async function runPoBillAutomation(client, input) {
         ? bestCandidate.vendorScore + (combinedMatch ? 40 : bestCandidate.totalScore) + bestCandidate.dateScore + bestCandidate.receiptScore
         : (vendorMatches ? 40 : 0) + (totalMatches ? 40 : 0) + 0;
     const coreMatchPassed = coreMatchScore >= CORE_MATCH_THRESHOLD;
-    addCheck(checks, 'Core Match', coreMatchPassed ? 'pass' : 'fail', `Vendor, total due, date, and receipt evidence scored ${coreMatchScore}/103. Auto mode requires ${CORE_MATCH_THRESHOLD}/103 or better.`);
+    addCheck(checks, 'Core Match', coreMatchPassed ? 'pass' : 'fail', `Vendor, total due, date, and receipt evidence scored ${coreMatchScore}/${CORE_MATCH_MAX_SCORE}. Auto mode requires ${CORE_MATCH_THRESHOLD}/${CORE_MATCH_MAX_SCORE} or better.`);
     const canAutoProceed = (poStateReady || poStateApprovable) &&
         totalMatches &&
         vendorMatches &&
@@ -2757,5 +2773,15 @@ async function runPoBillAutomation(client, input) {
         canAutoProceed,
         actionsTaken,
         actionsPending,
+    };
+}
+async function runPoBillAutomation(client, input) {
+    const startedAt = Date.now();
+    const result = await runPoBillAutomationInternal(client, input);
+    const runDurationMs = Math.max(0, Date.now() - startedAt);
+    return {
+        ...result,
+        runDurationMs,
+        runDurationSeconds: Number((runDurationMs / 1000).toFixed(3)),
     };
 }

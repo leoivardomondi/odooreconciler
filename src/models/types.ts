@@ -518,6 +518,7 @@ export interface PurchaseOrderSummary {
   id: number;
   name: string;
   state?: string | null;
+  create_date?: string | null;
   date_order?: string | null;
   amount_total?: number | null;
   amount_untaxed?: number | null;
@@ -556,6 +557,9 @@ export interface PoBillAutomationCandidate {
   dateScore: number;
   itemScore: number;
   receiptScore: number;
+  matchingDate?: string | null;
+  dateDistanceDays?: number | null;
+  creationDateDistanceDays?: number | null;
   reasons: string[];
 }
 
@@ -563,6 +567,8 @@ export interface PoBillAutomationResult {
   mode: 'review' | 'auto';
   attachmentId: number;
   attachmentName: string;
+  runDurationMs?: number;
+  runDurationSeconds?: number;
   purchaseOrder: PurchaseOrderSummary | null;
   purchaseOrders?: PurchaseOrderSummary[];
   candidates: PoBillAutomationCandidate[];
