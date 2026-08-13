@@ -20,6 +20,7 @@ exports.getTransportKeywordRules = getTransportKeywordRules;
 exports.getCategoryDefinitions = getCategoryDefinitions;
 const repositories_1 = require("../models/repositories");
 const db_1 = require("../models/db");
+const geminiOAuthService_1 = require("./geminiOAuthService");
 // ─── Category Definitions ───────────────────────────────────────────────
 const MPESA_CATEGORIES = [
     'staff_lunch_expense',
@@ -959,7 +960,12 @@ async function callGeminiCategoryApi(input) {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
-            'X-goog-api-key': input.apiKey,
+            ...(input.accessToken
+                ? {
+                    Authorization: `Bearer ${input.accessToken}`,
+                    'x-goog-user-project': input.projectId || '',
+                }
+                : { 'X-goog-api-key': input.apiKey || '' }),
         },
         body: JSON.stringify({
             contents: [
@@ -1070,10 +1076,17 @@ async function tryAiCategorization(input) {
         if (!config?.enabled || config.provider === 'disabled') {
             return null;
         }
-        const apiKey = config.apiKeys?.[config.provider];
-        if (!apiKey) {
-            return null;
+        let apiKey = config.apiKeys?.[config.provider];
+        let accessToken = '';
+        let projectId = '';
+        if (config.provider === 'gemini' && config.geminiOAuth?.connected) {
+            const oauth = await (0, geminiOAuthService_1.getGeminiOAuthAccessToken)();
+            accessToken = oauth.accessToken;
+            projectId = oauth.projectId;
+            apiKey = '';
         }
+        if (!apiKey && !accessToken)
+            return null;
         const model = config.model?.trim() || defaultModelForProvider(config.provider);
         const prompt = buildCategoryPrompt({
             details: input.details,
@@ -1097,6 +1110,8 @@ async function tryAiCategorization(input) {
         else if (config.provider === 'gemini') {
             outputText = await callGeminiCategoryApi({
                 apiKey,
+                accessToken,
+                projectId,
                 model,
                 baseUrl: config.baseUrl,
                 prompt,

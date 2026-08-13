@@ -21,6 +21,7 @@ const startupState_1 = require("./src/services/startupState");
 const paths_1 = require("./src/utils/paths");
 const configuredStartupStepTimeoutMs = Number(env_1.env.STARTUP_STEP_TIMEOUT_MS || 30000);
 const configuredStartupDbRetryMs = Number(env_1.env.STARTUP_DB_RETRY_MS || 2000);
+const MAX_STARTUP_LOG_BYTES = 10 * 1024 * 1024;
 const STARTUP_STEP_TIMEOUT_MS = Number.isFinite(configuredStartupStepTimeoutMs) && configuredStartupStepTimeoutMs > 0
     ? configuredStartupStepTimeoutMs
     : 30000;
@@ -30,6 +31,10 @@ const STARTUP_DB_RETRY_MS = Number.isFinite(configuredStartupDbRetryMs) && confi
 function writeStartupLog(message, error) {
     try {
         fs_1.default.mkdirSync(paths_1.storageDirectoryPath, { recursive: true });
+        const startupLogPath = path_1.default.join(paths_1.storageDirectoryPath, 'startup.log');
+        if (fs_1.default.existsSync(startupLogPath) && fs_1.default.statSync(startupLogPath).size > MAX_STARTUP_LOG_BYTES) {
+            fs_1.default.truncateSync(startupLogPath, 0);
+        }
         const details = error instanceof Error
             ? `\n${error.stack || error.message}`
             : error

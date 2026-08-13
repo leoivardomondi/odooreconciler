@@ -2,6 +2,11 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getSettings = getSettings;
 exports.saveSettings = saveSettings;
+exports.getGeminiOAuthCredentials = getGeminiOAuthCredentials;
+exports.getGeminiOAuthClientConfig = getGeminiOAuthClientConfig;
+exports.saveGeminiOAuthCredentials = saveGeminiOAuthCredentials;
+exports.updateGeminiOAuthAccessToken = updateGeminiOAuthAccessToken;
+exports.clearGeminiOAuthCredentials = clearGeminiOAuthCredentials;
 exports.getCachedModelFields = getCachedModelFields;
 exports.saveCachedModelFields = saveCachedModelFields;
 exports.clearCachedModelFields = clearCachedModelFields;
@@ -50,6 +55,10 @@ exports.getProcessedStockVariantIds = getProcessedStockVariantIds;
 exports.getUnreversedProcessedStockItemsForOrder = getUnreversedProcessedStockItemsForOrder;
 exports.insertProcessedStockItem = insertProcessedStockItem;
 exports.markProcessedStockItemReversed = markProcessedStockItemReversed;
+exports.hasPoBillUnreadableNotification = hasPoBillUnreadableNotification;
+exports.recordPoBillUnreadableNotification = recordPoBillUnreadableNotification;
+exports.hasAiCredentialFailureNotification = hasAiCredentialFailureNotification;
+exports.recordAiCredentialFailureNotification = recordAiCredentialFailureNotification;
 exports.getPoBillProcessedDocumentsByAttachmentIds = getPoBillProcessedDocumentsByAttachmentIds;
 exports.getPoBillProcessedDocumentsByInvoiceFingerprint = getPoBillProcessedDocumentsByInvoiceFingerprint;
 exports.getLatestPoBillProcessedDocumentsByPurchaseOrderIds = getLatestPoBillProcessedDocumentsByPurchaseOrderIds;
@@ -120,6 +129,59 @@ function getSchedulerLockStaleMs() {
     const configuredMinutes = Number(env_1.env.SCHEDULER_LOCK_STALE_MINUTES || 10);
     const minutes = Number.isFinite(configuredMinutes) && configuredMinutes > 0 ? configuredMinutes : 10;
     return minutes * 60 * 1000;
+}
+function readStoredGeminiOAuthCredentials(payload) {
+    const encrypted = typeof payload.geminiOAuth === 'string' ? payload.geminiOAuth : '';
+    if (!encrypted)
+        return null;
+    try {
+        const parsed = JSON.parse((0, crypto_1.decryptSecret)(encrypted));
+        if (!parsed.refreshToken)
+            return null;
+        return {
+            refreshToken: String(parsed.refreshToken),
+            accessToken: String(parsed.accessToken || ''),
+            accessTokenExpiresAt: Number(parsed.accessTokenExpiresAt || 0),
+            email: String(parsed.email || ''),
+            scopes: Array.isArray(parsed.scopes) ? parsed.scopes.map(String) : [],
+            connectedAt: String(parsed.connectedAt || ''),
+        };
+    }
+    catch (error) {
+        console.warn('[settings] Stored Gemini OAuth credentials could not be decrypted. Reconnect Google Gemini using the current APP_ENCRYPTION_KEY.', error instanceof Error ? error.message : error);
+        return null;
+    }
+}
+function readStoredGeminiOAuthClient(payload) {
+    const encrypted = typeof payload.geminiOAuthClient === 'string' ? payload.geminiOAuthClient : '';
+    if (!encrypted)
+        return null;
+    try {
+        const parsed = JSON.parse((0, crypto_1.decryptSecret)(encrypted));
+        if (!parsed.clientId && !parsed.clientSecret)
+            return null;
+        return {
+            clientId: String(parsed.clientId || ''),
+            clientSecret: String(parsed.clientSecret || ''),
+        };
+    }
+    catch (error) {
+        console.warn('[settings] Stored Gemini OAuth client credentials could not be decrypted. Re-save them from AI settings using the current APP_ENCRYPTION_KEY.', error instanceof Error ? error.message : error);
+        return null;
+    }
+}
+function buildGeminiOAuthStatus(rawAi, encryptedKeysPayload) {
+    const rawStatus = (rawAi.geminiOAuth || {});
+    const credentials = readStoredGeminiOAuthCredentials(encryptedKeysPayload);
+    const client = readStoredGeminiOAuthClient(encryptedKeysPayload);
+    return {
+        connected: Boolean(credentials?.refreshToken),
+        email: credentials?.email || String(rawStatus.email || ''),
+        projectId: String(rawStatus.projectId || env_1.env.GOOGLE_GEMINI_PROJECT_ID || ''),
+        connectedAt: credentials?.connectedAt || (rawStatus.connectedAt ? String(rawStatus.connectedAt) : null),
+        clientId: client?.clientId || String(rawStatus.clientId || ''),
+        hasClientSecret: Boolean(client?.clientSecret),
+    };
 }
 async function getSettingsRow() {
     let row = null;
@@ -382,6 +444,7 @@ async function getSettings() {
     const encryptedKeysPayload = (0, helpers_1.safeJsonParse)(rawAi.apiKeysEncryptedJson, {});
     const encryptedApiKeys = (encryptedKeysPayload.providers || encryptedKeysPayload);
     const encryptedNvidiaModelKeys = (encryptedKeysPayload.nvidiaModels || {});
+    const geminiOAuth = buildGeminiOAuthStatus(rawAi, encryptedKeysPayload);
     const rawAiOcr = (rawAi.ocr || {});
     const aiApiKeys = { ...helpers_1.DEFAULT_AI_EXTRACTION_CONFIG.apiKeys };
     Object.keys(aiApiKeys).forEach((key) => {
@@ -427,6 +490,7 @@ async function getSettings() {
         maxImages: Number(rawAi.maxImages || helpers_1.DEFAULT_AI_EXTRACTION_CONFIG.maxImages),
         apiKeys: aiApiKeys,
         nvidiaModelKeys,
+        geminiOAuth,
         ocr: {
             ...helpers_1.DEFAULT_AI_EXTRACTION_CONFIG.ocr,
             ...rawAiOcr,
@@ -540,6 +604,10 @@ async function getSettings() {
 }
 async function saveSettings(input) {
     const existing = await getSettings();
+    const existingRow = await getSettingsRow();
+    const existingRawAi = (0, helpers_1.safeJsonParse)(existingRow.ai_config_json, {});
+    const existingEncryptedKeysPayload = (0, helpers_1.safeJsonParse)(String(existingRawAi.apiKeysEncryptedJson || ''), {});
+    const existingGeminiOAuthClient = readStoredGeminiOAuthClient(existingEncryptedKeysPayload);
     const nextApiKey = input.clearStoredApiKey
         ? (input.apiKey || '')
         : input.keepExistingApiKey && !input.apiKey
@@ -596,6 +664,27 @@ async function saveSettings(input) {
             accumulator[model] = (0, crypto_1.encryptSecret)(key);
         return accumulator;
     }, {});
+    const encryptedAiPayload = {
+        providers: encryptedProviderKeys,
+        nvidiaModels: encryptedNvidiaModelKeys,
+    };
+    const submittedGeminiClientId = String(submittedAi.geminiOAuthClientId || '').trim();
+    const submittedGeminiClientSecret = String(submittedAi.geminiOAuthClientSecret || '').trim();
+    const nextGeminiClientId = submittedAi.clearGeminiOAuthClientId
+        ? ''
+        : submittedGeminiClientId || existingGeminiOAuthClient?.clientId || '';
+    const nextGeminiClientSecret = submittedAi.clearGeminiOAuthClientSecret
+        ? ''
+        : submittedGeminiClientSecret || existingGeminiOAuthClient?.clientSecret || '';
+    if (nextGeminiClientId || nextGeminiClientSecret) {
+        encryptedAiPayload.geminiOAuthClient = (0, crypto_1.encryptSecret)(JSON.stringify({
+            clientId: nextGeminiClientId,
+            clientSecret: nextGeminiClientSecret,
+        }));
+    }
+    if (typeof existingEncryptedKeysPayload.geminiOAuth === 'string' && existingEncryptedKeysPayload.geminiOAuth) {
+        encryptedAiPayload.geminiOAuth = existingEncryptedKeysPayload.geminiOAuth;
+    }
     const ai = {
         ...existing.ai,
         ...submittedAi,
@@ -611,10 +700,14 @@ async function saveSettings(input) {
                         ? (0, crypto_1.encryptSecret)(existing.ai.ocr.apiKey)
                         : '',
         },
-        apiKeysEncryptedJson: JSON.stringify({ providers: encryptedProviderKeys, nvidiaModels: encryptedNvidiaModelKeys }),
+        apiKeysEncryptedJson: JSON.stringify(encryptedAiPayload),
     };
     delete ai.apiKeys;
     delete ai.clearApiKeys;
+    delete ai.geminiOAuthClientId;
+    delete ai.geminiOAuthClientSecret;
+    delete ai.clearGeminiOAuthClientId;
+    delete ai.clearGeminiOAuthClientSecret;
     delete ai.nvidiaModelKeys;
     delete ai.clearNvidiaModelKeys;
     delete ai.ocr.apiKey;
@@ -712,6 +805,76 @@ async function saveSettings(input) {
         ]);
     }
     return getSettings();
+}
+async function getGeminiOAuthCredentials() {
+    const row = await getSettingsRow();
+    const rawAi = (0, helpers_1.safeJsonParse)(row.ai_config_json, {});
+    const encryptedKeysPayload = (0, helpers_1.safeJsonParse)(String(rawAi.apiKeysEncryptedJson || ''), {});
+    return readStoredGeminiOAuthCredentials(encryptedKeysPayload);
+}
+async function getGeminiOAuthClientConfig() {
+    const row = await getSettingsRow();
+    const rawAi = (0, helpers_1.safeJsonParse)(row.ai_config_json, {});
+    const encryptedKeysPayload = (0, helpers_1.safeJsonParse)(String(rawAi.apiKeysEncryptedJson || ''), {});
+    return readStoredGeminiOAuthClient(encryptedKeysPayload);
+}
+async function saveGeminiOAuthCredentials(input) {
+    const row = await getSettingsRow();
+    const rawAi = (0, helpers_1.safeJsonParse)(row.ai_config_json, {});
+    const encryptedKeysPayload = (0, helpers_1.safeJsonParse)(String(rawAi.apiKeysEncryptedJson || ''), {});
+    const credentials = {
+        refreshToken: input.refreshToken,
+        accessToken: input.accessToken,
+        accessTokenExpiresAt: input.accessTokenExpiresAt,
+        email: input.email,
+        scopes: input.scopes,
+        connectedAt: new Date().toISOString(),
+    };
+    encryptedKeysPayload.geminiOAuth = (0, crypto_1.encryptSecret)(JSON.stringify(credentials));
+    rawAi.apiKeysEncryptedJson = JSON.stringify(encryptedKeysPayload);
+    rawAi.geminiOAuth = {
+        connected: true,
+        email: input.email,
+        projectId: input.projectId,
+        connectedAt: credentials.connectedAt,
+        clientId: readStoredGeminiOAuthClient(encryptedKeysPayload)?.clientId || '',
+        hasClientSecret: Boolean(readStoredGeminiOAuthClient(encryptedKeysPayload)?.clientSecret),
+    };
+    await (0, db_1.execute)('UPDATE settings SET ai_config_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1', [JSON.stringify(rawAi)]);
+}
+async function updateGeminiOAuthAccessToken(input) {
+    const credentials = await getGeminiOAuthCredentials();
+    if (!credentials) {
+        throw new Error('Google Gemini is not connected.');
+    }
+    const row = await getSettingsRow();
+    const rawAi = (0, helpers_1.safeJsonParse)(row.ai_config_json, {});
+    const encryptedKeysPayload = (0, helpers_1.safeJsonParse)(String(rawAi.apiKeysEncryptedJson || ''), {});
+    encryptedKeysPayload.geminiOAuth = (0, crypto_1.encryptSecret)(JSON.stringify({
+        ...credentials,
+        accessToken: input.accessToken,
+        accessTokenExpiresAt: input.accessTokenExpiresAt,
+    }));
+    rawAi.apiKeysEncryptedJson = JSON.stringify(encryptedKeysPayload);
+    await (0, db_1.execute)('UPDATE settings SET ai_config_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1', [JSON.stringify(rawAi)]);
+}
+async function clearGeminiOAuthCredentials() {
+    const row = await getSettingsRow();
+    const rawAi = (0, helpers_1.safeJsonParse)(row.ai_config_json, {});
+    const encryptedKeysPayload = (0, helpers_1.safeJsonParse)(String(rawAi.apiKeysEncryptedJson || ''), {});
+    delete encryptedKeysPayload.geminiOAuth;
+    rawAi.apiKeysEncryptedJson = JSON.stringify(encryptedKeysPayload);
+    const currentStatus = (rawAi.geminiOAuth || {});
+    const client = readStoredGeminiOAuthClient(encryptedKeysPayload);
+    rawAi.geminiOAuth = {
+        connected: false,
+        email: '',
+        projectId: String(currentStatus.projectId || env_1.env.GOOGLE_GEMINI_PROJECT_ID || ''),
+        connectedAt: null,
+        clientId: client?.clientId || String(currentStatus.clientId || ''),
+        hasClientSecret: Boolean(client?.clientSecret),
+    };
+    await (0, db_1.execute)('UPDATE settings SET ai_config_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1', [JSON.stringify(rawAi)]);
 }
 async function getCachedModelFields(modelName) {
     const row = await (0, db_1.queryOne)(`
@@ -2045,6 +2208,65 @@ async function markProcessedStockItemReversed(processedItemId, orderId) {
           VALUES (?, ?)
         `;
     await (0, db_1.execute)(sql, [processedItemId, orderId]);
+}
+async function hasPoBillUnreadableNotification(attachmentId) {
+    const rows = await (0, db_1.queryAll)(`
+      SELECT attachment_id
+      FROM po_bill_unreadable_notifications
+      WHERE attachment_id = ?
+      LIMIT 1
+    `, [attachmentId]);
+    return rows.length > 0;
+}
+async function recordPoBillUnreadableNotification(attachmentId, attachmentName) {
+    const sql = (0, db_1.getDatabaseDialect)() === 'mysql'
+        ? `
+        INSERT INTO po_bill_unreadable_notifications (attachment_id, attachment_name)
+        VALUES (?, ?)
+        ON DUPLICATE KEY UPDATE
+          attachment_name = VALUES(attachment_name)
+      `
+        : `
+        INSERT INTO po_bill_unreadable_notifications (attachment_id, attachment_name)
+        VALUES (?, ?)
+        ON CONFLICT(attachment_id) DO UPDATE SET
+          attachment_name = excluded.attachment_name
+      `;
+    await (0, db_1.execute)(sql, [attachmentId, attachmentName || '']);
+}
+async function hasAiCredentialFailureNotification(attachmentId, failureSignature) {
+    const rows = await (0, db_1.queryAll)(`
+      SELECT attachment_id
+      FROM ai_credential_failure_notifications
+      WHERE attachment_id = ? AND failure_signature = ?
+      LIMIT 1
+    `, [attachmentId, failureSignature]);
+    return rows.length > 0;
+}
+async function recordAiCredentialFailureNotification(input) {
+    const sql = (0, db_1.getDatabaseDialect)() === 'mysql'
+        ? `
+        INSERT INTO ai_credential_failure_notifications (
+          attachment_id, failure_signature, provider, model
+        ) VALUES (?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          provider = VALUES(provider),
+          model = VALUES(model)
+      `
+        : `
+        INSERT INTO ai_credential_failure_notifications (
+          attachment_id, failure_signature, provider, model
+        ) VALUES (?, ?, ?, ?)
+        ON CONFLICT(attachment_id, failure_signature) DO UPDATE SET
+          provider = excluded.provider,
+          model = excluded.model
+      `;
+    await (0, db_1.execute)(sql, [
+        input.attachmentId,
+        input.failureSignature,
+        input.provider || '',
+        input.model || '',
+    ]);
 }
 function mapPoBillProcessedDocument(row) {
     return {

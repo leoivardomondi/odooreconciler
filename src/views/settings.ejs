@@ -1040,7 +1040,7 @@
             <h2 class="h4 mb-0">AI Invoice Extraction</h2>
             <div class="d-flex gap-2">
               <button type="submit" name="settingsSection" value="ai" class="btn btn-sm btn-primary">Save AI</button>
-              <button type="submit" formaction="/settings/test-ai-connection" name="settingsSection" value="ai" class="btn btn-sm btn-outline-primary">Test selected AI key</button>
+              <button type="submit" formaction="/settings/test-ai-connection" name="settingsSection" value="ai" class="btn btn-sm btn-outline-primary">Test selected AI connection</button>
             </div>
           </div>
           <div class="alert alert-light border small" role="alert">
@@ -1239,6 +1239,59 @@
               <label class="form-label">Confidence Threshold</label>
               <input type="number" min="0" max="1" step="0.01" class="form-control" name="aiConfidenceThreshold" value="<%= form.aiConfidenceThreshold %>" />
             </div>
+            <div class="col-12">
+              <div class="border rounded p-3 bg-light-subtle">
+                <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
+                  <div>
+                    <h3 class="h6 mb-1">Google Gemini OAuth</h3>
+                    <p class="small text-secondary mb-2">
+                      Connect a Google Cloud account for Gemini without storing a Gemini API key. The scheduler reuses and refreshes this connection on the server.
+                    </p>
+                    <% if (form.geminiOAuthConnected) { %>
+                      <span class="badge text-bg-success">Connected</span>
+                      <% if (form.geminiOAuthEmail) { %><span class="small text-secondary ms-2"><%= form.geminiOAuthEmail %></span><% } %>
+                    <% } else { %>
+                      <span class="badge text-bg-secondary">Not connected</span>
+                    <% } %>
+                  </div>
+                  <div class="d-flex flex-wrap gap-2">
+                    <% if (form.geminiOAuthConnected) { %>
+                      <button type="submit" formaction="/settings/ai/gemini/disconnect" formmethod="post" class="btn btn-sm btn-outline-danger" data-confirm="Disconnect Google Gemini OAuth from this app?">Disconnect</button>
+                    <% } else { %>
+                      <a href="/settings/ai/gemini/connect" class="btn btn-sm btn-outline-primary">Connect with Google</a>
+                    <% } %>
+                  </div>
+                </div>
+                <div class="row g-3 mt-1">
+                  <div class="col-md-4">
+                    <label class="form-label small" for="geminiProjectId">Google Cloud project ID</label>
+                    <input id="geminiProjectId" type="text" class="form-control font-monospace" name="geminiProjectId" value="<%= form.geminiProjectId %>" placeholder="my-gemini-project" />
+                    <div class="form-text">Enable the Generative Language API here.</div>
+                  </div>
+                  <div class="col-md-4">
+                    <label class="form-label small" for="geminiOAuthClientId">Google OAuth client ID</label>
+                    <input id="geminiOAuthClientId" type="text" class="form-control font-monospace" name="geminiOAuthClientId" value="<%= form.geminiOAuthClientId %>" placeholder="123...apps.googleusercontent.com" />
+                    <div class="form-check mt-2">
+                      <input class="form-check-input" type="checkbox" name="clearGeminiOAuthClientId" id="clearGeminiOAuthClientId" />
+                      <label class="form-check-label small" for="clearGeminiOAuthClientId">Clear saved client ID</label>
+                    </div>
+                  </div>
+                  <div class="col-md-4">
+                    <label class="form-label small" for="geminiOAuthClientSecret">Google OAuth client secret</label>
+                    <input id="geminiOAuthClientSecret" type="password" class="form-control font-monospace" name="geminiOAuthClientSecret" placeholder="<%= form.hasGeminiOAuthClientSecret ? 'Leave blank to keep saved secret' : 'Paste client secret' %>" autocomplete="new-password" />
+                    <div class="form-check mt-2">
+                      <input class="form-check-input" type="checkbox" name="clearGeminiOAuthClientSecret" id="clearGeminiOAuthClientSecret" />
+                      <label class="form-check-label small" for="clearGeminiOAuthClientSecret">Clear saved client secret</label>
+                    </div>
+                  </div>
+                  <div class="col-12">
+                    <div class="small text-secondary">
+                      Save these fields before connecting. OAuth is authorized for the Gemini API scope only; the client secret is encrypted and never displayed after saving.
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
             <div class="col-md-6">
               <label class="form-label">NVIDIA API Key</label>
               <input type="password" class="form-control" name="nvidiaApiKey" placeholder="<%= form.hasNvidiaApiKey ? 'Leave blank to keep stored NVIDIA key' : 'Paste NVIDIA API key' %>" />
@@ -1256,7 +1309,7 @@
               </div>
             </div>
             <div class="col-md-4">
-              <label class="form-label">Google Gemini API Key</label>
+              <label class="form-label">Google Gemini API Key (optional fallback)</label>
               <input type="password" class="form-control" name="geminiApiKey" placeholder="<%= form.hasGeminiApiKey ? 'Keep stored Google key' : 'Paste Google AI Studio key' %>" />
               <div class="form-check mt-2">
                 <input class="form-check-input" type="checkbox" name="clearGeminiApiKey" id="clearGeminiApiKey" />
@@ -1326,8 +1379,15 @@
               <div class="form-check">
                 <input class="form-check-input" type="checkbox" name="ocrEnabled" id="ocrEnabled" <%= form.ocrEnabled ? 'checked' : '' %> />
                 <label class="form-check-label" for="ocrEnabled">
-                  Use NVIDIA Nemotron OCR for scanned invoice text extraction
+                  Enable OCR for scanned invoice text extraction
                 </label>
+              </div>
+              <div class="form-check mt-2">
+                <input class="form-check-input" type="checkbox" name="geminiOcrFallbackEnabled" id="geminiOcrFallbackEnabled" <%= form.geminiOcrFallbackEnabled ? 'checked' : '' %> />
+                <label class="form-check-label" for="geminiOcrFallbackEnabled">
+                  Use Gemini Vision as a second pass for difficult OCR
+                </label>
+                <div class="form-text">Runs only when the first OCR result is fragmented, duplicated, or incomplete. Requires a Gemini API key or connected Google Gemini OAuth.</div>
               </div>
             </div>
             <div class="col-md-4">
@@ -1341,11 +1401,19 @@
             </div>
             <div class="col-md-4">
               <label class="form-label">OCR Model</label>
-              <input type="text" class="form-control font-monospace" name="ocrModel" value="<%= form.ocrModel %>" />
+              <% const ocrModelOptions = ['gemini-flash-latest', 'nvidia/nemotron-ocr-v2']; %>
+              <select class="form-select font-monospace" name="ocrModel" id="ocrModel">
+                <option value="gemini-flash-latest" <%= form.ocrModel === 'gemini-flash-latest' ? 'selected' : '' %>>gemini-flash-latest (Gemini)</option>
+                <option value="nvidia/nemotron-ocr-v2" <%= form.ocrModel === 'nvidia/nemotron-ocr-v2' ? 'selected' : '' %>>nvidia/nemotron-ocr-v2 (NVIDIA)</option>
+                <% if (form.ocrModel && !ocrModelOptions.includes(form.ocrModel)) { %>
+                  <option value="<%= form.ocrModel %>" selected><%= form.ocrModel %> (saved custom model)</option>
+                <% } %>
+              </select>
+              <div class="form-text">Choose <code>gemini-flash-latest</code> when using Gemini Vision OCR.</div>
             </div>
             <div class="col-md-4">
-              <label class="form-label">NVIDIA OCR API Key</label>
-              <input type="password" class="form-control" name="ocrApiKey" placeholder="<%= form.hasOcrApiKey ? 'Keep stored OCR key' : 'Paste NVIDIA OCR key' %>" />
+              <label class="form-label">OCR API Key (optional)</label>
+              <input type="password" class="form-control" name="ocrApiKey" placeholder="<%= form.hasOcrApiKey ? 'Keep stored OCR key' : 'Paste NVIDIA or Gemini OCR key' %>" />
               <div class="form-check mt-2">
                 <input class="form-check-input" type="checkbox" name="clearOcrApiKey" id="clearOcrApiKey" />
                 <label class="form-check-label small" for="clearOcrApiKey">Clear saved OCR key</label>
@@ -1354,7 +1422,7 @@
             <div class="col-12">
               <label class="form-label">OCR Endpoint</label>
               <input type="url" class="form-control font-monospace" name="ocrEndpoint" value="<%= form.ocrEndpoint %>" />
-              <div class="form-text">Recommended: <code>https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr-v2</code>. The app retries temporary NVIDIA errors and falls back to local Tesseract.</div>
+              <div class="form-text">NVIDIA: <code>https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr-v2</code>. Gemini uses <code>https://generativelanguage.googleapis.com/v1beta</code> automatically when this field still contains the NVIDIA endpoint.</div>
             </div>
           </div>
 

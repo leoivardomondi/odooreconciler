@@ -243,6 +243,7 @@ export function normalizeInvoiceTotals(invoice: ParsedInvoice): ParsedInvoice {
   const extracted = text ? extractTotals(text) : { goods_total: null, vat: null, amount_due: null };
   const currentAmountDue = positiveMoney(invoice.totals?.amount_due);
   const extractedVat = positiveMoney(extracted.vat);
+  const extractedAmountDue = positiveMoney(extracted.amount_due);
   const suppliedVat = positiveMoney(invoice.totals?.vat);
   const vat =
     suppliedVat !== null && currentAmountDue !== null && suppliedVat > currentAmountDue
@@ -257,6 +258,60 @@ export function normalizeInvoiceTotals(invoice: ParsedInvoice): ParsedInvoice {
   const hasExplicitFinalTotal = text ? findExplicitAmountDueCandidates(text).length > 0 : false;
   const computedAmountDue =
     goodsTotal !== null && vat !== null ? roundMoney(goodsTotal + vat) : null;
+  const lineItemsPlusVat =
+    clearLineItemsTotal !== null && vat !== null ? roundMoney(clearLineItemsTotal + vat) : null;
+  const currentAmountDueMatchesGoodsAndVat =
+    currentAmountDue !== null && computedAmountDue !== null &&
+    nearlyEqualComputedMoney(computedAmountDue, currentAmountDue);
+  const currentAmountDueMatchesLineItemsAndVat =
+    currentAmountDue !== null && lineItemsPlusVat !== null &&
+    nearlyEqualComputedMoney(lineItemsPlusVat, currentAmountDue);
+  const goodsTotalMatchesLineItems =
+    goodsTotal === null || clearLineItemsTotal === null ||
+    nearlyEqualMoney(goodsTotal, clearLineItemsTotal, 2);
+  const reconciledCurrentAmountDue =
+    currentAmountDueMatchesLineItemsAndVat ||
+    (currentAmountDueMatchesGoodsAndVat && goodsTotalMatchesLineItems);
+  const labelledAmountDueMatchesComputedTotal =
+    labelledAmountDue !== null && computedAmountDue !== null &&
+    nearlyEqualComputedMoney(labelledAmountDue, computedAmountDue);
+  const labelledAmountDueMatchesLineItemsTotal =
+    labelledAmountDue !== null && lineItemsPlusVat !== null &&
+    nearlyEqualComputedMoney(labelledAmountDue, lineItemsPlusVat);
+  const reliableLabelledAmountDue =
+    labelledAmountDue !== null &&
+    (labelledAmountDueMatchesComputedTotal || labelledAmountDueMatchesLineItemsTotal ||
+      (currentAmountDue !== null && nearlyEqualMoney(labelledAmountDue, currentAmountDue, 2)))
+      ? labelledAmountDue
+      : null;
+  const reliableExtractedAmountDue =
+    extractedAmountDue !== null &&
+    (
+      (computedAmountDue !== null && nearlyEqualComputedMoney(extractedAmountDue, computedAmountDue)) ||
+      (lineItemsPlusVat !== null && nearlyEqualComputedMoney(extractedAmountDue, lineItemsPlusVat)) ||
+      (currentAmountDue !== null && nearlyEqualMoney(extractedAmountDue, currentAmountDue, 2))
+    )
+      ? extractedAmountDue
+      : null;
+  const currentAmountDueMatchesLineItems =
+    currentAmountDue !== null && clearLineItemsTotal !== null &&
+    nearlyEqualMoney(currentAmountDue, clearLineItemsTotal, 2);
+  const reconciledLineItemsAmountDue =
+    lineItemsPlusVat !== null &&
+    (
+      currentAmountDueMatchesLineItemsAndVat ||
+      labelledAmountDueMatchesLineItemsTotal ||
+      (reliableExtractedAmountDue !== null && lineItemsPlusVat !== null &&
+        nearlyEqualComputedMoney(reliableExtractedAmountDue, lineItemsPlusVat)) ||
+      (
+        hasExplicitFinalTotal &&
+        currentAmountDueMatchesLineItems &&
+        currentAmountDue !== null &&
+        lineItemsPlusVat > currentAmountDue
+      )
+    )
+      ? lineItemsPlusVat
+      : null;
   const arithmeticallySupportedAmountDue =
     (computedAmountDue !== null && currentAmountDue !== null && nearlyEqualComputedMoney(computedAmountDue, currentAmountDue)) ||
     (clearLineItemsTotal !== null && currentAmountDue !== null && nearlyEqualComputedMoney(clearLineItemsTotal, currentAmountDue));
@@ -300,9 +355,13 @@ export function normalizeInvoiceTotals(invoice: ParsedInvoice): ParsedInvoice {
     ((strongFinalTotal !== null && strongFinalTotal > currentAmountDue) ||
       (computedAmountDue !== null && computedAmountDue > currentAmountDue));
   const recoveredAmountDue =
-    (currentLooksLikeWeakPayment ? strongFinalTotal ?? clearLineItemsTotal ?? computedAmountDue : null) ??
-    (currentLooksLikeVat ? strongFinalTotal ?? computedAmountDue : null) ??
+    (currentLooksLikeWeakPayment ? strongFinalTotal ?? reconciledLineItemsAmountDue ?? clearLineItemsTotal ?? computedAmountDue : null) ??
+    (currentLooksLikeVat ? strongFinalTotal ?? reconciledLineItemsAmountDue ?? computedAmountDue : null) ??
     strongFinalTotal ??
+    (reconciledCurrentAmountDue ? currentAmountDue : null) ??
+    reliableLabelledAmountDue ??
+    reliableExtractedAmountDue ??
+    reconciledLineItemsAmountDue ??
     clearLineItemsTotal ??
     computedAmountDue ??
     (labelledAmountDueLooksImplausible ? vatConsistentAmountDue : labelledAmountDue) ??
@@ -313,7 +372,12 @@ export function normalizeInvoiceTotals(invoice: ParsedInvoice): ParsedInvoice {
     currentAmountDue ??
     largestMoney;
   const recoveredGoodsTotal =
-    goodsTotal === null
+    clearLineItemsTotal !== null &&
+    (currentAmountDueMatchesLineItemsAndVat ||
+      (recoveredAmountDue !== null && lineItemsPlusVat !== null &&
+        nearlyEqualComputedMoney(recoveredAmountDue, lineItemsPlusVat)))
+      ? clearLineItemsTotal
+      : goodsTotal === null
       ? inferGoodsFromGrossAndVat(recoveredAmountDue, vat)
       : vatInferenceLooksBetter && recoveredAmountDue !== null && vat !== null
       ? roundMoney(recoveredAmountDue - vat)

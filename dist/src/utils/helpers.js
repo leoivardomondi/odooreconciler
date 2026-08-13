@@ -72,9 +72,18 @@ exports.DEFAULT_AI_EXTRACTION_CONFIG = {
         openrouter: '',
     },
     nvidiaModelKeys: {},
+    geminiOAuth: {
+        connected: false,
+        email: '',
+        projectId: env_1.env.GOOGLE_GEMINI_PROJECT_ID,
+        connectedAt: null,
+        clientId: '',
+        hasClientSecret: false,
+    },
     ocr: {
         provider: 'disabled',
         enabled: false,
+        geminiFallbackEnabled: true,
         model: 'nvidia/nemotron-ocr-v2',
         endpoint: 'https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr-v2',
         apiKey: '',

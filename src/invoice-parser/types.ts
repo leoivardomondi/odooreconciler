@@ -32,9 +32,14 @@ export interface AiInvoiceExtractionConfig {
     openrouter: string;
   };
   nvidiaModelKeys?: Record<string, string>;
+  geminiOAuth?: {
+    connected: boolean;
+    projectId: string;
+  };
   ocr?: {
     provider: 'disabled' | 'nvidia_nemoretriever' | 'gemini_vision' | 'google';
     enabled: boolean;
+    geminiFallbackEnabled: boolean;
     model: string;
     endpoint: string;
     apiKey: string;

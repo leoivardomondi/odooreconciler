@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
 import { AiInvoiceExtraction, AiInvoiceExtractionConfig, ParsedInvoice } from './types';
+import { getGeminiOAuthAccessToken } from '../services/geminiOAuthService';
 
 const OPENAI_RESPONSES_URL = 'https://api.openai.com/v1/responses';
 const OPENAI_CHAT_URL = 'https://api.openai.com/v1/chat/completions';
@@ -140,7 +141,10 @@ export function shouldUseConfiguredAiInvoiceExtraction(
   }
 
   const provider = config.provider || 'disabled';
-  if (!config.enabled || provider === 'disabled' || !config.apiKeys?.[provider]) {
+  const hasConfiguredCredential = provider === 'gemini'
+    ? Boolean(config.apiKeys?.gemini || config.geminiOAuth?.connected)
+    : provider !== 'disabled' && Boolean(config.apiKeys?.[provider]);
+  if (!config.enabled || provider === 'disabled' || !hasConfiguredCredential) {
     return false;
   }
 
@@ -563,6 +567,44 @@ function resolveConfiguredApiKey(
   return config.apiKeys?.[provider] || (provider === 'nvidia' ? process.env.NVIDIA_API_KEY || '' : '');
 }
 
+type GeminiCredential = {
+  apiKey?: string;
+  accessToken?: string;
+  projectId?: string;
+};
+
+async function resolveConfiguredCredential(
+  config: AiInvoiceExtractionConfig,
+  provider: AiInvoiceExtractionConfig['provider'],
+  model?: string,
+): Promise<GeminiCredential> {
+  if (provider !== 'gemini') {
+    return { apiKey: resolveConfiguredApiKey(config, provider, model) };
+  }
+
+  if (config.geminiOAuth?.connected) {
+    const oauth = await getGeminiOAuthAccessToken();
+    return { accessToken: oauth.accessToken, projectId: oauth.projectId };
+  }
+
+  const apiKey = resolveConfiguredApiKey(config, provider, model);
+  if (apiKey) return { apiKey };
+
+  return {};
+}
+
+function providerHasConfiguredCredential(
+  config: AiInvoiceExtractionConfig,
+  provider: AiInvoiceExtractionConfig['provider'],
+  model?: string,
+) {
+  return Boolean(
+    provider === 'gemini'
+      ? config.geminiOAuth?.connected || resolveConfiguredApiKey(config, provider, model)
+      : resolveConfiguredApiKey(config, provider, model),
+  );
+}
+
 function isTextOnlyNvidiaModel(model: string) {
   const m = model.trim();
   return /^openai\/gpt-oss-/i.test(m) || /^z-ai\//i.test(m);
@@ -721,7 +763,9 @@ async function callOpenAiCompatibleInvoiceAi(input: {
 }
 
 async function callGeminiInvoiceAi(input: {
-  apiKey: string;
+  apiKey?: string;
+  accessToken?: string;
+  projectId?: string;
   model: string;
   baseUrl: string;
   images: Array<{ mediaType: string; base64: string }>;
@@ -734,7 +778,12 @@ async function callGeminiInvoiceAi(input: {
     signal: AbortSignal.timeout(60000),
     headers: {
       'Content-Type': 'application/json',
-      'X-goog-api-key': input.apiKey,
+      ...(input.accessToken
+        ? {
+            Authorization: `Bearer ${input.accessToken}`,
+            'x-goog-user-project': input.projectId || '',
+          }
+        : { 'X-goog-api-key': input.apiKey || '' }),
     },
     body: JSON.stringify({
       contents: [
@@ -935,11 +984,11 @@ async function extractInvoiceWithConfiguredAi(input: {
   ];
 
   const candidateProviders: Array<'gemini' | 'openai' | 'openrouter' | 'nvidia' | 'anthropic'> = [];
-  if (resolveConfiguredApiKey(input.config, primaryProvider)) {
+  if (providerHasConfiguredCredential(input.config, primaryProvider)) {
     candidateProviders.push(primaryProvider);
   }
   for (const p of allSupportedProviders) {
-    if (p !== primaryProvider && Boolean(resolveConfiguredApiKey(input.config, p))) {
+    if (p !== primaryProvider && providerHasConfiguredCredential(input.config, p)) {
       candidateProviders.push(p);
     }
   }
@@ -947,7 +996,7 @@ async function extractInvoiceWithConfiguredAi(input: {
   if (candidateProviders.length === 0) {
     return {
       extraction: null,
-      warnings: [`AI invoice extraction skipped because no API key is configured for selected provider "${primaryProvider}".`],
+      warnings: [`AI invoice extraction skipped because no API key or OAuth connection is configured for selected provider "${primaryProvider}".`],
     };
   }
 
@@ -962,10 +1011,6 @@ async function extractInvoiceWithConfiguredAi(input: {
     const model = provider === primaryProvider && input.config.model?.trim()
       ? input.config.model.trim()
       : defaultModelForProvider(provider);
-    const apiKey = resolveConfiguredApiKey(input.config, provider, model);
-    if (!apiKey) {
-      continue;
-    }
     const canRunTextOnly = provider === 'nvidia' && isTextOnlyNvidiaModel(model);
 
     if (imagePaths.length === 0 && !canRunTextOnly) {
@@ -973,6 +1018,11 @@ async function extractInvoiceWithConfiguredAi(input: {
     }
 
     try {
+      const credential = await resolveConfiguredCredential(input.config, provider, model);
+      if (!credential.apiKey && !credential.accessToken) {
+        continue;
+      }
+      const apiKey = credential.apiKey || '';
       const prompt = buildExtractionPrompt(input);
       let outputText = '';
       const accumulatedWarnings: string[] = [];
@@ -1042,7 +1092,9 @@ async function extractInvoiceWithConfiguredAi(input: {
       } else if (provider === 'gemini') {
         const images = await readImagesForAi(imagePaths);
         outputText = await callGeminiInvoiceAi({
-          apiKey,
+          apiKey: credential.apiKey,
+          accessToken: credential.accessToken,
+          projectId: credential.projectId,
           model,
           baseUrl: input.config.baseUrl,
           images,

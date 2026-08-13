@@ -22,10 +22,16 @@ import {
 import { getRelationLabel } from '../utils/helpers';
 import { resolveProjectFile } from '../utils/paths';
 import { OdooClient } from './odooClient';
+import {
+  isUnreadableDocument,
+  notifyUnreadableDocument,
+} from './unreadableDocumentNotificationService';
+import { notifyAiCredentialFailures } from './aiCredentialFailureNotificationService';
 
 const TOTAL_TOLERANCE = 1;
 const AUTO_MATCH_THRESHOLD = 90;
 const CORE_MATCH_THRESHOLD = 90;
+const PURCHASE_ORDER_SEARCH_PAGE_SIZE = 100;
 const DOCUMENT_FOLDER_NAME = 'Finance';
 const DELIVERY_NOTE_DOCUMENT_TAG_NAME = 'Delivery Note';
 const RECENT_DOCUMENT_PDFS_SINCE = '2026-05-01 00:00:00';
@@ -55,6 +61,7 @@ const COLOR_STOP_WORDS = new Set([
   'board',
   'boards',
   'mm',
+  'mdf',
   'piece',
   'pcs',
   'sheet',
@@ -113,6 +120,7 @@ interface MailMessageSummary {
   res_id?: number | null;
   body?: string | null;
   date?: string | null;
+  subtype_id?: [number, string] | false | null;
 }
 
 interface StockPickingSummary {
@@ -298,10 +306,11 @@ function describeAiExtractionStatus(
     return { status: 'info' as const, detail: 'AI extraction is disabled in Settings.' };
   }
 
-  if (!aiConfig.apiKeys?.[aiConfig.provider]) {
+  const hasGeminiOAuth = aiConfig.provider === 'gemini' && Boolean(aiConfig.geminiOAuth?.connected);
+  if (!aiConfig.apiKeys?.[aiConfig.provider] && !hasGeminiOAuth) {
     return {
       status: 'warn' as const,
-      detail: `AI extraction is enabled for ${aiConfig.provider}, but that provider API key is not configured.`,
+      detail: `AI extraction is enabled for ${aiConfig.provider}, but no provider API key or OAuth connection is configured.`,
     };
   }
 
@@ -722,7 +731,7 @@ async function findPurchaseOrderApprovalDates(client: OdooClient, purchaseOrderI
       ['model', '=', 'purchase.order'],
       ['res_id', 'in', purchaseOrderIds],
     ],
-    fields: ['id', 'res_id', 'body', 'date'],
+    fields: ['id', 'res_id', 'body', 'date', 'subtype_id'],
     limit: 2000,
     order: 'date asc, id asc',
   }).catch(() => []);
@@ -730,11 +739,11 @@ async function findPurchaseOrderApprovalDates(client: OdooClient, purchaseOrderI
   for (const message of messages) {
     const purchaseOrderId = Number((message as MailMessageSummary & { res_id?: number }).res_id);
     const body = String(message.body || '').replace(/<[^>]+>/g, ' ');
+    const subtypeName = Array.isArray(message.subtype_id) ? String(message.subtype_id[1] || '') : '';
     if (
       purchaseOrderIds.includes(purchaseOrderId) &&
       !approvalDates.has(purchaseOrderId) &&
-      /\brfq\b/i.test(body) &&
-      /\bto approve\b/i.test(body) &&
+      (isPurchaseOrderApprovalMessage(body, subtypeName)) &&
       message.date
     ) {
       approvalDates.set(purchaseOrderId, message.date);
@@ -744,10 +753,17 @@ async function findPurchaseOrderApprovalDates(client: OdooClient, purchaseOrderI
   return approvalDates;
 }
 
+export function isPurchaseOrderApprovalMessage(body: string | null | undefined, subtypeName: string | null | undefined) {
+  const normalizedBody = String(body || '').replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  const normalizedSubtype = String(subtypeName || '').replace(/\s+/g, ' ').trim();
+  return /\brfq\s+approved\b/i.test(normalizedSubtype) ||
+    /\brfq\b.*\bto\s+approve\b/i.test(normalizedBody) ||
+    /\bto\s+approve\b.*\brfq\b/i.test(normalizedBody);
+}
+
 function normalizeProductText(value: string | null | undefined) {
   return normalizeText(value)
-    .replace(/\b\d+(?:\.\d+)?\s*mm\b/g, ' ')
-    .replace(/\b\d+\b/g, ' ')
+    .replace(/\b(\d+(?:\.\d+)?)\s*mm\b/g, ' $1mm ')
     .replace(/\s+/g, ' ')
     .trim();
 }
@@ -796,7 +812,7 @@ function invoiceLineMatchesPoAmount(invoiceAmount: number | null, poLine: Purcha
   );
 }
 
-function computeItemScore(
+export function computeItemScore(
   invoiceItems: PoBillAutomationResult['parsedInvoice']['items'],
   poLines: PurchaseOrderLine[],
 ) {
@@ -820,21 +836,26 @@ function computeItemScore(
         const poPhrases = extractColorPhrases(poName);
         const phraseMatches = [...invoicePhrases].filter((phrase) => poPhrases.has(phrase));
         const amountMatches = invoiceLineMatchesPoAmount(item.amount, line);
+        const quantityMatches =
+          typeof item.quantity === 'number' && typeof line.product_qty === 'number'
+            ? Math.abs(item.quantity - line.product_qty) <= 0.01
+            : true;
         const phraseScore = phraseMatches.some((phrase) => phrase.includes(' ')) ? 2 : phraseMatches.length > 0 ? 1 : 0;
         return {
           line,
           poName,
           phraseMatches,
           amountMatches,
-          score: phraseScore + (amountMatches ? 1 : 0),
+          quantityMatches,
+          score: quantityMatches ? phraseScore + (amountMatches ? 1 : 0) : 0,
         };
       })
       .sort((left, right) => right.score - left.score || Number(right.amountMatches) - Number(left.amountMatches))[0];
 
-    if (best && best.score >= 1 && best.phraseMatches.length > 0) {
+    if (best && best.score >= 1 && best.phraseMatches.length > 0 && best.quantityMatches) {
       usedPoLineIds.add(best.line.id);
       const label = best.phraseMatches.find((phrase) => phrase.includes(' ')) || best.phraseMatches[0];
-      matched.push(`${label.toUpperCase()}${best.amountMatches ? ' amount/VAT matched' : ''}`);
+      matched.push(`${label.toUpperCase()}${best.amountMatches ? ' amount/VAT matched' : ''}${best.quantityMatches ? ' quantity matched' : ''}`);
     }
   }
 
@@ -901,6 +922,71 @@ function buildCandidate(
     receiptScore: receipt.score,
     reasons: [vendor.reason, total.reason, date.reason, approvalDateReason, itemScore.reason, receipt.reason].filter(Boolean) as string[],
   };
+}
+
+export function isReliablePoBillCandidate(candidate: PoBillAutomationCandidate) {
+  return candidate.vendorScore > 0 &&
+    candidate.totalScore >= 40 &&
+    candidate.score >= AUTO_MATCH_THRESHOLD;
+}
+
+async function resolveVendorPartnerIds(
+  client: OdooClient,
+  parsedInvoice: PoBillAutomationResult['parsedInvoice'],
+) {
+  const hints = [parsedInvoice.vendorName, parsedInvoice.filenameVendorHint]
+    .map((value) => normalizeVendorName(value).name)
+    .filter(Boolean)
+    .flatMap((value) => value.split(' ').filter((word) => word.length >= 4 && !GENERIC_VENDOR_WORDS.has(word)))
+    .filter((value, index, values) => values.indexOf(value) === index)
+    .slice(0, 3);
+  if (hints.length === 0) return [];
+
+  const partners = await Promise.all(hints.map((hint) =>
+    client.searchReadRecords<{ id: number; name?: string | null }>('res.partner', {
+      domain: [['name', 'ilike', hint]],
+      fields: ['id', 'name'],
+      limit: 100,
+      order: 'id asc',
+    }).catch(() => []),
+  ));
+
+  const ids = new Set<number>();
+  for (const partner of partners.flat()) {
+    if (
+      typeof partner.id === 'number' &&
+      (vendorNamesMatch(parsedInvoice.vendorName, partner.name || '') ||
+        vendorNamesMatch(parsedInvoice.filenameVendorHint, partner.name || ''))
+    ) {
+      ids.add(partner.id);
+    }
+  }
+  return [...ids];
+}
+
+async function searchPurchaseOrdersAcrossPages(
+  client: OdooClient,
+  domain: unknown[],
+  fields: string[],
+) {
+  const count = await client.searchCountRecords('purchase.order', domain).catch(() => null);
+  const orders: PurchaseOrderSummary[] = [];
+  const targetCount = typeof count === 'number' && count >= 0 ? count : Number.MAX_SAFE_INTEGER;
+
+  for (let offset = 0; offset < targetCount; offset += PURCHASE_ORDER_SEARCH_PAGE_SIZE) {
+    const page = await client.searchReadRecords<PurchaseOrderSummary>('purchase.order', {
+      domain,
+      fields,
+      limit: PURCHASE_ORDER_SEARCH_PAGE_SIZE,
+      offset,
+      order: 'date_order desc, id desc',
+    });
+    orders.push(...page);
+    if (page.length < PURCHASE_ORDER_SEARCH_PAGE_SIZE) break;
+    if (typeof count !== 'number' && orders.length >= 1000) break;
+  }
+
+  return orders;
 }
 
 function sumPurchaseOrderTotals(orders: PurchaseOrderSummary[]) {
@@ -1557,6 +1643,9 @@ export async function findPurchaseOrderCandidates(
   const hasReadableVendor = Boolean(
     normalizeVendorName(parsedInvoice.vendorName).name || normalizeVendorName(parsedInvoice.filenameVendorHint).name,
   );
+  const vendorPartnerIds = hasReadableVendor
+    ? await resolveVendorPartnerIds(client, parsedInvoice)
+    : [];
 
   if (options.fromDate) {
     domain.push(['date_order', '>=', options.fromDate]);
@@ -1566,6 +1655,12 @@ export async function findPurchaseOrderCandidates(
   }
   if (options.onlyUnbilled) {
     domain.push(['state', 'in', ['purchase', 'to approve']], ['invoice_status', '!=', 'invoiced']);
+  }
+
+  // Apply the vendor scope in Odoo before pagination. Searching the newest
+  // 100 POs globally can hide an older exact match behind unrelated vendors.
+  if (vendorPartnerIds.length > 0) {
+    domain.push(['partner_id', 'in', vendorPartnerIds]);
   }
 
   if (hasReadableVendor) {
@@ -1589,26 +1684,21 @@ export async function findPurchaseOrderCandidates(
     domain.push(['date_order', '>=', from.toISOString().slice(0, 10)], ['date_order', '<=', to.toISOString().slice(0, 10)]);
   }
 
-  const orders = await client.searchReadRecords<PurchaseOrderSummary>('purchase.order', {
-    domain,
-    fields: [
-      'id',
-      'name',
-      'state',
-      'date_order',
-      'amount_total',
-      'amount_untaxed',
-      'partner_id',
-      'currency_id',
-      'invoice_status',
-      'user_id',
-      'picking_ids',
-      'invoice_ids',
-      'invoice_count',
-    ],
-    limit: 100,
-    order: 'date_order desc, id desc',
-  });
+  const orders = await searchPurchaseOrdersAcrossPages(client, domain, [
+    'id',
+    'name',
+    'state',
+    'date_order',
+    'amount_total',
+    'amount_untaxed',
+    'partner_id',
+    'currency_id',
+    'invoice_status',
+    'user_id',
+    'picking_ids',
+    'invoice_ids',
+    'invoice_count',
+  ]);
 
   const orderIds = orders.map((order) => order.id);
   const processedByPo: Record<number, PoBillProcessedDocumentEntry> = await getLatestPoBillProcessedDocumentsByPurchaseOrderIds(orderIds).catch(() => ({}));
@@ -1737,7 +1827,7 @@ async function findVendorBillsForPurchaseOrders(client: OdooClient, purchaseOrde
   return [...byId.values()];
 }
 
-function vendorBillMatchesParsedInvoice(
+export function vendorBillMatchesParsedInvoice(
   bill: VendorBillSummary,
   parsedInvoice: PoBillAutomationResult['parsedInvoice'],
 ) {
@@ -1747,7 +1837,11 @@ function vendorBillMatchesParsedInvoice(
   const numberMatches = Boolean(invoiceNumber && (billRef === invoiceNumber || billName === invoiceNumber));
   const totalMatchesInvoice = totalsMatch(bill.amount_total, parsedInvoice.grandTotal);
 
-  return numberMatches || (Boolean(parsedInvoice.invoiceNumber) && totalMatchesInvoice);
+  // Invoice numbers are useful supporting evidence, but they are frequently
+  // unreadable or inconsistent on scanned vendor invoices. A matching vendor
+  // bill total is sufficient to prevent a duplicate bill when the number is
+  // missing or unreliable.
+  return numberMatches || totalMatchesInvoice;
 }
 
 async function findVendorBillEvidence(
@@ -2545,6 +2639,48 @@ export async function runPoBillAutomation(
     confidence: supplierInvoice.confidence,
     handwriting: supplierInvoice.handwriting,
   };
+  try {
+    const notification = await notifyAiCredentialFailures({
+      attachmentId: attachment.id,
+      attachmentName: attachment.name,
+      logs: parsedInvoice.logs,
+    });
+    if (notification.sent) {
+      parsedInvoice.logs.push('AI credential failure notification sent to DB admins.');
+    } else if (notification.skipped && notification.signals.length > 0) {
+      parsedInvoice.logs.push('AI credential failure notification was already sent for this attachment.');
+    }
+  } catch (error) {
+    parsedInvoice.logs.push(`AI credential failure notification failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (isUnreadableDocument({
+    attachmentId: attachment.id,
+    attachmentName: attachment.name,
+    vendorName: parsedInvoice.vendorName,
+    grandTotal: parsedInvoice.grandTotal,
+    itemCount: parsedInvoice.itemCount,
+    rawText: parsedInvoice.rawText,
+    confidenceOverall: parsedInvoice.confidence?.overall,
+  })) {
+    try {
+      const notification = await notifyUnreadableDocument({
+        attachmentId: attachment.id,
+        attachmentName: attachment.name,
+        vendorName: parsedInvoice.vendorName,
+        grandTotal: parsedInvoice.grandTotal,
+        itemCount: parsedInvoice.itemCount,
+        rawText: parsedInvoice.rawText,
+        confidenceOverall: parsedInvoice.confidence?.overall,
+      });
+      if (notification.sent) {
+        parsedInvoice.logs.push(`Unreadable document notification sent to ${notification.recipient}.`);
+      } else if (notification.alreadyNotified) {
+        parsedInvoice.logs.push('Unreadable document notification was already sent for this attachment.');
+      }
+    } catch (error) {
+      parsedInvoice.logs.push(`Unreadable document notification failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
   const invoiceFingerprint = buildInvoiceFingerprint({
     attachmentContent: attachment.content,
     vendorName: parsedInvoice.vendorName,
@@ -2777,17 +2913,54 @@ export async function runPoBillAutomation(
     };
   }
 
-  const acceptableCandidate = candidates.find((candidate) =>
-    isConfirmedPurchaseOrderState(candidate.purchaseOrder.state) ||
-    isApprovablePurchaseOrderState(candidate.purchaseOrder.state),
-  );
   const combinedMatch =
     !overridePurchaseOrder && !orderNumberPurchaseOrder
       ? findCombinedPurchaseOrderMatch(candidates, parsedInvoice)
       : null;
+  const reliableCandidate = candidates.find((candidate) =>
+    isReliablePoBillCandidate(candidate) &&
+    (isConfirmedPurchaseOrderState(candidate.purchaseOrder.state) ||
+      isApprovablePurchaseOrderState(candidate.purchaseOrder.state)),
+  );
+  const explicitPurchaseOrder = overridePurchaseOrder || orderNumberPurchaseOrder;
+  if (!combinedMatch && !explicitPurchaseOrder && !reliableCandidate) {
+    const strongestCandidate = candidates[0] || null;
+    addCheck(
+      checks,
+      'PO Match Score',
+      strongestCandidate ? 'warn' : 'fail',
+      strongestCandidate
+        ? `No reliable PO match reached ${AUTO_MATCH_THRESHOLD}/100 with a matching total. Strongest candidate ${strongestCandidate.purchaseOrder.name} scored ${strongestCandidate.score}/100.`
+        : 'No PO candidates were found for the extracted vendor and invoice date.',
+    );
+    addCheck(
+      checks,
+      'Purchase Order',
+      'fail',
+      'No Purchase Order was selected because low-confidence or wrong-total candidates cannot be used as matches.',
+    );
+    actionsPending.push(
+      strongestCandidate
+        ? `Stopped before PO selection because ${strongestCandidate.purchaseOrder.name} did not meet the reliable-match threshold.`
+        : 'Stopped because no reliable Purchase Order candidate was found.',
+    );
+    return {
+      mode: input.mode,
+      attachmentId: attachment.id,
+      attachmentName: attachment.name,
+      purchaseOrder: null,
+      purchaseOrders: [],
+      candidates,
+      parsedInvoice,
+      checks,
+      canAutoProceed: false,
+      actionsTaken,
+      actionsPending,
+    };
+  }
   let matchedPurchaseOrders = combinedMatch?.purchaseOrders ||
-    (overridePurchaseOrder || orderNumberPurchaseOrder || acceptableCandidate?.purchaseOrder
-      ? [overridePurchaseOrder || orderNumberPurchaseOrder || acceptableCandidate?.purchaseOrder].filter(Boolean) as PurchaseOrderSummary[]
+    (explicitPurchaseOrder || reliableCandidate?.purchaseOrder
+      ? [explicitPurchaseOrder || reliableCandidate?.purchaseOrder].filter(Boolean) as PurchaseOrderSummary[]
       : []);
   let purchaseOrder = matchedPurchaseOrders[0] || null;
   const bestCandidate = candidates.find((candidate) => candidate.purchaseOrder.id === purchaseOrder?.id) || null;

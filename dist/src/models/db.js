@@ -428,6 +428,21 @@ async function ensureSqliteDatabase(config) {
       acquired_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS po_bill_unreadable_notifications (
+      attachment_id INTEGER PRIMARY KEY,
+      attachment_name TEXT NOT NULL DEFAULT '',
+      notified_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS ai_credential_failure_notifications (
+      attachment_id INTEGER NOT NULL,
+      failure_signature TEXT NOT NULL,
+      provider TEXT NOT NULL DEFAULT '',
+      model TEXT NOT NULL DEFAULT '',
+      notified_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (attachment_id, failure_signature)
+    );
+
     CREATE TABLE IF NOT EXISTS po_bill_processed_documents (
       attachment_id INTEGER PRIMARY KEY,
       attachment_name TEXT NOT NULL DEFAULT '',
@@ -888,6 +903,23 @@ async function ensureMysqlDatabase(config) {
     CREATE TABLE IF NOT EXISTS po_bill_processing_locks (
       attachment_id INT PRIMARY KEY,
       acquired_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+    await query('create po_bill_unreadable_notifications table', `
+    CREATE TABLE IF NOT EXISTS po_bill_unreadable_notifications (
+      attachment_id INT PRIMARY KEY,
+      attachment_name VARCHAR(1024) NOT NULL DEFAULT '',
+      notified_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )
+  `);
+    await query('create ai_credential_failure_notifications table', `
+    CREATE TABLE IF NOT EXISTS ai_credential_failure_notifications (
+      attachment_id INT NOT NULL,
+      failure_signature VARCHAR(128) NOT NULL,
+      provider VARCHAR(64) NOT NULL DEFAULT '',
+      model VARCHAR(255) NOT NULL DEFAULT '',
+      notified_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (attachment_id, failure_signature)
     )
   `);
     await query('create po_bill_processed_documents table', `

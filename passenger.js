@@ -4,10 +4,14 @@ const path = require('path');
 const projectRoot = __dirname;
 const startupLogPath = path.join(projectRoot, 'storage', 'startup.log');
 const compiledServerPath = path.join(projectRoot, 'dist', 'server.js');
+const MAX_STARTUP_LOG_BYTES = 10 * 1024 * 1024;
 
 function writeStartupLog(message, error) {
   try {
     fs.mkdirSync(path.dirname(startupLogPath), { recursive: true });
+    if (fs.existsSync(startupLogPath) && fs.statSync(startupLogPath).size > MAX_STARTUP_LOG_BYTES) {
+      fs.truncateSync(startupLogPath, 0);
+    }
     const timestamp = new Date().toISOString();
     const detail = error
       ? `\n${error && error.stack ? error.stack : String(error)}`

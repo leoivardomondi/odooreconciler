@@ -44,6 +44,16 @@ function parsedInvoice(overrides = {}) {
     };
     strict_1.default.equal((0, poBillAutomationService_1.selectExistingVendorBillForMatchedPurchaseOrders)([bill], [purchaseOrder], parsedInvoice()), bill);
 });
+(0, node_test_1.default)('uses a matching vendor bill total even when the invoice number is unreadable', () => {
+    strict_1.default.equal((0, poBillAutomationService_1.vendorBillMatchesParsedInvoice)({
+        id: 901,
+        name: 'BILL/2026/00901',
+        ref: null,
+        state: 'posted',
+        invoice_origin: 'P00695',
+        amount_total: 1440,
+    }, parsedInvoice({ invoiceNumber: null, grandTotal: 1440 })), true);
+});
 (0, node_test_1.default)('does not recover a cancelled bill as a successful match', () => {
     const bill = {
         id: 901,
@@ -86,4 +96,59 @@ function parsedInvoice(overrides = {}) {
         attachmentName: 'SARADHY DELIVERY NOTE AND INVOICE.pdf',
         rawText: 'DELIVERY NOTE No. 393\nINVOICE No. 302\nTOTAL 4,200',
     }), false);
+});
+(0, node_test_1.default)('reads RFQ approval chatter from the Odoo subtype when the body is empty', () => {
+    strict_1.default.equal((0, poBillAutomationService_1.isPurchaseOrderApprovalMessage)('', 'RFQ Approved'), true);
+    strict_1.default.equal((0, poBillAutomationService_1.isPurchaseOrderApprovalMessage)('<p>RFQ -&gt; To Approve</p>', ''), true);
+    strict_1.default.equal((0, poBillAutomationService_1.isPurchaseOrderApprovalMessage)('', 'RFQ Confirmed'), false);
+});
+(0, node_test_1.default)('distinguishes white 3mm MDF from black 18mm MDF and checks quantity', () => {
+    const invoiceItems = [{
+            description: 'PRE-LAM MDF 3MM WHITE 1/S',
+            quantity: 3,
+            unitPrice: 1293.1,
+            amount: 3879.31,
+        }];
+    const po590Lines = [{
+            id: 1051,
+            name: 'Backer White MDF 3mm',
+            product_id: [294, 'Backer White MDF 3mm'],
+            product_qty: 3,
+            qty_received: 3,
+            price_subtotal: 4500,
+            price_total: 4500,
+        }];
+    const po784Lines = [{
+            id: 1369,
+            name: 'Black MDF 18mm',
+            product_id: [889, 'Black MDF 18mm'],
+            product_qty: 1,
+            qty_received: 1,
+            price_subtotal: 3250,
+            price_total: 3250,
+        }];
+    strict_1.default.equal((0, poBillAutomationService_1.computeItemScore)(invoiceItems, po590Lines).score, 10);
+    strict_1.default.equal((0, poBillAutomationService_1.computeItemScore)(invoiceItems, po784Lines).score, 0);
+});
+(0, node_test_1.default)('does not treat a wrong-total low-score candidate as reliable', () => {
+    strict_1.default.equal((0, poBillAutomationService_1.isReliablePoBillCandidate)({
+        purchaseOrder: { id: 784, name: 'P00784', state: 'purchase' },
+        score: 58,
+        vendorScore: 40,
+        totalScore: 0,
+        dateScore: 0,
+        itemScore: 10,
+        receiptScore: 8,
+        reasons: [],
+    }), false);
+    strict_1.default.equal((0, poBillAutomationService_1.isReliablePoBillCandidate)({
+        purchaseOrder: { id: 590, name: 'P00590', state: 'purchase' },
+        score: 110,
+        vendorScore: 40,
+        totalScore: 40,
+        dateScore: 12,
+        itemScore: 10,
+        receiptScore: 8,
+        reasons: [],
+    }), true);
 });

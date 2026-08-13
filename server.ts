@@ -20,6 +20,7 @@ type PhusionPassengerGlobal = {
 
 const configuredStartupStepTimeoutMs = Number(env.STARTUP_STEP_TIMEOUT_MS || 30000);
 const configuredStartupDbRetryMs = Number(env.STARTUP_DB_RETRY_MS || 2000);
+const MAX_STARTUP_LOG_BYTES = 10 * 1024 * 1024;
 const STARTUP_STEP_TIMEOUT_MS =
   Number.isFinite(configuredStartupStepTimeoutMs) && configuredStartupStepTimeoutMs > 0
     ? configuredStartupStepTimeoutMs
@@ -32,6 +33,10 @@ const STARTUP_DB_RETRY_MS =
 function writeStartupLog(message: string, error?: unknown) {
   try {
     fs.mkdirSync(storageDirectoryPath, { recursive: true });
+    const startupLogPath = path.join(storageDirectoryPath, 'startup.log');
+    if (fs.existsSync(startupLogPath) && fs.statSync(startupLogPath).size > MAX_STARTUP_LOG_BYTES) {
+      fs.truncateSync(startupLogPath, 0);
+    }
     const details =
       error instanceof Error
         ? `\n${error.stack || error.message}`

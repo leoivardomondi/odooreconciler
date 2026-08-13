@@ -5,28 +5,64 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.geminiVisionOcr = geminiVisionOcr;
 const promises_1 = __importDefault(require("fs/promises"));
-async function geminiVisionOcr(imagePaths, ocrConfig, geminiApiKey) {
+const geminiOAuthService_1 = require("../../services/geminiOAuthService");
+async function geminiVisionOcr(imagePaths, ocrConfig, geminiApiKey, geminiOAuthConnected) {
     const warnings = [];
-    const apiKey = ocrConfig?.apiKey || geminiApiKey || process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-        return { pages: [], warnings: ['Google Gemini Vision OCR skipped because no Gemini API key is configured.'] };
+    let oauth = null;
+    let oauthError = null;
+    try {
+        // Match the main Gemini extractor: a connected OAuth account takes
+        // precedence over stale or invalid API keys saved in OCR settings.
+        oauth = await (0, geminiOAuthService_1.getGeminiOAuthAccessToken)();
     }
+    catch (error) {
+        oauthError = error;
+        oauth = null;
+    }
+    const apiKey = oauth
+        ? undefined
+        : ocrConfig?.apiKey || geminiApiKey || process.env.GEMINI_API_KEY;
+    if (!apiKey && !oauth) {
+        return {
+            pages: [],
+            warnings: [
+                ...(geminiOAuthConnected && oauthError
+                    ? [`Google Gemini OAuth connection failed: ${oauthError instanceof Error ? oauthError.message : String(oauthError)}`]
+                    : []),
+                'Google Gemini Vision OCR skipped because no Gemini API key or OAuth connection is configured.',
+            ],
+        };
+    }
+    if (geminiOAuthConnected && oauthError) {
+        warnings.push(`Google Gemini OAuth connection failed: ${oauthError instanceof Error ? oauthError.message : String(oauthError)}. Falling back to the configured Gemini API key.`);
+    }
+    if (oauth)
+        warnings.push('Google Gemini Vision OCR using the connected OAuth account.');
     const model = (ocrConfig?.model && ocrConfig.model.trim() && ocrConfig.model !== 'nvidia/nemotron-ocr-v2')
         ? ocrConfig.model.trim()
         : 'gemini-flash-latest';
+    const configuredBaseUrl = ocrConfig?.endpoint?.trim().replace(/\/+$/, '');
+    const baseUrl = configuredBaseUrl &&
+        !/ai\.api\.nvidia\.com|\/cv\/nvidia\//i.test(configuredBaseUrl)
+        ? configuredBaseUrl
+        : 'https://generativelanguage.googleapis.com/v1beta';
     const pages = [];
     try {
         for (const image of imagePaths) {
             const buffer = await promises_1.default.readFile(image.imagePath);
             const base64 = buffer.toString('base64');
-            const baseUrl = ocrConfig?.endpoint?.replace(/\/+$/, '') || 'https://generativelanguage.googleapis.com/v1beta';
             const endpoint = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent`;
             const response = await fetch(endpoint, {
                 method: 'POST',
                 signal: AbortSignal.timeout(30000),
                 headers: {
                     'Content-Type': 'application/json',
-                    'X-goog-api-key': apiKey,
+                    ...(oauth
+                        ? {
+                            Authorization: `Bearer ${oauth.accessToken}`,
+                            'x-goog-user-project': oauth.projectId,
+                        }
+                        : { 'X-goog-api-key': apiKey || '' }),
                 },
                 body: JSON.stringify({
                     contents: [

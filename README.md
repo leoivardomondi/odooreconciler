@@ -85,6 +85,24 @@ ODOO_WEBHOOK_TOKEN=use-a-long-random-webhook-secret-here
 TRUST_PROXY=true
 ```
 
+## Connect Gemini with Google OAuth
+
+Gemini can use a Google OAuth connection instead of a Gemini API key. The server stores the refresh token inside the existing encrypted AI credential payload and refreshes access tokens for scheduled jobs.
+
+1. In Google Cloud, enable the Generative Language API and configure the OAuth consent screen. Add the Google account that will authorize the scheduler as a test user while the consent screen is in testing.
+2. Create an OAuth 2.0 **Web application** client. Add this exact redirect URI, using the deployed `APP_BASE_URL`:
+   `https://your-host.example/settings/ai/gemini/callback`
+3. Ensure the deployed `APP_BASE_URL` is set so the callback URL is stable:
+
+```env
+APP_BASE_URL=https://your-host.example
+```
+
+4. Open Settings → AI Parser and enter the Google Cloud project ID, OAuth client ID, and OAuth client secret. Click Save AI, then click Connect with Google and approve the Gemini scope.
+5. Select Google Gemini as the AI provider and use Test selected AI connection. The test uses the OAuth connection when it is connected; the API-key field remains available as a fallback after disconnecting OAuth.
+
+See Google’s [Gemini OAuth quickstart](https://ai.google.dev/gemini-api/docs/oauth) for the current Cloud project, API, consent-screen, and OAuth prerequisites.
+
 ## Install and run locally
 
 ```bash

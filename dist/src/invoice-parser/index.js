@@ -256,7 +256,7 @@ async function parseSupplierInvoice(input) {
                     imageVariants: processed.variantPaths,
                 };
             }));
-            const ocr = await (0, ocrEngine_1.runOcr)(preprocessed, preferredOcr, input.aiConfig?.ocr, input.aiConfig?.apiKeys?.gemini);
+            const ocr = await (0, ocrEngine_1.runOcr)(preprocessed, preferredOcr, input.aiConfig?.ocr, input.aiConfig?.apiKeys?.gemini, input.aiConfig?.geminiOAuth?.connected);
             warnings.push(...ocr.warnings);
             ocrText = (0, normalizeText_1.normalizeText)(ocr.pages.map((page) => page.text).join('\n\n'));
             const imageVariantsByPage = new Map(preprocessed.map((page) => [page.pageNumber, page.imageVariants || []]));

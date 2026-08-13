@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ParsedVendorInvoiceResult, PurchaseOrderSummary } from '../models/types';
+import { ParsedVendorInvoiceResult, PurchaseOrderLine, PurchaseOrderSummary } from '../models/types';
 import {
+  computeItemScore,
   isCompletedPoBillActivityNote,
+  isPurchaseOrderApprovalMessage,
+  isReliablePoBillCandidate,
   isStandaloneDeliveryNoteDocument,
   selectExistingVendorBillForMatchedPurchaseOrders,
+  vendorBillMatchesParsedInvoice,
 } from './poBillAutomationService';
 
 const purchaseOrder: PurchaseOrderSummary = {
@@ -49,6 +53,23 @@ test('recovers an existing PO bill by total even when invoice items were not ext
   assert.equal(
     selectExistingVendorBillForMatchedPurchaseOrders([bill], [purchaseOrder], parsedInvoice()),
     bill,
+  );
+});
+
+test('uses a matching vendor bill total even when the invoice number is unreadable', () => {
+  assert.equal(
+    vendorBillMatchesParsedInvoice(
+      {
+        id: 901,
+        name: 'BILL/2026/00901',
+        ref: null,
+        state: 'posted',
+        invoice_origin: 'P00695',
+        amount_total: 1440,
+      },
+      parsedInvoice({ invoiceNumber: null, grandTotal: 1440 }),
+    ),
+    true,
   );
 });
 
@@ -123,4 +144,63 @@ test('does not classify a delivery note that is accompanied by an invoice', () =
     }),
     false,
   );
+});
+
+test('reads RFQ approval chatter from the Odoo subtype when the body is empty', () => {
+  assert.equal(isPurchaseOrderApprovalMessage('', 'RFQ Approved'), true);
+  assert.equal(isPurchaseOrderApprovalMessage('<p>RFQ -&gt; To Approve</p>', ''), true);
+  assert.equal(isPurchaseOrderApprovalMessage('', 'RFQ Confirmed'), false);
+});
+
+test('distinguishes white 3mm MDF from black 18mm MDF and checks quantity', () => {
+  const invoiceItems = [{
+    description: 'PRE-LAM MDF 3MM WHITE 1/S',
+    quantity: 3,
+    unitPrice: 1293.1,
+    amount: 3879.31,
+  }];
+  const po590Lines: PurchaseOrderLine[] = [{
+    id: 1051,
+    name: 'Backer White MDF 3mm',
+    product_id: [294, 'Backer White MDF 3mm'],
+    product_qty: 3,
+    qty_received: 3,
+    price_subtotal: 4500,
+    price_total: 4500,
+  }];
+  const po784Lines: PurchaseOrderLine[] = [{
+    id: 1369,
+    name: 'Black MDF 18mm',
+    product_id: [889, 'Black MDF 18mm'],
+    product_qty: 1,
+    qty_received: 1,
+    price_subtotal: 3250,
+    price_total: 3250,
+  }];
+
+  assert.equal(computeItemScore(invoiceItems, po590Lines).score, 10);
+  assert.equal(computeItemScore(invoiceItems, po784Lines).score, 0);
+});
+
+test('does not treat a wrong-total low-score candidate as reliable', () => {
+  assert.equal(isReliablePoBillCandidate({
+    purchaseOrder: { id: 784, name: 'P00784', state: 'purchase' },
+    score: 58,
+    vendorScore: 40,
+    totalScore: 0,
+    dateScore: 0,
+    itemScore: 10,
+    receiptScore: 8,
+    reasons: [],
+  }), false);
+  assert.equal(isReliablePoBillCandidate({
+    purchaseOrder: { id: 590, name: 'P00590', state: 'purchase' },
+    score: 110,
+    vendorScore: 40,
+    totalScore: 40,
+    dateScore: 12,
+    itemScore: 10,
+    receiptScore: 8,
+    reasons: [],
+  }), true);
 });

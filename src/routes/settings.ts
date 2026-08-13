@@ -2,6 +2,7 @@ import { Request, Response, Router } from 'express';
 import { body, validationResult } from 'express-validator';
 import {
   clearCachedModelFields,
+  clearGeminiOAuthCredentials,
   getApprovedAuthUsers,
   getCachedModelFields,
   getSettings,
@@ -29,6 +30,13 @@ import {
   sanitizeBaseUrl,
 } from '../utils/helpers';
 import { normalizeShopFloorReportingStartDate } from '../utils/shopFloorReporting';
+import {
+  buildGeminiOAuthAuthorizationUrl,
+  completeGeminiOAuth,
+  getGeminiOAuthAccessToken,
+  getGeminiOAuthRedirectUri,
+  verifyGeminiOAuthState,
+} from '../services/geminiOAuthService';
 
 const router = Router();
 
@@ -143,10 +151,16 @@ const aiValidators = [
   body('openaiApiKey').optional({ values: 'falsy' }).trim(),
   body('nvidiaApiKey').optional({ values: 'falsy' }).trim(),
   body('geminiApiKey').optional({ values: 'falsy' }).trim(),
+  body('geminiProjectId').optional({ values: 'falsy' }).trim(),
+  body('geminiOAuthClientId').optional({ values: 'falsy' }).trim(),
+  body('geminiOAuthClientSecret').optional({ values: 'falsy' }).trim(),
+  body('clearGeminiOAuthClientId').optional({ values: 'falsy' }).trim(),
+  body('clearGeminiOAuthClientSecret').optional({ values: 'falsy' }).trim(),
   body('anthropicApiKey').optional({ values: 'falsy' }).trim(),
   body('openrouterApiKey').optional({ values: 'falsy' }).trim(),
   body('ocrProvider').optional({ values: 'falsy' }).trim(),
   body('ocrEnabled').optional({ values: 'falsy' }).trim(),
+  body('geminiOcrFallbackEnabled').optional({ values: 'falsy' }).trim(),
   body('ocrModel').optional({ values: 'falsy' }).trim(),
   body('ocrEndpoint').optional({ values: 'falsy' }).trim(),
   body('ocrApiKey').optional({ values: 'falsy' }).trim(),
@@ -558,6 +572,11 @@ async function buildFormValues(
 ) {
   const resolvedExisting = existing || (await getSettings());
   const resolvedMappings = resolveFieldMappings(resolvedExisting.fieldMappings, availableFields);
+  const ocrProvider = source.ocrProvider ?? resolvedExisting.ai.ocr.provider;
+  const submittedOcrModel = source.ocrModel ?? resolvedExisting.ai.ocr.model;
+  const ocrModel = ocrProvider === 'gemini_vision' && /^nvidia\//i.test(submittedOcrModel)
+    ? 'gemini-flash-latest'
+    : submittedOcrModel;
 
   return {
     baseUrl: source.baseUrl ?? resolvedExisting.odoo.baseUrl,
@@ -611,6 +630,12 @@ async function buildFormValues(
     hasOpenaiApiKey: Boolean(resolvedExisting.ai.apiKeys.openai),
     hasNvidiaApiKey: Boolean(resolvedExisting.ai.apiKeys.nvidia),
     hasGeminiApiKey: Boolean(resolvedExisting.ai.apiKeys.gemini),
+    geminiProjectId: source.geminiProjectId ?? resolvedExisting.ai.geminiOAuth.projectId,
+    geminiOAuthClientId: source.geminiOAuthClientId ?? resolvedExisting.ai.geminiOAuth.clientId,
+    hasGeminiOAuthClientSecret: resolvedExisting.ai.geminiOAuth.hasClientSecret,
+    geminiOAuthConnected: resolvedExisting.ai.geminiOAuth.connected,
+    geminiOAuthEmail: resolvedExisting.ai.geminiOAuth.email,
+    geminiOAuthConnectedAt: resolvedExisting.ai.geminiOAuth.connectedAt,
     hasAnthropicApiKey: Boolean(resolvedExisting.ai.apiKeys.anthropic),
     hasOpenrouterApiKey: Boolean(resolvedExisting.ai.apiKeys.openrouter),
     nvidiaModelKeys: Object.fromEntries(
@@ -619,11 +644,14 @@ async function buildFormValues(
         source[nvidiaModelFieldName(model)] ?? resolvedExisting.ai.nvidiaModelKeys?.[model] ?? '',
       ]),
     ),
-    ocrProvider: source.ocrProvider ?? resolvedExisting.ai.ocr.provider,
+    ocrProvider,
     ocrEnabled:
       source.ocrEnabled === 'on' ||
       (source.ocrEnabled === undefined && resolvedExisting.ai.ocr.enabled),
-    ocrModel: source.ocrModel ?? resolvedExisting.ai.ocr.model,
+    geminiOcrFallbackEnabled:
+      source.geminiOcrFallbackEnabled === 'on' ||
+      (source.geminiOcrFallbackEnabled === undefined && resolvedExisting.ai.ocr.geminiFallbackEnabled),
+    ocrModel,
     ocrEndpoint: source.ocrEndpoint ?? resolvedExisting.ai.ocr.endpoint,
     hasOcrApiKey: Boolean(resolvedExisting.ai.ocr.apiKey),
     schedulerEnabled:
@@ -891,6 +919,70 @@ router.get('/settings', async (req, res) => {
         ? { type: 'danger', message: error }
         : null,
   });
+});
+
+router.get('/settings/ai/gemini/connect', async (req: Request, res: Response) => {
+  try {
+    const settings = await getSettings();
+    const projectId = settings.ai.geminiOAuth.projectId.trim();
+    if (!projectId) {
+      throw new Error('Enter the Google Cloud project ID and save AI settings before connecting Gemini.');
+    }
+    const authorizationUrl = await buildGeminiOAuthAuthorizationUrl({
+      sessionId: req.authSessionId || '',
+      redirectUri: getGeminiOAuthRedirectUri(),
+    });
+    return res.redirect(authorizationUrl);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Could not start Google Gemini connection.';
+    return res.redirect(`/settings?error=${encodeURIComponent(message)}#section-ai-parser`);
+  }
+});
+
+router.get('/settings/ai/gemini/callback', async (req: Request, res: Response) => {
+  const errorCode = typeof req.query.error === 'string' ? req.query.error : '';
+  if (errorCode) {
+    return res.redirect(`/settings?error=${encodeURIComponent(`Google Gemini connection was cancelled (${errorCode}).`)}#section-ai-parser`);
+  }
+
+  const state = typeof req.query.state === 'string' ? req.query.state : '';
+  const code = typeof req.query.code === 'string' ? req.query.code : '';
+  if (!verifyGeminiOAuthState(state, req.authSessionId || '')) {
+    return res.redirect(`/settings?error=${encodeURIComponent('The Google Gemini OAuth state expired or was invalid. Start the connection again.')}#section-ai-parser`);
+  }
+  if (!code) {
+    return res.redirect(`/settings?error=${encodeURIComponent('Google did not return an authorization code.')}#section-ai-parser`);
+  }
+
+  try {
+    const settings = await getSettings();
+    const result = await completeGeminiOAuth({
+      code,
+      redirectUri: getGeminiOAuthRedirectUri(),
+      projectId: settings.ai.geminiOAuth.projectId,
+    });
+    await logEvent('info', 'Google Gemini OAuth connection completed', {
+      email: result.email || null,
+      projectId: settings.ai.geminiOAuth.projectId,
+    });
+    const account = result.email ? ` (${result.email})` : '';
+    return res.redirect(`/settings?message=${encodeURIComponent(`Google Gemini connected${account}. The scheduler will use the OAuth connection.`)}#section-ai-parser`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Could not complete Google Gemini connection.';
+    await logEvent('error', 'Google Gemini OAuth connection failed', { error: message }).catch(() => undefined);
+    return res.redirect(`/settings?error=${encodeURIComponent(message)}#section-ai-parser`);
+  }
+});
+
+router.post('/settings/ai/gemini/disconnect', async (_req: Request, res: Response) => {
+  try {
+    await clearGeminiOAuthCredentials();
+    await logEvent('info', 'Google Gemini OAuth connection disconnected');
+    return res.redirect(`/settings?message=${encodeURIComponent('Google Gemini OAuth connection removed.')}#section-ai-parser`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Could not disconnect Google Gemini.';
+    return res.redirect(`/settings?error=${encodeURIComponent(message)}#section-ai-parser`);
+  }
 });
 
 router.get('/settings/mail', (_req, res) => {
@@ -1212,6 +1304,17 @@ router.post('/settings', validators, async (req: Request, res: Response) => {
       ? req.body.aiModel?.trim() || ''
       : aiModelPreset || req.body.aiModel?.trim() || '';
     const aiModel = normalizeAiModelForProvider(aiProvider, submittedAiModel);
+    const ocrProvider = req.body.ocrProvider?.trim() || 'disabled';
+    const submittedOcrModel = req.body.ocrModel?.trim() || '';
+    const ocrModel = ocrProvider === 'gemini_vision' && /^nvidia\//i.test(submittedOcrModel)
+      ? 'gemini-flash-latest'
+      : submittedOcrModel || (ocrProvider === 'gemini_vision' ? 'gemini-flash-latest' : 'nvidia/nemotron-ocr-v2');
+    const submittedOcrEndpoint = req.body.ocrEndpoint?.trim() || '';
+    const ocrEndpoint = ocrProvider === 'gemini_vision' && /ai\.api\.nvidia\.com|\/cv\/nvidia\//i.test(submittedOcrEndpoint)
+      ? 'https://generativelanguage.googleapis.com/v1beta'
+      : submittedOcrEndpoint || (ocrProvider === 'gemini_vision'
+        ? 'https://generativelanguage.googleapis.com/v1beta'
+        : 'https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr-v2');
     const saved = await saveSettings({
       baseUrl: sanitizeBaseUrl(req.body.baseUrl),
       database: req.body.database?.trim() || '',
@@ -1241,6 +1344,14 @@ router.post('/settings', validators, async (req: Request, res: Response) => {
         baseUrl: req.body.aiBaseUrl?.trim() || '',
         confidenceThreshold: Number(req.body.aiConfidenceThreshold || 0.75),
         maxImages: Number(req.body.aiMaxImages || 3),
+        geminiOAuth: {
+          ...currentSettings.ai.geminiOAuth,
+          projectId: req.body.geminiProjectId?.trim() || currentSettings.ai.geminiOAuth.projectId,
+        },
+        geminiOAuthClientId: req.body.geminiOAuthClientId?.trim() || '',
+        geminiOAuthClientSecret: req.body.geminiOAuthClientSecret?.trim() || '',
+        clearGeminiOAuthClientId: req.body.clearGeminiOAuthClientId === 'on',
+        clearGeminiOAuthClientSecret: req.body.clearGeminiOAuthClientSecret === 'on',
         apiKeys: {
           openai: req.body.openaiApiKey?.trim() || '',
           nvidia: req.body.nvidiaApiKey?.trim() || '',
@@ -1262,12 +1373,11 @@ router.post('/settings', validators, async (req: Request, res: Response) => {
           openrouter: req.body.clearOpenrouterApiKey === 'on',
         },
         ocr: {
-          provider: req.body.ocrProvider?.trim() || 'disabled',
-          enabled: req.body.ocrEnabled === 'on' || ['nvidia_nemoretriever', 'gemini_vision', 'google'].includes(req.body.ocrProvider),
-          model: req.body.ocrModel?.trim() || (req.body.ocrProvider === 'gemini_vision' ? 'gemini-flash-latest' : 'nvidia/nemotron-ocr-v2'),
-          endpoint:
-            req.body.ocrEndpoint?.trim() ||
-            'https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr-v2',
+          provider: ocrProvider,
+          enabled: req.body.ocrEnabled === 'on' || ['nvidia_nemoretriever', 'gemini_vision', 'google'].includes(ocrProvider),
+          geminiFallbackEnabled: req.body.geminiOcrFallbackEnabled === 'on',
+          model: ocrModel,
+          endpoint: ocrEndpoint,
           apiKey: req.body.ocrApiKey?.trim() || '',
           clearApiKey: req.body.clearOcrApiKey === 'on',
         },
@@ -1320,6 +1430,7 @@ router.post('/settings', validators, async (req: Request, res: Response) => {
         ocr: {
           provider: saved.ai.ocr.provider,
           enabled: saved.ai.ocr.enabled,
+          geminiFallbackEnabled: saved.ai.ocr.geminiFallbackEnabled,
           model: saved.ai.ocr.model,
           endpoint: saved.ai.ocr.endpoint,
           hasApiKey: Boolean(saved.ai.ocr.apiKey),
@@ -1370,16 +1481,18 @@ router.post(
       : '';
     const apiKey = modelKey || req.body[providerKeyField]?.trim() ||
       (provider === 'nvidia' ? currentSettings.ai.nvidiaModelKeys?.[model] || currentSettings.ai.apiKeys.nvidia : storedProviderKey);
+    const hasGeminiOAuth = provider === 'gemini' && currentSettings.ai.geminiOAuth.connected;
     const source = req.body as Record<string, string>;
 
     if (provider === 'disabled') {
       return renderSettingsPage(res, { existing: currentSettings, source, status: { type: 'danger', message: 'Select an AI provider before testing.' } });
     }
-    if (!apiKey) {
-      return renderSettingsPage(res, { existing: currentSettings, source, status: { type: 'danger', message: `No API key is configured for ${provider} / ${model}.` } });
+    if (!apiKey && !hasGeminiOAuth) {
+      return renderSettingsPage(res, { existing: currentSettings, source, status: { type: 'danger', message: `No API key or OAuth connection is configured for ${provider} / ${model}.` } });
     }
 
     try {
+      const geminiOAuth = hasGeminiOAuth ? await getGeminiOAuthAccessToken() : null;
       const configuredBaseUrl = req.body.aiBaseUrl?.trim() || currentSettings.ai.baseUrl;
       let endpoint = '';
       let headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -1387,7 +1500,12 @@ router.post(
 
       if (provider === 'gemini') {
         endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
-        headers['x-goog-api-key'] = apiKey;
+        if (geminiOAuth) {
+          headers.Authorization = `Bearer ${geminiOAuth.accessToken}`;
+          headers['x-goog-user-project'] = geminiOAuth.projectId;
+        } else {
+          headers['x-goog-api-key'] = apiKey;
+        }
         body = { contents: [{ role: 'user', parts: [{ text: 'Reply with the single word OK.' }] }] };
       } else if (provider === 'anthropic') {
         endpoint = 'https://api.anthropic.com/v1/messages';

@@ -50,6 +50,15 @@ export interface AiProviderApiKeys {
   openrouter: string;
 }
 
+export interface GeminiOAuthConnectionStatus {
+  connected: boolean;
+  email: string;
+  projectId: string;
+  connectedAt: string | null;
+  clientId: string;
+  hasClientSecret: boolean;
+}
+
 export interface AiExtractionConfig {
   enabled: boolean;
   provider: AiInvoiceProvider;
@@ -59,9 +68,11 @@ export interface AiExtractionConfig {
   maxImages: number;
   apiKeys: AiProviderApiKeys;
   nvidiaModelKeys: Record<string, string>;
+  geminiOAuth: GeminiOAuthConnectionStatus;
   ocr: {
     provider: 'disabled' | 'nvidia_nemoretriever' | 'gemini_vision' | 'google';
     enabled: boolean;
+    geminiFallbackEnabled: boolean;
     model: string;
     endpoint: string;
     apiKey: string;

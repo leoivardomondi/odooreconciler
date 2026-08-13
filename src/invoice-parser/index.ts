@@ -280,6 +280,7 @@ export async function parseSupplierInvoice(input: ParseSupplierInvoiceInput): Pr
         preferredOcr,
         input.aiConfig?.ocr,
         input.aiConfig?.apiKeys?.gemini,
+        input.aiConfig?.geminiOAuth?.connected,
       );
       warnings.push(...ocr.warnings);
       ocrText = normalizeText(ocr.pages.map((page) => page.text).join('\n\n'));

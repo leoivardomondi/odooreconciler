@@ -11,6 +11,7 @@
 import { getSettings } from '../models/repositories';
 import { execute, getDatabaseDialect, queryAll } from '../models/db';
 import { AiExtractionConfig } from '../models/types';
+import { getGeminiOAuthAccessToken } from './geminiOAuthService';
 
 // ─── Category Definitions ───────────────────────────────────────────────
 
@@ -1181,7 +1182,9 @@ async function callOpenAiCompatibleCategoryApi(input: {
 }
 
 async function callGeminiCategoryApi(input: {
-  apiKey: string;
+  apiKey?: string;
+  accessToken?: string;
+  projectId?: string;
   model: string;
   baseUrl: string;
   prompt: string;
@@ -1193,7 +1196,12 @@ async function callGeminiCategoryApi(input: {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      'X-goog-api-key': input.apiKey,
+      ...(input.accessToken
+        ? {
+            Authorization: `Bearer ${input.accessToken}`,
+            'x-goog-user-project': input.projectId || '',
+          }
+        : { 'X-goog-api-key': input.apiKey || '' }),
     },
     body: JSON.stringify({
       contents: [
@@ -1364,10 +1372,16 @@ async function tryAiCategorization(input: {
       return null;
     }
 
-    const apiKey = config.apiKeys?.[config.provider];
-    if (!apiKey) {
-      return null;
+    let apiKey = config.apiKeys?.[config.provider];
+    let accessToken = '';
+    let projectId = '';
+    if (config.provider === 'gemini' && config.geminiOAuth?.connected) {
+      const oauth = await getGeminiOAuthAccessToken();
+      accessToken = oauth.accessToken;
+      projectId = oauth.projectId;
+      apiKey = '';
     }
+    if (!apiKey && !accessToken) return null;
 
     const model = config.model?.trim() || defaultModelForProvider(config.provider);
     const prompt = buildCategoryPrompt({
@@ -1393,6 +1407,8 @@ async function tryAiCategorization(input: {
     } else if (config.provider === 'gemini') {
       outputText = await callGeminiCategoryApi({
         apiKey,
+        accessToken,
+        projectId,
         model,
         baseUrl: config.baseUrl,
         prompt,
