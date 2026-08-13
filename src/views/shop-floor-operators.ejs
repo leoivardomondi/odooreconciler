@@ -45,37 +45,54 @@
         </div>
       </div>
 
-      <div class="operators-page__actions">
-        <a href="/settings/staff-onboarding" class="btn operators-page__secondary-action rounded-pill">Onboarding Approvals</a>
-        <form method="get" action="/shop-floor/operators/weekly-report.pdf" target="_blank" class="d-flex align-items-center gap-1">
-          <input type="date" name="fromDate" class="form-control form-control-sm rounded-pill" title="Report Start Date" style="width: 135px;" />
-          <input type="date" name="toDate" class="form-control form-control-sm rounded-pill" title="Report End Date" style="width: 135px;" />
-          <button type="submit" class="btn operators-page__secondary-action operators-page__download-action rounded-pill">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:6px;vertical-align:-2px"><path d="M6 2h9l5 5v15H6z"/><path d="M14 2v6h6M9 14h6m-6 4h6"/></svg>
-            Download Report PDF
-          </button>
-        </form>
-        <form method="post" action="/shop-floor/operators/send-weekly-report" data-confirm="Send the Wednesday accountability PDF now?" class="d-flex flex-wrap align-items-center gap-2">
-          <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
-          <input type="hidden" name="sendMode" value="all" class="report-send-mode" />
-          <input type="email" name="recipientEmail" class="form-control rounded-pill" placeholder="Recipient email" aria-label="Report recipient email" style="min-width:230px;max-width:290px" />
-          <button type="submit" class="btn operators-page__secondary-action rounded-pill" onclick="this.form.querySelector('.report-send-mode').value='entered'">Send to This Email</button>
-          <button type="submit" class="btn operators-page__secondary-action rounded-pill" onclick="this.form.querySelector('.report-send-mode').value='all'">Send Report to All</button>
-        </form>
-        <form method="post" action="/shop-floor/operators/send-invite" id="sendInviteForm" data-confirm="Send welcome emails to selected operators with login instructions?">
-          <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
-          <input type="hidden" name="ids" id="selectedOperatorIds" value="" />
-          <button type="submit" class="btn btn-primary rounded-pill operators-page__primary-action" onclick="prepareInviteIds()">
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" style="margin-right:6px;vertical-align:-2px"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
-            Send Invite
-          </button>
-        </form>
-        <form method="post" action="/shop-floor/operators/sync-access">
-          <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
-          <button type="submit" class="btn operators-page__secondary-action rounded-pill">
-            Sync to Access
-          </button>
-        </form>
+      <div class="operators-page__action-groups">
+        <section class="operators-page__action-group" aria-labelledby="operator-workflow-actions">
+          <h2 id="operator-workflow-actions" class="operators-page__action-group-label">Workflow</h2>
+          <div class="operators-page__action-group-controls">
+            <a href="/settings/staff-onboarding" class="btn operators-page__secondary-action rounded-pill">Onboarding Approvals</a>
+          </div>
+        </section>
+
+        <section class="operators-page__action-group" aria-labelledby="operator-report-actions">
+          <h2 id="operator-report-actions" class="operators-page__action-group-label">Reports</h2>
+          <div class="operators-page__action-group-controls">
+            <form method="get" action="/shop-floor/operators/weekly-report.pdf" target="_blank" class="operators-page__download-form">
+              <input type="date" name="fromDate" class="form-control form-control-sm rounded-pill" title="Report Start Date" aria-label="Report start date" />
+              <input type="date" name="toDate" class="form-control form-control-sm rounded-pill" title="Report End Date" aria-label="Report end date" />
+              <button type="submit" class="btn operators-page__secondary-action operators-page__download-action rounded-pill">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 2h9l5 5v15H6z"/><path d="M14 2v6h6M9 14h6m-6 4h6"/></svg>
+                Download Report PDF
+              </button>
+            </form>
+            <form method="post" action="/shop-floor/operators/send-weekly-report" data-confirm="Send the Wednesday accountability PDF now?" class="operators-page__report-form">
+              <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+              <input type="hidden" name="sendMode" value="all" class="report-send-mode" />
+              <input type="email" name="recipientEmail" class="form-control rounded-pill" placeholder="Recipient email" aria-label="Report recipient email" />
+              <button type="submit" class="btn operators-page__secondary-action rounded-pill" onclick="this.form.querySelector('.report-send-mode').value='entered'">Send to This Email</button>
+              <button type="submit" class="btn operators-page__secondary-action rounded-pill" onclick="this.form.querySelector('.report-send-mode').value='all'">Send Report to All</button>
+            </form>
+          </div>
+        </section>
+
+        <section class="operators-page__action-group" aria-labelledby="operator-access-actions">
+          <h2 id="operator-access-actions" class="operators-page__action-group-label">Access</h2>
+          <div class="operators-page__action-group-controls">
+            <form method="post" action="/shop-floor/operators/send-invite" id="sendInviteForm" data-confirm="Send welcome emails to selected operators with login instructions?">
+              <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+              <input type="hidden" name="ids" id="selectedOperatorIds" value="" />
+              <button type="submit" class="btn btn-primary rounded-pill operators-page__primary-action" onclick="prepareInviteIds()">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
+                Send Invite
+              </button>
+            </form>
+            <form method="post" action="/shop-floor/operators/sync-access">
+              <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+              <button type="submit" class="btn operators-page__secondary-action rounded-pill">
+                Sync to Access
+              </button>
+            </form>
+          </div>
+        </section>
       </div>
     </div>
   </div>
