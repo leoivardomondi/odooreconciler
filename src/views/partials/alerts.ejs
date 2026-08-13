@@ -1,5 +1,9 @@
 <% if (status) { %>
-  <div class="alert alert-<%= status.type %> shadow-sm" role="alert">
+  <div
+    class="alert alert-<%= status.type %> shadow-sm"
+    role="alert"
+    <% if (status.type === 'danger' && /Gemini Google OAuth is not configured/i.test(String(status.message || ''))) { %>data-popup-error="true"<% } %>
+  >
     <%= status.message %>
   </div>
 <% } %>

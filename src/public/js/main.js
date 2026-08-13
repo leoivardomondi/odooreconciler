@@ -62,6 +62,14 @@ function hideAppLoading() {
   if (overlay instanceof HTMLElement) overlay.classList.remove('is-visible');
 }
 
+function setupPopupErrors() {
+  document.querySelectorAll('[data-popup-error="true"]').forEach((element) => {
+    if (!(element instanceof HTMLElement) || element.dataset.popupShown === 'true') return;
+    element.dataset.popupShown = 'true';
+    window.alert(element.textContent.replace(/\s+/g, ' ').trim());
+  });
+}
+
 window.addEventListener('pageshow', hideAppLoading);
 window.addEventListener('pagehide', () => window.clearTimeout(window.__appLoadingSafetyTimer));
 
@@ -960,6 +968,7 @@ setupPwaBadgeRefresh();
 setupExpectedBoardAlertNotifications();
 setupHourlyShopFloorTaskNotifications();
 setupConfirmDialogs();
+setupPopupErrors();
 
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {

@@ -17,19 +17,18 @@
 
   <!-- Page Header -->
   <div class="operators-page__header app-card mb-4">
-    <div class="operators-page__header-copy">
-      <p class="operators-page__eyebrow text-uppercase small fw-semibold text-muted mb-0">Shop Floor</p>
-      <div class="operators-page__title-row">
-        <h1 class="h2 fw-bold mb-0">Operators</h1>
-        <span class="operators-page__status-pill">Synced from Odoo</span>
+    <div class="operators-page__header-top">
+      <div class="operators-page__header-copy">
+        <p class="operators-page__eyebrow text-uppercase small fw-semibold text-muted mb-1">Shop Floor</p>
+        <div class="operators-page__title-row mb-1">
+          <h1 class="h2 fw-bold mb-0">Operators</h1>
+          <span class="operators-page__status-pill">Synced from Odoo</span>
+        </div>
+        <p class="operators-page__subtitle text-muted mb-0">
+          Synced from Odoo &mdash; <strong><%= departments.join(', ') %></strong>
+        </p>
       </div>
-      <p class="operators-page__subtitle text-muted mb-0">
-        Synced from Odoo &mdash; <strong><%= departments.join(', ') %></strong>
-      </p>
-    </div>
 
-    <div class="operators-page__panel">
-      <div class="operators-page__panel-label">Attendance summary</div>
       <div class="operators-page__stats">
         <div class="operators-page__stat operators-page__stat--total app-card">
           <div class="operators-page__stat-label">Total</div>
@@ -44,55 +43,74 @@
           <div class="operators-page__stat-value text-danger"><%= total - checkedInCount %></div>
         </div>
       </div>
+    </div>
 
-      <div class="operators-page__action-groups">
-        <section class="operators-page__action-group" aria-labelledby="operator-workflow-actions">
-          <h2 id="operator-workflow-actions" class="operators-page__action-group-label">Workflow</h2>
-          <div class="operators-page__action-group-controls">
-            <a href="/settings/staff-onboarding" class="btn operators-page__secondary-action rounded-pill">Onboarding Approvals</a>
-          </div>
-        </section>
+    <!-- Action Cards Grid -->
+    <div class="operators-page__actions-grid">
+      <!-- Reports Card -->
+      <div class="operators-page__action-card">
+        <div class="operators-page__action-card-header">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+          <span>Reports & Export</span>
+        </div>
+        <div class="operators-page__action-card-body">
+          <form method="get" action="/shop-floor/operators/weekly-report.pdf" target="_blank" class="operators-page__download-form mb-2">
+            <div class="row g-2 align-items-center">
+              <div class="col-sm-4">
+                <input type="date" name="fromDate" class="form-control form-control-sm rounded-pill" title="Report Start Date" aria-label="Report start date" placeholder="Start Date" />
+              </div>
+              <div class="col-sm-4">
+                <input type="date" name="toDate" class="form-control form-control-sm rounded-pill" title="Report End Date" aria-label="Report end date" placeholder="End Date" />
+              </div>
+              <div class="col-sm-4">
+                <button type="submit" class="btn btn-sm btn-outline-secondary w-100 rounded-pill fw-semibold">
+                  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 2h9l5 5v15H6z"/><path d="M14 2v6h6M9 14h6m-6 4h6"/></svg>
+                  Download PDF
+                </button>
+              </div>
+            </div>
+          </form>
 
-        <section class="operators-page__action-group" aria-labelledby="operator-report-actions">
-          <h2 id="operator-report-actions" class="operators-page__action-group-label">Reports</h2>
-          <div class="operators-page__action-group-controls">
-            <form method="get" action="/shop-floor/operators/weekly-report.pdf" target="_blank" class="operators-page__download-form">
-              <input type="date" name="fromDate" class="form-control form-control-sm rounded-pill" title="Report Start Date" aria-label="Report start date" />
-              <input type="date" name="toDate" class="form-control form-control-sm rounded-pill" title="Report End Date" aria-label="Report end date" />
-              <button type="submit" class="btn operators-page__secondary-action operators-page__download-action rounded-pill">
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 2h9l5 5v15H6z"/><path d="M14 2v6h6M9 14h6m-6 4h6"/></svg>
-                Download Report PDF
-              </button>
-            </form>
-            <form method="post" action="/shop-floor/operators/send-weekly-report" data-confirm="Send the Wednesday accountability PDF now?" class="operators-page__report-form">
-              <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
-              <input type="hidden" name="sendMode" value="all" class="report-send-mode" />
-              <input type="email" name="recipientEmail" class="form-control rounded-pill" placeholder="Recipient email" aria-label="Report recipient email" />
-              <button type="submit" class="btn operators-page__secondary-action rounded-pill" onclick="this.form.querySelector('.report-send-mode').value='entered'">Send to This Email</button>
-              <button type="submit" class="btn operators-page__secondary-action rounded-pill" onclick="this.form.querySelector('.report-send-mode').value='all'">Send Report to All</button>
-            </form>
-          </div>
-        </section>
+          <form method="post" action="/shop-floor/operators/send-weekly-report" data-confirm="Send the Wednesday accountability PDF now?" class="operators-page__report-form">
+            <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+            <input type="hidden" name="sendMode" value="all" class="report-send-mode" />
+            <div class="input-group input-group-sm">
+              <input type="email" name="recipientEmail" class="form-control" placeholder="Recipient email address..." aria-label="Report recipient email" />
+              <button type="submit" class="btn btn-outline-secondary px-3" onclick="this.form.querySelector('.report-send-mode').value='entered'">Send to Email</button>
+              <button type="submit" class="btn btn-primary px-3" onclick="this.form.querySelector('.report-send-mode').value='all'">Send Report to All</button>
+            </div>
+          </form>
+        </div>
+      </div>
 
-        <section class="operators-page__action-group" aria-labelledby="operator-access-actions">
-          <h2 id="operator-access-actions" class="operators-page__action-group-label">Access</h2>
-          <div class="operators-page__action-group-controls">
-            <form method="post" action="/shop-floor/operators/send-invite" id="sendInviteForm" data-confirm="Send welcome emails to selected operators with login instructions?">
+      <!-- Quick Actions & Access Card -->
+      <div class="operators-page__action-card">
+        <div class="operators-page__action-card-header">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><polyline points="17 11 19 13 23 9"/></svg>
+          <span>Workflow & Access</span>
+        </div>
+        <div class="operators-page__action-card-body">
+          <div class="d-flex flex-wrap gap-2 align-items-center">
+            <a href="/settings/staff-onboarding" class="btn btn-sm btn-outline-secondary rounded-pill fw-semibold px-3 py-2 flex-grow-1 text-center">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/></svg>
+              Onboarding Approvals
+            </a>
+            <form method="post" action="/shop-floor/operators/send-invite" id="sendInviteForm" data-confirm="Send welcome emails to selected operators with login instructions?" class="flex-grow-1">
               <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
               <input type="hidden" name="ids" id="selectedOperatorIds" value="" />
-              <button type="submit" class="btn btn-primary rounded-pill operators-page__primary-action" onclick="prepareInviteIds()">
-                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
+              <button type="submit" class="btn btn-sm btn-primary rounded-pill fw-semibold w-100 py-2" onclick="prepareInviteIds()">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7"/></svg>
                 Send Invite
               </button>
             </form>
-            <form method="post" action="/shop-floor/operators/sync-access">
+            <form method="post" action="/shop-floor/operators/sync-access" class="flex-grow-1">
               <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
-              <button type="submit" class="btn operators-page__secondary-action rounded-pill">
+              <button type="submit" class="btn btn-sm btn-outline-secondary rounded-pill fw-semibold w-100 py-2">
                 Sync to Access
               </button>
             </form>
           </div>
-        </section>
+        </div>
       </div>
     </div>
   </div>

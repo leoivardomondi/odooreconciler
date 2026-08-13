@@ -16,6 +16,21 @@ function nairobiDateTime(value: string | null) {
   if (!value) return '-';
   return new Intl.DateTimeFormat('en-KE', { timeZone: 'Africa/Nairobi', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true }).format(new Date(value));
 }
+function isLateCheckIn(value: string | null) {
+  if (!value) return false;
+  const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Nairobi', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date(value));
+  const get = (type: string) => Number(parts.find((part) => part.type === type)?.value || 0);
+  return get('hour') > 8 || (get('hour') === 8 && get('minute') > 20);
+}
+function nairobiDateKey(value: string | null) {
+  if (!value) return '';
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Nairobi', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(value));
+}
+function nextDate(value: string) {
+  const date = new Date(`${value}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + 1);
+  return dateOnly(date);
+}
 
 async function getOperators(client: OdooClient, companyId: number) {
   const departments = (await Promise.all(DEPARTMENTS.map((name) => client.findDepartmentByName(name)))).flat();
@@ -46,7 +61,7 @@ export async function buildWeeklyShopFloorReport(scope?: { fromDate?: string; to
     reportEnd = clampShopFloorReportingDate(dateOnly(end), reportingBaseline);
   }
 
-  const [boardSummary, penalties, orders, operators, boardLoggingByOperator] = await Promise.all([
+  const [boardSummary, penalties, orders, moCompletion, operators, boardLoggingByOperator] = await Promise.all([
     client.getBoardRegistrationSummary({
       ...settings.stock,
       fromDate: reportStart,
@@ -54,6 +69,7 @@ export async function buildWeeklyShopFloorReport(scope?: { fromDate?: string; to
     }),
     client.getTeamPenalties(settings.stock),
     client.getWarehouseScopedActiveWorkOrders(warehouseId, 500),
+    client.getWarehouseManufacturingOrderCompletionSummary(warehouseId, reportStart, reportEnd),
     getOperators(client, companyId),
     getBoardIntakeLoggingReport(reportStart, reportEnd, reportingBaseline),
   ]);
@@ -70,17 +86,33 @@ export async function buildWeeklyShopFloorReport(scope?: { fromDate?: string; to
   const dates = Array.from({ length: reportingDayCount }, (_, index) => {
     const value = new Date(reportStartDate); value.setUTCDate(reportStartDate.getUTCDate() + index); return dateOnly(value);
   }).filter((date) => new Intl.DateTimeFormat('en-US', { timeZone: 'Africa/Nairobi', weekday: 'short' }).format(new Date(`${date}T12:00:00Z`)) !== 'Sun');
+  const attendanceQueryDates = [...new Set([...dates, nextDate(reportEnd)])];
   const attendanceByDate = operators.length
-    ? await Promise.all(dates.map((date) => client.getBulkAttendance(operators.map((operator) => operator.id), date).catch(() => [])))
-    : dates.map(() => []);
+    ? await Promise.all(attendanceQueryDates.map((date) => client.getBulkAttendance(operators.map((operator) => operator.id), date).catch(() => [])))
+    : attendanceQueryDates.map(() => []);
+  const allAttendanceRecords = attendanceByDate.flat();
   const attendance = operators.map((operator) => ({
     name: operator.name,
     days: dates.map((date, index) => {
       const record = attendanceByDate[index].find((entry) => (Array.isArray(entry.employee_id) ? entry.employee_id[0] : entry.employee_id) === operator.id);
-      return { date, status: record ? (record.check_out ? 'Present' : 'No checkout') : 'Absent' };
+      const followingRecord = record && !record.check_out
+        ? allAttendanceRecords.find((entry) =>
+          (Array.isArray(entry.employee_id) ? entry.employee_id[0] : entry.employee_id) === operator.id &&
+          nairobiDateKey(entry.check_in) === nextDate(date),
+        )
+        : null;
+      return {
+        date,
+        status: record ? (record.check_out ? 'Present' : 'No checkout') : 'Absent',
+        late: Boolean(record && isLateCheckIn(record.check_in)),
+        checkIn: record?.check_in || null,
+        checkOut: record?.check_out || null,
+        workedHours: Number(record?.worked_hours || (record?.check_in && record?.check_out ? (new Date(record.check_out).getTime() - new Date(record.check_in).getTime()) / 3600000 : 0)),
+        nextDayCheckIn: followingRecord?.check_in || null,
+      };
     }),
   }));
-  return { generatedAt: new Date(), start: reportStart, end: reportEnd, reportingBaseline, companyName: 'URBAN VIBE INTERIOR DESIGN COMPANY LTD', warehouseId, boardSummary, boardLoggingByOperator, penalties, overdueNotStarted, attendance };
+  return { generatedAt: new Date(), start: reportStart, end: reportEnd, reportingBaseline, companyName: 'URBAN VIBE INTERIOR DESIGN COMPANY LTD', warehouseId, boardSummary, boardLoggingByOperator, penalties, moCompletion, overdueNotStarted, attendance };
 }
 
 export async function renderWeeklyShopFloorReportPdf(
@@ -121,8 +153,8 @@ export async function renderWeeklyShopFloorReportPdf(
   document.y = 130;
 
   const attendanceTotals = report.attendance.reduce((totals, person) => {
-    person.days.forEach((day) => { if (day.status === 'Present') totals.present += 1; else if (day.status === 'Absent') totals.absent += 1; else totals.noCheckout += 1; }); return totals;
-  }, { present: 0, absent: 0, noCheckout: 0 });
+    person.days.forEach((day) => { if (day.status === 'Present') totals.present += 1; else if (day.status === 'Absent') totals.absent += 1; else totals.noCheckout += 1; if (day.late) totals.late += 1; }); return totals;
+  }, { present: 0, absent: 0, noCheckout: 0, late: 0 });
   const expectedAttendance = report.attendance.length * (report.attendance[0]?.days.length || 0);
   const attendanceRate = expectedAttendance ? Math.round(((attendanceTotals.present + attendanceTotals.noCheckout) / expectedAttendance) * 100) : 0;
   const coverage = Number(report.boardSummary?.coveragePercent || 0);
@@ -137,8 +169,10 @@ export async function renderWeeklyShopFloorReportPdf(
   const criticalPoints = [
     `${report.boardSummary?.missingBoards || 0} cutting MO(s) from ${report.start} to ${report.end} have no same-day board inventory log; current coverage is ${coverage}%.`,
     `${report.penalties?.undoneReceipts || 0} purchased-board receipt(s) need validation.`,
+    `${report.moCompletion.completed} of ${report.moCompletion.eligible} eligible MO(s) created in the period were completed by ${report.end} (${report.moCompletion.completionPercent}%).`,
     `${report.overdueNotStarted.length} manufacturing order(s) are overdue and have not started.`,
     `${attendanceTotals.absent} absence record(s) and ${attendanceTotals.noCheckout} missing checkout(s) were recorded across ${report.attendance[0]?.days.length || 0} working day(s).`,
+    `${attendanceTotals.late} late check-in(s) were recorded after 8:20 AM Nairobi time.`,
   ];
   criticalPoints.forEach((point, index) => {
     document.circle(48, document.y + 5, 3).fill(index === 0 || index === 2 ? '#dc2626' : copper);
@@ -149,7 +183,7 @@ export async function renderWeeklyShopFloorReportPdf(
     ? Math.round(((expectedAttendance - attendanceTotals.noCheckout) / expectedAttendance) * 100)
     : 100;
   const receiptUsageScore = Number(report.penalties?.undoneReceipts || 0) === 0 ? 100 : Number(report.penalties?.undoneReceipts || 0) <= 2 ? 60 : 20;
-  const moUsageScore = Math.max(0, 100 - report.overdueNotStarted.length * 15);
+  const moUsageScore = report.moCompletion.completionPercent;
   const adoptionScore = Math.round((coverage + receiptUsageScore + moUsageScore + attendanceDataCompleteness) / 4);
   const adoptionLabel = adoptionScore >= 90 ? 'FULL USE' : adoptionScore >= 75 ? 'PARTIAL USE' : 'POOR USE';
   const adoptionColor = adoptionScore >= 90 ? '#16a34a' : adoptionScore >= 75 ? '#d97706' : '#dc2626';
@@ -162,7 +196,7 @@ export async function renderWeeklyShopFloorReportPdf(
   const usageEvidence = [
     { label: 'MO board logging', score: coverage, issue: `${report.boardSummary?.missingBoards || 0} MOs missing` },
     { label: 'Receipt validation', score: receiptUsageScore, issue: `${report.penalties?.undoneReceipts || 0} pending` },
-    { label: 'MO workflow updates', score: moUsageScore, issue: `${report.overdueNotStarted.length} overdue/not started` },
+    { label: 'MO completion rate', score: moUsageScore, issue: `${report.moCompletion.completed}/${report.moCompletion.eligible} completed; ${report.moCompletion.open} open` },
     { label: 'Attendance completion', score: attendanceDataCompleteness, issue: `${attendanceTotals.noCheckout} missing checkout` },
   ];
   usageEvidence.forEach((item, index) => {
@@ -181,11 +215,55 @@ export async function renderWeeklyShopFloorReportPdf(
 
   const checkoutExceptions = report.attendance.map((person) => ({ name: person.name, missing: person.days.filter((day) => day.status === 'No checkout').length })).filter((person) => person.missing > 0);
   if (checkoutExceptions.length) {
-    document.font('Helvetica-Bold').fontSize(7.5).fillColor(navy).text('OPERATOR-SPECIFIC USAGE EXCEPTIONS', 42, document.y, { width: contentWidth });
-    document.moveDown(.25);
-    document.font('Helvetica').fontSize(7).fillColor(ink).text(checkoutExceptions.map((person) => `${person.name}: ${person.missing} missing checkout${person.missing === 1 ? '' : 's'}`).join('   |   '), 42, document.y, { width: contentWidth, lineGap: 2 });
-    document.moveDown(.45);
+    section('Checkout failure details', 'A failed checkout is shown with the hours recorded and the next-day check-in that continued the attendance record.');
+    const checkoutCols = [
+      { label: 'EMPLOYEE', x: 48, width: 145 },
+      { label: 'FAILED CHECKOUT', x: 198, width: 84 },
+      { label: 'HOURS LOGGED', x: 286, width: 76 },
+      { label: 'NEXT-DAY CHECK-IN', x: 366, width: 100 },
+      { label: 'DETAIL', x: 472, width: 72 },
+    ];
+    tableHeader(checkoutCols);
+    const checkoutRows = report.attendance.flatMap((person) => person.days
+      .filter((day) => day.status === 'No checkout')
+      .map((day) => ({ person, day })));
+    checkoutRows.forEach(({ person, day }, index) => {
+      ensureSpace(32); if (document.y < 55) tableHeader(checkoutCols); const y = document.y;
+      document.rect(42, y, contentWidth, 30).fill(index % 2 ? '#fff7f7' : '#ffffff');
+      document.font('Helvetica-Bold').fontSize(6.9).fillColor(ink).text(person.name, 48, y + 9, { width: 145, lineBreak: false });
+      document.font('Helvetica').fontSize(6.9).text(day.date, 198, y + 9, { width: 84, lineBreak: false });
+      document.font('Helvetica-Bold').fontSize(7).fillColor('#dc2626').text(`${Number(day.workedHours || 0).toFixed(1)}h`, 286, y + 9, { width: 76, lineBreak: false });
+      document.font('Helvetica').fontSize(6.5).fillColor(ink).text(day.nextDayCheckIn ? nairobiDateTime(day.nextDayCheckIn) : 'No next check-in', 366, y + 8, { width: 100, height: 18 });
+      document.font('Helvetica').fontSize(6.2).fillColor('#991b1b').text(day.nextDayCheckIn ? 'Continued next day' : 'Checkout missing', 472, y + 8, { width: 72, height: 18 });
+      document.y = y + 30;
+    });
   }
+
+  section('Late check-in report', 'A check-in after 8:20 AM Nairobi time is counted as late.');
+  const lateCheckIns = report.attendance
+    .map((person) => ({
+      name: person.name,
+      days: person.days.filter((day) => day.late),
+    }))
+    .filter((person) => person.days.length > 0);
+  const lateCols = [
+    { label: 'EMPLOYEE', x: 48, width: 190 },
+    { label: 'LATE DAYS', x: 244, width: 62 },
+    { label: 'DATES / CHECK-IN TIMES', x: 314, width: 230 },
+  ];
+  tableHeader(lateCols);
+  if (!lateCheckIns.length) {
+    document.font('Helvetica').fontSize(9).fillColor('#16a34a').text('No late check-ins were recorded.', 48, document.y + 8);
+    document.y += 28;
+  }
+  lateCheckIns.forEach((person, index) => {
+    ensureSpace(30); if (document.y < 55) tableHeader(lateCols); const y = document.y;
+    document.rect(42, y, contentWidth, 28).fill(index % 2 ? '#f8fafc' : '#ffffff');
+    document.font('Helvetica-Bold').fontSize(7.5).fillColor(ink).text(person.name, 48, y + 9, { width: 190, lineBreak: false });
+    document.font('Helvetica-Bold').fontSize(8).fillColor('#dc2626').text(String(person.days.length), 244, y + 9, { width: 62, align: 'center' });
+    document.font('Helvetica').fontSize(6.8).fillColor(ink).text(person.days.map((day) => `${day.date.slice(5)} ${day.checkIn ? nairobiDateTime(day.checkIn).split(', ').pop() : '-'}`).join(' | '), 314, y + 7, { width: 230, height: 18 });
+    document.y = y + 28;
+  });
 
   const boardLogTotals = report.boardLoggingByOperator.reduce((totals, operator) => {
     totals.records += operator.records;

@@ -1298,21 +1298,21 @@ router.post('/settings', validators, async (req: Request, res: Response) => {
       saleOrderFieldState.fields.length > 0
         ? sanitizeFieldMappings(req.body, saleOrderFieldState.fields, currentSettings.fieldMappings)
         : { sanitized: currentSettings.fieldMappings, invalidSelections: [] };
-    const aiProvider = req.body.aiProvider?.trim() || 'disabled';
+    const aiProvider = req.body.aiProvider?.trim() || currentSettings.ai.provider || 'disabled';
     const aiModelPreset = req.body.aiModelPreset?.trim() || '';
     const submittedAiModel = aiModelPreset === 'custom'
       ? req.body.aiModel?.trim() || ''
       : aiModelPreset || req.body.aiModel?.trim() || '';
-    const aiModel = normalizeAiModelForProvider(aiProvider, submittedAiModel);
-    const ocrProvider = req.body.ocrProvider?.trim() || 'disabled';
+    const aiModel = normalizeAiModelForProvider(aiProvider, submittedAiModel || currentSettings.ai.model);
+    const ocrProvider = req.body.ocrProvider?.trim() || currentSettings.ai.ocr?.provider || 'disabled';
     const submittedOcrModel = req.body.ocrModel?.trim() || '';
     const ocrModel = ocrProvider === 'gemini_vision' && /^nvidia\//i.test(submittedOcrModel)
       ? 'gemini-flash-latest'
-      : submittedOcrModel || (ocrProvider === 'gemini_vision' ? 'gemini-flash-latest' : 'nvidia/nemotron-ocr-v2');
+      : submittedOcrModel || currentSettings.ai.ocr?.model || (ocrProvider === 'gemini_vision' ? 'gemini-flash-latest' : 'nvidia/nemotron-ocr-v2');
     const submittedOcrEndpoint = req.body.ocrEndpoint?.trim() || '';
     const ocrEndpoint = ocrProvider === 'gemini_vision' && /ai\.api\.nvidia\.com|\/cv\/nvidia\//i.test(submittedOcrEndpoint)
       ? 'https://generativelanguage.googleapis.com/v1beta'
-      : submittedOcrEndpoint || (ocrProvider === 'gemini_vision'
+      : submittedOcrEndpoint || currentSettings.ai.ocr?.endpoint || (ocrProvider === 'gemini_vision'
         ? 'https://generativelanguage.googleapis.com/v1beta'
         : 'https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr-v2');
     const saved = await saveSettings({

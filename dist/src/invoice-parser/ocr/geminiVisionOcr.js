@@ -52,7 +52,7 @@ async function geminiVisionOcr(imagePaths, ocrConfig, geminiApiKey, geminiOAuthC
             const buffer = await promises_1.default.readFile(image.imagePath);
             const base64 = buffer.toString('base64');
             const endpoint = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent`;
-            const response = await fetch(endpoint, {
+            let response = await fetch(endpoint, {
                 method: 'POST',
                 signal: AbortSignal.timeout(30000),
                 headers: {
@@ -86,6 +86,44 @@ async function geminiVisionOcr(imagePaths, ocrConfig, geminiApiKey, geminiOAuthC
                     },
                 }),
             });
+            if (response.status === 429) {
+                // Wait 5 seconds for Google Cloud rate limit window to clear before retrying
+                await new Promise((resolve) => setTimeout(resolve, 5000));
+                response = await fetch(endpoint, {
+                    method: 'POST',
+                    signal: AbortSignal.timeout(30000),
+                    headers: {
+                        'Content-Type': 'application/json',
+                        ...(oauth
+                            ? {
+                                Authorization: `Bearer ${oauth.accessToken}`,
+                                'x-goog-user-project': oauth.projectId,
+                            }
+                            : { 'X-goog-api-key': apiKey || '' }),
+                    },
+                    body: JSON.stringify({
+                        contents: [
+                            {
+                                role: 'user',
+                                parts: [
+                                    {
+                                        text: 'Transcribe all text from this scanned image page exactly as written line-by-line. Output only the extracted plain text without code blocks, markdown wrappers, or extra explanations.',
+                                    },
+                                    {
+                                        inline_data: {
+                                            mime_type: 'image/png',
+                                            data: base64,
+                                        },
+                                    },
+                                ],
+                            },
+                        ],
+                        generationConfig: {
+                            temperature: 0,
+                        },
+                    }),
+                });
+            }
             if (!response.ok) {
                 const errJson = await response.json().catch(() => null);
                 warnings.push(`Google Gemini Vision OCR page ${image.pageNumber} failed (HTTP ${response.status}): ${errJson?.error?.message || 'API error'}`);

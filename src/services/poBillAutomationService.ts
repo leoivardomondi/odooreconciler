@@ -3274,17 +3274,21 @@ async function runPoBillAutomationInternal(
     /converted from markdown\/prose|malformed json|parsed from non-json ai response/i.test(log),
   );
   const handwritingReviewRequired = Boolean(parsedInvoice.handwriting?.reviewRequired);
-  const extractionQualityPassed = hasValidInvoiceItem && !hasUnreliableAiOutput && !handwritingReviewRequired;
+  // Handwriting is a review signal, not an automatic stop. If the extracted
+  // line structure is usable and the independent PO/vendor/total/receipt
+  // gates pass, a handwritten invoice may proceed in auto mode.
+  const extractionQualityPassed = hasValidInvoiceItem && !hasUnreliableAiOutput;
+  const extractionQualityStatus = extractionQualityPassed && handwritingReviewRequired ? 'warn' : extractionQualityPassed ? 'pass' : 'fail';
   addCheck(
     checks,
     'Extraction Quality',
-    extractionQualityPassed ? 'pass' : 'fail',
+    extractionQualityStatus,
     extractionQualityPassed
-      ? 'Receipt contains at least one usable line item and AI output is structurally reliable.'
+      ? handwritingReviewRequired
+        ? `Handwriting was detected, but the extracted line structure is usable. Auto-processing may proceed if the PO, vendor, total, date, and receipt gates pass.`
+        : 'Receipt contains at least one usable line item and AI output is structurally reliable.'
       : hasUnreliableAiOutput
         ? 'AI output was malformed or converted from prose; manual review is required.'
-        : handwritingReviewRequired
-          ? `Handwriting confidence is ${Math.round((parsedInvoice.handwriting?.confidence || 0) * 100)}%; manual review is required before auto-processing.`
         : 'No usable invoice line item was extracted; manual review is required.',
   );
   addCheck(

@@ -14,7 +14,10 @@ const NEVER_SHOP_FLOOR_REMINDER_EMAILS = new Set([
     'raphael@urbanvibeinteriordesign.co.ke',
 ]);
 function isNeverShopFloorReminderRecipient(email) {
-    return NEVER_SHOP_FLOOR_REMINDER_EMAILS.has(String(email || '').trim().toLowerCase());
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    const dbAdminEmail = String(env_1.env.DBADMIN_EMAIL || '').trim().toLowerCase();
+    return NEVER_SHOP_FLOOR_REMINDER_EMAILS.has(normalizedEmail)
+        || Boolean(dbAdminEmail && normalizedEmail === dbAdminEmail);
 }
 function nairobiScheduleParts() {
     const parts = new Intl.DateTimeFormat('en-CA', {

@@ -340,9 +340,12 @@ async function buildOperatorDashboard(client, userEmail, req, stockScope) {
             client.getLateCountThisMonth(employee.id),
             // 3. Work orders and stock alerts
             (async () => {
-                const allOrdersRaw = await client.getAllActiveWorkOrders(100);
+                const [allOrdersRaw, performanceOrders] = await Promise.all([
+                    client.getAllActiveWorkOrders(100),
+                    client.getManufacturingPerformanceOrders(),
+                ]);
                 const allOrders = allOrdersRaw.filter(o => o.name.startsWith('WH/MO/'));
-                const originsToFetch = [...new Set(allOrders.map(o => o.origin).filter(Boolean))];
+                const originsToFetch = [...new Set([...allOrders, ...performanceOrders].map(o => o.origin).filter(Boolean))];
                 const moIds = allOrders.map(o => o.id);
                 const [clientMap, saleOrderDateMap, allComponents, poStateMap, workOrderStateMap] = await Promise.all([
                     client.getBulkSaleOrderClients(originsToFetch).catch(() => new Map()),
@@ -474,7 +477,7 @@ async function buildOperatorDashboard(client, userEmail, req, stockScope) {
                     return 0;
                 });
                 const completedAreaStats = new Map();
-                for (const o of allOrders) {
+                for (const o of performanceOrders) {
                     const area = detectArea(Array.isArray(o.product_id) ? o.product_id[1] : '');
                     if (!completedAreaStats.has(area)) {
                         completedAreaStats.set(area, { totalOrders: 0, completedOrders: 0, onTimeOrders: 0, overdueQuickClose: 0, days: [] });
@@ -491,7 +494,8 @@ async function buildOperatorDashboard(client, userEmail, req, stockScope) {
                     const soConfirmed = new Date(confirmedAt.includes('T') ? confirmedAt : confirmedAt.replace(' ', 'T') + 'Z');
                     const startedAt = o.date_start ? new Date(o.date_start.includes('T') ? o.date_start : o.date_start.replace(' ', 'T') + 'Z') : null;
                     const finishedAt = new Date(o.date_finished.includes('T') ? o.date_finished : o.date_finished.replace(' ', 'T') + 'Z');
-                    if (Number.isNaN(soConfirmed.getTime()) || Number.isNaN(finishedAt.getTime())) {
+                    const minPerfDate = new Date('2026-08-05T00:00:00Z');
+                    if (soConfirmed.getTime() < minPerfDate.getTime()) {
                         continue;
                     }
                     stats.completedOrders += 1;
@@ -563,6 +567,7 @@ async function buildOperatorDashboard(client, userEmail, req, stockScope) {
             getDailyManufacturingAnalytics('timing-summary', () => client.getManufacturingTimingSummary(employee.id, employee.name)),
             // 11. Manufacturing timeline data for charting
             getDailyManufacturingAnalytics('timeline-data', () => client.getManufacturingTimelineData(employee.id, employee.name)),
+            // 12. Board registration summary from physical inventory
             // 12. Board registration summary from physical inventory
             client.getBoardRegistrationSummary(stockScope),
             // 13. Team Penalties
@@ -672,7 +677,7 @@ async function buildOperatorDashboard(client, userEmail, req, stockScope) {
         if (manufacturingTimelineRes.status === 'fulfilled' && manufacturingTimelineRes.value) {
             const timelineRecords = manufacturingTimelineRes.value.records.map((record) => ({
                 ...record,
-                area: normalizeManufacturingArea(record.workCenter) || detectArea(record.product || ''),
+                area: normalizeManufacturingArea(record.area) || normalizeManufacturingArea(record.workCenter) || detectArea(record.product || ''),
             }));
             result.manufacturingTimelineData = {
                 monthLabel: manufacturingTimelineRes.value.monthLabel,
@@ -697,6 +702,10 @@ async function buildOperatorDashboard(client, userEmail, req, stockScope) {
                 const startedAt = new Date(record.startedAt);
                 const finishedAt = new Date(record.finishedAt);
                 if (Number.isNaN(soConfirmed.getTime()) || Number.isNaN(finishedAt.getTime())) {
+                    continue;
+                }
+                const minPerfDate = new Date('2026-08-05T00:00:00Z');
+                if (soConfirmed.getTime() < minPerfDate.getTime()) {
                     continue;
                 }
                 stats.completedOrders += 1;

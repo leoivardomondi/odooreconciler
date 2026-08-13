@@ -169,10 +169,18 @@
         <i class="bi bi-exclamation-triangle-fill fs-3 text-danger flex-shrink-0"></i>
         <div>
           <div class="fw-bold fs-6 mb-1" data-i18n="failed_checkout_title">Failed Checkout Detected</div>
-          <p class="mb-0 small" style="opacity: 0.9" data-i18n="failed_checkout_desc">You did not check out properly on the following days. Your attendance ran until the next day:</p>
-          <ul class="mb-0 mt-2 small fw-medium ps-3">
+          <p class="mb-0 small" style="opacity: 0.9" data-i18n="failed_checkout_desc">Your checkout was missing on the dates below. Each attendance session stayed open longer than expected.</p>
+          <ul class="list-unstyled mb-0 mt-3 small">
             <% data.failedCheckouts.forEach(fc => { %>
-              <li><%= fc.date %> (<%= fc.hours %> <span data-i18n="hours_logged">hours logged</span>)</li>
+              <li class="mb-2 pb-2 border-bottom border-danger-subtle">
+                <strong>Checkout missing: <%= fc.date %></strong><br />
+                <span><%= fc.hours %> hours remained open before the record ended.</span>
+                <% if (fc.nextDayCheckIn) { %>
+                  <br /><span>Later check-in recorded: <%= new Intl.DateTimeFormat('en-KE', { timeZone: 'Africa/Nairobi', dateStyle: 'medium', timeStyle: 'short' }).format(new Date(fc.nextDayCheckIn)) %>.</span>
+                <% } else { %>
+                  <br /><span>No later check-in was found for this attendance record.</span>
+                <% } %>
+              </li>
             <% }); %>
           </ul>
         </div>
@@ -207,7 +215,7 @@
           <div>
             <div class="fw-bold fs-5 mb-1 text-dark">Performance by Area</div>
             <p class="mb-0 text-muted" style="font-size:0.86rem">
-              Rated from completed manufacturing orders in each work centre area. Overdue MOs started and closed within 30 minutes are treated as late marking, not success.
+              Rated from completed manufacturing orders from 5 August 2026 onward in each work centre area. Overdue MOs started and closed within 30 minutes are treated as late marking, not success.
             </p>
           </div>
         </div>

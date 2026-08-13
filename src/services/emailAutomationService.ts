@@ -22,11 +22,13 @@ function nairobiNow() {
     day: '2-digit',
     weekday: 'short',
     hour: '2-digit',
+    minute: '2-digit',
     hour12: false,
   }).formatToParts(new Date());
   const get = (type: string) => parts.find((part) => part.type === type)?.value || '';
   return {
     hour: Number(get('hour')),
+    minute: Number(get('minute')),
     dayOfWeek: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(get('weekday')),
   };
 }
@@ -37,7 +39,13 @@ function isDue(item: EmailAutomation, now = new Date()) {
   const last = item.lastSentAt ? new Date(item.lastSentAt) : null;
   const elapsedHours = last && Number.isFinite(last.getTime()) ? (now.getTime() - last.getTime()) / 3_600_000 : Infinity;
   if (item.frequency === 'hourly') return elapsedHours >= Math.max(1, item.interval);
-  if (local.hour < item.hour) return false;
+  if (item.systemKey === 'mo-overtime') {
+    return local.hour === 16 && local.minute >= 50 && local.minute < 60 && elapsedHours >= 23;
+  }
+  // Daily/weekly automations are intended to run during their configured
+  // Nairobi hour. Do not send a missed run hours later when the next polling
+  // cycle happens; that is what caused the overtime email to arrive late.
+  if (local.hour !== item.hour) return false;
   if (item.frequency === 'daily') return elapsedHours >= 23 * Math.max(1, item.interval);
   return local.dayOfWeek === item.dayOfWeek && elapsedHours >= 24 * 6.5 * Math.max(1, item.interval);
 }

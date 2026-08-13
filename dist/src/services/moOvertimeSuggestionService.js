@@ -31,7 +31,7 @@ async function sendMoOvertimeSuggestion(recipientOverride = '') {
     const orders = await client.getWarehouseScopedActiveWorkOrders(warehouseId, 500);
     const largeCuttingOrders = orders.filter((order) => {
         const product = Array.isArray(order.product_id) ? String(order.product_id[1] || '') : String(order.product_id || '');
-        return !/edge\s*band|edging/i.test(product) && Number(order.product_qty || 0) >= OVERTIME_BOARD_THRESHOLD && !['done', 'cancel'].includes(order.state);
+        return /^cutting\b/i.test(product) && Number(order.product_qty || 0) >= OVERTIME_BOARD_THRESHOLD && !['done', 'cancel'].includes(order.state);
     });
     if (!largeCuttingOrders.length)
         return false;

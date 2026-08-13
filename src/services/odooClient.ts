@@ -37,6 +37,8 @@ interface OdooJsonRpcError {
   };
 }
 
+const MANUFACTURING_PERFORMANCE_START_DATE = '2026-08-05';
+
 interface OdooJsonRpcResponse<T> {
   id?: number | string | null;
   jsonrpc?: string;
@@ -1320,6 +1322,7 @@ export class OdooClient {
       employee_id: [number, string];
       check_in: string;
       check_out: string | null;
+      worked_hours: number;
     }>>(
       'hr.attendance',
       'search_read',
@@ -1329,7 +1332,7 @@ export class OdooClient {
           ['check_in', '>=', `${targetDate} 00:00:00`],
           ['check_in', '<=', `${targetDate} 23:59:59`],
         ],
-        fields: ['id', 'employee_id', 'check_in', 'check_out'],
+        fields: ['id', 'employee_id', 'check_in', 'check_out', 'worked_hours'],
         limit: employeeIds.length * 5,
       },
     );
@@ -1492,6 +1495,30 @@ export class OdooClient {
     );
   }
 
+  async getManufacturingPerformanceOrders(fromDate = MANUFACTURING_PERFORMANCE_START_DATE) {
+    const toDate = new Date().toISOString().slice(0, 10);
+    return this.request<Array<{
+      id: number;
+      name: string;
+      product_id: [number, string];
+      product_qty: number;
+      state: string;
+      date_start: string | null;
+      date_finished: string | null;
+      origin: string | null;
+      create_date: string | null;
+    }>>('mrp.production', 'search_read', {
+      domain: [
+        ['state', '=', 'done'],
+        ['date_finished', '>=', `${fromDate} 00:00:00`],
+        ['date_finished', '<=', `${toDate} 23:59:59`],
+      ],
+      fields: ['id', 'name', 'product_id', 'product_qty', 'state', 'date_start', 'date_finished', 'origin', 'create_date'],
+      order: 'date_finished desc, id desc',
+      limit: 5000,
+    });
+  }
+
   async getBulkWorkOrderStates(moIds: number[]) {
     if (!moIds.length) return new Map<number, 'progress' | 'pending' | 'ready'>();
     const workorders = await this.searchReadRecords<{
@@ -1553,6 +1580,65 @@ export class OdooClient {
     }
     const expectedPrefix = `${warehouseCode}/MO/`;
     return orders.filter((order) => String(order.name || '').toUpperCase().startsWith(expectedPrefix));
+  }
+
+  async getWarehouseManufacturingOrderCompletionSummary(
+    warehouseId: number,
+    fromDate: string,
+    toDate: string,
+  ) {
+    const targetCompanyId = await this.getTargetCompanyId();
+    const warehouses = await this.searchReadRecords<{ id: number; name: string; code: string; company_id: [number, string] | false }>('stock.warehouse', {
+      domain: [['id', '=', warehouseId], ['company_id', '=', targetCompanyId]],
+      fields: ['id', 'name', 'code', 'company_id'],
+      limit: 1,
+    });
+    if (!warehouses.length) {
+      throw new OdooClientError(`Configured warehouse ${warehouseId} does not belong to ${env.ODOO_TARGET_COMPANY_NAME}.`);
+    }
+
+    const orders = await this.request<Array<{
+      id: number;
+      name: string;
+      state: string;
+      create_date: string | null;
+      date_finished: string | null;
+    }>>('mrp.production', 'search_read', {
+      domain: [
+        ['company_id', '=', targetCompanyId],
+        ['picking_type_id.warehouse_id', '=', warehouseId],
+        ['create_date', '>=', `${fromDate} 00:00:00`],
+        ['create_date', '<=', `${toDate} 23:59:59`],
+      ],
+      fields: ['id', 'name', 'state', 'create_date', 'date_finished'],
+      order: 'create_date asc, id asc',
+      limit: 5000,
+    });
+
+    const warehouseCode = String(warehouses[0].code || '').trim().toUpperCase();
+    const expectedPrefix = `${warehouseCode}/MO/`;
+    const warehouseOrders = orders.filter((order) => String(order.name || '').toUpperCase().startsWith(expectedPrefix));
+    const cancelled = warehouseOrders.filter((order) => order.state === 'cancel').length;
+    const draft = warehouseOrders.filter((order) => order.state === 'draft').length;
+    const eligible = warehouseOrders.filter((order) => !['cancel', 'draft'].includes(order.state));
+    const reportEnd = `${toDate} 23:59:59`;
+    const completed = eligible.filter((order) => (
+      order.state === 'done'
+      && Boolean(order.date_finished)
+      && String(order.date_finished).slice(0, 19) <= reportEnd
+    )).length;
+    const open = Math.max(0, eligible.length - completed);
+
+    return {
+      created: warehouseOrders.length,
+      eligible: eligible.length,
+      completed,
+      open,
+      cancelled,
+      draft,
+      completionPercent: eligible.length > 0 ? Math.round((completed / eligible.length) * 100) : 100,
+      details: `MOs created ${fromDate} to ${toDate}: ${warehouseOrders.length} total | ${eligible.length} eligible | ${completed} completed by period end | ${open} open | ${cancelled} cancelled | ${draft} draft`,
+    };
   }
 
   /**
@@ -1905,7 +1991,7 @@ export class OdooClient {
   /**
    * Get failed checkouts for an employee (e.g. worked hours > 16 or missing check out for > 24 hours).
    */
-  async getFailedCheckouts(employeeId: number): Promise<Array<{ date: string; hours: number }>> {
+  async getFailedCheckouts(employeeId: number): Promise<Array<{ date: string; hours: number; nextDayCheckIn: string | null }>> {
     try {
       const records = await this.request<Array<{ check_in: string; check_out: string | false; worked_hours: number }>>(
         'hr.attendance',
@@ -1923,7 +2009,17 @@ export class OdooClient {
         }
       );
 
-      const failed: Array<{ date: string; hours: number }> = [];
+      const recentRecords = await this.request<Array<{ check_in: string; check_out: string | false; worked_hours: number }>>(
+        'hr.attendance',
+        'search_read',
+        {
+          domain: [['employee_id', '=', employeeId]],
+          fields: ['check_in', 'check_out', 'worked_hours'],
+          order: 'check_in asc',
+          limit: 100,
+        },
+      );
+      const failed: Array<{ date: string; hours: number; nextDayCheckIn: string | null }> = [];
       const now = new Date();
       
       for (const rec of records) {
@@ -1933,7 +2029,14 @@ export class OdooClient {
         // If check out is missing and it's been more than 24 hours since check in, or worked hours > 16
         if ((!rec.check_out && (now.getTime() - checkInDate.getTime()) > 24 * 60 * 60 * 1000) || rec.worked_hours > 16) {
           const dateStr = checkInDate.toISOString().split('T')[0];
-          failed.push({ date: dateStr, hours: Math.round(rec.worked_hours * 10) / 10 });
+          const nextDate = new Date(checkInDate);
+          nextDate.setDate(nextDate.getDate() + 1);
+          const nextDayCheckIn = recentRecords.find((candidate) => {
+            if (!candidate.check_in) return false;
+            const candidateDate = new Date(candidate.check_in.includes('T') ? candidate.check_in : candidate.check_in.replace(' ', 'T') + 'Z');
+            return candidateDate.toISOString().slice(0, 10) === nextDate.toISOString().slice(0, 10) && candidateDate > checkInDate;
+          })?.check_in || null;
+          failed.push({ date: dateStr, hours: Math.round(rec.worked_hours * 10) / 10, nextDayCheckIn });
         }
       }
       return failed;
@@ -1992,8 +2095,7 @@ export class OdooClient {
       const reportDate = new Date(`${localToday}T00:00:00Z`);
       if (Number(reportValue('hour')) < 18) reportDate.setUTCDate(reportDate.getUTCDate() - 1);
       const reportDay = reportDate.toISOString().slice(0, 10);
-      const reportMonthStart = `${reportDay.slice(0, 7)}-01`;
-      const firstDayStr = `${reportMonthStart} 00:00:00`;
+      const firstDayStr = `${MANUFACTURING_PERFORMANCE_START_DATE} 00:00:00`;
       const lastDayStr = `${reportDay} 23:59:59`;
 
       // 2. Fetch completed WOs for these work centers last month
@@ -2033,7 +2135,8 @@ export class OdooClient {
         'search_read',
         {
           domain: [
-            ['date_deadline', '!=', false],
+          ['date_deadline', '!=', false],
+            ['date_deadline', '>=', firstDayStr],
             ['state', 'not in', ['done', 'cancel']],
             ['date_deadline', '<=', lastDayStr],
           ],
@@ -2057,10 +2160,11 @@ export class OdooClient {
         'search_read',
         {
           domain: [
-            ['workcenter_id', 'in', wcIds],
-            ['state', 'not in', ['done', 'cancel']],
-            ['date_start', '!=', false],
-            ['date_start', '<=', lastDayStr],
+          ['workcenter_id', 'in', wcIds],
+          ['state', 'not in', ['done', 'cancel']],
+          ['date_start', '!=', false],
+          ['date_start', '>=', firstDayStr],
+          ['date_start', '<=', lastDayStr],
           ],
           fields: ['id', 'duration_expected', 'date_start', 'qty_production', 'qty_produced', 'state'],
           limit: 500,
@@ -2135,6 +2239,7 @@ export class OdooClient {
       let lateCompletedWeight = 0;
       let slowLowQty = 0;
       let completionDays: number[] = [];
+      const minDate = new Date(`${MANUFACTURING_PERFORMANCE_START_DATE}T00:00:00Z`);
       for (const mo of moMap.values()) {
         if (!mo.date_finished || !mo.origin) continue;
         const soDate = soDateMap.get(mo.origin);
@@ -2142,6 +2247,7 @@ export class OdooClient {
         const moFinished = parseOdooDateTime(mo.date_finished);
         const moStarted = parseOdooDateTime(mo.date_start);
         if (!soConfirmed || !moFinished) continue;
+        if (soConfirmed.getTime() < minDate.getTime()) continue;
 
         const weight = Math.max(1, Number(mo.product_qty || 0));
         const finishDays = (moFinished.getTime() - soConfirmed.getTime()) / (1000 * 60 * 60 * 24);
@@ -2241,11 +2347,9 @@ export class OdooClient {
       const wcIds = workcenters.map((w) => w.id);
 
       const now = new Date();
-      const firstDayOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-      const lastDayOfLastMonth = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59);
-      const firstDayStr = firstDayOfLastMonth.toISOString().split('T')[0] + ' 00:00:00';
-      const lastDayStr = lastDayOfLastMonth.toISOString().split('T')[0] + ' 23:59:59';
-      const monthLabel = firstDayOfLastMonth.toLocaleString('en-US', { month: 'long', year: 'numeric' });
+      const firstDayStr = `${MANUFACTURING_PERFORMANCE_START_DATE} 00:00:00`;
+      const lastDayStr = now.toISOString().split('T')[0] + ' 23:59:59';
+      const monthLabel = `From 5 August 2026`;
 
       const workorders = await this.request<Array<{
         id: number;
@@ -2320,6 +2424,7 @@ export class OdooClient {
       let finishedWithin3Days = 0;
       let sameDayStartFinish = 0;
       let withSalesOrders = 0;
+      const minDate = new Date(`${MANUFACTURING_PERFORMANCE_START_DATE}T00:00:00Z`);
 
       for (const mo of moMap.values()) {
         if (!mo.origin || !mo.date_start || !mo.date_finished) {
@@ -2330,6 +2435,9 @@ export class OdooClient {
         const moStarted = parseOdooDateTime(mo.date_start);
         const moFinished = parseOdooDateTime(mo.date_finished);
         if (!soConfirmed || !moStarted || !moFinished) {
+          continue;
+        }
+        if (soConfirmed.getTime() < minDate.getTime()) {
           continue;
         }
 
@@ -2397,10 +2505,9 @@ export class OdooClient {
       const wcIds = workcenters.map((w) => w.id);
 
       const now = new Date();
-      const firstDay = new Date(now.getFullYear(), now.getMonth() - 5, 1);
-      const firstDayStr = firstDay.toISOString().split('T')[0] + ' 00:00:00';
+      const firstDayStr = `${MANUFACTURING_PERFORMANCE_START_DATE} 00:00:00`;
       const lastDayStr = now.toISOString().split('T')[0] + ' 23:59:59';
-      const monthLabel = `Last 6 months`;
+      const monthLabel = `From 5 August 2026`;
 
       const workorders = await this.request<Array<{
         id: number;

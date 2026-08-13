@@ -174,13 +174,15 @@ function buildGeminiOAuthStatus(rawAi, encryptedKeysPayload) {
     const rawStatus = (rawAi.geminiOAuth || {});
     const credentials = readStoredGeminiOAuthCredentials(encryptedKeysPayload);
     const client = readStoredGeminiOAuthClient(encryptedKeysPayload);
+    const clientId = client?.clientId || String(rawStatus.clientId || '') || env_1.env.GOOGLE_GEMINI_OAUTH_CLIENT_ID.trim();
+    const hasClientSecret = Boolean(client?.clientSecret || env_1.env.GOOGLE_GEMINI_OAUTH_CLIENT_SECRET.trim());
     return {
         connected: Boolean(credentials?.refreshToken),
         email: credentials?.email || String(rawStatus.email || ''),
         projectId: String(rawStatus.projectId || env_1.env.GOOGLE_GEMINI_PROJECT_ID || ''),
         connectedAt: credentials?.connectedAt || (rawStatus.connectedAt ? String(rawStatus.connectedAt) : null),
-        clientId: client?.clientId || String(rawStatus.clientId || ''),
-        hasClientSecret: Boolean(client?.clientSecret),
+        clientId,
+        hasClientSecret,
     };
 }
 async function getSettingsRow() {
@@ -672,15 +674,21 @@ async function saveSettings(input) {
     const submittedGeminiClientSecret = String(submittedAi.geminiOAuthClientSecret || '').trim();
     const nextGeminiClientId = submittedAi.clearGeminiOAuthClientId
         ? ''
-        : submittedGeminiClientId || existingGeminiOAuthClient?.clientId || '';
+        : submittedGeminiClientId || existingGeminiOAuthClient?.clientId || env_1.env.GOOGLE_GEMINI_OAUTH_CLIENT_ID.trim();
     const nextGeminiClientSecret = submittedAi.clearGeminiOAuthClientSecret
         ? ''
-        : submittedGeminiClientSecret || existingGeminiOAuthClient?.clientSecret || '';
+        : submittedGeminiClientSecret || existingGeminiOAuthClient?.clientSecret || env_1.env.GOOGLE_GEMINI_OAUTH_CLIENT_SECRET.trim();
     if (nextGeminiClientId || nextGeminiClientSecret) {
         encryptedAiPayload.geminiOAuthClient = (0, crypto_1.encryptSecret)(JSON.stringify({
             clientId: nextGeminiClientId,
             clientSecret: nextGeminiClientSecret,
         }));
+    }
+    else if (!submittedAi.clearGeminiOAuthClientId &&
+        !submittedAi.clearGeminiOAuthClientSecret &&
+        typeof existingEncryptedKeysPayload.geminiOAuthClient === 'string' &&
+        existingEncryptedKeysPayload.geminiOAuthClient) {
+        encryptedAiPayload.geminiOAuthClient = existingEncryptedKeysPayload.geminiOAuthClient;
     }
     if (typeof existingEncryptedKeysPayload.geminiOAuth === 'string' && existingEncryptedKeysPayload.geminiOAuth) {
         encryptedAiPayload.geminiOAuth = existingEncryptedKeysPayload.geminiOAuth;

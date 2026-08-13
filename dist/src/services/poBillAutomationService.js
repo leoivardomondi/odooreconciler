@@ -2499,14 +2499,18 @@ async function runPoBillAutomationInternal(client, input) {
         (typeof item.amount === 'number' || (typeof item.quantity === 'number' && typeof item.unitPrice === 'number')));
     const hasUnreliableAiOutput = parsedInvoice.logs.some((log) => /converted from markdown\/prose|malformed json|parsed from non-json ai response/i.test(log));
     const handwritingReviewRequired = Boolean(parsedInvoice.handwriting?.reviewRequired);
-    const extractionQualityPassed = hasValidInvoiceItem && !hasUnreliableAiOutput && !handwritingReviewRequired;
-    addCheck(checks, 'Extraction Quality', extractionQualityPassed ? 'pass' : 'fail', extractionQualityPassed
-        ? 'Receipt contains at least one usable line item and AI output is structurally reliable.'
+    // Handwriting is a review signal, not an automatic stop. If the extracted
+    // line structure is usable and the independent PO/vendor/total/receipt
+    // gates pass, a handwritten invoice may proceed in auto mode.
+    const extractionQualityPassed = hasValidInvoiceItem && !hasUnreliableAiOutput;
+    const extractionQualityStatus = extractionQualityPassed && handwritingReviewRequired ? 'warn' : extractionQualityPassed ? 'pass' : 'fail';
+    addCheck(checks, 'Extraction Quality', extractionQualityStatus, extractionQualityPassed
+        ? handwritingReviewRequired
+            ? `Handwriting was detected, but the extracted line structure is usable. Auto-processing may proceed if the PO, vendor, total, date, and receipt gates pass.`
+            : 'Receipt contains at least one usable line item and AI output is structurally reliable.'
         : hasUnreliableAiOutput
             ? 'AI output was malformed or converted from prose; manual review is required.'
-            : handwritingReviewRequired
-                ? `Handwriting confidence is ${Math.round((parsedInvoice.handwriting?.confidence || 0) * 100)}%; manual review is required before auto-processing.`
-                : 'No usable invoice line item was extracted; manual review is required.');
+            : 'No usable invoice line item was extracted; manual review is required.');
     addCheck(checks, 'Item Count', itemCountMatches ? 'pass' : parsedInvoice.itemCount === 0 ? 'warn' : 'fail', `Invoice has ${parsedInvoice.itemCount} readable item(s); PO has ${poLines.length} item(s).`);
     const coreMatchScore = bestCandidate
         ? bestCandidate.vendorScore + (combinedMatch ? 40 : bestCandidate.totalScore) + bestCandidate.dateScore + bestCandidate.receiptScore

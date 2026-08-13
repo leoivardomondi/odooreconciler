@@ -256,7 +256,7 @@ interface OperatorDashboardData {
   lateCount: number;
   incidents: Array<{ id: string; machineName: string; description: string | null; reportedBy: string | null; reportedAt: string; status: string; }>;
   assignedItems: Array<{ id: string; itemName: string; assignedDate: string; quantity: number; notes: string | null; }>;
-  failedCheckouts: Array<{ date: string; hours: number }>;
+  failedCheckouts: Array<{ date: string; hours: number; nextDayCheckIn: string | null }>;
   performanceRate: { percentage: number; color: string; totalOrders: number; } | null;
   areaPerformanceRates: Array<{
     area: string;
@@ -537,9 +537,12 @@ async function buildOperatorDashboard(
       client.getLateCountThisMonth(employee.id),
     // 3. Work orders and stock alerts
       (async () => {
-        const allOrdersRaw = await client.getAllActiveWorkOrders(100);
+        const [allOrdersRaw, performanceOrders] = await Promise.all([
+          client.getAllActiveWorkOrders(100),
+          client.getManufacturingPerformanceOrders(),
+        ]);
         const allOrders = allOrdersRaw.filter(o => o.name.startsWith('WH/MO/'));
-        const originsToFetch = [...new Set(allOrders.map(o => o.origin).filter(Boolean))] as string[];
+        const originsToFetch = [...new Set([...allOrders, ...performanceOrders].map(o => o.origin).filter(Boolean))] as string[];
         const moIds = allOrders.map(o => o.id);
 
         const [clientMap, saleOrderDateMap, allComponents, poStateMap, workOrderStateMap] = await Promise.all([
@@ -678,7 +681,7 @@ async function buildOperatorDashboard(
           days: number[];
         }>();
 
-        for (const o of allOrders) {
+        for (const o of performanceOrders) {
           const area = detectArea(Array.isArray(o.product_id) ? o.product_id[1] : '');
           if (!completedAreaStats.has(area)) {
             completedAreaStats.set(area, { totalOrders: 0, completedOrders: 0, onTimeOrders: 0, overdueQuickClose: 0, days: [] });
@@ -698,7 +701,8 @@ async function buildOperatorDashboard(
           const soConfirmed = new Date(confirmedAt.includes('T') ? confirmedAt : confirmedAt.replace(' ', 'T') + 'Z');
           const startedAt = o.date_start ? new Date(o.date_start.includes('T') ? o.date_start : o.date_start.replace(' ', 'T') + 'Z') : null;
           const finishedAt = new Date(o.date_finished.includes('T') ? o.date_finished : o.date_finished.replace(' ', 'T') + 'Z');
-          if (Number.isNaN(soConfirmed.getTime()) || Number.isNaN(finishedAt.getTime())) {
+          const minPerfDate = new Date('2026-08-05T00:00:00Z');
+          if (soConfirmed.getTime() < minPerfDate.getTime()) {
             continue;
           }
 
@@ -772,6 +776,7 @@ async function buildOperatorDashboard(
       // 11. Manufacturing timeline data for charting
       getDailyManufacturingAnalytics('timeline-data', () => client.getManufacturingTimelineData(employee.id, employee.name)),
       // 12. Board registration summary from physical inventory
+      // 12. Board registration summary from physical inventory
       client.getBoardRegistrationSummary(stockScope),
       // 13. Team Penalties
       client.getTeamPenalties(stockScope),
@@ -812,6 +817,7 @@ async function buildOperatorDashboard(
     if (lateCountRes.status === 'fulfilled') {
       result.lateCount = lateCountRes.value;
     }
+
     // Handle Work Orders & Stock Alerts
     if (workOrdersRes.status === 'fulfilled' && workOrdersRes.value) {
       result.workOrders = workOrdersRes.value.workOrders;
@@ -892,7 +898,7 @@ async function buildOperatorDashboard(
     if (manufacturingTimelineRes.status === 'fulfilled' && manufacturingTimelineRes.value) {
       const timelineRecords = manufacturingTimelineRes.value.records.map((record: any) => ({
         ...record,
-        area: normalizeManufacturingArea(record.workCenter) || detectArea(record.product || ''),
+        area: normalizeManufacturingArea(record.area) || normalizeManufacturingArea(record.workCenter) || detectArea(record.product || ''),
       }));
       result.manufacturingTimelineData = {
         monthLabel: manufacturingTimelineRes.value.monthLabel,
@@ -926,6 +932,11 @@ async function buildOperatorDashboard(
         const startedAt = new Date(record.startedAt);
         const finishedAt = new Date(record.finishedAt);
         if (Number.isNaN(soConfirmed.getTime()) || Number.isNaN(finishedAt.getTime())) {
+          continue;
+        }
+
+        const minPerfDate = new Date('2026-08-05T00:00:00Z');
+        if (soConfirmed.getTime() < minPerfDate.getTime()) {
           continue;
         }
 
@@ -1005,7 +1016,6 @@ router.get('/shop-floor', async (req: Request, res: Response) => {
 
   const viewedEmail = getViewedUserEmail(req);
   const cacheKey = `shop-floor-dashboard:v2:${viewedEmail.toLowerCase()}`;
-
   if (req.query.refresh === 'true') {
     shopFloorCache.delete(cacheKey);
   }
