@@ -1377,7 +1377,6 @@ async function ensureMysqlDatabase(config: RuntimeDatabaseConfig) {
       updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       started_at DATETIME NULL,
       completed_at DATETIME NULL,
-      CONSTRAINT fk_mpesa_extraction_jobs_batch FOREIGN KEY (batch_id) REFERENCES mpesa_statement_batches(id) ON DELETE CASCADE,
       KEY idx_mpesa_extraction_jobs_status (status, created_at)
     )
   `);
