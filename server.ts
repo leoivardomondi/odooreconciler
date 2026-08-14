@@ -11,6 +11,7 @@ import { startStockMirrorInterval } from './src/services/stockMirrorService';
 import { startUserProfileSyncInterval } from './src/services/userProfileSyncService';
 import { startShopFloorOperatorAccessSyncInterval } from './src/services/shopFloorOperatorAccessSyncService';
 import { startBoardIntakeSyncInterval } from './src/services/boardIntakeSyncService';
+import { startMpesaExtractionJobWorker } from './src/services/mpesaExtractionJobService';
 import { markStartupFailed, markStartupReady, markStartupStep } from './src/services/startupState';
 import { storageDirectoryPath } from './src/utils/paths';
 
@@ -200,6 +201,7 @@ export async function startServer() {
       writeStartupLog('Database initialization starting.');
       await withStartupTimeout('Database initialization', () => ensureDatabaseWithRetry());
       writeStartupLog('Database initialization completed.');
+      startMpesaExtractionJobWorker();
       markStartupStep('initializing scheduler');
       await withStartupTimeout('Scheduler initialization', () => startSchedulerInterval());
       startEmailAutomationInterval();

@@ -4,18 +4,21 @@ import path from 'path';
 import { NextFunction, Request, Response, Router } from 'express';
 import {
   autoVerifyMpesaTransactionsByRule,
+  createMpesaExtractionJob,
   createMpesaStatementBatch,
   deleteMpesaStatementBatch,
   getMpesaTransactionExplorerOptions,
   getMpesaTransactionExplorerRows,
   getMpesaStatementBatchesWithOpenReviewCounts,
   getMpesaStatementBatchById,
+  getMpesaExtractionJobById,
   getMpesaTransactionsByIds,
   getMpesaTransactionsByBatchId,
   getReviewedSalaryAdvanceTransactionsByPeriod,
   getRecentMpesaStatementBatches,
   getSettings,
   replaceMpesaStatementBatchExtraction,
+  markMpesaStatementBatchProcessing,
   updateMpesaTransactionAdminReviewFields,
   updateMpesaTransactions,
 } from '../models/repositories';
@@ -40,6 +43,7 @@ import {
 import { hasOdooConfiguration, sanitizeBaseUrl } from '../utils/helpers';
 import { resolveProjectFile } from '../utils/paths';
 import { processMpesaPoReconciliation, processMpesaPoReconciliationByMonth } from '../services/mpesaPoReconcileService';
+import { wakeMpesaExtractionJobWorker } from '../services/mpesaExtractionJobService';
 
 const router = Router();
 const uploadRoot = resolveProjectFile(process.env.UPLOAD_DIR || 'uploads', 'uploads');
@@ -630,6 +634,7 @@ router.get('/mpesa-reconciliation', async (req, res) => {
           : typeof req.query.error === 'string'
             ? { type: 'danger', message: req.query.error }
             : null,
+      extractionJobId: typeof req.query.job === 'string' ? req.query.job : '',
       salaryAdvanceShare: {
         count: salaryAdvanceRecords.length,
         total: salaryAdvanceRecords.reduce((sum, record) => sum + record.amount, 0),
@@ -650,6 +655,7 @@ router.get('/mpesa-reconciliation', async (req, res) => {
         type: 'danger',
         message: error instanceof Error ? error.message : 'Could not load M-Pesa reconciliation.',
       },
+      extractionJobId: typeof req.query.job === 'string' ? req.query.job : '',
       batches: [],
       selectedBatch: null,
       transactions: [],
@@ -679,6 +685,38 @@ router.get('/mpesa-reconciliation/review-count', async (_req, res) => {
     count: batches.length,
     checkedAt: new Date().toISOString(),
   });
+});
+
+router.get('/mpesa-reconciliation/extraction-jobs/:jobId', async (req, res) => {
+  if (req.authUser?.role !== 'admin') {
+    return res.status(403).json({ ok: false, error: 'Admin access is required.' });
+  }
+
+  try {
+    const job = await getMpesaExtractionJobById(req.params.jobId);
+    const batch = await getMpesaStatementBatchById(job.batchId);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+      ok: true,
+      job: {
+        id: job.id,
+        batchId: job.batchId,
+        status: job.status,
+        errorMessage: job.errorMessage,
+        transactionCount: job.transactionCount,
+      },
+      batch: {
+        id: batch.id,
+        status: batch.status,
+        transactionCount: batch.transactionCount,
+      },
+    });
+  } catch (error) {
+    res.status(404).json({
+      ok: false,
+      error: error instanceof Error ? error.message : 'M-Pesa extraction job was not found.',
+    });
+  }
 });
 
 router.get('/mpesa-reconciliation/transactions', async (req, res) => {
@@ -786,27 +824,25 @@ router.post('/mpesa-reconciliation/upload', uploadSingleFile('file'), async (req
     if (!req.file) {
       throw new Error('Upload an M-Pesa statement PDF or image file.');
     }
-
-    const { settings, client } = await buildOptionalOdooClient();
-    const extraction = await extractMpesaStatement({
-      filePath: req.file.path,
-      originalFilename: req.file.originalname,
-      aiConfig: settings.ai,
-      odooClient: client,
-    });
-
     const batch = await createMpesaStatementBatch({
       originalFilename: req.file.originalname,
       storedFilename: req.file.filename,
-      status: extraction.transactions.length > 0 ? 'needs_review' : 'failed',
-      warnings: extraction.warnings,
-      rawTextPreview: extraction.rawTextPreview,
-      transactions: extraction.transactions,
+      status: 'processing',
+      warnings: [],
+      rawTextPreview: '',
+      transactions: [],
     });
+    const job = await createMpesaExtractionJob({
+      batchId: batch.id,
+      jobType: 'upload',
+      originalFilename: req.file.originalname,
+      storedFilename: req.file.filename,
+    });
+    wakeMpesaExtractionJobWorker();
 
     res.redirect(
-      `/mpesa-reconciliation?batch=${encodeURIComponent(batch.id)}&message=${encodeURIComponent(
-        `Imported ${extraction.transactions.length} M-Pesa transaction row(s).`,
+      `/mpesa-reconciliation?batch=${encodeURIComponent(batch.id)}&job=${encodeURIComponent(job.id)}&message=${encodeURIComponent(
+        'M-Pesa statement uploaded. Extraction is running in the background.',
       )}`,
     );
   } catch (error) {
@@ -829,24 +865,18 @@ router.post('/mpesa-reconciliation/batches/:batchId/reprocess', async (req, res)
     const storedFilePath = resolveStoredMpesaFile(batch.storedFilename);
     await fs.access(storedFilePath);
 
-    const { settings, client } = await buildOptionalOdooClient();
-    const extraction = await extractMpesaStatement({
-      filePath: storedFilePath,
+    await markMpesaStatementBatchProcessing(batch.id);
+    const job = await createMpesaExtractionJob({
+      batchId: batch.id,
+      jobType: 'reprocess',
       originalFilename: batch.originalFilename,
-      aiConfig: settings.ai,
-      odooClient: client,
+      storedFilename: batch.storedFilename,
     });
-
-    await replaceMpesaStatementBatchExtraction(batch.id, {
-      status: extraction.transactions.length > 0 ? 'needs_review' : 'failed',
-      warnings: extraction.warnings,
-      rawTextPreview: extraction.rawTextPreview,
-      transactions: extraction.transactions,
-    });
+    wakeMpesaExtractionJobWorker();
 
     res.redirect(
-      `/mpesa-reconciliation?batch=${encodeURIComponent(batch.id)}&message=${encodeURIComponent(
-        `Retried extraction and found ${extraction.transactions.length} M-Pesa transaction row(s).`,
+      `/mpesa-reconciliation?batch=${encodeURIComponent(batch.id)}&job=${encodeURIComponent(job.id)}&message=${encodeURIComponent(
+        'Extraction retry started in the background.',
       )}`,
     );
   } catch (error) {
@@ -871,28 +901,19 @@ router.post('/mpesa-reconciliation/batches/:batchId/reupload', uploadSingleFile(
     }
 
     const batch = await getMpesaStatementBatchById(batchId);
-    const { settings, client } = await buildOptionalOdooClient();
-    const extraction = await extractMpesaStatement({
-      filePath: req.file.path,
-      originalFilename: req.file.originalname,
-      aiConfig: settings.ai,
-      odooClient: client,
-    });
-
-    await replaceMpesaStatementBatchExtraction(batch.id, {
+    await markMpesaStatementBatchProcessing(batch.id);
+    const job = await createMpesaExtractionJob({
+      batchId: batch.id,
+      jobType: 'reupload',
       originalFilename: req.file.originalname,
       storedFilename: req.file.filename,
-      status: extraction.transactions.length > 0 ? 'needs_review' : 'failed',
-      warnings: extraction.warnings,
-      rawTextPreview: extraction.rawTextPreview,
-      transactions: extraction.transactions,
+      previousStoredFilename: batch.storedFilename,
     });
-
-    await deleteStoredMpesaFile(batch.storedFilename);
+    wakeMpesaExtractionJobWorker();
 
     res.redirect(
-      `/mpesa-reconciliation?batch=${encodeURIComponent(batch.id)}&message=${encodeURIComponent(
-        `Reuploaded ${req.file.originalname} and found ${extraction.transactions.length} M-Pesa transaction row(s).`,
+      `/mpesa-reconciliation?batch=${encodeURIComponent(batch.id)}&job=${encodeURIComponent(job.id)}&message=${encodeURIComponent(
+        'Replacement statement uploaded. Extraction is running in the background.',
       )}`,
     );
   } catch (error) {

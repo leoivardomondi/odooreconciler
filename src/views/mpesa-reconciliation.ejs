@@ -30,6 +30,19 @@
 
   <%- include('partials/alerts', { status, validationErrors: [] }) %>
 
+  <% if (extractionJobId) { %>
+    <div
+      id="mpesa-extraction-status"
+      class="alert alert-info d-flex align-items-center gap-2"
+      data-job-id="<%= extractionJobId %>"
+      data-batch-id="<%= selectedBatch ? selectedBatch.id : '' %>"
+      role="status"
+    >
+      <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+      <span>Statement uploaded. Extraction is running in the background; this page will refresh when it is ready.</span>
+    </div>
+  <% } %>
+
   <%
     const money = (value) =>
       value === null || value === undefined
@@ -227,7 +240,7 @@
           </div>
         </div>
         <div class="mpesa-batch-actions">
-          <span class="badge text-bg-<%= selectedBatch.status === 'parsed' ? 'success' : selectedBatch.status === 'failed' ? 'danger' : 'warning' %>">
+          <span class="badge text-bg-<%= selectedBatch.status === 'parsed' ? 'success' : selectedBatch.status === 'failed' ? 'danger' : selectedBatch.status === 'processing' ? 'info' : 'warning' %>">
             <%= selectedBatch.status %>
           </span>
           <% if (selectedBatch.warningCount > 0) { %>
@@ -644,6 +657,51 @@
 
 <script>
 (function() {
+  var extractionStatus = document.getElementById('mpesa-extraction-status');
+  if (extractionStatus) {
+    var jobId = extractionStatus.getAttribute('data-job-id');
+    var batchId = extractionStatus.getAttribute('data-batch-id');
+    var statusText = extractionStatus.querySelector('span:last-child');
+    var pollStartedAt = Date.now();
+    var poll = function() {
+      fetch('/mpesa-reconciliation/extraction-jobs/' + encodeURIComponent(jobId), {
+        headers: { Accept: 'application/json' },
+        credentials: 'same-origin',
+        cache: 'no-store'
+      })
+        .then(function(response) { return response.json(); })
+        .then(function(payload) {
+          if (!payload || !payload.ok) throw new Error(payload && payload.error ? payload.error : 'Could not read extraction status.');
+          var job = payload.job || {};
+          if (job.status === 'completed') {
+            statusText.textContent = 'Extraction completed. Refreshing the statement…';
+            window.location.href = '/mpesa-reconciliation?batch=' + encodeURIComponent(batchId || job.batchId);
+            return;
+          }
+          if (job.status === 'failed') {
+            extractionStatus.className = 'alert alert-danger';
+            statusText.textContent = job.errorMessage || 'Statement extraction failed. Use Retry Extraction to try again.';
+            return;
+          }
+          if (Date.now() - pollStartedAt > 30 * 60 * 1000) {
+            extractionStatus.className = 'alert alert-warning';
+            statusText.textContent = 'Extraction is still running. You can refresh this page later to check the result.';
+            return;
+          }
+          window.setTimeout(poll, 3000);
+        })
+        .catch(function(error) {
+          if (Date.now() - pollStartedAt > 30 * 60 * 1000) {
+            extractionStatus.className = 'alert alert-warning';
+            statusText.textContent = error.message || 'Could not check extraction status.';
+            return;
+          }
+          window.setTimeout(poll, 5000);
+        });
+    };
+    poll();
+  }
+
   var searchInput = document.getElementById('mpesa-statement-search');
   if (!searchInput) return;
 

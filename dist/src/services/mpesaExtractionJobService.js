@@ -1,0 +1,92 @@
+"use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.startMpesaExtractionJobWorker = startMpesaExtractionJobWorker;
+exports.wakeMpesaExtractionJobWorker = wakeMpesaExtractionJobWorker;
+const promises_1 = __importDefault(require("fs/promises"));
+const repositories_1 = require("../models/repositories");
+const mpesaReconciliationService_1 = require("./mpesaReconciliationService");
+const odooClient_1 = require("./odooClient");
+const helpers_1 = require("../utils/helpers");
+const paths_1 = require("../utils/paths");
+let workerTimer = null;
+let processing = false;
+function resolveStoredFile(filename) {
+    return (0, paths_1.resolveProjectFile)(`${process.env.UPLOAD_DIR || 'uploads'}/mpesa/${filename}`, 'uploads/mpesa');
+}
+async function deleteStoredFile(filename) {
+    if (!filename)
+        return;
+    await promises_1.default.unlink(resolveStoredFile(filename)).catch(() => undefined);
+}
+async function processNextMpesaExtractionJob() {
+    if (processing)
+        return;
+    processing = true;
+    try {
+        const job = await (0, repositories_1.claimNextMpesaExtractionJob)();
+        if (!job)
+            return;
+        try {
+            const settings = await (0, repositories_1.getSettings)();
+            const client = (0, helpers_1.hasOdooConfiguration)(settings)
+                ? new odooClient_1.OdooClient({
+                    baseUrl: (0, helpers_1.sanitizeBaseUrl)(settings.odoo.baseUrl),
+                    database: settings.odoo.database,
+                    username: settings.odoo.username,
+                    apiKey: settings.odoo.apiKey,
+                })
+                : null;
+            const extraction = await (0, mpesaReconciliationService_1.extractMpesaStatement)({
+                filePath: resolveStoredFile(job.storedFilename),
+                originalFilename: job.originalFilename,
+                aiConfig: settings.ai,
+                odooClient: client,
+            });
+            await (0, repositories_1.replaceMpesaStatementBatchExtraction)(job.batchId, {
+                originalFilename: job.originalFilename,
+                storedFilename: job.storedFilename,
+                status: extraction.transactions.length > 0 ? 'needs_review' : 'failed',
+                warnings: extraction.warnings,
+                rawTextPreview: extraction.rawTextPreview,
+                transactions: extraction.transactions,
+            });
+            if (job.previousStoredFilename && job.previousStoredFilename !== job.storedFilename) {
+                await deleteStoredFile(job.previousStoredFilename);
+            }
+            await (0, repositories_1.completeMpesaExtractionJob)({
+                id: job.id,
+                status: 'completed',
+                transactionCount: extraction.transactions.length,
+            });
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            await (0, repositories_1.markMpesaStatementBatchExtractionFailed)(job.batchId, message).catch(() => undefined);
+            await (0, repositories_1.completeMpesaExtractionJob)({
+                id: job.id,
+                status: 'failed',
+                errorMessage: message,
+            }).catch(() => undefined);
+            if (job.jobType === 'reupload') {
+                await deleteStoredFile(job.storedFilename);
+            }
+        }
+    }
+    finally {
+        processing = false;
+    }
+}
+function startMpesaExtractionJobWorker() {
+    if (workerTimer)
+        return;
+    workerTimer = setInterval(() => {
+        void processNextMpesaExtractionJob().catch(() => undefined);
+    }, 2000);
+    void processNextMpesaExtractionJob().catch(() => undefined);
+}
+function wakeMpesaExtractionJobWorker() {
+    void processNextMpesaExtractionJob().catch(() => undefined);
+}

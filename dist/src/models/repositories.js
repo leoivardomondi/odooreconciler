@@ -31,6 +31,12 @@ exports.getMpesaStatementBatchesWithOpenReviewCounts = getMpesaStatementBatchesW
 exports.hasMpesaStatementUploadedSince = hasMpesaStatementUploadedSince;
 exports.hasMpesaReviewNotificationSince = hasMpesaReviewNotificationSince;
 exports.getMpesaStatementBatchById = getMpesaStatementBatchById;
+exports.markMpesaStatementBatchProcessing = markMpesaStatementBatchProcessing;
+exports.markMpesaStatementBatchExtractionFailed = markMpesaStatementBatchExtractionFailed;
+exports.createMpesaExtractionJob = createMpesaExtractionJob;
+exports.getMpesaExtractionJobById = getMpesaExtractionJobById;
+exports.claimNextMpesaExtractionJob = claimNextMpesaExtractionJob;
+exports.completeMpesaExtractionJob = completeMpesaExtractionJob;
 exports.deleteMpesaStatementBatch = deleteMpesaStatementBatch;
 exports.getMpesaTransactionsByBatchId = getMpesaTransactionsByBatchId;
 exports.getMpesaTransactionsByIds = getMpesaTransactionsByIds;
@@ -1232,6 +1238,23 @@ function mapMpesaBatchRow(row) {
         updatedAt: row.updated_at,
     };
 }
+function mapMpesaExtractionJobRow(row) {
+    return {
+        id: row.id,
+        batchId: row.batch_id,
+        jobType: row.job_type,
+        status: row.status,
+        originalFilename: row.original_filename,
+        storedFilename: row.stored_filename,
+        previousStoredFilename: row.previous_stored_filename,
+        errorMessage: row.error_message,
+        transactionCount: row.transaction_count === null ? null : Number(row.transaction_count),
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        startedAt: row.started_at,
+        completedAt: row.completed_at,
+    };
+}
 function mapMpesaTransactionRow(row) {
     const parseNullableNumber = (value) => {
         if (value === null || value === undefined || value === '') {
@@ -1595,6 +1618,71 @@ async function getMpesaStatementBatchById(id) {
         throw new Error(`M-Pesa statement batch ${id} was not found.`);
     }
     return mapMpesaBatchRow(row);
+}
+async function markMpesaStatementBatchProcessing(id) {
+    await (0, db_1.execute)(`UPDATE mpesa_statement_batches SET status = 'processing', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [id]);
+}
+async function markMpesaStatementBatchExtractionFailed(id, message) {
+    await (0, db_1.execute)(`
+      UPDATE mpesa_statement_batches
+      SET status = 'failed', warning_count = 1, warnings_json = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `, [JSON.stringify([message]), id]);
+}
+async function createMpesaExtractionJob(input) {
+    const id = (0, uuid_1.v4)();
+    await (0, db_1.execute)(`
+      INSERT INTO mpesa_extraction_jobs (
+        id, batch_id, job_type, status, original_filename, stored_filename, previous_stored_filename
+      ) VALUES (?, ?, ?, 'pending', ?, ?, ?)
+    `, [
+        id,
+        input.batchId,
+        input.jobType,
+        input.originalFilename,
+        input.storedFilename,
+        input.previousStoredFilename || null,
+    ]);
+    return getMpesaExtractionJobById(id);
+}
+async function getMpesaExtractionJobById(id) {
+    const row = await (0, db_1.queryOne)(`
+      SELECT id, batch_id, job_type, status, original_filename, stored_filename,
+        previous_stored_filename, error_message, transaction_count, created_at,
+        updated_at, started_at, completed_at
+      FROM mpesa_extraction_jobs
+      WHERE id = ?
+    `, [id]);
+    if (!row) {
+        throw new Error(`M-Pesa extraction job ${id} was not found.`);
+    }
+    return mapMpesaExtractionJobRow(row);
+}
+async function claimNextMpesaExtractionJob() {
+    const candidate = await (0, db_1.queryOne)(`
+      SELECT id
+      FROM mpesa_extraction_jobs
+      WHERE status = 'pending'
+      ORDER BY created_at ASC, id ASC
+      LIMIT 1
+    `);
+    if (!candidate) {
+        return null;
+    }
+    const result = await (0, db_1.execute)(`
+      UPDATE mpesa_extraction_jobs
+      SET status = 'running', started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ? AND status = 'pending'
+    `, [candidate.id]);
+    return result.affectedRows > 0 ? getMpesaExtractionJobById(candidate.id) : null;
+}
+async function completeMpesaExtractionJob(input) {
+    await (0, db_1.execute)(`
+      UPDATE mpesa_extraction_jobs
+      SET status = ?, transaction_count = ?, error_message = ?, completed_at = CURRENT_TIMESTAMP,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `, [input.status, input.transactionCount ?? null, input.errorMessage || null, input.id]);
 }
 async function deleteMpesaStatementBatch(id) {
     const batch = await getMpesaStatementBatchById(id);

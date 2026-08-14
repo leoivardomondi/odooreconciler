@@ -661,6 +661,26 @@ async function ensureSqliteDatabase(config: RuntimeDatabaseConfig) {
       FOREIGN KEY (batch_id) REFERENCES mpesa_statement_batches(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS mpesa_extraction_jobs (
+      id TEXT PRIMARY KEY,
+      batch_id TEXT NOT NULL,
+      job_type TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      original_filename TEXT NOT NULL,
+      stored_filename TEXT NOT NULL,
+      previous_stored_filename TEXT,
+      error_message TEXT,
+      transaction_count INTEGER,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      started_at TEXT,
+      completed_at TEXT,
+      FOREIGN KEY (batch_id) REFERENCES mpesa_statement_batches(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_mpesa_extraction_jobs_status
+      ON mpesa_extraction_jobs(status, created_at);
+
     CREATE TABLE IF NOT EXISTS mpesa_category_training_rules (
       id TEXT PRIMARY KEY,
       match_scope TEXT NOT NULL DEFAULT 'any',
@@ -1339,6 +1359,26 @@ async function ensureMysqlDatabase(config: RuntimeDatabaseConfig) {
       synced_at DATETIME NULL,
       updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       KEY idx_board_intake_queue_status (status, created_at)
+    )
+  `);
+
+  await query('create mpesa extraction jobs table', `
+    CREATE TABLE IF NOT EXISTS mpesa_extraction_jobs (
+      id VARCHAR(64) PRIMARY KEY,
+      batch_id VARCHAR(64) NOT NULL,
+      job_type VARCHAR(32) NOT NULL,
+      status VARCHAR(32) NOT NULL DEFAULT 'pending',
+      original_filename VARCHAR(1024) NOT NULL,
+      stored_filename VARCHAR(1024) NOT NULL,
+      previous_stored_filename VARCHAR(1024) NULL,
+      error_message TEXT NULL,
+      transaction_count INT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      started_at DATETIME NULL,
+      completed_at DATETIME NULL,
+      CONSTRAINT fk_mpesa_extraction_jobs_batch FOREIGN KEY (batch_id) REFERENCES mpesa_statement_batches(id) ON DELETE CASCADE,
+      KEY idx_mpesa_extraction_jobs_status (status, created_at)
     )
   `);
 

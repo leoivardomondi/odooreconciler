@@ -14,6 +14,7 @@ import {
   LogEntry,
   MailConfig,
   MpesaPurchaseOrderCandidate,
+  MpesaExtractionJob,
   MpesaStatementBatch,
   MpesaTransaction,
   MpesaTransactionExplorerFilters,
@@ -1528,6 +1529,38 @@ function mapMpesaBatchRow(row: {
   };
 }
 
+function mapMpesaExtractionJobRow(row: {
+  id: string;
+  batch_id: string;
+  job_type: MpesaExtractionJob['jobType'];
+  status: MpesaExtractionJob['status'];
+  original_filename: string;
+  stored_filename: string;
+  previous_stored_filename: string | null;
+  error_message: string | null;
+  transaction_count: number | string | null;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+}): MpesaExtractionJob {
+  return {
+    id: row.id,
+    batchId: row.batch_id,
+    jobType: row.job_type,
+    status: row.status,
+    originalFilename: row.original_filename,
+    storedFilename: row.stored_filename,
+    previousStoredFilename: row.previous_stored_filename,
+    errorMessage: row.error_message,
+    transactionCount: row.transaction_count === null ? null : Number(row.transaction_count),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+  };
+}
+
 function mapMpesaTransactionRow(row: {
   id: string;
   batch_id: string;
@@ -2027,6 +2060,114 @@ export async function getMpesaStatementBatchById(id: string): Promise<MpesaState
   }
 
   return mapMpesaBatchRow(row);
+}
+
+export async function markMpesaStatementBatchProcessing(id: string) {
+  await execute(
+    `UPDATE mpesa_statement_batches SET status = 'processing', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+    [id],
+  );
+}
+
+export async function markMpesaStatementBatchExtractionFailed(id: string, message: string) {
+  await execute(
+    `
+      UPDATE mpesa_statement_batches
+      SET status = 'failed', warning_count = 1, warnings_json = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `,
+    [JSON.stringify([message]), id],
+  );
+}
+
+export async function createMpesaExtractionJob(input: {
+  batchId: string;
+  jobType: MpesaExtractionJob['jobType'];
+  originalFilename: string;
+  storedFilename: string;
+  previousStoredFilename?: string | null;
+}): Promise<MpesaExtractionJob> {
+  const id = uuidv4();
+  await execute(
+    `
+      INSERT INTO mpesa_extraction_jobs (
+        id, batch_id, job_type, status, original_filename, stored_filename, previous_stored_filename
+      ) VALUES (?, ?, ?, 'pending', ?, ?, ?)
+    `,
+    [
+      id,
+      input.batchId,
+      input.jobType,
+      input.originalFilename,
+      input.storedFilename,
+      input.previousStoredFilename || null,
+    ],
+  );
+
+  return getMpesaExtractionJobById(id);
+}
+
+export async function getMpesaExtractionJobById(id: string): Promise<MpesaExtractionJob> {
+  const row = await queryOne<Parameters<typeof mapMpesaExtractionJobRow>[0]>(
+    `
+      SELECT id, batch_id, job_type, status, original_filename, stored_filename,
+        previous_stored_filename, error_message, transaction_count, created_at,
+        updated_at, started_at, completed_at
+      FROM mpesa_extraction_jobs
+      WHERE id = ?
+    `,
+    [id],
+  );
+
+  if (!row) {
+    throw new Error(`M-Pesa extraction job ${id} was not found.`);
+  }
+
+  return mapMpesaExtractionJobRow(row);
+}
+
+export async function claimNextMpesaExtractionJob(): Promise<MpesaExtractionJob | null> {
+  const candidate = await queryOne<{ id: string }>(
+    `
+      SELECT id
+      FROM mpesa_extraction_jobs
+      WHERE status = 'pending'
+      ORDER BY created_at ASC, id ASC
+      LIMIT 1
+    `,
+  );
+
+  if (!candidate) {
+    return null;
+  }
+
+  const result = await execute(
+    `
+      UPDATE mpesa_extraction_jobs
+      SET status = 'running', started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ? AND status = 'pending'
+    `,
+    [candidate.id],
+  );
+
+  return result.affectedRows > 0 ? getMpesaExtractionJobById(candidate.id) : null;
+}
+
+export async function completeMpesaExtractionJob(input: {
+  id: string;
+  status: Extract<MpesaExtractionJob['status'], 'completed' | 'failed'>;
+  transactionCount?: number | null;
+  errorMessage?: string | null;
+}) {
+  await execute(
+    `
+      UPDATE mpesa_extraction_jobs
+      SET status = ?, transaction_count = ?, error_message = ?, completed_at = CURRENT_TIMESTAMP,
+        updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `,
+    [input.status, input.transactionCount ?? null, input.errorMessage || null, input.id],
+  );
 }
 
 export async function deleteMpesaStatementBatch(id: string): Promise<MpesaStatementBatch> {

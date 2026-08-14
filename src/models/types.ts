@@ -583,7 +583,7 @@ export interface MpesaStatementBatch {
   id: string;
   originalFilename: string;
   storedFilename: string;
-  status: 'parsed' | 'needs_review' | 'failed';
+  status: 'processing' | 'parsed' | 'needs_review' | 'failed';
   transactionCount: number;
   pageCount?: number;
   matchedCount: number;
@@ -594,6 +594,22 @@ export interface MpesaStatementBatch {
   rawTextPreview: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface MpesaExtractionJob {
+  id: string;
+  batchId: string;
+  jobType: 'upload' | 'reprocess' | 'reupload';
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  originalFilename: string;
+  storedFilename: string;
+  previousStoredFilename: string | null;
+  errorMessage: string | null;
+  transactionCount: number | null;
+  createdAt: string;
+  updatedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
 }
 
 export interface MpesaPurchaseOrderCandidate {
