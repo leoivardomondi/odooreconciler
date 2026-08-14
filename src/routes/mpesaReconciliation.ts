@@ -262,7 +262,7 @@ async function trainMpesaCategoryRulesFromPatches(
         }
 
         const payload = buildTrainingPayloadFromTransaction(transaction, patch);
-        return payload ? trainMpesaCategoryFromTransaction(payload) : null;
+        return payload ? trainMpesaCategoryFromTransaction(payload).catch(() => undefined) : null;
       })
       .filter((entry): entry is Promise<void> => Boolean(entry)),
   );
