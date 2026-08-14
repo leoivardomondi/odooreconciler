@@ -1034,7 +1034,7 @@ function parseStructuredTransactionsFromText(text: string) {
       // NOTE: "Merchant Payment Online" is NOT a boundary — it appears as a
       // description line WITHIN transactions (e.g. "Merchant Payment Online from 254...")
       if (
-        /\b(Business\s+Buy\s+Goods|Organization\s+Transfer|Customer\s+Merchant\s+Payment|Pay\s*Bill|Withdraw(al)?\s+(From|At|Cash)|(Send|Sent)\s+to|Funds\s+Received)\b/i.test(lines[endIndex])
+        /\b(Organization\s+Transfer|Customer\s+Merchant\s+Payment|Pay\s*Bill|Withdraw(al)?\s+(From|At|Cash)|(Send|Sent)\s+to|Funds\s+Received)\b/i.test(lines[endIndex])
       ) {
         break;
       }
