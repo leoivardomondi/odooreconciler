@@ -32,8 +32,8 @@ app.use((0, helmet_1.default)({
     crossOriginEmbedderPolicy: false,
 }));
 app.use((0, compression_1.default)());
-app.use(express_1.default.urlencoded({ extended: true, limit: '2mb' }));
-app.use(express_1.default.json({ limit: '2mb' }));
+app.use(express_1.default.urlencoded({ extended: true, limit: '10mb', parameterLimit: 50000 }));
+app.use(express_1.default.json({ limit: '10mb' }));
 app.use((req, res, next) => {
     const requestId = String(req.get('x-request-id') || (0, crypto_1.randomUUID)()).slice(0, 80);
     res.setHeader('X-Request-ID', requestId);
@@ -361,7 +361,8 @@ app.use((error, req, res, _next) => {
         path: req.originalUrl || req.path,
         error,
     });
-    if (req.path.startsWith('/api/') || req.path.startsWith('/jobs/') || req.xhr || req.accepts('json') === 'json') {
+    const acceptsJson = Boolean(req.get('accept')?.includes('application/json') && !req.get('accept')?.includes('text/html'));
+    if (req.path.startsWith('/api/') || req.path.startsWith('/jobs/') || req.xhr || acceptsJson) {
         res.status(500).json({
             ok: false,
             error: isDevelopment ? message : 'Internal server error.',

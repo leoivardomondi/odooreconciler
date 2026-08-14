@@ -1366,7 +1366,10 @@ function mergeMpesaRetriedTransactions(newTransactions, existingTransactions) {
 }
 async function createMpesaStatementBatch(input) {
     const id = (0, uuid_1.v4)();
-    const matchedCount = input.transactions.filter((transaction) => Boolean(transaction.matchedPoId)).length;
+    const safeWarnings = Array.isArray(input.warnings) ? input.warnings : [];
+    const safeRawTextPreview = String(input.rawTextPreview || '');
+    const safeTransactions = Array.isArray(input.transactions) ? input.transactions : [];
+    const matchedCount = safeTransactions.filter((transaction) => Boolean(transaction && transaction.matchedPoId)).length;
     await (0, db_1.execute)(`
       INSERT INTO mpesa_statement_batches (
         id, original_filename, stored_filename, status, transaction_count, matched_count,
@@ -1378,11 +1381,11 @@ async function createMpesaStatementBatch(input) {
         input.originalFilename,
         input.storedFilename,
         input.status,
-        input.transactions.length,
+        safeTransactions.length,
         matchedCount,
-        input.warnings.length,
-        JSON.stringify(input.warnings),
-        input.rawTextPreview,
+        safeWarnings.length,
+        JSON.stringify(safeWarnings),
+        safeRawTextPreview,
     ]);
     for (const transaction of input.transactions) {
         await (0, db_1.execute)(`

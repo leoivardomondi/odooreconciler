@@ -1389,7 +1389,8 @@ async function extractMpesaStatement(input) {
                 tempFilesToClean.add(processed.imagePath);
                 return { pageNumber: image.pageNumber, imagePath: processed.imagePath };
             }));
-            const ocr = await (0, ocrEngine_1.runOcr)(preprocessed, 'auto', input.aiConfig?.ocr);
+            const preferredOcr = input.preferredOcr || input.aiConfig?.ocr?.provider || 'auto';
+            const ocr = await (0, ocrEngine_1.runOcr)(preprocessed, preferredOcr, input.aiConfig?.ocr, input.aiConfig?.apiKeys?.gemini || process.env.GEMINI_API_KEY, input.aiConfig?.geminiOAuth?.connected);
             warnings.push(...ocr.warnings);
             ocrText = ocr.pages.map((page) => page.text).join('\n\n');
         }

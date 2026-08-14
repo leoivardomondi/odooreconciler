@@ -182,7 +182,7 @@ async function trainMpesaCategoryRulesFromPatches(transactions, patches) {
             return null;
         }
         const payload = buildTrainingPayloadFromTransaction(transaction, patch);
-        return payload ? (0, aiCategoryService_1.trainMpesaCategoryFromTransaction)(payload) : null;
+        return payload ? (0, aiCategoryService_1.trainMpesaCategoryFromTransaction)(payload).catch(() => undefined) : null;
     })
         .filter((entry) => Boolean(entry)));
 }
@@ -357,8 +357,9 @@ function extractMoneyValues(value) {
         .filter((entry) => typeof entry === 'number');
 }
 function extractStatementSummaryTotals(rawTextPreview) {
-    const normalized = rawTextPreview.replace(/\r/g, '');
-    const totalLine = rawTextPreview
+    const preview = String(rawTextPreview || '');
+    const normalized = preview.replace(/\r/g, '');
+    const totalLine = preview
         .split(/\r?\n/)
         .map((line) => line.trim())
         .find((line) => /^Total/i.test(line));
@@ -393,6 +394,18 @@ function buildStatementTotalChecks(rawTextPreview, transactions) {
                     : 'mismatch',
         };
     });
+}
+function uploadSingleFile(fieldName) {
+    return (req, res, next) => {
+        upload.single(fieldName)(req, res, (err) => {
+            if (err) {
+                const batchIdParam = req.params.batchId ? `batch=${encodeURIComponent(req.params.batchId)}&` : '';
+                const message = err instanceof Error ? err.message : 'Upload an M-Pesa statement PDF or image file.';
+                return res.redirect(`/mpesa-reconciliation?${batchIdParam}error=${encodeURIComponent(message)}`);
+            }
+            next();
+        });
+    };
 }
 function resolveStoredMpesaFile(storedFilename) {
     const resolved = path_1.default.resolve(uploadDir, storedFilename);
@@ -620,7 +633,7 @@ router.get('/mpesa-reconciliation/batches/:batchId/download', async (req, res) =
         res.status(404).type('text/plain').send(error instanceof Error ? error.message : 'M-Pesa document was not found.');
     }
 });
-router.post('/mpesa-reconciliation/upload', upload.single('file'), async (req, res) => {
+router.post('/mpesa-reconciliation/upload', uploadSingleFile('file'), async (req, res) => {
     try {
         if (!req.file) {
             throw new Error('Upload an M-Pesa statement PDF or image file.');
@@ -643,6 +656,9 @@ router.post('/mpesa-reconciliation/upload', upload.single('file'), async (req, r
         res.redirect(`/mpesa-reconciliation?batch=${encodeURIComponent(batch.id)}&message=${encodeURIComponent(`Imported ${extraction.transactions.length} M-Pesa transaction row(s).`)}`);
     }
     catch (error) {
+        if (req.file?.path) {
+            await deleteStoredMpesaFile(req.file.filename).catch(() => undefined);
+        }
         res.redirect(`/mpesa-reconciliation?error=${encodeURIComponent(error instanceof Error ? error.message : 'M-Pesa statement import failed.')}`);
     }
 });
@@ -671,7 +687,7 @@ router.post('/mpesa-reconciliation/batches/:batchId/reprocess', async (req, res)
         res.redirect(`/mpesa-reconciliation?batch=${encodeURIComponent(batchId)}&error=${encodeURIComponent(error instanceof Error ? error.message : 'Could not retry extraction for this M-Pesa document.')}`);
     }
 });
-router.post('/mpesa-reconciliation/batches/:batchId/reupload', upload.single('file'), async (req, res) => {
+router.post('/mpesa-reconciliation/batches/:batchId/reupload', uploadSingleFile('file'), async (req, res) => {
     const batchId = req.params.batchId;
     try {
         if (req.authUser?.role !== 'admin') {
