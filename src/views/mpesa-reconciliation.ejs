@@ -69,12 +69,14 @@
       );
     };
     const candidateAllowedForTransaction = (transaction, candidate) => {
+      if (!candidate) return false;
       const alias = knownPayerAliasForTransaction(transaction);
       return !alias || hasAllSearchTokens(candidate.vendorName || '', alias.customerName);
     };
     const visibleCandidatesForTransaction = (transaction) =>
-      (transaction.candidates || []).filter((candidate) => candidateAllowedForTransaction(transaction, candidate));
+      (transaction.candidates || []).filter((candidate) => Boolean(candidate) && candidateAllowedForTransaction(transaction, candidate));
     const candidateReasonsForDisplay = (candidate) => {
+      if (!candidate) return [];
       const reasons = (candidate.reasons || [])
         .filter((reason) => !/^Invoice date is within/i.test(reason))
         .filter((reason, index, list) => list.indexOf(reason) === index);
@@ -171,7 +173,14 @@
   %>
 
   <section class="mpesa-command-band mb-3">
-    <form method="post" action="/mpesa-reconciliation/upload?_csrf=<%= encodeURIComponent(csrfToken || '') %>" enctype="multipart/form-data" class="mpesa-upload-form">
+    <form
+      method="post"
+      action="/mpesa-reconciliation/upload?_csrf=<%= encodeURIComponent(csrfToken || '') %>"
+      enctype="multipart/form-data"
+      class="mpesa-upload-form"
+      data-loading-message="Parsing M-Pesa statement & matching Odoo records..."
+      data-loading-timeout="180000"
+    >
       <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
       <div>
         <label class="form-label">Statement PDF or Image</label>

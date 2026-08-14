@@ -41,7 +41,7 @@ function ensureAppLoadingOverlay() {
   return overlay;
 }
 
-function showAppLoading(message) {
+function showAppLoading(message, timeoutMs) {
   const overlay = ensureAppLoadingOverlay();
   const messageElement = overlay.querySelector('.app-loading-message');
   if (messageElement instanceof HTMLElement) {
@@ -51,9 +51,10 @@ function showAppLoading(message) {
     overlay.classList.add('is-visible');
   });
   window.clearTimeout(window.__appLoadingSafetyTimer);
+  const duration = typeof timeoutMs === 'number' && timeoutMs > 0 ? timeoutMs : 120000;
   window.__appLoadingSafetyTimer = window.setTimeout(() => {
     overlay.classList.remove('is-visible');
-  }, 15000);
+  }, duration);
 }
 
 function hideAppLoading() {
@@ -220,8 +221,10 @@ document.addEventListener('submit', (event) => {
 
   const loadingDisabled = form.getAttribute('data-no-loading') === 'true';
   const loadingMessage = submitter?.getAttribute('data-loading-message') || form.getAttribute('data-loading-message') || 'Submitting, please wait...';
+  const rawTimeout = submitter?.getAttribute('data-loading-timeout') || form.getAttribute('data-loading-timeout');
+  const loadingTimeout = rawTimeout ? parseInt(rawTimeout, 10) : undefined;
   if (!loadingDisabled) {
-    showAppLoading(loadingMessage);
+    showAppLoading(loadingMessage, loadingTimeout);
   }
   // Keep long-running forms visible when they opt out of the full-screen overlay.
   if (submitter) {

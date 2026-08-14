@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
 import multer from 'multer';
 import path from 'path';
-import { Request, Response, Router } from 'express';
+import { NextFunction, Request, Response, Router } from 'express';
 import {
   autoVerifyMpesaTransactionsByRule,
   createMpesaStatementBatch,
@@ -476,9 +476,10 @@ function extractMoneyValues(value: string) {
     .filter((entry): entry is number => typeof entry === 'number');
 }
 
-function extractStatementSummaryTotals(rawTextPreview: string) {
-  const normalized = rawTextPreview.replace(/\r/g, '');
-  const totalLine = rawTextPreview
+function extractStatementSummaryTotals(rawTextPreview: string | null | undefined) {
+  const preview = String(rawTextPreview || '');
+  const normalized = preview.replace(/\r/g, '');
+  const totalLine = preview
     .split(/\r?\n/)
     .map((line) => line.trim())
     .find((line) => /^Total/i.test(line));
@@ -496,7 +497,7 @@ function extractStatementSummaryTotals(rawTextPreview: string) {
 }
 
 function buildStatementTotalChecks(
-  rawTextPreview: string,
+  rawTextPreview: string | null | undefined,
   transactions: MpesaTransaction[],
 ): MpesaStatementTotalCheck[] {
   const expected = extractStatementSummaryTotals(rawTextPreview);
@@ -521,6 +522,19 @@ function buildStatementTotalChecks(
             : 'mismatch',
     };
   });
+}
+
+function uploadSingleFile(fieldName: string) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    upload.single(fieldName)(req, res, (err) => {
+      if (err) {
+        const batchIdParam = req.params.batchId ? `batch=${encodeURIComponent(req.params.batchId)}&` : '';
+        const message = err instanceof Error ? err.message : 'Upload an M-Pesa statement PDF or image file.';
+        return res.redirect(`/mpesa-reconciliation?${batchIdParam}error=${encodeURIComponent(message)}`);
+      }
+      next();
+    });
+  };
 }
 
 function resolveStoredMpesaFile(storedFilename: string) {
@@ -767,7 +781,7 @@ router.get('/mpesa-reconciliation/batches/:batchId/download', async (req, res) =
   }
 });
 
-router.post('/mpesa-reconciliation/upload', upload.single('file'), async (req, res) => {
+router.post('/mpesa-reconciliation/upload', uploadSingleFile('file'), async (req, res) => {
   try {
     if (!req.file) {
       throw new Error('Upload an M-Pesa statement PDF or image file.');
@@ -796,6 +810,9 @@ router.post('/mpesa-reconciliation/upload', upload.single('file'), async (req, r
       )}`,
     );
   } catch (error) {
+    if (req.file?.path) {
+      await deleteStoredMpesaFile(req.file.filename).catch(() => undefined);
+    }
     res.redirect(
       `/mpesa-reconciliation?error=${encodeURIComponent(
         error instanceof Error ? error.message : 'M-Pesa statement import failed.',
@@ -841,7 +858,7 @@ router.post('/mpesa-reconciliation/batches/:batchId/reprocess', async (req, res)
   }
 });
 
-router.post('/mpesa-reconciliation/batches/:batchId/reupload', upload.single('file'), async (req, res) => {
+router.post('/mpesa-reconciliation/batches/:batchId/reupload', uploadSingleFile('file'), async (req, res) => {
   const batchId = req.params.batchId;
 
   try {
