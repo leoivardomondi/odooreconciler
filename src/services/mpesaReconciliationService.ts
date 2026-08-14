@@ -4,6 +4,7 @@ import { readFile, unlink } from 'fs/promises';
 import { extractPdfText } from '../invoice-parser/extractPdfText';
 import { renderPdfToImages } from '../invoice-parser/renderPdfToImages';
 import { runOcr } from '../invoice-parser/ocr/ocrEngine';
+import { PreferredOcr } from '../invoice-parser/types';
 import { preprocessImage } from '../invoice-parser/preprocess/imagePreprocess';
 import {
   AiExtractionConfig,
@@ -1586,7 +1587,7 @@ async function addOdooReconciliationCandidates(
 export async function extractMpesaStatement(input: {
   filePath: string;
   originalFilename: string;
-  preferredOcr?: 'auto' | 'tesseract' | 'nvidia_nemoretriever' | 'disabled';
+  preferredOcr?: PreferredOcr;
   aiConfig?: AiExtractionConfig | null;
   odooClient?: OdooClient | null;
 }): Promise<{
@@ -1650,7 +1651,14 @@ export async function extractMpesaStatement(input: {
           return { pageNumber: image.pageNumber, imagePath: processed.imagePath };
         }),
       );
-      const ocr = await runOcr(preprocessed, 'auto', input.aiConfig?.ocr);
+      const preferredOcr = input.preferredOcr || (input.aiConfig?.ocr?.provider as PreferredOcr) || 'auto';
+      const ocr = await runOcr(
+        preprocessed,
+        preferredOcr,
+        input.aiConfig?.ocr,
+        input.aiConfig?.apiKeys?.gemini || process.env.GEMINI_API_KEY,
+        input.aiConfig?.geminiOAuth?.connected,
+      );
       warnings.push(...ocr.warnings);
       ocrText = ocr.pages.map((page) => page.text).join('\n\n');
     }
