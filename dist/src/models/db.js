@@ -531,6 +531,25 @@ async function ensureSqliteDatabase(config) {
     CREATE INDEX IF NOT EXISTS idx_mpesa_extraction_jobs_status
       ON mpesa_extraction_jobs(status, created_at);
 
+    CREATE TABLE IF NOT EXISTS invoice_extraction_jobs (
+      id TEXT PRIMARY KEY,
+      status TEXT NOT NULL DEFAULT 'pending',
+      original_filename TEXT NOT NULL,
+      stored_filename TEXT NOT NULL,
+      preferred_ocr TEXT NOT NULL DEFAULT 'auto',
+      stage TEXT NOT NULL DEFAULT 'queued',
+      progress INTEGER NOT NULL DEFAULT 0,
+      result_json TEXT,
+      error_message TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      started_at TEXT,
+      completed_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_invoice_extraction_jobs_status
+      ON invoice_extraction_jobs(status, created_at);
+
     CREATE TABLE IF NOT EXISTS mpesa_category_training_rules (
       id TEXT PRIMARY KEY,
       match_scope TEXT NOT NULL DEFAULT 'any',
@@ -1193,6 +1212,24 @@ async function ensureMysqlDatabase(config) {
       started_at DATETIME NULL,
       completed_at DATETIME NULL,
       KEY idx_mpesa_extraction_jobs_status (status, created_at)
+    )
+  `);
+    await query('create invoice extraction jobs table', `
+    CREATE TABLE IF NOT EXISTS invoice_extraction_jobs (
+      id VARCHAR(64) PRIMARY KEY,
+      status VARCHAR(32) NOT NULL DEFAULT 'pending',
+      original_filename VARCHAR(1024) NOT NULL,
+      stored_filename VARCHAR(1024) NOT NULL,
+      preferred_ocr VARCHAR(64) NOT NULL DEFAULT 'auto',
+      stage VARCHAR(128) NOT NULL DEFAULT 'queued',
+      progress INT NOT NULL DEFAULT 0,
+      result_json LONGTEXT NULL,
+      error_message TEXT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      started_at DATETIME NULL,
+      completed_at DATETIME NULL,
+      KEY idx_invoice_extraction_jobs_status (status, created_at)
     )
   `);
     await ensureColumnMysql(pool, 'history', 'computed_signature', 'TEXT NULL', config.mysqlDatabase);

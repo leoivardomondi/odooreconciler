@@ -18,6 +18,7 @@ const userProfileSyncService_1 = require("./src/services/userProfileSyncService"
 const shopFloorOperatorAccessSyncService_1 = require("./src/services/shopFloorOperatorAccessSyncService");
 const boardIntakeSyncService_1 = require("./src/services/boardIntakeSyncService");
 const mpesaExtractionJobService_1 = require("./src/services/mpesaExtractionJobService");
+const invoiceExtractionJobService_1 = require("./src/services/invoiceExtractionJobService");
 const startupState_1 = require("./src/services/startupState");
 const paths_1 = require("./src/utils/paths");
 const configuredStartupStepTimeoutMs = Number(env_1.env.STARTUP_STEP_TIMEOUT_MS || 30000);
@@ -166,6 +167,7 @@ async function startServer() {
             await withStartupTimeout('Database initialization', () => ensureDatabaseWithRetry());
             writeStartupLog('Database initialization completed.');
             (0, mpesaExtractionJobService_1.startMpesaExtractionJobWorker)();
+            (0, invoiceExtractionJobService_1.startInvoiceExtractionJobWorker)();
             (0, startupState_1.markStartupStep)('initializing scheduler');
             await withStartupTimeout('Scheduler initialization', () => (0, schedulerService_1.startSchedulerInterval)());
             (0, emailAutomationService_1.startEmailAutomationInterval)();

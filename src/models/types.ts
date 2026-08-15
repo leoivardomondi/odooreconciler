@@ -612,6 +612,22 @@ export interface MpesaExtractionJob {
   completedAt: string | null;
 }
 
+export interface InvoiceExtractionJob {
+  id: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  originalFilename: string;
+  storedFilename: string;
+  preferredOcr: string;
+  stage: string;
+  progress: number;
+  result: import('../invoice-parser/types').ParsedInvoice | null;
+  errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
 export interface MpesaPurchaseOrderCandidate {
   id: number;
   name: string;

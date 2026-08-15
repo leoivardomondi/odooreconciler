@@ -37,6 +37,11 @@ exports.createMpesaExtractionJob = createMpesaExtractionJob;
 exports.getMpesaExtractionJobById = getMpesaExtractionJobById;
 exports.claimNextMpesaExtractionJob = claimNextMpesaExtractionJob;
 exports.completeMpesaExtractionJob = completeMpesaExtractionJob;
+exports.createInvoiceExtractionJob = createInvoiceExtractionJob;
+exports.getInvoiceExtractionJobById = getInvoiceExtractionJobById;
+exports.claimNextInvoiceExtractionJob = claimNextInvoiceExtractionJob;
+exports.updateInvoiceExtractionJobProgress = updateInvoiceExtractionJobProgress;
+exports.completeInvoiceExtractionJob = completeInvoiceExtractionJob;
 exports.deleteMpesaStatementBatch = deleteMpesaStatementBatch;
 exports.getMpesaTransactionsByBatchId = getMpesaTransactionsByBatchId;
 exports.getMpesaTransactionsByIds = getMpesaTransactionsByIds;
@@ -1256,6 +1261,23 @@ function mapMpesaExtractionJobRow(row) {
         completedAt: row.completed_at,
     };
 }
+function mapInvoiceExtractionJobRow(row) {
+    return {
+        id: row.id,
+        status: row.status,
+        originalFilename: row.original_filename,
+        storedFilename: row.stored_filename,
+        preferredOcr: row.preferred_ocr,
+        stage: row.stage,
+        progress: Number(row.progress || 0),
+        result: row.result_json ? (0, helpers_1.safeJsonParse)(row.result_json, null) : null,
+        errorMessage: row.error_message,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        startedAt: row.started_at,
+        completedAt: row.completed_at,
+    };
+}
 function mapMpesaTransactionRow(row) {
     const parseNullableNumber = (value) => {
         if (value === null || value === undefined || value === '') {
@@ -1684,6 +1706,66 @@ async function completeMpesaExtractionJob(input) {
         updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `, [input.status, input.transactionCount ?? null, input.errorMessage || null, input.id]);
+}
+async function createInvoiceExtractionJob(input) {
+    const id = (0, uuid_1.v4)();
+    await (0, db_1.execute)(`
+      INSERT INTO invoice_extraction_jobs (
+        id, status, original_filename, stored_filename, preferred_ocr, stage, progress
+      ) VALUES (?, 'pending', ?, ?, ?, 'queued', 0)
+    `, [id, input.originalFilename, input.storedFilename, input.preferredOcr]);
+    return getInvoiceExtractionJobById(id);
+}
+async function getInvoiceExtractionJobById(id) {
+    const row = await (0, db_1.queryOne)(`
+      SELECT id, status, original_filename, stored_filename, preferred_ocr, stage, progress,
+        result_json, error_message, created_at, updated_at, started_at, completed_at
+      FROM invoice_extraction_jobs
+      WHERE id = ?
+    `, [id]);
+    if (!row) {
+        throw new Error(`Invoice extraction job ${id} was not found.`);
+    }
+    return mapInvoiceExtractionJobRow(row);
+}
+async function claimNextInvoiceExtractionJob() {
+    const candidate = await (0, db_1.queryOne)(`
+      SELECT id FROM invoice_extraction_jobs
+      WHERE status = 'pending'
+      ORDER BY created_at ASC, id ASC
+      LIMIT 1
+    `);
+    if (!candidate)
+        return null;
+    const result = await (0, db_1.execute)(`
+      UPDATE invoice_extraction_jobs
+      SET status = 'running', stage = 'starting', progress = 5,
+        started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ? AND status = 'pending'
+    `, [candidate.id]);
+    return result.affectedRows > 0 ? getInvoiceExtractionJobById(candidate.id) : null;
+}
+async function updateInvoiceExtractionJobProgress(input) {
+    await (0, db_1.execute)(`
+      UPDATE invoice_extraction_jobs
+      SET stage = ?, progress = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ? AND status = 'running'
+    `, [input.stage, Math.max(0, Math.min(99, Math.round(input.progress))), input.id]);
+}
+async function completeInvoiceExtractionJob(input) {
+    await (0, db_1.execute)(`
+      UPDATE invoice_extraction_jobs
+      SET status = ?, stage = ?, progress = ?, result_json = ?, error_message = ?,
+        completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `, [
+        input.status,
+        input.status === 'completed' ? 'completed' : 'failed',
+        input.status === 'completed' ? 100 : 0,
+        input.result ? JSON.stringify(input.result) : null,
+        input.errorMessage || null,
+        input.id,
+    ]);
 }
 async function deleteMpesaStatementBatch(id) {
     const batch = await getMpesaStatementBatchById(id);

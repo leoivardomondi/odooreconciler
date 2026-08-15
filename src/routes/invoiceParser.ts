@@ -2,8 +2,12 @@ import fs from 'fs/promises';
 import multer from 'multer';
 import path from 'path';
 import { Router } from 'express';
-import { parseSupplierInvoice, PreferredOcr } from '../invoice-parser';
-import { getSettings } from '../models/repositories';
+import { PreferredOcr } from '../invoice-parser';
+import {
+  createInvoiceExtractionJob,
+  getInvoiceExtractionJobById,
+} from '../models/repositories';
+import { wakeInvoiceExtractionJobWorker } from '../services/invoiceExtractionJobService';
 import { resolveProjectFile } from '../utils/paths';
 
 const router = Router();
@@ -50,8 +54,35 @@ const upload = multer({
   },
 });
 
-router.get('/invoice-parser', (_req, res) => {
-  res.redirect('/po-bill-automation');
+router.get('/invoice-parser', async (req, res) => {
+  const preferredOcr: PreferredOcr =
+    req.query.preferredOcr === 'google' || req.query.preferredOcr === 'tesseract'
+      ? req.query.preferredOcr
+      : 'auto';
+  const jobId = String(req.query.job || '').trim();
+
+  try {
+    const extractionJob = jobId ? await getInvoiceExtractionJobById(jobId) : null;
+    res.render('invoice-parser', {
+      pageTitle: 'Invoice Parser',
+      preferredOcr,
+      parsedInvoice: extractionJob?.result || null,
+      extractionJob,
+      status: extractionJob?.status === 'failed'
+        ? { type: 'danger', message: extractionJob.errorMessage || 'Invoice parsing failed.' }
+        : extractionJob?.status === 'completed'
+          ? { type: 'success', message: 'Invoice extraction completed.' }
+          : null,
+    });
+  } catch (error) {
+    res.status(404).render('invoice-parser', {
+      pageTitle: 'Invoice Parser',
+      preferredOcr,
+      parsedInvoice: null,
+      extractionJob: null,
+      status: { type: 'danger', message: error instanceof Error ? error.message : 'Invoice job not found.' },
+    });
+  }
 });
 
 router.post('/invoice-parser', upload.single('file'), async (req, res) => {
@@ -64,18 +95,20 @@ router.post('/invoice-parser', upload.single('file'), async (req, res) => {
       throw new Error('Upload a PDF or image file.');
     }
 
-    const settings = await getSettings();
-    const parsedInvoice = await parseSupplierInvoice({
-      filePath: req.file.path,
+    const job = await createInvoiceExtractionJob({
       originalFilename: req.file.originalname,
       preferredOcr,
-      aiConfig: settings.ai,
+      storedFilename: path.relative(resolveProjectFile(process.env.UPLOAD_DIR || 'uploads', 'uploads'), req.file.path).replace(/\\/g, '/'),
     });
-
-    res.json(parsedInvoice);
+    wakeInvoiceExtractionJobWorker();
+    res.redirect(`/invoice-parser?job=${encodeURIComponent(job.id)}&preferredOcr=${encodeURIComponent(preferredOcr)}`);
   } catch (error) {
-    res.status(400).json({
-      error: error instanceof Error ? error.message : 'Invoice parsing failed.',
+    res.status(400).render('invoice-parser', {
+      pageTitle: 'Invoice Parser',
+      preferredOcr,
+      parsedInvoice: null,
+      extractionJob: null,
+      status: { type: 'danger', message: error instanceof Error ? error.message : 'Invoice upload failed.' },
     });
   }
 });
@@ -91,30 +124,24 @@ router.post('/api/invoices/parse', upload.single('file'), async (req, res) => {
       req.body.preferredOcr === 'google' || req.body.preferredOcr === 'tesseract'
         ? req.body.preferredOcr
         : 'auto';
-    const settings = await getSettings();
-    const parsedInvoice = await parseSupplierInvoice({
-      filePath: req.file.path,
+    const job = await createInvoiceExtractionJob({
       originalFilename: req.file.originalname,
       preferredOcr,
-      aiConfig: settings.ai,
+      storedFilename: path.relative(resolveProjectFile(process.env.UPLOAD_DIR || 'uploads', 'uploads'), req.file.path).replace(/\\/g, '/'),
     });
-
-    res.json(parsedInvoice);
+    wakeInvoiceExtractionJobWorker();
+    res.status(202).json({ ok: true, jobId: job.id, status: job.status });
   } catch (error) {
-    res.status(500).json({
-      supplier: null,
-      supplier_key: 'UNKNOWN',
-      document_type: 'unknown',
-      invoice_number: null,
-      invoice_date: null,
-      customer: null,
-      currency: 'KES',
-      items: [],
-      totals: { goods_total: null, vat: null, amount_due: null },
-      confidence: { supplier: 0, invoice_number: 0, date: 0, items: 0, totals: 0, overall: 0 },
-      warnings: [error instanceof Error ? error.message : 'Invoice parsing failed.'],
-      raw: { pdf_text: '', ocr_text: '', pages: [] },
-    });
+    res.status(500).json({ ok: false, error: error instanceof Error ? error.message : 'Invoice upload failed.' });
+  }
+});
+
+router.get('/invoice-parser/extraction-jobs/:jobId', async (req, res) => {
+  try {
+    const job = await getInvoiceExtractionJobById(req.params.jobId);
+    res.json({ ok: true, job });
+  } catch (error) {
+    res.status(404).json({ ok: false, error: error instanceof Error ? error.message : 'Invoice job not found.' });
   }
 });
 

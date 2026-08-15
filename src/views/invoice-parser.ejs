@@ -20,6 +20,16 @@
 
   <%- include('partials/alerts', { status, validationErrors: [] }) %>
 
+  <% if (extractionJob && (extractionJob.status === 'pending' || extractionJob.status === 'running')) { %>
+    <div class="alert alert-info d-flex align-items-center gap-3 mb-4" data-invoice-extraction-status data-job-id="<%= extractionJob.id %>">
+      <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+      <div>
+        <strong>Invoice processing in the background</strong>
+        <div class="small"><span data-invoice-stage><%= extractionJob.stage %></span> · <span data-invoice-progress><%= extractionJob.progress %></span>% complete. You can keep this page open.</div>
+      </div>
+    </div>
+  <% } %>
+
   <div class="row g-4">
     <div class="col-lg-4">
       <div class="card shadow-sm border-0 app-card">
@@ -187,3 +197,50 @@
 </main>
 
 <%- include('partials/footer') %>
+
+<% if (extractionJob && (extractionJob.status === 'pending' || extractionJob.status === 'running')) { %>
+  <script>
+    (() => {
+      const status = document.querySelector('[data-invoice-extraction-status]');
+      if (!(status instanceof HTMLElement)) return;
+      const jobId = status.dataset.jobId;
+      const stage = status.querySelector('[data-invoice-stage]');
+      const progress = status.querySelector('[data-invoice-progress]');
+      let attempts = 0;
+
+      const poll = async () => {
+        attempts += 1;
+        try {
+          const response = await fetch('/invoice-parser/extraction-jobs/' + encodeURIComponent(jobId), {
+            headers: { Accept: 'application/json' },
+            credentials: 'same-origin',
+          });
+          const payload = await response.json();
+          if (!response.ok || !payload.ok) throw new Error(payload.error || 'Could not read invoice job status.');
+          const job = payload.job;
+          if (stage) stage.textContent = job.stage || 'processing';
+          if (progress) progress.textContent = String(job.progress || 0);
+          if (job.status === 'completed') {
+            window.location.assign('/invoice-parser?job=' + encodeURIComponent(job.id));
+            return;
+          }
+          if (job.status === 'failed') {
+            status.className = 'alert alert-danger mb-4';
+            status.innerHTML = '<strong>Invoice processing failed.</strong><div class="small"></div>';
+            const detail = status.querySelector('.small');
+            if (detail) detail.textContent = job.errorMessage || 'Retry the upload.';
+            return;
+          }
+        } catch (error) {
+          if (attempts >= 10) {
+            status.className = 'alert alert-warning mb-4';
+            status.textContent = error instanceof Error ? error.message : 'Invoice status is temporarily unavailable.';
+          }
+        }
+        window.setTimeout(poll, 2500);
+      };
+
+      window.setTimeout(poll, 1000);
+    })();
+  </script>
+<% } %>

@@ -12,6 +12,7 @@ import { startUserProfileSyncInterval } from './src/services/userProfileSyncServ
 import { startShopFloorOperatorAccessSyncInterval } from './src/services/shopFloorOperatorAccessSyncService';
 import { startBoardIntakeSyncInterval } from './src/services/boardIntakeSyncService';
 import { startMpesaExtractionJobWorker } from './src/services/mpesaExtractionJobService';
+import { startInvoiceExtractionJobWorker } from './src/services/invoiceExtractionJobService';
 import { markStartupFailed, markStartupReady, markStartupStep } from './src/services/startupState';
 import { storageDirectoryPath } from './src/utils/paths';
 
@@ -202,6 +203,7 @@ export async function startServer() {
       await withStartupTimeout('Database initialization', () => ensureDatabaseWithRetry());
       writeStartupLog('Database initialization completed.');
       startMpesaExtractionJobWorker();
+      startInvoiceExtractionJobWorker();
       markStartupStep('initializing scheduler');
       await withStartupTimeout('Scheduler initialization', () => startSchedulerInterval());
       startEmailAutomationInterval();
