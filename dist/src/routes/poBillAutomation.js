@@ -261,4 +261,27 @@ router.post('/po-bill-automation/stop-scheduler', async (req, res) => {
         });
     }
 });
+router.post('/po-bill-automation/reset-exhausted', async (req, res) => {
+    const pdfPage = String(req.body.pdfPage || '1');
+    const loadRecentPdfs = req.body.loadPdfs === '1';
+    try {
+        const resetCount = await (0, repositories_1.resetPoBillExhaustedDocuments)();
+        const query = new URLSearchParams({
+            message: `Reset attempt count for ${resetCount} document(s). The scheduler will re-check them on its next run.`,
+            pdfPage,
+        });
+        if (loadRecentPdfs)
+            query.set('loadPdfs', '1');
+        res.redirect(`/po-bill-automation?${query.toString()}`);
+    }
+    catch (error) {
+        const query = new URLSearchParams({
+            error: error instanceof Error ? error.message : 'Could not reset exhausted documents.',
+            pdfPage,
+        });
+        if (loadRecentPdfs)
+            query.set('loadPdfs', '1');
+        res.redirect(`/po-bill-automation?${query.toString()}`);
+    }
+});
 exports.default = router;

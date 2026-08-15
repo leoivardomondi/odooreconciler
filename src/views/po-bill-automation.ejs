@@ -256,6 +256,7 @@
               <input type="hidden" name="loadPdfs" value="1" />
             <% } %>
             <button type="submit" class="btn btn-outline-primary">Run PO Matching Scheduler</button>
+            <button type="submit" formaction="/po-bill-automation/reset-exhausted" class="btn btn-outline-secondary" data-disable-submit="true" data-loading-message="Resetting exhausted document retries...">Reset Exhausted Document Retries</button>
             <% if (schedulerStatus && schedulerStatus.isRunning) { %>
               <button type="submit" formaction="/po-bill-automation/stop-scheduler" class="btn btn-outline-danger" data-disable-submit="true" data-loading-message="Requesting scheduler stop...">Stop Active Scheduler Run</button>
               <div class="form-text text-warning">A stop request lets the current document finish, then releases the scheduler lock safely.</div>

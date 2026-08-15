@@ -3324,6 +3324,15 @@ export async function getPoBillProcessedDocumentsByAttachmentIds(
   }, {});
 }
 
+export async function resetPoBillExhaustedDocuments(): Promise<number> {
+  const result = await execute(
+    `UPDATE po_bill_processed_documents
+     SET attempt_count = 0, updated_at = CURRENT_TIMESTAMP
+     WHERE status NOT IN ('processed', 'processed_with_warnings', 'delivery_note')`,
+  );
+  return result.affectedRows || 0;
+}
+
 export async function getPoBillProcessedDocumentsByInvoiceFingerprint(
   invoiceFingerprint: string | null | undefined,
 ): Promise<PoBillProcessedDocumentEntry[]> {

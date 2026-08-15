@@ -66,6 +66,7 @@ exports.recordPoBillUnreadableNotification = recordPoBillUnreadableNotification;
 exports.hasAiCredentialFailureNotification = hasAiCredentialFailureNotification;
 exports.recordAiCredentialFailureNotification = recordAiCredentialFailureNotification;
 exports.getPoBillProcessedDocumentsByAttachmentIds = getPoBillProcessedDocumentsByAttachmentIds;
+exports.resetPoBillExhaustedDocuments = resetPoBillExhaustedDocuments;
 exports.getPoBillProcessedDocumentsByInvoiceFingerprint = getPoBillProcessedDocumentsByInvoiceFingerprint;
 exports.getLatestPoBillProcessedDocumentsByPurchaseOrderIds = getLatestPoBillProcessedDocumentsByPurchaseOrderIds;
 exports.upsertPoBillProcessedDocument = upsertPoBillProcessedDocument;
@@ -2427,6 +2428,12 @@ async function getPoBillProcessedDocumentsByAttachmentIds(attachmentIds) {
         acc[entry.attachmentId] = entry;
         return acc;
     }, {});
+}
+async function resetPoBillExhaustedDocuments() {
+    const result = await (0, db_1.execute)(`UPDATE po_bill_processed_documents
+     SET attempt_count = 0, updated_at = CURRENT_TIMESTAMP
+     WHERE status NOT IN ('processed', 'processed_with_warnings', 'delivery_note')`);
+    return result.affectedRows || 0;
 }
 async function getPoBillProcessedDocumentsByInvoiceFingerprint(invoiceFingerprint) {
     const fingerprint = String(invoiceFingerprint || '').trim();
