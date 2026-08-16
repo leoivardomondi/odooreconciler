@@ -161,8 +161,10 @@ app.locals.stringify = (value: unknown) => JSON.stringify(value, null, 2);
 app.get('/health', (_req: Request, res: Response) => {
   const startupState = getStartupState();
   const isDevelopment = env.NODE_ENV !== 'production';
+  const ready = startupState.status === 'ready';
+  res.status(ready ? 200 : 503);
   res.json({
-    ok: true,
+    ok: ready,
     service: env.APP_NAME,
     timestamp: new Date().toISOString(),
     startupStatus: startupState.status,
