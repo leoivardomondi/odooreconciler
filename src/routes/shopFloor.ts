@@ -1018,6 +1018,7 @@ router.get('/shop-floor', async (req: Request, res: Response) => {
 
   const viewedEmail = getViewedUserEmail(req);
   const cacheKey = `shop-floor-dashboard:v3:${viewedEmail.toLowerCase()}`;
+  const featureFlagsPromise = getShopFloorFeatureFlags();
   if (req.query.refresh === 'true') {
     shopFloorCache.delete(cacheKey);
     dailyManufacturingAnalytics.clear();
@@ -1034,7 +1035,7 @@ router.get('/shop-floor', async (req: Request, res: Response) => {
       shopFloorCache.set(cacheKey, data, 60 * 1000);
     }
 
-    const featureFlags = await getShopFloorFeatureFlags();
+    const featureFlags = await featureFlagsPromise;
     res.render('shop-floor', {
       pageTitle: 'Shop Floor',
       appName: env.APP_NAME,
