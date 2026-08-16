@@ -134,7 +134,12 @@ export async function geminiVisionOcr(
 
       if (!response.ok) {
         const errJson = await response.json().catch(() => null);
-        warnings.push(`Google Gemini Vision OCR page ${image.pageNumber} failed (HTTP ${response.status}): ${errJson?.error?.message || 'API error'}`);
+        const detail = errJson?.error?.message || 'API error';
+        if ([400, 401, 403].includes(response.status)) {
+          warnings.push(`Google Gemini Vision OCR stopped after a credential/configuration error (HTTP ${response.status}): ${detail}. Falling back to the other OCR engines.`);
+          break;
+        }
+        warnings.push(`Google Gemini Vision OCR page ${image.pageNumber} failed (HTTP ${response.status}): ${detail}`);
         continue;
       }
 
