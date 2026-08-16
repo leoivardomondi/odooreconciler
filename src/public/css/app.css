@@ -1075,6 +1075,14 @@ body {
   background: rgba(8, 114, 54, 0.025);
 }
 
+/* Keep long statement grids responsive without changing row editing behavior. */
+@supports (content-visibility: auto) {
+  .mpesa-grid tbody tr {
+    content-visibility: auto;
+    contain-intrinsic-size: 0 58px;
+  }
+}
+
 .mpesa-grid tbody tr:hover td {
   background: rgba(8, 114, 54, 0.055);
 }
