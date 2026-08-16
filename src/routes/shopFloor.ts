@@ -1668,10 +1668,12 @@ router.get('/shop-floor/boards', async (req: Request, res: Response) => {
   }
 
   try {
-    const settings = await getSettings();
-    const stockMirror = await getStockMirrorForPage(req.query.refresh === 'true');
+    const [settings, stockMirror, recentIntakes] = await Promise.all([
+      getSettings(),
+      getStockMirrorForPage(req.query.refresh === 'true'),
+      getRecentBoardIntakeQueueEntries(),
+    ]);
     const products = stockMirror.products;
-    const recentIntakes = await getRecentBoardIntakeQueueEntries();
     const viewedEmail = getViewedUserEmail(req);
     const dashboardCacheKey = `shop-floor-dashboard:v2:${viewedEmail.toLowerCase()}`;
     let dashboardData = shopFloorCache.get<OperatorDashboardData>(dashboardCacheKey);
