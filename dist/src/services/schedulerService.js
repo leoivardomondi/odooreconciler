@@ -783,7 +783,7 @@ async function runPoBillSchedulerCycle(trigger = 'manual') {
             processedCount,
             skippedCount,
             failedCount,
-            summary: `${stopRequested ? 'PO bill scheduler stopped by operator. ' : ''}PO bill scheduler scanned ${scannedCount} Finance document(s), processed ${processedCount}, skipped ${skippedCount}, failed ${failedCount}${exhaustedCount > 0 ? `, ${exhaustedCount} exhausted (permanently skipped after ${settings.poBillScheduler.maxRetryAttempts} attempts)` : ''}${cooldownBlockedCount > 0 ? `, ${cooldownBlockedCount} in cooldown` : ''}${consecutiveRetryBlockedCount > 0 ? `, ${consecutiveRetryBlockedCount} held back after the previous run` : ''}.`,
+            summary: `${stopRequested ? 'PO bill scheduler stopped by operator. ' : ''}Found ${recentPdfs.length} Finance document(s) since ${fromDate}; ${queue.length} eligible in this batch; scanned ${scannedCount}, processed ${processedCount}, skipped ${skippedCount}, failed ${failedCount}${exhaustedCount > 0 ? `, ${exhaustedCount} exhausted (permanently skipped after ${settings.poBillScheduler.maxRetryAttempts} attempts)` : ''}${cooldownBlockedCount > 0 ? `, ${cooldownBlockedCount} in cooldown` : ''}${consecutiveRetryBlockedCount > 0 ? `, ${consecutiveRetryBlockedCount} held back after the previous run` : ''}.`,
             context: {
                 jobType: PO_BILL_SCHEDULER_JOB_TYPE,
                 schedulerName: 'PO Bill Scheduler',
