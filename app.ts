@@ -171,13 +171,27 @@ app.get('/health', (_req: Request, res: Response) => {
     poBillManual: getPoBillManualJobWorkerStatus(),
   };
   const workersReady = Object.values(workers).every((worker) => worker.healthy);
+  const workerDiagnostics = Object.fromEntries(
+    Object.entries(workers).map(([name, worker]) => [
+      name,
+      isDevelopment
+        ? worker
+        : {
+            running: worker.running,
+            processing: worker.processing,
+            healthy: worker.healthy,
+            lastPollAt: worker.lastPollAt,
+            lastErrorAt: worker.lastErrorAt,
+          },
+    ]),
+  );
   res.status(ready && workersReady ? 200 : 503);
   res.json({
     ok: ready && workersReady,
     service: env.APP_NAME,
     timestamp: new Date().toISOString(),
     startupStatus: startupState.status,
-    workers,
+    workers: workerDiagnostics,
     ...(isDevelopment
       ? {
           startupStep: startupState.step,
