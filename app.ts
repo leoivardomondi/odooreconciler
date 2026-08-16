@@ -164,6 +164,9 @@ app.locals.stringify = (value: unknown) => JSON.stringify(value, null, 2);
 app.get('/health', (_req: Request, res: Response) => {
   const startupState = getStartupState();
   const isDevelopment = env.NODE_ENV !== 'production';
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
   const ready = startupState.status === 'ready';
   const workers = {
     mpesaExtraction: getMpesaExtractionJobWorkerStatus(),
