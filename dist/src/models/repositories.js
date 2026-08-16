@@ -45,6 +45,8 @@ exports.completeInvoiceExtractionJob = completeInvoiceExtractionJob;
 exports.scheduleMpesaExtractionJobRetry = scheduleMpesaExtractionJobRetry;
 exports.scheduleInvoiceExtractionJobRetry = scheduleInvoiceExtractionJobRetry;
 exports.getExtractionQueueHealth = getExtractionQueueHealth;
+exports.retryMpesaExtractionJob = retryMpesaExtractionJob;
+exports.retryInvoiceExtractionJob = retryInvoiceExtractionJob;
 exports.reclaimStaleMpesaExtractionJobs = reclaimStaleMpesaExtractionJobs;
 exports.touchMpesaExtractionJob = touchMpesaExtractionJob;
 exports.reclaimStaleInvoiceExtractionJobs = reclaimStaleInvoiceExtractionJobs;
@@ -1838,6 +1840,12 @@ async function getExtractionQueueHealth() {
     ]);
     const map = (rows) => Object.fromEntries(rows.map((row) => [row.status, Number(row.count || 0)]));
     return { mpesa: map(mpesa), invoice: map(invoice), poBill: map(poBill) };
+}
+async function retryMpesaExtractionJob(id) {
+    await (0, db_1.execute)(`UPDATE mpesa_extraction_jobs SET status = 'pending', retry_count = 0, next_retry_at = NULL, error_message = NULL, completed_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'dead_letter'`, [id]);
+}
+async function retryInvoiceExtractionJob(id) {
+    await (0, db_1.execute)(`UPDATE invoice_extraction_jobs SET status = 'pending', retry_count = 0, next_retry_at = NULL, error_message = NULL, completed_at = NULL, stage = 'queued', progress = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'dead_letter'`, [id]);
 }
 function staleJobCutoff(minutes) {
     const cutoff = new Date(Date.now() - minutes * 60 * 1000);

@@ -12,6 +12,8 @@ const extractionService_1 = require("../services/extractionService");
 const jobSummaryReminderService_1 = require("../services/jobSummaryReminderService");
 const logService_1 = require("../services/logService");
 const mpesaReviewNotificationService_1 = require("../services/mpesaReviewNotificationService");
+const invoiceExtractionJobService_1 = require("../services/invoiceExtractionJobService");
+const mpesaExtractionJobService_1 = require("../services/mpesaExtractionJobService");
 const shopFloorTaskReminderService_1 = require("../services/shopFloorTaskReminderService");
 const odooClient_1 = require("../services/odooClient");
 const schedulerService_1 = require("../services/schedulerService");
@@ -21,6 +23,30 @@ const helpers_1 = require("../utils/helpers");
 const paths_1 = require("../utils/paths");
 const router = (0, express_1.Router)();
 const webhookLogPath = path_1.default.join(paths_1.storageDirectoryPath, 'webhook.log');
+router.post('/jobs/retry-dead-letter/:type/:jobId', async (req, res) => {
+    if (req.authUser?.role !== 'admin') {
+        return res.status(403).json({ ok: false, error: 'Admin access is required.' });
+    }
+    const type = String(req.params.type || '').toLowerCase();
+    const jobId = String(req.params.jobId || '').trim();
+    if (!jobId || !['mpesa', 'invoice'].includes(type)) {
+        return res.status(400).json({ ok: false, error: 'A valid job type and job ID are required.' });
+    }
+    try {
+        if (type === 'mpesa') {
+            await (0, repositories_1.retryMpesaExtractionJob)(jobId);
+            (0, mpesaExtractionJobService_1.wakeMpesaExtractionJobWorker)();
+        }
+        else {
+            await (0, repositories_1.retryInvoiceExtractionJob)(jobId);
+            (0, invoiceExtractionJobService_1.wakeInvoiceExtractionJobWorker)();
+        }
+        return res.json({ ok: true, status: 'queued', jobId });
+    }
+    catch (error) {
+        return res.status(500).json({ ok: false, error: error instanceof Error ? error.message : 'Could not retry job.' });
+    }
+});
 async function isAuthorizedCronRequest(token) {
     const settings = await (0, repositories_1.getSettings)();
     const expectedToken = settings.scheduler.cronToken || env_1.env.SCHEDULER_CRON_TOKEN;

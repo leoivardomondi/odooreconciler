@@ -2395,6 +2395,14 @@ export async function getExtractionQueueHealth() {
   return { mpesa: map(mpesa), invoice: map(invoice), poBill: map(poBill) };
 }
 
+export async function retryMpesaExtractionJob(id: string) {
+  await execute(`UPDATE mpesa_extraction_jobs SET status = 'pending', retry_count = 0, next_retry_at = NULL, error_message = NULL, completed_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'dead_letter'`, [id]);
+}
+
+export async function retryInvoiceExtractionJob(id: string) {
+  await execute(`UPDATE invoice_extraction_jobs SET status = 'pending', retry_count = 0, next_retry_at = NULL, error_message = NULL, completed_at = NULL, stage = 'queued', progress = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'dead_letter'`, [id]);
+}
+
 function staleJobCutoff(minutes: number) {
   const cutoff = new Date(Date.now() - minutes * 60 * 1000);
   return cutoff.toISOString().slice(0, 19).replace('T', ' ');

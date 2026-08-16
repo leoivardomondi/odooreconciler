@@ -2,7 +2,7 @@ import { timingSafeEqual } from 'node:crypto';
 import fs from 'fs';
 import path from 'path';
 import { Request, Router } from 'express';
-import { getSettings } from '../models/repositories';
+import { getSettings, retryInvoiceExtractionJob, retryMpesaExtractionJob } from '../models/repositories';
 import {
   extractAttachmentForOrder,
   sendExtractedResultToOdoo,
@@ -10,6 +10,8 @@ import {
 import { closeOpenJobSummaryReminderActivities } from '../services/jobSummaryReminderService';
 import { logEvent } from '../services/logService';
 import { sendDailyMpesaReviewNotification } from '../services/mpesaReviewNotificationService';
+import { wakeInvoiceExtractionJobWorker } from '../services/invoiceExtractionJobService';
+import { wakeMpesaExtractionJobWorker } from '../services/mpesaExtractionJobService';
 import { sendHourlyShopFloorTaskReminders } from '../services/shopFloorTaskReminderService';
 import { OdooClient } from '../services/odooClient';
 import { runPoBillSchedulerCycle, runSchedulerCycle } from '../services/schedulerService';
@@ -24,6 +26,29 @@ import { storageDirectoryPath } from '../utils/paths';
 
 const router = Router();
 const webhookLogPath = path.join(storageDirectoryPath, 'webhook.log');
+
+router.post('/jobs/retry-dead-letter/:type/:jobId', async (req, res) => {
+  if (req.authUser?.role !== 'admin') {
+    return res.status(403).json({ ok: false, error: 'Admin access is required.' });
+  }
+  const type = String(req.params.type || '').toLowerCase();
+  const jobId = String(req.params.jobId || '').trim();
+  if (!jobId || !['mpesa', 'invoice'].includes(type)) {
+    return res.status(400).json({ ok: false, error: 'A valid job type and job ID are required.' });
+  }
+  try {
+    if (type === 'mpesa') {
+      await retryMpesaExtractionJob(jobId);
+      wakeMpesaExtractionJobWorker();
+    } else {
+      await retryInvoiceExtractionJob(jobId);
+      wakeInvoiceExtractionJobWorker();
+    }
+    return res.json({ ok: true, status: 'queued', jobId });
+  } catch (error) {
+    return res.status(500).json({ ok: false, error: error instanceof Error ? error.message : 'Could not retry job.' });
+  }
+});
 
 interface AttachmentUploadedPayload {
   attachmentId: number;
