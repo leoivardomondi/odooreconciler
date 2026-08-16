@@ -40,6 +40,24 @@ app.use((req, res, next) => {
     res.locals.requestId = requestId;
     next();
 });
+app.use((req, res, next) => {
+    const startedAt = process.hrtime.bigint();
+    res.on('finish', () => {
+        const durationMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+        if (durationMs < 1000 || req.path === '/health' || req.path.startsWith('/public/')) {
+            return;
+        }
+        void (0, logService_1.logEvent)('warn', 'Slow HTTP request', {
+            requestId: res.locals.requestId || null,
+            method: req.method,
+            path: req.path,
+            statusCode: res.statusCode,
+            durationMs: Math.round(durationMs),
+            userEmail: req.authUser?.email || null,
+        }).catch(() => undefined);
+    });
+    next();
+});
 app.use((0, morgan_1.default)(env_1.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 app.use('/public', express_1.default.static(paths_1.publicPath));
 function proxyPayrollBridge(req, res, next) {

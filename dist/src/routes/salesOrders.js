@@ -26,12 +26,26 @@ async function buildClient() {
 async function buildSalesOrderListItems(client, settings, orderSummaries) {
     const availableFields = await client.getSaleOrderFields();
     const mappings = (0, helpers_1.resolveFieldMappings)(settings.fieldMappings, availableFields);
+    const attachmentsByOrder = await client.getAttachmentsForSaleOrders(orderSummaries.map((order) => order.id)).catch(async () => {
+        const fallback = new Map();
+        await Promise.all(orderSummaries.map(async (order) => fallback.set(order.id, await client.getAttachments(order.id).catch(() => []))));
+        return fallback;
+    });
+    const handoffsByOrder = await client.getSaleOrderStockHandoffs(orderSummaries.map((order) => order.id), mappings).catch(async () => {
+        const fallback = new Map();
+        await Promise.all(orderSummaries.map(async (order) => {
+            const handoff = await client.getSaleOrderStockHandoff(order.id, mappings).catch(() => null);
+            if (handoff)
+                fallback.set(order.id, handoff);
+        }));
+        return fallback;
+    });
     return Promise.all(orderSummaries.map(async (order) => {
-        const [attachments, history, handoff] = await Promise.all([
-            client.getAttachments(order.id).catch(() => []),
+        const [attachments, history] = await Promise.all([
+            Promise.resolve(attachmentsByOrder.get(order.id) || []),
             Promise.resolve((0, extractionService_1.getRecentOrderHistory)(order.id)),
-            client.getSaleOrderStockHandoff(order.id, mappings).catch(() => null),
         ]);
+        const handoff = handoffsByOrder.get(order.id) || null;
         const hasJobSummary = attachments.some((attachment) => (0, helpers_1.isJobSummaryAttachment)(attachment, settings.parser.filenameKeyword));
         const extracted = history.some((entry) => ['parsed', 'parsed_empty', 'sent_to_odoo', 'signature_unchanged_skipped'].includes(entry.status));
         const sentToOdoo = history.some((entry) => entry.status === 'sent_to_odoo');

@@ -479,6 +479,81 @@ export class OdooClient {
     });
   }
 
+  async getAttachmentsForSaleOrders(orderIds: number[]): Promise<Map<number, AttachmentInfo[]>> {
+    const result = new Map<number, AttachmentInfo[]>();
+    const ids = [...new Set(orderIds.filter((id) => Number.isInteger(id) && id > 0))];
+    ids.forEach((id) => result.set(id, []));
+    if (ids.length === 0) {
+      return result;
+    }
+
+    const attachmentFields = ['id', 'name', 'mimetype', 'create_date', 'write_date', 'file_size', 'res_model', 'res_id'];
+    const directAttachments = await this.request<Array<AttachmentInfo & { res_model?: string; res_id?: number }>>(
+      'ir.attachment',
+      'search_read',
+      {
+        domain: [
+          ['res_model', '=', 'sale.order'],
+          ['res_id', 'in', ids],
+        ],
+        fields: attachmentFields,
+        limit: Math.max(200, ids.length * 200),
+        order: 'write_date desc, create_date desc, id desc',
+      },
+    );
+
+    directAttachments.forEach((attachment) => {
+      if (attachment.res_id && result.has(attachment.res_id)) {
+        result.get(attachment.res_id)!.push(attachment);
+      }
+    });
+
+    try {
+      const messages = await this.request<Array<{ id: number; res_id?: number }>>('mail.message', 'search_read', {
+        domain: [
+          ['model', '=', 'sale.order'],
+          ['res_id', 'in', ids],
+        ],
+        fields: ['id', 'res_id'],
+        limit: Math.max(500, ids.length * 500),
+        order: 'id desc',
+      });
+      const messageToOrder = new Map(messages.filter((message) => message.res_id).map((message) => [message.id, message.res_id!]));
+      const messageIds = [...messageToOrder.keys()];
+      if (messageIds.length > 0) {
+        const chatterAttachments = await this.request<Array<AttachmentInfo & { res_id?: number }>>('ir.attachment', 'search_read', {
+          domain: [
+            ['res_model', '=', 'mail.message'],
+            ['res_id', 'in', messageIds],
+          ],
+          fields: attachmentFields,
+          limit: Math.max(200, ids.length * 200),
+          order: 'write_date desc, create_date desc, id desc',
+        });
+        chatterAttachments.forEach((attachment) => {
+          const orderId = attachment.res_id ? messageToOrder.get(attachment.res_id) : undefined;
+          if (orderId && result.has(orderId)) {
+            result.get(orderId)!.push(attachment);
+          }
+        });
+      }
+    } catch (error) {
+      console.warn('[odoo] Could not load sale.order chatter attachments in bulk.', error instanceof Error ? error.message : error);
+    }
+
+    result.forEach((attachments, orderId) => {
+      const byId = new Map<number, AttachmentInfo>();
+      attachments.forEach((attachment) => byId.set(attachment.id, attachment));
+      result.set(orderId, [...byId.values()].sort((left, right) => {
+        const leftDate = new Date(left.write_date || left.create_date || 0).getTime();
+        const rightDate = new Date(right.write_date || right.create_date || 0).getTime();
+        return rightDate !== leftDate ? rightDate - leftDate : right.id - left.id;
+      }));
+    });
+
+    return result;
+  }
+
   async getAttachmentRecord(attachmentId: number): Promise<{
     id: number;
     name: string;
@@ -654,6 +729,43 @@ export class OdooClient {
       stockAdjustmentInputJson: String(values[mappings.deltaJsonField] || ''),
       processingLog: String(values[mappings.logField] || ''),
     };
+  }
+
+  async getSaleOrderStockHandoffs(orderIds: number[], mappings: FieldMappings): Promise<Map<number, SaleOrderStockHandoff>> {
+    const result = new Map<number, SaleOrderStockHandoff>();
+    const ids = [...new Set(orderIds.filter((id) => Number.isInteger(id) && id > 0))];
+    if (ids.length === 0) {
+      return result;
+    }
+    const targetCompanyId = await this.getTargetCompanyId();
+    const fieldNames = [
+      'id', 'name', 'company_id', mappings.edgeJsonField, mappings.previousJsonField,
+      mappings.signatureField, mappings.stockSignatureField, mappings.stockProcessedField,
+      mappings.deltaJsonField, mappings.logField,
+    ].filter(Boolean);
+    const orders = await this.request<Array<Record<string, unknown>>>('sale.order', 'read', {
+      ids,
+      fields: [...new Set(fieldNames)],
+    }, { timeoutMs: this.saleOrderReadTimeoutMs });
+    orders.forEach((order) => {
+      const orderId = Number(order.id);
+      const companyId = Array.isArray(order.company_id) ? order.company_id[0] : null;
+      if (!orderId || companyId !== targetCompanyId) {
+        return;
+      }
+      result.set(orderId, {
+        orderId,
+        orderName: String(order.name || ''),
+        edgeJson: String(order[mappings.edgeJsonField] || ''),
+        previousJson: String(order[mappings.previousJsonField] || ''),
+        signature: String(order[mappings.signatureField] || ''),
+        stockSignature: String(order[mappings.stockSignatureField] || ''),
+        stockProcessed: Boolean(order[mappings.stockProcessedField]),
+        stockAdjustmentInputJson: String(order[mappings.deltaJsonField] || ''),
+        processingLog: String(order[mappings.logField] || ''),
+      });
+    });
+    return result;
   }
 
   async getSaleOrderLines(orderId: number): Promise<SaleOrderLine[]> {

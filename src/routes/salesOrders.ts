@@ -1,6 +1,6 @@
 import { Response, Router } from 'express';
 import { getSettings } from '../models/repositories';
-import { AppSettings, HistoryEntry, SalesOrderListItem, StockProcessingRunResult } from '../models/types';
+import { AppSettings, AttachmentInfo, HistoryEntry, SaleOrderStockHandoff, SalesOrderListItem, StockProcessingRunResult } from '../models/types';
 import {
   extractAttachmentForOrder,
   extractLatestJobSummaryForOrder,
@@ -51,14 +51,27 @@ async function buildSalesOrderListItems(
 ): Promise<SalesOrderListItem[]> {
   const availableFields = await client.getSaleOrderFields();
   const mappings = resolveFieldMappings(settings.fieldMappings, availableFields);
+  const attachmentsByOrder = await client.getAttachmentsForSaleOrders(orderSummaries.map((order) => order.id)).catch(async () => {
+    const fallback = new Map<number, AttachmentInfo[]>();
+    await Promise.all(orderSummaries.map(async (order) => fallback.set(order.id, await client.getAttachments(order.id).catch(() => []))));
+    return fallback;
+  });
+  const handoffsByOrder = await client.getSaleOrderStockHandoffs(orderSummaries.map((order) => order.id), mappings).catch(async () => {
+    const fallback = new Map<number, SaleOrderStockHandoff>();
+    await Promise.all(orderSummaries.map(async (order) => {
+      const handoff = await client.getSaleOrderStockHandoff(order.id, mappings).catch(() => null);
+      if (handoff) fallback.set(order.id, handoff);
+    }));
+    return fallback;
+  });
 
   return Promise.all(
     orderSummaries.map(async (order) => {
-      const [attachments, history, handoff] = await Promise.all([
-        client.getAttachments(order.id).catch(() => []),
+      const [attachments, history] = await Promise.all([
+        Promise.resolve(attachmentsByOrder.get(order.id) || []),
         Promise.resolve(getRecentOrderHistory(order.id)),
-        client.getSaleOrderStockHandoff(order.id, mappings).catch(() => null),
       ]);
+      const handoff = handoffsByOrder.get(order.id) || null;
       const hasJobSummary = attachments.some((attachment) =>
         isJobSummaryAttachment(attachment, settings.parser.filenameKeyword),
       );

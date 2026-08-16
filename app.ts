@@ -59,6 +59,24 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   res.locals.requestId = requestId;
   next();
 });
+app.use((req: Request, res: Response, next: NextFunction) => {
+  const startedAt = process.hrtime.bigint();
+  res.on('finish', () => {
+    const durationMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+    if (durationMs < 1000 || req.path === '/health' || req.path.startsWith('/public/')) {
+      return;
+    }
+    void logEvent('warn', 'Slow HTTP request', {
+      requestId: res.locals.requestId || null,
+      method: req.method,
+      path: req.path,
+      statusCode: res.statusCode,
+      durationMs: Math.round(durationMs),
+      userEmail: req.authUser?.email || null,
+    }).catch(() => undefined);
+  });
+  next();
+});
 app.use(morgan(env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 app.use('/public', express.static(publicPath));
 
