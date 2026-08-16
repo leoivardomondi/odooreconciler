@@ -1545,6 +1545,8 @@ function mapMpesaExtractionJobRow(row: {
   updated_at: string;
   started_at: string | null;
   completed_at: string | null;
+  retry_count: number | string;
+  next_retry_at: string | null;
 }): MpesaExtractionJob {
   return {
     id: row.id,
@@ -1560,6 +1562,8 @@ function mapMpesaExtractionJobRow(row: {
     updatedAt: row.updated_at,
     startedAt: row.started_at,
     completedAt: row.completed_at,
+    retryCount: Number(row.retry_count || 0),
+    nextRetryAt: row.next_retry_at,
   };
 }
 
@@ -1577,6 +1581,8 @@ function mapInvoiceExtractionJobRow(row: {
   updated_at: string;
   started_at: string | null;
   completed_at: string | null;
+  retry_count: number | string;
+  next_retry_at: string | null;
 }): InvoiceExtractionJob {
   return {
     id: row.id,
@@ -1592,6 +1598,8 @@ function mapInvoiceExtractionJobRow(row: {
     updatedAt: row.updated_at,
     startedAt: row.started_at,
     completedAt: row.completed_at,
+    retryCount: Number(row.retry_count || 0),
+    nextRetryAt: row.next_retry_at,
   };
 }
 
@@ -2174,7 +2182,7 @@ export async function getMpesaExtractionJobById(id: string): Promise<MpesaExtrac
     `
       SELECT id, batch_id, job_type, status, original_filename, stored_filename,
         previous_stored_filename, error_message, transaction_count, created_at,
-        updated_at, started_at, completed_at
+        updated_at, started_at, completed_at, retry_count, next_retry_at
       FROM mpesa_extraction_jobs
       WHERE id = ?
     `,
@@ -2194,6 +2202,7 @@ export async function claimNextMpesaExtractionJob(): Promise<MpesaExtractionJob 
       SELECT id
       FROM mpesa_extraction_jobs
       WHERE status = 'pending'
+        AND (next_retry_at IS NULL OR next_retry_at <= CURRENT_TIMESTAMP)
       ORDER BY created_at ASC, id ASC
       LIMIT 1
     `,
@@ -2217,7 +2226,7 @@ export async function claimNextMpesaExtractionJob(): Promise<MpesaExtractionJob 
 
 export async function completeMpesaExtractionJob(input: {
   id: string;
-  status: Extract<MpesaExtractionJob['status'], 'completed' | 'failed'>;
+  status: Extract<MpesaExtractionJob['status'], 'completed' | 'failed' | 'dead_letter'>;
   transactionCount?: number | null;
   errorMessage?: string | null;
 }) {
@@ -2225,7 +2234,7 @@ export async function completeMpesaExtractionJob(input: {
     `
       UPDATE mpesa_extraction_jobs
       SET status = ?, transaction_count = ?, error_message = ?, completed_at = CURRENT_TIMESTAMP,
-        updated_at = CURRENT_TIMESTAMP
+        updated_at = CURRENT_TIMESTAMP, next_retry_at = NULL
       WHERE id = ?
     `,
     [input.status, input.transactionCount ?? null, input.errorMessage || null, input.id],
@@ -2253,7 +2262,7 @@ export async function getInvoiceExtractionJobById(id: string): Promise<InvoiceEx
   const row = await queryOne<Parameters<typeof mapInvoiceExtractionJobRow>[0]>(
     `
       SELECT id, status, original_filename, stored_filename, preferred_ocr, stage, progress,
-        result_json, error_message, created_at, updated_at, started_at, completed_at
+        result_json, error_message, created_at, updated_at, started_at, completed_at, retry_count, next_retry_at
       FROM invoice_extraction_jobs
       WHERE id = ?
     `,
@@ -2270,6 +2279,7 @@ export async function claimNextInvoiceExtractionJob(): Promise<InvoiceExtraction
     `
       SELECT id FROM invoice_extraction_jobs
       WHERE status = 'pending'
+        AND (next_retry_at IS NULL OR next_retry_at <= CURRENT_TIMESTAMP)
       ORDER BY created_at ASC, id ASC
       LIMIT 1
     `,
@@ -2305,7 +2315,7 @@ export async function updateInvoiceExtractionJobProgress(input: {
 
 export async function completeInvoiceExtractionJob(input: {
   id: string;
-  status: Extract<InvoiceExtractionJob['status'], 'completed' | 'failed'>;
+  status: Extract<InvoiceExtractionJob['status'], 'completed' | 'failed' | 'dead_letter'>;
   result?: InvoiceExtractionJob['result'];
   errorMessage?: string | null;
 }) {
@@ -2313,7 +2323,7 @@ export async function completeInvoiceExtractionJob(input: {
     `
       UPDATE invoice_extraction_jobs
       SET status = ?, stage = ?, progress = ?, result_json = ?, error_message = ?,
-        completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+        completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, next_retry_at = NULL
       WHERE id = ?
     `,
     [
@@ -2324,6 +2334,54 @@ export async function completeInvoiceExtractionJob(input: {
       input.errorMessage || null,
       input.id,
     ],
+  );
+}
+
+function retryAtSql() {
+  return getDatabaseDialect() === 'mysql'
+    ? 'DATE_ADD(CURRENT_TIMESTAMP, INTERVAL ? MINUTE)'
+    : "datetime(CURRENT_TIMESTAMP, '+' || ? || ' minutes')";
+}
+
+export async function scheduleMpesaExtractionJobRetry(input: {
+  id: string;
+  errorMessage: string;
+  maxAttempts?: number;
+  delayMinutes?: number;
+}) {
+  const maxAttempts = Math.max(1, input.maxAttempts || 3);
+  const delayMinutes = Math.max(1, input.delayMinutes || 2);
+  await execute(
+    `UPDATE mpesa_extraction_jobs
+     SET status = CASE WHEN retry_count + 1 >= ? THEN 'dead_letter' ELSE 'pending' END,
+         retry_count = retry_count + 1,
+         next_retry_at = CASE WHEN retry_count + 1 >= ? THEN NULL ELSE ${retryAtSql()} END,
+         error_message = ?, started_at = NULL,
+         completed_at = CASE WHEN retry_count + 1 >= ? THEN CURRENT_TIMESTAMP ELSE NULL END,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = ?`,
+    [maxAttempts, maxAttempts, delayMinutes, input.errorMessage, maxAttempts, input.id],
+  );
+}
+
+export async function scheduleInvoiceExtractionJobRetry(input: {
+  id: string;
+  errorMessage: string;
+  maxAttempts?: number;
+  delayMinutes?: number;
+}) {
+  const maxAttempts = Math.max(1, input.maxAttempts || 3);
+  const delayMinutes = Math.max(1, input.delayMinutes || 2);
+  await execute(
+    `UPDATE invoice_extraction_jobs
+     SET status = CASE WHEN retry_count + 1 >= ? THEN 'dead_letter' ELSE 'pending' END,
+         retry_count = retry_count + 1,
+         next_retry_at = CASE WHEN retry_count + 1 >= ? THEN NULL ELSE ${retryAtSql()} END,
+         error_message = ?, started_at = NULL,
+         completed_at = CASE WHEN retry_count + 1 >= ? THEN CURRENT_TIMESTAMP ELSE NULL END,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = ?`,
+    [maxAttempts, maxAttempts, delayMinutes, input.errorMessage, maxAttempts, input.id],
   );
 }
 

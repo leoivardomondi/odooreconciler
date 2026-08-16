@@ -6,6 +6,7 @@ import {
   markMpesaStatementBatchExtractionFailed,
   reclaimStaleMpesaExtractionJobs,
   replaceMpesaStatementBatchExtraction,
+  scheduleMpesaExtractionJobRetry,
   touchMpesaExtractionJob,
 } from '../models/repositories';
 import { extractMpesaStatement } from './mpesaReconciliationService';
@@ -75,12 +76,8 @@ async function processNextMpesaExtractionJob() {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       await markMpesaStatementBatchExtractionFailed(job.batchId, message).catch(() => undefined);
-      await completeMpesaExtractionJob({
-        id: job.id,
-        status: 'failed',
-        errorMessage: message,
-      }).catch(() => undefined);
-      if (job.jobType === 'reupload') {
+      await scheduleMpesaExtractionJobRetry({ id: job.id, errorMessage: message }).catch(() => undefined);
+      if (job.jobType === 'reupload' && job.retryCount + 1 >= 3) {
         await deleteStoredFile(job.storedFilename);
       }
     } finally {

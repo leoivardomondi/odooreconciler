@@ -42,6 +42,8 @@ exports.getInvoiceExtractionJobById = getInvoiceExtractionJobById;
 exports.claimNextInvoiceExtractionJob = claimNextInvoiceExtractionJob;
 exports.updateInvoiceExtractionJobProgress = updateInvoiceExtractionJobProgress;
 exports.completeInvoiceExtractionJob = completeInvoiceExtractionJob;
+exports.scheduleMpesaExtractionJobRetry = scheduleMpesaExtractionJobRetry;
+exports.scheduleInvoiceExtractionJobRetry = scheduleInvoiceExtractionJobRetry;
 exports.reclaimStaleMpesaExtractionJobs = reclaimStaleMpesaExtractionJobs;
 exports.touchMpesaExtractionJob = touchMpesaExtractionJob;
 exports.reclaimStaleInvoiceExtractionJobs = reclaimStaleInvoiceExtractionJobs;
@@ -1269,6 +1271,8 @@ function mapMpesaExtractionJobRow(row) {
         updatedAt: row.updated_at,
         startedAt: row.started_at,
         completedAt: row.completed_at,
+        retryCount: Number(row.retry_count || 0),
+        nextRetryAt: row.next_retry_at,
     };
 }
 function mapInvoiceExtractionJobRow(row) {
@@ -1286,6 +1290,8 @@ function mapInvoiceExtractionJobRow(row) {
         updatedAt: row.updated_at,
         startedAt: row.started_at,
         completedAt: row.completed_at,
+        retryCount: Number(row.retry_count || 0),
+        nextRetryAt: row.next_retry_at,
     };
 }
 function mapPoBillManualJobRow(row) {
@@ -1697,7 +1703,7 @@ async function getMpesaExtractionJobById(id) {
     const row = await (0, db_1.queryOne)(`
       SELECT id, batch_id, job_type, status, original_filename, stored_filename,
         previous_stored_filename, error_message, transaction_count, created_at,
-        updated_at, started_at, completed_at
+        updated_at, started_at, completed_at, retry_count, next_retry_at
       FROM mpesa_extraction_jobs
       WHERE id = ?
     `, [id]);
@@ -1711,6 +1717,7 @@ async function claimNextMpesaExtractionJob() {
       SELECT id
       FROM mpesa_extraction_jobs
       WHERE status = 'pending'
+        AND (next_retry_at IS NULL OR next_retry_at <= CURRENT_TIMESTAMP)
       ORDER BY created_at ASC, id ASC
       LIMIT 1
     `);
@@ -1728,7 +1735,7 @@ async function completeMpesaExtractionJob(input) {
     await (0, db_1.execute)(`
       UPDATE mpesa_extraction_jobs
       SET status = ?, transaction_count = ?, error_message = ?, completed_at = CURRENT_TIMESTAMP,
-        updated_at = CURRENT_TIMESTAMP
+        updated_at = CURRENT_TIMESTAMP, next_retry_at = NULL
       WHERE id = ?
     `, [input.status, input.transactionCount ?? null, input.errorMessage || null, input.id]);
 }
@@ -1744,7 +1751,7 @@ async function createInvoiceExtractionJob(input) {
 async function getInvoiceExtractionJobById(id) {
     const row = await (0, db_1.queryOne)(`
       SELECT id, status, original_filename, stored_filename, preferred_ocr, stage, progress,
-        result_json, error_message, created_at, updated_at, started_at, completed_at
+        result_json, error_message, created_at, updated_at, started_at, completed_at, retry_count, next_retry_at
       FROM invoice_extraction_jobs
       WHERE id = ?
     `, [id]);
@@ -1757,6 +1764,7 @@ async function claimNextInvoiceExtractionJob() {
     const candidate = await (0, db_1.queryOne)(`
       SELECT id FROM invoice_extraction_jobs
       WHERE status = 'pending'
+        AND (next_retry_at IS NULL OR next_retry_at <= CURRENT_TIMESTAMP)
       ORDER BY created_at ASC, id ASC
       LIMIT 1
     `);
@@ -1781,7 +1789,7 @@ async function completeInvoiceExtractionJob(input) {
     await (0, db_1.execute)(`
       UPDATE invoice_extraction_jobs
       SET status = ?, stage = ?, progress = ?, result_json = ?, error_message = ?,
-        completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+        completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, next_retry_at = NULL
       WHERE id = ?
     `, [
         input.status,
@@ -1791,6 +1799,35 @@ async function completeInvoiceExtractionJob(input) {
         input.errorMessage || null,
         input.id,
     ]);
+}
+function retryAtSql() {
+    return (0, db_1.getDatabaseDialect)() === 'mysql'
+        ? 'DATE_ADD(CURRENT_TIMESTAMP, INTERVAL ? MINUTE)'
+        : "datetime(CURRENT_TIMESTAMP, '+' || ? || ' minutes')";
+}
+async function scheduleMpesaExtractionJobRetry(input) {
+    const maxAttempts = Math.max(1, input.maxAttempts || 3);
+    const delayMinutes = Math.max(1, input.delayMinutes || 2);
+    await (0, db_1.execute)(`UPDATE mpesa_extraction_jobs
+     SET status = CASE WHEN retry_count + 1 >= ? THEN 'dead_letter' ELSE 'pending' END,
+         retry_count = retry_count + 1,
+         next_retry_at = CASE WHEN retry_count + 1 >= ? THEN NULL ELSE ${retryAtSql()} END,
+         error_message = ?, started_at = NULL,
+         completed_at = CASE WHEN retry_count + 1 >= ? THEN CURRENT_TIMESTAMP ELSE NULL END,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = ?`, [maxAttempts, maxAttempts, delayMinutes, input.errorMessage, maxAttempts, input.id]);
+}
+async function scheduleInvoiceExtractionJobRetry(input) {
+    const maxAttempts = Math.max(1, input.maxAttempts || 3);
+    const delayMinutes = Math.max(1, input.delayMinutes || 2);
+    await (0, db_1.execute)(`UPDATE invoice_extraction_jobs
+     SET status = CASE WHEN retry_count + 1 >= ? THEN 'dead_letter' ELSE 'pending' END,
+         retry_count = retry_count + 1,
+         next_retry_at = CASE WHEN retry_count + 1 >= ? THEN NULL ELSE ${retryAtSql()} END,
+         error_message = ?, started_at = NULL,
+         completed_at = CASE WHEN retry_count + 1 >= ? THEN CURRENT_TIMESTAMP ELSE NULL END,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE id = ?`, [maxAttempts, maxAttempts, delayMinutes, input.errorMessage, maxAttempts, input.id]);
 }
 function staleJobCutoff(minutes) {
     const cutoff = new Date(Date.now() - minutes * 60 * 1000);

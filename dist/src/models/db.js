@@ -525,6 +525,8 @@ async function ensureSqliteDatabase(config) {
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       started_at TEXT,
       completed_at TEXT,
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      next_retry_at TEXT,
       FOREIGN KEY (batch_id) REFERENCES mpesa_statement_batches(id) ON DELETE CASCADE
     );
 
@@ -544,7 +546,9 @@ async function ensureSqliteDatabase(config) {
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       started_at TEXT,
-      completed_at TEXT
+      completed_at TEXT,
+      retry_count INTEGER NOT NULL DEFAULT 0,
+      next_retry_at TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_invoice_extraction_jobs_status
@@ -769,6 +773,10 @@ async function ensureSqliteDatabase(config) {
     await ensureColumnSqlite(db, 'board_intake_queue', 'retry_count', 'INTEGER NOT NULL DEFAULT 0');
     await ensureColumnSqlite(db, 'board_intake_queue', 'last_attempt_at', 'TEXT');
     await ensureColumnSqlite(db, 'board_intake_queue', 'next_retry_at', 'TEXT');
+    await ensureColumnSqlite(db, 'mpesa_extraction_jobs', 'retry_count', 'INTEGER NOT NULL DEFAULT 0');
+    await ensureColumnSqlite(db, 'mpesa_extraction_jobs', 'next_retry_at', 'TEXT');
+    await ensureColumnSqlite(db, 'invoice_extraction_jobs', 'retry_count', 'INTEGER NOT NULL DEFAULT 0');
+    await ensureColumnSqlite(db, 'invoice_extraction_jobs', 'next_retry_at', 'TEXT');
 }
 async function ensureMysqlDatabase(config) {
     const pool = await getMysqlPool(config);
@@ -1228,6 +1236,8 @@ async function ensureMysqlDatabase(config) {
       updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       started_at DATETIME NULL,
       completed_at DATETIME NULL,
+      retry_count INT NOT NULL DEFAULT 0,
+      next_retry_at DATETIME NULL,
       KEY idx_mpesa_extraction_jobs_status (status, created_at)
     )
   `);
@@ -1246,6 +1256,8 @@ async function ensureMysqlDatabase(config) {
       updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       started_at DATETIME NULL,
       completed_at DATETIME NULL,
+      retry_count INT NOT NULL DEFAULT 0,
+      next_retry_at DATETIME NULL,
       KEY idx_invoice_extraction_jobs_status (status, created_at)
     )
   `);
@@ -1283,6 +1295,10 @@ async function ensureMysqlDatabase(config) {
     await ensureColumnMysql(pool, 'board_intake_queue', 'retry_count', 'INT NOT NULL DEFAULT 0', config.mysqlDatabase);
     await ensureColumnMysql(pool, 'board_intake_queue', 'last_attempt_at', 'DATETIME NULL', config.mysqlDatabase);
     await ensureColumnMysql(pool, 'board_intake_queue', 'next_retry_at', 'DATETIME NULL', config.mysqlDatabase);
+    await ensureColumnMysql(pool, 'mpesa_extraction_jobs', 'retry_count', 'INT NOT NULL DEFAULT 0', config.mysqlDatabase);
+    await ensureColumnMysql(pool, 'mpesa_extraction_jobs', 'next_retry_at', 'DATETIME NULL', config.mysqlDatabase);
+    await ensureColumnMysql(pool, 'invoice_extraction_jobs', 'retry_count', 'INT NOT NULL DEFAULT 0', config.mysqlDatabase);
+    await ensureColumnMysql(pool, 'invoice_extraction_jobs', 'next_retry_at', 'DATETIME NULL', config.mysqlDatabase);
 }
 async function ensureDatabase() {
     const config = getRuntimeDatabaseConfig();

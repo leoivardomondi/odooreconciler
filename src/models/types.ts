@@ -600,7 +600,7 @@ export interface MpesaExtractionJob {
   id: string;
   batchId: string;
   jobType: 'upload' | 'reprocess' | 'reupload';
-  status: 'pending' | 'running' | 'completed' | 'failed';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'dead_letter';
   originalFilename: string;
   storedFilename: string;
   previousStoredFilename: string | null;
@@ -610,11 +610,13 @@ export interface MpesaExtractionJob {
   updatedAt: string;
   startedAt: string | null;
   completedAt: string | null;
+  retryCount: number;
+  nextRetryAt: string | null;
 }
 
 export interface InvoiceExtractionJob {
   id: string;
-  status: 'pending' | 'running' | 'completed' | 'failed';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'dead_letter';
   originalFilename: string;
   storedFilename: string;
   preferredOcr: string;
@@ -626,6 +628,8 @@ export interface InvoiceExtractionJob {
   updatedAt: string;
   startedAt: string | null;
   completedAt: string | null;
+  retryCount: number;
+  nextRetryAt: string | null;
 }
 
 export interface PoBillManualJob {

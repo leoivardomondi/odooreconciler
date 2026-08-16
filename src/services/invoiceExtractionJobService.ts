@@ -4,6 +4,7 @@ import {
   completeInvoiceExtractionJob,
   getSettings,
   reclaimStaleInvoiceExtractionJobs,
+  scheduleInvoiceExtractionJobRetry,
   touchInvoiceExtractionJob,
   updateInvoiceExtractionJobProgress,
 } from '../models/repositories';
@@ -48,10 +49,12 @@ async function processNextInvoiceExtractionJob() {
       await completeInvoiceExtractionJob({ id: job.id, status: 'completed', result });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      await completeInvoiceExtractionJob({ id: job.id, status: 'failed', errorMessage: message }).catch(() => undefined);
+      await scheduleInvoiceExtractionJobRetry({ id: job.id, errorMessage: message }).catch(() => undefined);
     } finally {
       clearInterval(heartbeat);
-      await deleteStoredFile(job.storedFilename);
+      if (job.retryCount + 1 >= 3) {
+        await deleteStoredFile(job.storedFilename);
+      }
     }
   } finally {
     processing = false;

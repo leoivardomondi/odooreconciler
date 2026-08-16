@@ -44,11 +44,13 @@ async function processNextInvoiceExtractionJob() {
         }
         catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            await (0, repositories_1.completeInvoiceExtractionJob)({ id: job.id, status: 'failed', errorMessage: message }).catch(() => undefined);
+            await (0, repositories_1.scheduleInvoiceExtractionJobRetry)({ id: job.id, errorMessage: message }).catch(() => undefined);
         }
         finally {
             clearInterval(heartbeat);
-            await deleteStoredFile(job.storedFilename);
+            if (job.retryCount + 1 >= 3) {
+                await deleteStoredFile(job.storedFilename);
+            }
         }
     }
     finally {

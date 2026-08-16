@@ -69,12 +69,8 @@ async function processNextMpesaExtractionJob() {
         catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             await (0, repositories_1.markMpesaStatementBatchExtractionFailed)(job.batchId, message).catch(() => undefined);
-            await (0, repositories_1.completeMpesaExtractionJob)({
-                id: job.id,
-                status: 'failed',
-                errorMessage: message,
-            }).catch(() => undefined);
-            if (job.jobType === 'reupload') {
+            await (0, repositories_1.scheduleMpesaExtractionJobRetry)({ id: job.id, errorMessage: message }).catch(() => undefined);
+            if (job.jobType === 'reupload' && job.retryCount + 1 >= 3) {
                 await deleteStoredFile(job.storedFilename);
             }
         }
