@@ -14,13 +14,18 @@ import { logEvent } from './logService';
 
 let workerTimer: NodeJS.Timeout | null = null;
 let processing = false;
+let lastPollAt: string | null = null;
+let lastErrorAt: string | null = null;
+let lastErrorMessage: string | null = null;
 
-export function isInvoiceExtractionJobWorkerRunning() {
-  return Boolean(workerTimer);
+export function getInvoiceExtractionJobWorkerStatus() {
+  return { running: Boolean(workerTimer), lastPollAt, lastErrorAt, lastErrorMessage };
 }
 
 function reportWorkerError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
+  lastErrorAt = new Date().toISOString();
+  lastErrorMessage = message;
   console.error('[invoice-extraction-worker] Poll failed:', message);
   void logEvent('error', 'Invoice extraction worker poll failed', { error: message }).catch(() => undefined);
 }
@@ -34,6 +39,7 @@ async function deleteStoredFile(filename: string) {
 }
 
 async function processNextInvoiceExtractionJob() {
+  lastPollAt = new Date().toISOString();
   if (processing) return;
   processing = true;
 

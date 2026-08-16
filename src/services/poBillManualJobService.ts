@@ -12,18 +12,24 @@ import { logEvent } from './logService';
 
 let workerTimer: NodeJS.Timeout | null = null;
 let processing = false;
+let lastPollAt: string | null = null;
+let lastErrorAt: string | null = null;
+let lastErrorMessage: string | null = null;
 
-export function isPoBillManualJobWorkerRunning() {
-  return Boolean(workerTimer);
+export function getPoBillManualJobWorkerStatus() {
+  return { running: Boolean(workerTimer), lastPollAt, lastErrorAt, lastErrorMessage };
 }
 
 function reportWorkerError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
+  lastErrorAt = new Date().toISOString();
+  lastErrorMessage = message;
   console.error('[po-bill-manual-worker] Poll failed:', message);
   void logEvent('error', 'PO bill manual worker poll failed', { error: message }).catch(() => undefined);
 }
 
 async function processNextPoBillManualJob() {
+  lastPollAt = new Date().toISOString();
   if (processing) return;
   processing = true;
   try {

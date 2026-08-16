@@ -17,13 +17,18 @@ import { logEvent } from './logService';
 
 let workerTimer: NodeJS.Timeout | null = null;
 let processing = false;
+let lastPollAt: string | null = null;
+let lastErrorAt: string | null = null;
+let lastErrorMessage: string | null = null;
 
-export function isMpesaExtractionJobWorkerRunning() {
-  return Boolean(workerTimer);
+export function getMpesaExtractionJobWorkerStatus() {
+  return { running: Boolean(workerTimer), lastPollAt, lastErrorAt, lastErrorMessage };
 }
 
 function reportWorkerError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
+  lastErrorAt = new Date().toISOString();
+  lastErrorMessage = message;
   console.error('[mpesa-extraction-worker] Poll failed:', message);
   void logEvent('error', 'M-Pesa extraction worker poll failed', { error: message }).catch(() => undefined);
 }
@@ -38,6 +43,7 @@ async function deleteStoredFile(filename: string | null | undefined) {
 }
 
 async function processNextMpesaExtractionJob() {
+  lastPollAt = new Date().toISOString();
   if (processing) return;
   processing = true;
 

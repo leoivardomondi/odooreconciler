@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.isPoBillManualJobWorkerRunning = isPoBillManualJobWorkerRunning;
+exports.getPoBillManualJobWorkerStatus = getPoBillManualJobWorkerStatus;
 exports.startPoBillManualJobWorker = startPoBillManualJobWorker;
 exports.wakePoBillManualJobWorker = wakePoBillManualJobWorker;
 exports.stopPoBillManualJobWorker = stopPoBillManualJobWorker;
@@ -11,15 +11,21 @@ const helpers_1 = require("../utils/helpers");
 const logService_1 = require("./logService");
 let workerTimer = null;
 let processing = false;
-function isPoBillManualJobWorkerRunning() {
-    return Boolean(workerTimer);
+let lastPollAt = null;
+let lastErrorAt = null;
+let lastErrorMessage = null;
+function getPoBillManualJobWorkerStatus() {
+    return { running: Boolean(workerTimer), lastPollAt, lastErrorAt, lastErrorMessage };
 }
 function reportWorkerError(error) {
     const message = error instanceof Error ? error.message : String(error);
+    lastErrorAt = new Date().toISOString();
+    lastErrorMessage = message;
     console.error('[po-bill-manual-worker] Poll failed:', message);
     void (0, logService_1.logEvent)('error', 'PO bill manual worker poll failed', { error: message }).catch(() => undefined);
 }
 async function processNextPoBillManualJob() {
+    lastPollAt = new Date().toISOString();
     if (processing)
         return;
     processing = true;

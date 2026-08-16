@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.isMpesaExtractionJobWorkerRunning = isMpesaExtractionJobWorkerRunning;
+exports.getMpesaExtractionJobWorkerStatus = getMpesaExtractionJobWorkerStatus;
 exports.startMpesaExtractionJobWorker = startMpesaExtractionJobWorker;
 exports.wakeMpesaExtractionJobWorker = wakeMpesaExtractionJobWorker;
 exports.stopMpesaExtractionJobWorker = stopMpesaExtractionJobWorker;
@@ -16,11 +16,16 @@ const paths_1 = require("../utils/paths");
 const logService_1 = require("./logService");
 let workerTimer = null;
 let processing = false;
-function isMpesaExtractionJobWorkerRunning() {
-    return Boolean(workerTimer);
+let lastPollAt = null;
+let lastErrorAt = null;
+let lastErrorMessage = null;
+function getMpesaExtractionJobWorkerStatus() {
+    return { running: Boolean(workerTimer), lastPollAt, lastErrorAt, lastErrorMessage };
 }
 function reportWorkerError(error) {
     const message = error instanceof Error ? error.message : String(error);
+    lastErrorAt = new Date().toISOString();
+    lastErrorMessage = message;
     console.error('[mpesa-extraction-worker] Poll failed:', message);
     void (0, logService_1.logEvent)('error', 'M-Pesa extraction worker poll failed', { error: message }).catch(() => undefined);
 }
@@ -33,6 +38,7 @@ async function deleteStoredFile(filename) {
     await promises_1.default.unlink(resolveStoredFile(filename)).catch(() => undefined);
 }
 async function processNextMpesaExtractionJob() {
+    lastPollAt = new Date().toISOString();
     if (processing)
         return;
     processing = true;

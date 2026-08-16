@@ -28,9 +28,9 @@ import {
 } from './src/utils/helpers';
 import { publicPath, viewsPath } from './src/utils/paths';
 import { getStartupState, markStartupFailedIfStale } from './src/services/startupState';
-import { isInvoiceExtractionJobWorkerRunning } from './src/services/invoiceExtractionJobService';
-import { isMpesaExtractionJobWorkerRunning } from './src/services/mpesaExtractionJobService';
-import { isPoBillManualJobWorkerRunning } from './src/services/poBillManualJobService';
+import { getInvoiceExtractionJobWorkerStatus } from './src/services/invoiceExtractionJobService';
+import { getMpesaExtractionJobWorkerStatus } from './src/services/mpesaExtractionJobService';
+import { getPoBillManualJobWorkerStatus } from './src/services/poBillManualJobService';
 import { resolveLocalUserDisplayName } from './src/services/userIdentityService';
 import { logEvent } from './src/services/logService';
 
@@ -166,11 +166,11 @@ app.get('/health', (_req: Request, res: Response) => {
   const isDevelopment = env.NODE_ENV !== 'production';
   const ready = startupState.status === 'ready';
   const workers = {
-    mpesaExtraction: isMpesaExtractionJobWorkerRunning(),
-    invoiceExtraction: isInvoiceExtractionJobWorkerRunning(),
-    poBillManual: isPoBillManualJobWorkerRunning(),
+    mpesaExtraction: getMpesaExtractionJobWorkerStatus(),
+    invoiceExtraction: getInvoiceExtractionJobWorkerStatus(),
+    poBillManual: getPoBillManualJobWorkerStatus(),
   };
-  const workersReady = Object.values(workers).every(Boolean);
+  const workersReady = Object.values(workers).every((worker) => worker.running);
   res.status(ready && workersReady ? 200 : 503);
   res.json({
     ok: ready && workersReady,

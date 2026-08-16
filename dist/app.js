@@ -134,11 +134,11 @@ app.get('/health', (_req, res) => {
     const isDevelopment = env_1.env.NODE_ENV !== 'production';
     const ready = startupState.status === 'ready';
     const workers = {
-        mpesaExtraction: (0, mpesaExtractionJobService_1.isMpesaExtractionJobWorkerRunning)(),
-        invoiceExtraction: (0, invoiceExtractionJobService_1.isInvoiceExtractionJobWorkerRunning)(),
-        poBillManual: (0, poBillManualJobService_1.isPoBillManualJobWorkerRunning)(),
+        mpesaExtraction: (0, mpesaExtractionJobService_1.getMpesaExtractionJobWorkerStatus)(),
+        invoiceExtraction: (0, invoiceExtractionJobService_1.getInvoiceExtractionJobWorkerStatus)(),
+        poBillManual: (0, poBillManualJobService_1.getPoBillManualJobWorkerStatus)(),
     };
-    const workersReady = Object.values(workers).every(Boolean);
+    const workersReady = Object.values(workers).every((worker) => worker.running);
     res.status(ready && workersReady ? 200 : 503);
     res.json({
         ok: ready && workersReady,
