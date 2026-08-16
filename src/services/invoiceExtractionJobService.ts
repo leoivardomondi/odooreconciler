@@ -10,9 +10,16 @@ import {
 } from '../models/repositories';
 import { parseSupplierInvoice } from '../invoice-parser';
 import { resolveProjectFile } from '../utils/paths';
+import { logEvent } from './logService';
 
 let workerTimer: NodeJS.Timeout | null = null;
 let processing = false;
+
+function reportWorkerError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error('[invoice-extraction-worker] Poll failed:', message);
+  void logEvent('error', 'Invoice extraction worker poll failed', { error: message }).catch(() => undefined);
+}
 
 function resolveStoredFile(filename: string) {
   return resolveProjectFile(`${process.env.UPLOAD_DIR || 'uploads'}/${filename}`, 'uploads');
@@ -64,13 +71,13 @@ async function processNextInvoiceExtractionJob() {
 export function startInvoiceExtractionJobWorker() {
   if (workerTimer) return;
   workerTimer = setInterval(() => {
-    void processNextInvoiceExtractionJob().catch(() => undefined);
+    void processNextInvoiceExtractionJob().catch(reportWorkerError);
   }, 2000);
-  void processNextInvoiceExtractionJob().catch(() => undefined);
+  void processNextInvoiceExtractionJob().catch(reportWorkerError);
 }
 
 export function wakeInvoiceExtractionJobWorker() {
-  void processNextInvoiceExtractionJob().catch(() => undefined);
+  void processNextInvoiceExtractionJob().catch(reportWorkerError);
 }
 
 export function stopInvoiceExtractionJobWorker() {

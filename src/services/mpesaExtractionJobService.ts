@@ -13,9 +13,16 @@ import { extractMpesaStatement } from './mpesaReconciliationService';
 import { OdooClient } from './odooClient';
 import { hasOdooConfiguration, sanitizeBaseUrl } from '../utils/helpers';
 import { resolveProjectFile } from '../utils/paths';
+import { logEvent } from './logService';
 
 let workerTimer: NodeJS.Timeout | null = null;
 let processing = false;
+
+function reportWorkerError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error('[mpesa-extraction-worker] Poll failed:', message);
+  void logEvent('error', 'M-Pesa extraction worker poll failed', { error: message }).catch(() => undefined);
+}
 
 function resolveStoredFile(filename: string) {
   return resolveProjectFile(`${process.env.UPLOAD_DIR || 'uploads'}/mpesa/${filename}`, 'uploads/mpesa');
@@ -91,13 +98,13 @@ async function processNextMpesaExtractionJob() {
 export function startMpesaExtractionJobWorker() {
   if (workerTimer) return;
   workerTimer = setInterval(() => {
-    void processNextMpesaExtractionJob().catch(() => undefined);
+    void processNextMpesaExtractionJob().catch(reportWorkerError);
   }, 2000);
-  void processNextMpesaExtractionJob().catch(() => undefined);
+  void processNextMpesaExtractionJob().catch(reportWorkerError);
 }
 
 export function wakeMpesaExtractionJobWorker() {
-  void processNextMpesaExtractionJob().catch(() => undefined);
+  void processNextMpesaExtractionJob().catch(reportWorkerError);
 }
 
 export function stopMpesaExtractionJobWorker() {

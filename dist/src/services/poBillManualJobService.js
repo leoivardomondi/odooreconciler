@@ -7,8 +7,14 @@ const repositories_1 = require("../models/repositories");
 const poBillAutomationService_1 = require("./poBillAutomationService");
 const odooClient_1 = require("./odooClient");
 const helpers_1 = require("../utils/helpers");
+const logService_1 = require("./logService");
 let workerTimer = null;
 let processing = false;
+function reportWorkerError(error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('[po-bill-manual-worker] Poll failed:', message);
+    void (0, logService_1.logEvent)('error', 'PO bill manual worker poll failed', { error: message }).catch(() => undefined);
+}
 async function processNextPoBillManualJob() {
     if (processing)
         return;
@@ -57,11 +63,11 @@ async function processNextPoBillManualJob() {
 function startPoBillManualJobWorker() {
     if (workerTimer)
         return;
-    workerTimer = setInterval(() => void processNextPoBillManualJob().catch(() => undefined), 2000);
-    void processNextPoBillManualJob().catch(() => undefined);
+    workerTimer = setInterval(() => void processNextPoBillManualJob().catch(reportWorkerError), 2000);
+    void processNextPoBillManualJob().catch(reportWorkerError);
 }
 function wakePoBillManualJobWorker() {
-    void processNextPoBillManualJob().catch(() => undefined);
+    void processNextPoBillManualJob().catch(reportWorkerError);
 }
 function stopPoBillManualJobWorker() {
     if (workerTimer) {

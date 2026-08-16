@@ -8,9 +8,16 @@ import {
 import { runPoBillAutomation } from './poBillAutomationService';
 import { OdooClient } from './odooClient';
 import { hasOdooConfiguration, sanitizeBaseUrl } from '../utils/helpers';
+import { logEvent } from './logService';
 
 let workerTimer: NodeJS.Timeout | null = null;
 let processing = false;
+
+function reportWorkerError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error('[po-bill-manual-worker] Poll failed:', message);
+  void logEvent('error', 'PO bill manual worker poll failed', { error: message }).catch(() => undefined);
+}
 
 async function processNextPoBillManualJob() {
   if (processing) return;
@@ -55,12 +62,12 @@ async function processNextPoBillManualJob() {
 
 export function startPoBillManualJobWorker() {
   if (workerTimer) return;
-  workerTimer = setInterval(() => void processNextPoBillManualJob().catch(() => undefined), 2000);
-  void processNextPoBillManualJob().catch(() => undefined);
+  workerTimer = setInterval(() => void processNextPoBillManualJob().catch(reportWorkerError), 2000);
+  void processNextPoBillManualJob().catch(reportWorkerError);
 }
 
 export function wakePoBillManualJobWorker() {
-  void processNextPoBillManualJob().catch(() => undefined);
+  void processNextPoBillManualJob().catch(reportWorkerError);
 }
 
 export function stopPoBillManualJobWorker() {

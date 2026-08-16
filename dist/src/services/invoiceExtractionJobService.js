@@ -10,8 +10,14 @@ const promises_1 = __importDefault(require("fs/promises"));
 const repositories_1 = require("../models/repositories");
 const invoice_parser_1 = require("../invoice-parser");
 const paths_1 = require("../utils/paths");
+const logService_1 = require("./logService");
 let workerTimer = null;
 let processing = false;
+function reportWorkerError(error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('[invoice-extraction-worker] Poll failed:', message);
+    void (0, logService_1.logEvent)('error', 'Invoice extraction worker poll failed', { error: message }).catch(() => undefined);
+}
 function resolveStoredFile(filename) {
     return (0, paths_1.resolveProjectFile)(`${process.env.UPLOAD_DIR || 'uploads'}/${filename}`, 'uploads');
 }
@@ -62,12 +68,12 @@ function startInvoiceExtractionJobWorker() {
     if (workerTimer)
         return;
     workerTimer = setInterval(() => {
-        void processNextInvoiceExtractionJob().catch(() => undefined);
+        void processNextInvoiceExtractionJob().catch(reportWorkerError);
     }, 2000);
-    void processNextInvoiceExtractionJob().catch(() => undefined);
+    void processNextInvoiceExtractionJob().catch(reportWorkerError);
 }
 function wakeInvoiceExtractionJobWorker() {
-    void processNextInvoiceExtractionJob().catch(() => undefined);
+    void processNextInvoiceExtractionJob().catch(reportWorkerError);
 }
 function stopInvoiceExtractionJobWorker() {
     if (workerTimer) {
