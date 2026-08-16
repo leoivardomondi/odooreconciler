@@ -2385,6 +2385,16 @@ export async function scheduleInvoiceExtractionJobRetry(input: {
   );
 }
 
+export async function getExtractionQueueHealth() {
+  const [mpesa, invoice, poBill] = await Promise.all([
+    queryAll<{ status: string; count: number | string }>('SELECT status, COUNT(*) AS count FROM mpesa_extraction_jobs GROUP BY status'),
+    queryAll<{ status: string; count: number | string }>('SELECT status, COUNT(*) AS count FROM invoice_extraction_jobs GROUP BY status'),
+    queryAll<{ status: string; count: number | string }>('SELECT status, COUNT(*) AS count FROM po_bill_manual_jobs GROUP BY status'),
+  ]);
+  const map = (rows: Array<{ status: string; count: number | string }>) => Object.fromEntries(rows.map((row) => [row.status, Number(row.count || 0)]));
+  return { mpesa: map(mpesa), invoice: map(invoice), poBill: map(poBill) };
+}
+
 function staleJobCutoff(minutes: number) {
   const cutoff = new Date(Date.now() - minutes * 60 * 1000);
   return cutoff.toISOString().slice(0, 19).replace('T', ' ');

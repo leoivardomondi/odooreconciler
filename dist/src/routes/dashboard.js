@@ -17,12 +17,14 @@ router.get('/dashboard', async (req, res) => {
     const message = typeof req.query.message === 'string' ? req.query.message : '';
     const error = typeof req.query.error === 'string' ? req.query.error : '';
     const scheduler = await (0, schedulerService_1.getSchedulerStatus)();
+    const queueHealth = authUser?.role === 'admin' ? await (0, repositories_1.getExtractionQueueHealth)() : null;
     res.render('dashboard', {
         pageTitle: 'Dashboard',
         settings,
         history,
         logs,
         scheduler,
+        queueHealth,
         status: message
             ? { type: 'success', message }
             : error

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { getRecentHistory, getSettings } from '../models/repositories';
+import { getExtractionQueueHealth, getRecentHistory, getSettings } from '../models/repositories';
 import { HistoryEntry } from '../models/types';
 import { fetchRecentLogsAsync } from '../services/logService';
 import { getSchedulerStatus } from '../services/schedulerService';
@@ -19,6 +19,7 @@ router.get('/dashboard', async (req, res) => {
   const message = typeof req.query.message === 'string' ? req.query.message : '';
   const error = typeof req.query.error === 'string' ? req.query.error : '';
   const scheduler = await getSchedulerStatus();
+  const queueHealth = authUser?.role === 'admin' ? await getExtractionQueueHealth() : null;
 
   res.render('dashboard', {
     pageTitle: 'Dashboard',
@@ -26,6 +27,7 @@ router.get('/dashboard', async (req, res) => {
     history,
     logs,
     scheduler,
+    queueHealth,
     status: message
       ? { type: 'success', message }
       : error

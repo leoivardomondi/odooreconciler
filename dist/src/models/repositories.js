@@ -44,6 +44,7 @@ exports.updateInvoiceExtractionJobProgress = updateInvoiceExtractionJobProgress;
 exports.completeInvoiceExtractionJob = completeInvoiceExtractionJob;
 exports.scheduleMpesaExtractionJobRetry = scheduleMpesaExtractionJobRetry;
 exports.scheduleInvoiceExtractionJobRetry = scheduleInvoiceExtractionJobRetry;
+exports.getExtractionQueueHealth = getExtractionQueueHealth;
 exports.reclaimStaleMpesaExtractionJobs = reclaimStaleMpesaExtractionJobs;
 exports.touchMpesaExtractionJob = touchMpesaExtractionJob;
 exports.reclaimStaleInvoiceExtractionJobs = reclaimStaleInvoiceExtractionJobs;
@@ -1828,6 +1829,15 @@ async function scheduleInvoiceExtractionJobRetry(input) {
          completed_at = CASE WHEN retry_count + 1 >= ? THEN CURRENT_TIMESTAMP ELSE NULL END,
          updated_at = CURRENT_TIMESTAMP
      WHERE id = ?`, [maxAttempts, maxAttempts, delayMinutes, input.errorMessage, maxAttempts, input.id]);
+}
+async function getExtractionQueueHealth() {
+    const [mpesa, invoice, poBill] = await Promise.all([
+        (0, db_1.queryAll)('SELECT status, COUNT(*) AS count FROM mpesa_extraction_jobs GROUP BY status'),
+        (0, db_1.queryAll)('SELECT status, COUNT(*) AS count FROM invoice_extraction_jobs GROUP BY status'),
+        (0, db_1.queryAll)('SELECT status, COUNT(*) AS count FROM po_bill_manual_jobs GROUP BY status'),
+    ]);
+    const map = (rows) => Object.fromEntries(rows.map((row) => [row.status, Number(row.count || 0)]));
+    return { mpesa: map(mpesa), invoice: map(invoice), poBill: map(poBill) };
 }
 function staleJobCutoff(minutes) {
     const cutoff = new Date(Date.now() - minutes * 60 * 1000);

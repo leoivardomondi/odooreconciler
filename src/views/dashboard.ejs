@@ -556,6 +556,31 @@
       </div>
     </div>
   </div>
+
+  <% if (queueHealth) { %>
+    <section class="card shadow-sm border-0 app-card mb-4">
+      <div class="card-body p-4">
+        <div class="d-flex justify-content-between align-items-center gap-3 flex-wrap mb-3">
+          <div>
+            <h2 class="h4 mb-1">Processing Queue Health</h2>
+            <p class="text-secondary small mb-0">Background uploads and extraction jobs are monitored here.</p>
+          </div>
+          <span class="badge text-bg-secondary">Auto-retries: 3 attempts</span>
+        </div>
+        <div class="row g-3">
+          <% [['M-Pesa', queueHealth.mpesa], ['Invoice OCR', queueHealth.invoice], ['PO Bill', queueHealth.poBill]].forEach(([label, counts]) => { %>
+            <div class="col-md-4">
+              <div class="border rounded p-3 h-100">
+                <strong><%= label %></strong>
+                <div class="small text-secondary mt-2">Queued: <%= counts.pending || 0 %> · Running: <%= counts.running || 0 %></div>
+                <div class="small text-danger mt-1">Dead-letter: <%= counts.dead_letter || 0 %></div>
+              </div>
+            </div>
+          <% }) %>
+        </div>
+      </div>
+    </section>
+  <% } %>
 </main>
 
 <%- include('partials/footer') %>
