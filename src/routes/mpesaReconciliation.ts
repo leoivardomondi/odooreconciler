@@ -542,7 +542,9 @@ function uploadSingleFile(fieldName: string) {
     upload.single(fieldName)(req, res, (err) => {
       if (err) {
         const batchIdParam = req.params.batchId ? `batch=${encodeURIComponent(req.params.batchId)}&` : '';
-        const message = err instanceof Error ? err.message : 'Upload an M-Pesa statement PDF or image file.';
+        const message = err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE'
+          ? 'The statement is too large. Maximum upload size is 25 MB.'
+          : err instanceof Error ? err.message : 'Upload an M-Pesa statement PDF or image file.';
         return res.redirect(`/mpesa-reconciliation?${batchIdParam}error=${encodeURIComponent(message)}`);
       }
       next();

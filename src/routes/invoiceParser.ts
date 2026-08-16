@@ -1,7 +1,7 @@
 import fs from 'fs/promises';
 import multer from 'multer';
 import path from 'path';
-import { Router } from 'express';
+import { NextFunction, Request, Response, Router } from 'express';
 import { PreferredOcr } from '../invoice-parser';
 import {
   createInvoiceExtractionJob,
@@ -54,6 +54,32 @@ const upload = multer({
   },
 });
 
+function uploadInvoiceFile(api = false) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    upload.single('file')(req, res, (error) => {
+      if (!error) {
+        next();
+        return;
+      }
+      const message = error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE'
+        ? 'The file is too large. Maximum upload size is 20 MB.'
+        : error instanceof Error ? error.message : 'Invoice upload failed.';
+      if (api) {
+        res.status(error instanceof multer.MulterError && error.code === 'LIMIT_FILE_SIZE' ? 413 : 400)
+          .json({ ok: false, error: message });
+        return;
+      }
+      res.status(400).render('invoice-parser', {
+        pageTitle: 'Invoice Parser',
+        preferredOcr: req.body?.preferredOcr === 'google' || req.body?.preferredOcr === 'tesseract' ? req.body.preferredOcr : 'auto',
+        parsedInvoice: null,
+        extractionJob: null,
+        status: { type: 'danger', message },
+      });
+    });
+  };
+}
+
 router.get('/invoice-parser', async (req, res) => {
   const preferredOcr: PreferredOcr =
     req.query.preferredOcr === 'google' || req.query.preferredOcr === 'tesseract'
@@ -85,7 +111,7 @@ router.get('/invoice-parser', async (req, res) => {
   }
 });
 
-router.post('/invoice-parser', upload.single('file'), async (req, res) => {
+router.post('/invoice-parser', uploadInvoiceFile(), async (req, res) => {
   const preferredOcr = req.body.preferredOcr === 'google' || req.body.preferredOcr === 'tesseract'
     ? req.body.preferredOcr
     : 'auto';
@@ -113,7 +139,7 @@ router.post('/invoice-parser', upload.single('file'), async (req, res) => {
   }
 });
 
-router.post('/api/invoices/parse', upload.single('file'), async (req, res) => {
+router.post('/api/invoices/parse', uploadInvoiceFile(true), async (req, res) => {
   try {
     if (!req.file) {
       res.status(400).json({ error: 'Upload a file in multipart field "file".' });
