@@ -57,6 +57,7 @@ type MpesaStatementTotalCheck = {
   extracted: number;
   difference: number | null;
   status: 'match' | 'mismatch' | 'missing_summary';
+  diagnosis?: string;
 };
 
 const KNOWN_MPESA_PAYER_ALIASES = [
@@ -515,15 +516,23 @@ function buildStatementTotalChecks(
     { key: 'withdrawn' as const, label: 'Withdrawn match status', expected: expected.withdrawn, extracted: extracted.withdrawn },
   ].map((check) => {
     const difference = check.expected === null ? null : roundMoney(check.extracted - check.expected);
+    const status = check.expected === null
+      ? 'missing_summary' as const
+      : Math.abs(difference || 0) <= 0.01
+        ? 'match' as const
+        : 'mismatch' as const;
     return {
       ...check,
       difference,
-      status:
-        check.expected === null
-          ? 'missing_summary'
-          : Math.abs(difference || 0) <= 0.01
-            ? 'match'
-            : 'mismatch',
+      status,
+      diagnosis:
+        status === 'missing_summary'
+          ? 'The statement summary could not be read; verify the PDF text or re-upload a clearer copy.'
+          : status === 'match'
+            ? 'All extracted rows reconcile to the statement summary.'
+            : difference! < 0
+              ? 'Extracted rows are lower than the statement. Review OCR for missing, split, or unreadable transactions.'
+              : 'Extracted rows are higher than the statement. Review duplicate or incorrectly classified transactions.',
     };
   });
 }

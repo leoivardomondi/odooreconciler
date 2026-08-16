@@ -437,6 +437,9 @@
                   <% if (check.difference !== null && Math.abs(check.difference) > 0.01) { %>
                     <small>Difference <%= money(check.difference) %></small>
                   <% } %>
+                  <% if (check.diagnosis) { %>
+                    <small class="d-block mt-1"><%= check.diagnosis %></small>
+                  <% } %>
                 </div>
               <% }) %>
             </div>
