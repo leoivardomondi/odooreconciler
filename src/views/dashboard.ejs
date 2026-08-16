@@ -209,6 +209,18 @@
           %>
           <% scheduler.recentRuns.forEach((run) => { %>
             <% const activeLockRun = run.context.activeLockRun || null; %>
+            <% const isPoBillRun = run.context.jobType === 'po_bill_matching'; %>
+            <% const exhaustedCount = Number(run.context.exhaustedCount || 0); %>
+            <% const cooldownBlockedCount = Number(run.context.cooldownBlockedCount || 0); %>
+            <% const eligibleCount = Number(run.context.candidateFinancePdfCount || 0); %>
+            <% const runHealth = isPoBillRun && run.scannedCount === 0
+              ? (exhaustedCount > 0 ? { label: 'Manual review needed', tone: 'danger', note: `${exhaustedCount} document(s) exhausted their automatic retry limit.` }
+                : cooldownBlockedCount > 0 ? { label: 'Waiting for retry window', tone: 'warning', note: `${cooldownBlockedCount} document(s) are cooling down before the next automatic check.` }
+                : eligibleCount === 0 ? { label: 'No Finance documents found', tone: 'secondary', note: 'The scheduler completed normally, but there were no candidate Finance documents in its lookback window.' }
+                : { label: 'No documents scanned', tone: 'info', note: 'Candidates were found, but none were eligible for this batch.' })
+              : run.failedCount > 0 ? { label: 'Attention required', tone: 'danger', note: `${run.failedCount} document(s) failed during this run.` }
+              : run.processedCount > 0 ? { label: 'Work completed', tone: 'success', note: `${run.processedCount} document(s) were processed successfully.` }
+              : null; %>
             <article class="border rounded-3 p-3 mb-3">
               <div class="d-flex justify-content-between align-items-start gap-3 mb-2">
                 <div>
@@ -230,6 +242,12 @@
                 failed <strong><%= run.failedCount %></strong>
               </div>
               <div class="small text-secondary mb-2"><%= run.summary || 'No summary recorded.' %></div>
+              <% if (runHealth) { %>
+                <div class="small border rounded bg-body-tertiary p-2 mb-2">
+                  <span class="badge text-bg-<%= runHealth.tone %> me-1"><%= runHealth.label %></span>
+                  <span class="text-secondary"><%= runHealth.note %></span>
+                </div>
+              <% } %>
               <% if (run.status === 'skipped' && (activeLockRun || run.context.activeLockRunId)) { %>
                 <div class="small border rounded bg-body-tertiary p-2 mb-3">
                   <strong>Skipped scheduler:</strong> <%= schedulerRunName(run) %>
