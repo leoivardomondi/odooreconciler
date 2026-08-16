@@ -9,6 +9,7 @@
     "start": "node server.js",
     "check": "tsc --noEmit -p tsconfig.json",
     "test": "tsx --test --test-force-exit src/**/*.test.ts",
+    "verify": "npm run check && npm run build && npm test",
     "export:mysql-dump": "tsx scripts/export-sqlite-to-mysql.ts"
   },
   "engines": {
