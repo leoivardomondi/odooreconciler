@@ -138,7 +138,7 @@ app.get('/health', (_req, res) => {
         invoiceExtraction: (0, invoiceExtractionJobService_1.getInvoiceExtractionJobWorkerStatus)(),
         poBillManual: (0, poBillManualJobService_1.getPoBillManualJobWorkerStatus)(),
     };
-    const workersReady = Object.values(workers).every((worker) => worker.running);
+    const workersReady = Object.values(workers).every((worker) => worker.healthy);
     res.status(ready && workersReady ? 200 : 503);
     res.json({
         ok: ready && workersReady,

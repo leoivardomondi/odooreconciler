@@ -18,7 +18,15 @@ let lastPollAt = null;
 let lastErrorAt = null;
 let lastErrorMessage = null;
 function getInvoiceExtractionJobWorkerStatus() {
-    return { running: Boolean(workerTimer), lastPollAt, lastErrorAt, lastErrorMessage };
+    const pollAgeMs = lastPollAt ? Date.now() - Date.parse(lastPollAt) : Number.POSITIVE_INFINITY;
+    return {
+        running: Boolean(workerTimer),
+        processing,
+        healthy: Boolean(workerTimer) && (processing || pollAgeMs <= 120000),
+        lastPollAt,
+        lastErrorAt,
+        lastErrorMessage,
+    };
 }
 function reportWorkerError(error) {
     const message = error instanceof Error ? error.message : String(error);

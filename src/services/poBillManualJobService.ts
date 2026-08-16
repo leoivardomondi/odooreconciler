@@ -17,7 +17,15 @@ let lastErrorAt: string | null = null;
 let lastErrorMessage: string | null = null;
 
 export function getPoBillManualJobWorkerStatus() {
-  return { running: Boolean(workerTimer), lastPollAt, lastErrorAt, lastErrorMessage };
+  const pollAgeMs = lastPollAt ? Date.now() - Date.parse(lastPollAt) : Number.POSITIVE_INFINITY;
+  return {
+    running: Boolean(workerTimer),
+    processing,
+    healthy: Boolean(workerTimer) && (processing || pollAgeMs <= 120000),
+    lastPollAt,
+    lastErrorAt,
+    lastErrorMessage,
+  };
 }
 
 function reportWorkerError(error: unknown) {
