@@ -12,13 +12,15 @@ router.get('/dashboard', async (req, res) => {
     return res.redirect('/shop-floor');
   }
 
-  const settings = await getSettings();
-  const history = await getRecentHistory(12);
-  const logs = await fetchRecentLogsAsync(12);
+  const [settings, history, logs, scheduler] = await Promise.all([
+    getSettings(),
+    getRecentHistory(12),
+    fetchRecentLogsAsync(12),
+    getSchedulerStatus(),
+  ]);
   const lastRun = history[0] || null;
   const message = typeof req.query.message === 'string' ? req.query.message : '';
   const error = typeof req.query.error === 'string' ? req.query.error : '';
-  const scheduler = await getSchedulerStatus();
   const queueHealth = authUser?.role === 'admin' ? await getExtractionQueueHealth() : null;
 
   res.render('dashboard', {
