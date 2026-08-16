@@ -78,7 +78,11 @@ app.use((req: Request, res: Response, next: NextFunction) => {
   next();
 });
 app.use(morgan(env.NODE_ENV === 'production' ? 'combined' : 'dev'));
-app.use('/public', express.static(publicPath));
+app.use('/public', express.static(publicPath, {
+  etag: true,
+  lastModified: true,
+  maxAge: '1h',
+}));
 
 function proxyPayrollBridge(req: Request, res: Response, next: NextFunction) {
   if (!env.PAYROLL_BRIDGE_PROXY_URL) {

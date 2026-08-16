@@ -59,7 +59,11 @@ app.use((req, res, next) => {
     next();
 });
 app.use((0, morgan_1.default)(env_1.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
-app.use('/public', express_1.default.static(paths_1.publicPath));
+app.use('/public', express_1.default.static(paths_1.publicPath, {
+    etag: true,
+    lastModified: true,
+    maxAge: '1h',
+}));
 function proxyPayrollBridge(req, res, next) {
     if (!env_1.env.PAYROLL_BRIDGE_PROXY_URL) {
         next();
