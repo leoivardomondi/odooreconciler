@@ -17,6 +17,9 @@ const env_1 = require("./src/utils/env");
 const helpers_1 = require("./src/utils/helpers");
 const paths_1 = require("./src/utils/paths");
 const startupState_1 = require("./src/services/startupState");
+const invoiceExtractionJobService_1 = require("./src/services/invoiceExtractionJobService");
+const mpesaExtractionJobService_1 = require("./src/services/mpesaExtractionJobService");
+const poBillManualJobService_1 = require("./src/services/poBillManualJobService");
 const userIdentityService_1 = require("./src/services/userIdentityService");
 const logService_1 = require("./src/services/logService");
 const app = (0, express_1.default)();
@@ -130,12 +133,19 @@ app.get('/health', (_req, res) => {
     const startupState = (0, startupState_1.getStartupState)();
     const isDevelopment = env_1.env.NODE_ENV !== 'production';
     const ready = startupState.status === 'ready';
-    res.status(ready ? 200 : 503);
+    const workers = {
+        mpesaExtraction: (0, mpesaExtractionJobService_1.isMpesaExtractionJobWorkerRunning)(),
+        invoiceExtraction: (0, invoiceExtractionJobService_1.isInvoiceExtractionJobWorkerRunning)(),
+        poBillManual: (0, poBillManualJobService_1.isPoBillManualJobWorkerRunning)(),
+    };
+    const workersReady = Object.values(workers).every(Boolean);
+    res.status(ready && workersReady ? 200 : 503);
     res.json({
-        ok: ready,
+        ok: ready && workersReady,
         service: env_1.env.APP_NAME,
         timestamp: new Date().toISOString(),
         startupStatus: startupState.status,
+        workers,
         ...(isDevelopment
             ? {
                 startupStep: startupState.step,

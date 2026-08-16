@@ -3,6 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.isMpesaExtractionJobWorkerRunning = isMpesaExtractionJobWorkerRunning;
 exports.startMpesaExtractionJobWorker = startMpesaExtractionJobWorker;
 exports.wakeMpesaExtractionJobWorker = wakeMpesaExtractionJobWorker;
 exports.stopMpesaExtractionJobWorker = stopMpesaExtractionJobWorker;
@@ -15,6 +16,9 @@ const paths_1 = require("../utils/paths");
 const logService_1 = require("./logService");
 let workerTimer = null;
 let processing = false;
+function isMpesaExtractionJobWorkerRunning() {
+    return Boolean(workerTimer);
+}
 function reportWorkerError(error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error('[mpesa-extraction-worker] Poll failed:', message);

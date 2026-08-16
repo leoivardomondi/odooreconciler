@@ -28,6 +28,9 @@ import {
 } from './src/utils/helpers';
 import { publicPath, viewsPath } from './src/utils/paths';
 import { getStartupState, markStartupFailedIfStale } from './src/services/startupState';
+import { isInvoiceExtractionJobWorkerRunning } from './src/services/invoiceExtractionJobService';
+import { isMpesaExtractionJobWorkerRunning } from './src/services/mpesaExtractionJobService';
+import { isPoBillManualJobWorkerRunning } from './src/services/poBillManualJobService';
 import { resolveLocalUserDisplayName } from './src/services/userIdentityService';
 import { logEvent } from './src/services/logService';
 
@@ -162,12 +165,19 @@ app.get('/health', (_req: Request, res: Response) => {
   const startupState = getStartupState();
   const isDevelopment = env.NODE_ENV !== 'production';
   const ready = startupState.status === 'ready';
-  res.status(ready ? 200 : 503);
+  const workers = {
+    mpesaExtraction: isMpesaExtractionJobWorkerRunning(),
+    invoiceExtraction: isInvoiceExtractionJobWorkerRunning(),
+    poBillManual: isPoBillManualJobWorkerRunning(),
+  };
+  const workersReady = Object.values(workers).every(Boolean);
+  res.status(ready && workersReady ? 200 : 503);
   res.json({
-    ok: ready,
+    ok: ready && workersReady,
     service: env.APP_NAME,
     timestamp: new Date().toISOString(),
     startupStatus: startupState.status,
+    workers,
     ...(isDevelopment
       ? {
           startupStep: startupState.step,

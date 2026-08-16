@@ -18,6 +18,10 @@ import { logEvent } from './logService';
 let workerTimer: NodeJS.Timeout | null = null;
 let processing = false;
 
+export function isMpesaExtractionJobWorkerRunning() {
+  return Boolean(workerTimer);
+}
+
 function reportWorkerError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   console.error('[mpesa-extraction-worker] Poll failed:', message);

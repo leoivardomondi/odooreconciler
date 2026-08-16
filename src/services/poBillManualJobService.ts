@@ -13,6 +13,10 @@ import { logEvent } from './logService';
 let workerTimer: NodeJS.Timeout | null = null;
 let processing = false;
 
+export function isPoBillManualJobWorkerRunning() {
+  return Boolean(workerTimer);
+}
+
 function reportWorkerError(error: unknown) {
   const message = error instanceof Error ? error.message : String(error);
   console.error('[po-bill-manual-worker] Poll failed:', message);

@@ -1,5 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.isPoBillManualJobWorkerRunning = isPoBillManualJobWorkerRunning;
 exports.startPoBillManualJobWorker = startPoBillManualJobWorker;
 exports.wakePoBillManualJobWorker = wakePoBillManualJobWorker;
 exports.stopPoBillManualJobWorker = stopPoBillManualJobWorker;
@@ -10,6 +11,9 @@ const helpers_1 = require("../utils/helpers");
 const logService_1 = require("./logService");
 let workerTimer = null;
 let processing = false;
+function isPoBillManualJobWorkerRunning() {
+    return Boolean(workerTimer);
+}
 function reportWorkerError(error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error('[po-bill-manual-worker] Poll failed:', message);
