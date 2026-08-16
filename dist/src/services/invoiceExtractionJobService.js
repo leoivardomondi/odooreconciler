@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.startInvoiceExtractionJobWorker = startInvoiceExtractionJobWorker;
 exports.wakeInvoiceExtractionJobWorker = wakeInvoiceExtractionJobWorker;
+exports.stopInvoiceExtractionJobWorker = stopInvoiceExtractionJobWorker;
 const promises_1 = __importDefault(require("fs/promises"));
 const repositories_1 = require("../models/repositories");
 const invoice_parser_1 = require("../invoice-parser");
@@ -67,4 +68,10 @@ function startInvoiceExtractionJobWorker() {
 }
 function wakeInvoiceExtractionJobWorker() {
     void processNextInvoiceExtractionJob().catch(() => undefined);
+}
+function stopInvoiceExtractionJobWorker() {
+    if (workerTimer) {
+        clearInterval(workerTimer);
+        workerTimer = null;
+    }
 }

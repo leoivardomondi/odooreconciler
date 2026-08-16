@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.startPoBillManualJobWorker = startPoBillManualJobWorker;
 exports.wakePoBillManualJobWorker = wakePoBillManualJobWorker;
+exports.stopPoBillManualJobWorker = stopPoBillManualJobWorker;
 const repositories_1 = require("../models/repositories");
 const poBillAutomationService_1 = require("./poBillAutomationService");
 const odooClient_1 = require("./odooClient");
@@ -61,4 +62,10 @@ function startPoBillManualJobWorker() {
 }
 function wakePoBillManualJobWorker() {
     void processNextPoBillManualJob().catch(() => undefined);
+}
+function stopPoBillManualJobWorker() {
+    if (workerTimer) {
+        clearInterval(workerTimer);
+        workerTimer = null;
+    }
 }

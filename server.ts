@@ -2,18 +2,18 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import app from './app';
-import { ensureDatabase, getRuntimeDatabaseConfig } from './src/models/db';
+import { closeDatabase, ensureDatabase, getRuntimeDatabaseConfig } from './src/models/db';
 import { env } from './src/utils/env';
 import { logEvent } from './src/services/logService';
-import { startSchedulerInterval } from './src/services/schedulerService';
+import { startSchedulerInterval, stopSchedulerInterval } from './src/services/schedulerService';
 import { startEmailAutomationInterval } from './src/services/emailAutomationService';
 import { startStockMirrorInterval } from './src/services/stockMirrorService';
 import { startUserProfileSyncInterval } from './src/services/userProfileSyncService';
 import { startShopFloorOperatorAccessSyncInterval } from './src/services/shopFloorOperatorAccessSyncService';
 import { startBoardIntakeSyncInterval } from './src/services/boardIntakeSyncService';
-import { startMpesaExtractionJobWorker } from './src/services/mpesaExtractionJobService';
-import { startInvoiceExtractionJobWorker } from './src/services/invoiceExtractionJobService';
-import { startPoBillManualJobWorker } from './src/services/poBillManualJobService';
+import { startMpesaExtractionJobWorker, stopMpesaExtractionJobWorker } from './src/services/mpesaExtractionJobService';
+import { startInvoiceExtractionJobWorker, stopInvoiceExtractionJobWorker } from './src/services/invoiceExtractionJobService';
+import { startPoBillManualJobWorker, stopPoBillManualJobWorker } from './src/services/poBillManualJobService';
 import { markStartupFailed, markStartupReady, markStartupStep } from './src/services/startupState';
 import { storageDirectoryPath } from './src/utils/paths';
 
@@ -162,6 +162,27 @@ export async function startServer() {
   const port = Number(env.PORT || 3000);
   const listenTarget = isPassengerRuntime ? 'passenger' : port;
   const server = http.createServer(app);
+  let shuttingDown = false;
+
+  const shutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    console.log(`[shutdown] Received ${signal}; stopping workers and closing resources.`);
+    writeStartupLog(`Shutdown requested by ${signal}.`);
+    stopSchedulerInterval();
+    stopMpesaExtractionJobWorker();
+    stopInvoiceExtractionJobWorker();
+    stopPoBillManualJobWorker();
+
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+    }).catch(() => undefined);
+    await closeDatabase();
+    process.exit(0);
+  };
+
+  process.once('SIGTERM', () => void shutdown('SIGTERM'));
+  process.once('SIGINT', () => void shutdown('SIGINT'));
 
   process.on('unhandledRejection', (reason) => {
     const error = reason instanceof Error ? reason : new Error(String(reason));

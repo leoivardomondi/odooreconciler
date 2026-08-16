@@ -133,6 +133,25 @@ async function startServer() {
     const port = Number(env_1.env.PORT || 3000);
     const listenTarget = isPassengerRuntime ? 'passenger' : port;
     const server = http_1.default.createServer(app_1.default);
+    let shuttingDown = false;
+    const shutdown = async (signal) => {
+        if (shuttingDown)
+            return;
+        shuttingDown = true;
+        console.log(`[shutdown] Received ${signal}; stopping workers and closing resources.`);
+        writeStartupLog(`Shutdown requested by ${signal}.`);
+        (0, schedulerService_1.stopSchedulerInterval)();
+        (0, mpesaExtractionJobService_1.stopMpesaExtractionJobWorker)();
+        (0, invoiceExtractionJobService_1.stopInvoiceExtractionJobWorker)();
+        (0, poBillManualJobService_1.stopPoBillManualJobWorker)();
+        await new Promise((resolve) => {
+            server.close(() => resolve());
+        }).catch(() => undefined);
+        await (0, db_1.closeDatabase)();
+        process.exit(0);
+    };
+    process.once('SIGTERM', () => void shutdown('SIGTERM'));
+    process.once('SIGINT', () => void shutdown('SIGINT'));
     process.on('unhandledRejection', (reason) => {
         const error = reason instanceof Error ? reason : new Error(String(reason));
         console.error('[runtime-error] Unhandled promise rejection:', error);

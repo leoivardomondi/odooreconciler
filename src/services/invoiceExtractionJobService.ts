@@ -72,3 +72,10 @@ export function startInvoiceExtractionJobWorker() {
 export function wakeInvoiceExtractionJobWorker() {
   void processNextInvoiceExtractionJob().catch(() => undefined);
 }
+
+export function stopInvoiceExtractionJobWorker() {
+  if (workerTimer) {
+    clearInterval(workerTimer);
+    workerTimer = null;
+  }
+}

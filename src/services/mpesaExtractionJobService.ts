@@ -99,3 +99,10 @@ export function startMpesaExtractionJobWorker() {
 export function wakeMpesaExtractionJobWorker() {
   void processNextMpesaExtractionJob().catch(() => undefined);
 }
+
+export function stopMpesaExtractionJobWorker() {
+  if (workerTimer) {
+    clearInterval(workerTimer);
+    workerTimer = null;
+  }
+}

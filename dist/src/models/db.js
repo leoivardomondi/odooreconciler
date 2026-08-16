@@ -8,6 +8,7 @@ exports.isDatabaseInstallerEnabled = isDatabaseInstallerEnabled;
 exports.saveRuntimeDatabaseConfig = saveRuntimeDatabaseConfig;
 exports.getDatabaseDialect = getDatabaseDialect;
 exports.ensureDatabase = ensureDatabase;
+exports.closeDatabase = closeDatabase;
 exports.queryAll = queryAll;
 exports.queryOne = queryOne;
 exports.execute = execute;
@@ -1338,6 +1339,24 @@ async function ensureDatabase() {
         ensureDatabasePromise = null;
     });
     await ensureDatabasePromise;
+}
+async function closeDatabase() {
+    if (ensureDatabasePromise) {
+        await ensureDatabasePromise.catch(() => undefined);
+    }
+    if (mysqlPool) {
+        const pool = mysqlPool;
+        mysqlPool = null;
+        await pool.end().catch(() => undefined);
+    }
+    if (sqliteDb) {
+        const db = sqliteDb;
+        sqliteDb = null;
+        await new Promise((resolve) => {
+            db.close(() => resolve());
+        });
+    }
+    ensuredDialect = null;
 }
 async function queryAll(sql, params = []) {
     await ensureDatabase();

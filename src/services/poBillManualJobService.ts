@@ -62,3 +62,10 @@ export function startPoBillManualJobWorker() {
 export function wakePoBillManualJobWorker() {
   void processNextPoBillManualJob().catch(() => undefined);
 }
+
+export function stopPoBillManualJobWorker() {
+  if (workerTimer) {
+    clearInterval(workerTimer);
+    workerTimer = null;
+  }
+}

@@ -5,6 +5,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.startMpesaExtractionJobWorker = startMpesaExtractionJobWorker;
 exports.wakeMpesaExtractionJobWorker = wakeMpesaExtractionJobWorker;
+exports.stopMpesaExtractionJobWorker = stopMpesaExtractionJobWorker;
 const promises_1 = __importDefault(require("fs/promises"));
 const repositories_1 = require("../models/repositories");
 const mpesaReconciliationService_1 = require("./mpesaReconciliationService");
@@ -92,4 +93,10 @@ function startMpesaExtractionJobWorker() {
 }
 function wakeMpesaExtractionJobWorker() {
     void processNextMpesaExtractionJob().catch(() => undefined);
+}
+function stopMpesaExtractionJobWorker() {
+    if (workerTimer) {
+        clearInterval(workerTimer);
+        workerTimer = null;
+    }
 }

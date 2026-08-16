@@ -10,6 +10,7 @@ type SqlParameters = SqlParameter[];
 type QueryResultRow = Record<string, unknown>;
 type SqliteParameter = string | number | Buffer | null;
 type SqliteDatabase = {
+  close(callback?: (error: Error | null) => void): void;
   exec(sql: string, callback?: (error: Error | null) => void): void;
   all(
     sql: string,
@@ -1533,6 +1534,28 @@ export async function ensureDatabase() {
   });
 
   await ensureDatabasePromise;
+}
+
+export async function closeDatabase(): Promise<void> {
+  if (ensureDatabasePromise) {
+    await ensureDatabasePromise.catch(() => undefined);
+  }
+
+  if (mysqlPool) {
+    const pool = mysqlPool;
+    mysqlPool = null;
+    await pool.end().catch(() => undefined);
+  }
+
+  if (sqliteDb) {
+    const db = sqliteDb;
+    sqliteDb = null;
+    await new Promise<void>((resolve) => {
+      db.close(() => resolve());
+    });
+  }
+
+  ensuredDialect = null;
 }
 
 export async function queryAll<T extends QueryResultRow>(sql: string, params: SqlParameters = []): Promise<T[]> {
