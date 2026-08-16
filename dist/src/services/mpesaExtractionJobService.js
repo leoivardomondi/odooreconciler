@@ -26,9 +26,13 @@ async function processNextMpesaExtractionJob() {
         return;
     processing = true;
     try {
+        await (0, repositories_1.reclaimStaleMpesaExtractionJobs)();
         const job = await (0, repositories_1.claimNextMpesaExtractionJob)();
         if (!job)
             return;
+        const heartbeat = setInterval(() => {
+            void (0, repositories_1.touchMpesaExtractionJob)(job.id).catch(() => undefined);
+        }, 15000);
         try {
             const settings = await (0, repositories_1.getSettings)();
             const client = (0, helpers_1.hasOdooConfiguration)(settings)
@@ -73,6 +77,9 @@ async function processNextMpesaExtractionJob() {
             if (job.jobType === 'reupload') {
                 await deleteStoredFile(job.storedFilename);
             }
+        }
+        finally {
+            clearInterval(heartbeat);
         }
     }
     finally {

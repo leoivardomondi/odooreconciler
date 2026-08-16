@@ -4,7 +4,9 @@ import {
   completeMpesaExtractionJob,
   getSettings,
   markMpesaStatementBatchExtractionFailed,
+  reclaimStaleMpesaExtractionJobs,
   replaceMpesaStatementBatchExtraction,
+  touchMpesaExtractionJob,
 } from '../models/repositories';
 import { extractMpesaStatement } from './mpesaReconciliationService';
 import { OdooClient } from './odooClient';
@@ -28,9 +30,13 @@ async function processNextMpesaExtractionJob() {
   processing = true;
 
   try {
+    await reclaimStaleMpesaExtractionJobs();
     const job = await claimNextMpesaExtractionJob();
     if (!job) return;
 
+    const heartbeat = setInterval(() => {
+      void touchMpesaExtractionJob(job.id).catch(() => undefined);
+    }, 15000);
     try {
       const settings = await getSettings();
       const client = hasOdooConfiguration(settings)
@@ -77,6 +83,8 @@ async function processNextMpesaExtractionJob() {
       if (job.jobType === 'reupload') {
         await deleteStoredFile(job.storedFilename);
       }
+    } finally {
+      clearInterval(heartbeat);
     }
   } finally {
     processing = false;

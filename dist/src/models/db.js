@@ -550,6 +550,23 @@ async function ensureSqliteDatabase(config) {
     CREATE INDEX IF NOT EXISTS idx_invoice_extraction_jobs_status
       ON invoice_extraction_jobs(status, created_at);
 
+    CREATE TABLE IF NOT EXISTS po_bill_manual_jobs (
+      id TEXT PRIMARY KEY,
+      attachment_id INTEGER NOT NULL,
+      purchase_order_search TEXT NOT NULL DEFAULT '',
+      mode TEXT NOT NULL DEFAULT 'review',
+      status TEXT NOT NULL DEFAULT 'pending',
+      result_json TEXT,
+      error_message TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      started_at TEXT,
+      completed_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_po_bill_manual_jobs_status
+      ON po_bill_manual_jobs(status, created_at);
+
     CREATE TABLE IF NOT EXISTS mpesa_category_training_rules (
       id TEXT PRIMARY KEY,
       match_scope TEXT NOT NULL DEFAULT 'any',
@@ -1230,6 +1247,22 @@ async function ensureMysqlDatabase(config) {
       started_at DATETIME NULL,
       completed_at DATETIME NULL,
       KEY idx_invoice_extraction_jobs_status (status, created_at)
+    )
+  `);
+    await query('create po bill manual jobs table', `
+    CREATE TABLE IF NOT EXISTS po_bill_manual_jobs (
+      id VARCHAR(64) PRIMARY KEY,
+      attachment_id INT NOT NULL,
+      purchase_order_search VARCHAR(255) NOT NULL DEFAULT '',
+      mode VARCHAR(32) NOT NULL DEFAULT 'review',
+      status VARCHAR(32) NOT NULL DEFAULT 'pending',
+      result_json LONGTEXT NULL,
+      error_message TEXT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      started_at DATETIME NULL,
+      completed_at DATETIME NULL,
+      KEY idx_po_bill_manual_jobs_status (status, created_at)
     )
   `);
     await ensureColumnMysql(pool, 'history', 'computed_signature', 'TEXT NULL', config.mysqlDatabase);

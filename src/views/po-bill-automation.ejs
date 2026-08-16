@@ -391,15 +391,15 @@
               <div>
                 <p class="eyebrow mb-1">Single-document run</p>
                 <h2 class="h5 mb-1">
-                  <%= locals.manualJob.status === 'running' ? 'Processing document…' : locals.manualJob.status === 'completed' ? 'Processing complete' : 'Processing failed' %>
+                  <%= locals.manualJob.status === 'pending' ? 'Queued for processing…' : locals.manualJob.status === 'running' ? 'Processing document…' : locals.manualJob.status === 'completed' ? 'Processing complete' : 'Processing failed' %>
                 </h2>
                 <div class="text-secondary small">
                   Attachment <%= form.attachmentId || '—' %>. The result is shown below when processing completes.
                 </div>
                 <div class="small mt-2" id="manual-job-elapsed">Elapsed: calculating…</div>
               </div>
-              <span class="badge text-bg-<%= locals.manualJob.status === 'running' ? 'primary' : locals.manualJob.status === 'completed' ? 'success' : 'danger' %>">
-                <%= locals.manualJob.status === 'running' ? 'Running' : locals.manualJob.status === 'completed' ? 'Completed' : 'Failed' %>
+              <span class="badge text-bg-<%= locals.manualJob.status === 'pending' ? 'secondary' : locals.manualJob.status === 'running' ? 'primary' : locals.manualJob.status === 'completed' ? 'success' : 'danger' %>">
+                <%= locals.manualJob.status === 'pending' ? 'Queued' : locals.manualJob.status === 'running' ? 'Running' : locals.manualJob.status === 'completed' ? 'Completed' : 'Failed' %>
               </span>
             </div>
           </div>
@@ -594,7 +594,7 @@
     });
   });
 
-  <% if (locals.manualJob?.status === 'running') { %>
+  <% if (locals.manualJob && ['pending', 'running'].includes(locals.manualJob.status)) { %>
     const manualJobCard = document.querySelector('[data-manual-job-id]');
     if (manualJobCard) {
       const elapsed = document.getElementById('manual-job-elapsed');

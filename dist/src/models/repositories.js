@@ -42,6 +42,16 @@ exports.getInvoiceExtractionJobById = getInvoiceExtractionJobById;
 exports.claimNextInvoiceExtractionJob = claimNextInvoiceExtractionJob;
 exports.updateInvoiceExtractionJobProgress = updateInvoiceExtractionJobProgress;
 exports.completeInvoiceExtractionJob = completeInvoiceExtractionJob;
+exports.reclaimStaleMpesaExtractionJobs = reclaimStaleMpesaExtractionJobs;
+exports.touchMpesaExtractionJob = touchMpesaExtractionJob;
+exports.reclaimStaleInvoiceExtractionJobs = reclaimStaleInvoiceExtractionJobs;
+exports.touchInvoiceExtractionJob = touchInvoiceExtractionJob;
+exports.createPoBillManualJob = createPoBillManualJob;
+exports.getPoBillManualJobById = getPoBillManualJobById;
+exports.claimNextPoBillManualJob = claimNextPoBillManualJob;
+exports.completePoBillManualJob = completePoBillManualJob;
+exports.reclaimStalePoBillManualJobs = reclaimStalePoBillManualJobs;
+exports.touchPoBillManualJob = touchPoBillManualJob;
 exports.deleteMpesaStatementBatch = deleteMpesaStatementBatch;
 exports.getMpesaTransactionsByBatchId = getMpesaTransactionsByBatchId;
 exports.getMpesaTransactionsByIds = getMpesaTransactionsByIds;
@@ -1278,6 +1288,21 @@ function mapInvoiceExtractionJobRow(row) {
         completedAt: row.completed_at,
     };
 }
+function mapPoBillManualJobRow(row) {
+    return {
+        id: row.id,
+        attachmentId: Number(row.attachment_id),
+        purchaseOrderSearch: row.purchase_order_search || '',
+        mode: row.mode,
+        status: row.status,
+        result: row.result_json ? (0, helpers_1.safeJsonParse)(row.result_json, null) : null,
+        errorMessage: row.error_message,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        startedAt: row.started_at,
+        completedAt: row.completed_at,
+    };
+}
 function mapMpesaTransactionRow(row) {
     const parseNullableNumber = (value) => {
         if (value === null || value === undefined || value === '') {
@@ -1766,6 +1791,49 @@ async function completeInvoiceExtractionJob(input) {
         input.errorMessage || null,
         input.id,
     ]);
+}
+function staleJobCutoff(minutes) {
+    const cutoff = new Date(Date.now() - minutes * 60 * 1000);
+    return cutoff.toISOString().slice(0, 19).replace('T', ' ');
+}
+async function reclaimStaleMpesaExtractionJobs(minutes = 30) {
+    await (0, db_1.execute)(`UPDATE mpesa_extraction_jobs SET status = 'pending', started_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE status = 'running' AND updated_at < ?`, [staleJobCutoff(minutes)]);
+}
+async function touchMpesaExtractionJob(id) {
+    await (0, db_1.execute)(`UPDATE mpesa_extraction_jobs SET updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'running'`, [id]);
+}
+async function reclaimStaleInvoiceExtractionJobs(minutes = 30) {
+    await (0, db_1.execute)(`UPDATE invoice_extraction_jobs SET status = 'pending', started_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE status = 'running' AND updated_at < ?`, [staleJobCutoff(minutes)]);
+}
+async function touchInvoiceExtractionJob(id) {
+    await (0, db_1.execute)(`UPDATE invoice_extraction_jobs SET updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'running'`, [id]);
+}
+async function createPoBillManualJob(input) {
+    const id = (0, uuid_1.v4)();
+    await (0, db_1.execute)(`INSERT INTO po_bill_manual_jobs (id, attachment_id, purchase_order_search, mode) VALUES (?, ?, ?, ?)`, [id, input.attachmentId, input.purchaseOrderSearch, input.mode]);
+    return getPoBillManualJobById(id);
+}
+async function getPoBillManualJobById(id) {
+    const row = await (0, db_1.queryOne)(`SELECT id, attachment_id, purchase_order_search, mode, status, result_json, error_message, created_at, updated_at, started_at, completed_at FROM po_bill_manual_jobs WHERE id = ?`, [id]);
+    if (!row)
+        throw new Error(`PO Bill job ${id} was not found.`);
+    return mapPoBillManualJobRow(row);
+}
+async function claimNextPoBillManualJob() {
+    const candidate = await (0, db_1.queryOne)(`SELECT id FROM po_bill_manual_jobs WHERE status = 'pending' ORDER BY created_at ASC, id ASC LIMIT 1`);
+    if (!candidate)
+        return null;
+    const result = await (0, db_1.execute)(`UPDATE po_bill_manual_jobs SET status = 'running', started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'pending'`, [candidate.id]);
+    return result.affectedRows > 0 ? getPoBillManualJobById(candidate.id) : null;
+}
+async function completePoBillManualJob(input) {
+    await (0, db_1.execute)(`UPDATE po_bill_manual_jobs SET status = ?, result_json = ?, error_message = ?, completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [input.status, input.result ? JSON.stringify(input.result) : null, input.errorMessage || null, input.id]);
+}
+async function reclaimStalePoBillManualJobs(minutes = 30) {
+    await (0, db_1.execute)(`UPDATE po_bill_manual_jobs SET status = 'pending', started_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE status = 'running' AND updated_at < ?`, [staleJobCutoff(minutes)]);
+}
+async function touchPoBillManualJob(id) {
+    await (0, db_1.execute)(`UPDATE po_bill_manual_jobs SET updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'running'`, [id]);
 }
 async function deleteMpesaStatementBatch(id) {
     const batch = await getMpesaStatementBatchById(id);

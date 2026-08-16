@@ -22,9 +22,13 @@ async function processNextInvoiceExtractionJob() {
         return;
     processing = true;
     try {
+        await (0, repositories_1.reclaimStaleInvoiceExtractionJobs)();
         const job = await (0, repositories_1.claimNextInvoiceExtractionJob)();
         if (!job)
             return;
+        const heartbeat = setInterval(() => {
+            void (0, repositories_1.touchInvoiceExtractionJob)(job.id).catch(() => undefined);
+        }, 15000);
         try {
             await (0, repositories_1.updateInvoiceExtractionJobProgress)({ id: job.id, stage: 'loading_settings', progress: 10 });
             const settings = await (0, repositories_1.getSettings)();
@@ -43,6 +47,7 @@ async function processNextInvoiceExtractionJob() {
             await (0, repositories_1.completeInvoiceExtractionJob)({ id: job.id, status: 'failed', errorMessage: message }).catch(() => undefined);
         }
         finally {
+            clearInterval(heartbeat);
             await deleteStoredFile(job.storedFilename);
         }
     }

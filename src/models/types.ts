@@ -628,6 +628,20 @@ export interface InvoiceExtractionJob {
   completedAt: string | null;
 }
 
+export interface PoBillManualJob {
+  id: string;
+  attachmentId: number;
+  purchaseOrderSearch: string;
+  mode: 'review' | 'auto';
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  result: PoBillAutomationResult | null;
+  errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
 export interface MpesaPurchaseOrderCandidate {
   id: number;
   name: string;

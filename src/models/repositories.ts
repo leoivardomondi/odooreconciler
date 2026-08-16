@@ -16,6 +16,7 @@ import {
   MpesaPurchaseOrderCandidate,
   MpesaExtractionJob,
   InvoiceExtractionJob,
+  PoBillManualJob,
   MpesaStatementBatch,
   MpesaTransaction,
   MpesaTransactionExplorerFilters,
@@ -1594,6 +1595,34 @@ function mapInvoiceExtractionJobRow(row: {
   };
 }
 
+function mapPoBillManualJobRow(row: {
+  id: string;
+  attachment_id: number | string;
+  purchase_order_search: string;
+  mode: PoBillManualJob['mode'];
+  status: PoBillManualJob['status'];
+  result_json: string | null;
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+}): PoBillManualJob {
+  return {
+    id: row.id,
+    attachmentId: Number(row.attachment_id),
+    purchaseOrderSearch: row.purchase_order_search || '',
+    mode: row.mode,
+    status: row.status,
+    result: row.result_json ? safeJsonParse(row.result_json, null) : null,
+    errorMessage: row.error_message,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+  };
+}
+
 function mapMpesaTransactionRow(row: {
   id: string;
   batch_id: string;
@@ -2296,6 +2325,88 @@ export async function completeInvoiceExtractionJob(input: {
       input.id,
     ],
   );
+}
+
+function staleJobCutoff(minutes: number) {
+  const cutoff = new Date(Date.now() - minutes * 60 * 1000);
+  return cutoff.toISOString().slice(0, 19).replace('T', ' ');
+}
+
+export async function reclaimStaleMpesaExtractionJobs(minutes = 30) {
+  await execute(
+    `UPDATE mpesa_extraction_jobs SET status = 'pending', started_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE status = 'running' AND updated_at < ?`,
+    [staleJobCutoff(minutes)],
+  );
+}
+
+export async function touchMpesaExtractionJob(id: string) {
+  await execute(`UPDATE mpesa_extraction_jobs SET updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'running'`, [id]);
+}
+
+export async function reclaimStaleInvoiceExtractionJobs(minutes = 30) {
+  await execute(
+    `UPDATE invoice_extraction_jobs SET status = 'pending', started_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE status = 'running' AND updated_at < ?`,
+    [staleJobCutoff(minutes)],
+  );
+}
+
+export async function touchInvoiceExtractionJob(id: string) {
+  await execute(`UPDATE invoice_extraction_jobs SET updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'running'`, [id]);
+}
+
+export async function createPoBillManualJob(input: {
+  attachmentId: number;
+  purchaseOrderSearch: string;
+  mode: PoBillManualJob['mode'];
+}): Promise<PoBillManualJob> {
+  const id = uuidv4();
+  await execute(
+    `INSERT INTO po_bill_manual_jobs (id, attachment_id, purchase_order_search, mode) VALUES (?, ?, ?, ?)`,
+    [id, input.attachmentId, input.purchaseOrderSearch, input.mode],
+  );
+  return getPoBillManualJobById(id);
+}
+
+export async function getPoBillManualJobById(id: string): Promise<PoBillManualJob> {
+  const row = await queryOne<Parameters<typeof mapPoBillManualJobRow>[0]>(
+    `SELECT id, attachment_id, purchase_order_search, mode, status, result_json, error_message, created_at, updated_at, started_at, completed_at FROM po_bill_manual_jobs WHERE id = ?`,
+    [id],
+  );
+  if (!row) throw new Error(`PO Bill job ${id} was not found.`);
+  return mapPoBillManualJobRow(row);
+}
+
+export async function claimNextPoBillManualJob(): Promise<PoBillManualJob | null> {
+  const candidate = await queryOne<{ id: string }>(`SELECT id FROM po_bill_manual_jobs WHERE status = 'pending' ORDER BY created_at ASC, id ASC LIMIT 1`);
+  if (!candidate) return null;
+  const result = await execute(
+    `UPDATE po_bill_manual_jobs SET status = 'running', started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'pending'`,
+    [candidate.id],
+  );
+  return result.affectedRows > 0 ? getPoBillManualJobById(candidate.id) : null;
+}
+
+export async function completePoBillManualJob(input: {
+  id: string;
+  status: Extract<PoBillManualJob['status'], 'completed' | 'failed'>;
+  result?: PoBillManualJob['result'];
+  errorMessage?: string | null;
+}) {
+  await execute(
+    `UPDATE po_bill_manual_jobs SET status = ?, result_json = ?, error_message = ?, completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+    [input.status, input.result ? JSON.stringify(input.result) : null, input.errorMessage || null, input.id],
+  );
+}
+
+export async function reclaimStalePoBillManualJobs(minutes = 30) {
+  await execute(
+    `UPDATE po_bill_manual_jobs SET status = 'pending', started_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE status = 'running' AND updated_at < ?`,
+    [staleJobCutoff(minutes)],
+  );
+}
+
+export async function touchPoBillManualJob(id: string) {
+  await execute(`UPDATE po_bill_manual_jobs SET updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'running'`, [id]);
 }
 
 export async function deleteMpesaStatementBatch(id: string): Promise<MpesaStatementBatch> {

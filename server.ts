@@ -13,6 +13,7 @@ import { startShopFloorOperatorAccessSyncInterval } from './src/services/shopFlo
 import { startBoardIntakeSyncInterval } from './src/services/boardIntakeSyncService';
 import { startMpesaExtractionJobWorker } from './src/services/mpesaExtractionJobService';
 import { startInvoiceExtractionJobWorker } from './src/services/invoiceExtractionJobService';
+import { startPoBillManualJobWorker } from './src/services/poBillManualJobService';
 import { markStartupFailed, markStartupReady, markStartupStep } from './src/services/startupState';
 import { storageDirectoryPath } from './src/utils/paths';
 
@@ -204,6 +205,7 @@ export async function startServer() {
       writeStartupLog('Database initialization completed.');
       startMpesaExtractionJobWorker();
       startInvoiceExtractionJobWorker();
+      startPoBillManualJobWorker();
       markStartupStep('initializing scheduler');
       await withStartupTimeout('Scheduler initialization', () => startSchedulerInterval());
       startEmailAutomationInterval();

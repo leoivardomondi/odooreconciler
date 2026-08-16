@@ -3,6 +3,8 @@ import {
   claimNextInvoiceExtractionJob,
   completeInvoiceExtractionJob,
   getSettings,
+  reclaimStaleInvoiceExtractionJobs,
+  touchInvoiceExtractionJob,
   updateInvoiceExtractionJobProgress,
 } from '../models/repositories';
 import { parseSupplierInvoice } from '../invoice-parser';
@@ -24,9 +26,13 @@ async function processNextInvoiceExtractionJob() {
   processing = true;
 
   try {
+    await reclaimStaleInvoiceExtractionJobs();
     const job = await claimNextInvoiceExtractionJob();
     if (!job) return;
 
+    const heartbeat = setInterval(() => {
+      void touchInvoiceExtractionJob(job.id).catch(() => undefined);
+    }, 15000);
     try {
       await updateInvoiceExtractionJobProgress({ id: job.id, stage: 'loading_settings', progress: 10 });
       const settings = await getSettings();
@@ -44,6 +50,7 @@ async function processNextInvoiceExtractionJob() {
       const message = error instanceof Error ? error.message : String(error);
       await completeInvoiceExtractionJob({ id: job.id, status: 'failed', errorMessage: message }).catch(() => undefined);
     } finally {
+      clearInterval(heartbeat);
       await deleteStoredFile(job.storedFilename);
     }
   } finally {

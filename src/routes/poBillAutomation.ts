@@ -1,7 +1,13 @@
-import { randomUUID } from 'node:crypto';
 import path from 'path';
 import { Response, Router } from 'express';
-import { getSchedulerRuntimeState, getSettings, requestSchedulerStop, resetPoBillExhaustedDocuments } from '../models/repositories';
+import {
+  createPoBillManualJob,
+  getPoBillManualJobById,
+  getSchedulerRuntimeState,
+  getSettings,
+  requestSchedulerStop,
+  resetPoBillExhaustedDocuments,
+} from '../models/repositories';
 import { PoBillAutomationResult } from '../models/types';
 import { OdooClient } from '../services/odooClient';
 import {
@@ -9,23 +15,22 @@ import {
   getRecentDocumentPdfs,
   isSupportedPoBillMimetype,
   RecentDocumentPdfsPage,
-  runPoBillAutomation,
 } from '../services/poBillAutomationService';
 import { buildPoBillSchedulerDiagnostics } from '../services/poBillSchedulerDiagnosticsService';
 import { getSchedulerStatus, runPoBillSchedulerCycle } from '../services/schedulerService';
 import { logEvent } from '../services/logService';
 import { hasOdooConfiguration, sanitizeBaseUrl } from '../utils/helpers';
+import { wakePoBillManualJobWorker } from '../services/poBillManualJobService';
 
 const router = Router();
 const RECENT_PDFS_PAGE_SIZE = 25;
-type ManualPoCheckJob = {
-  status: 'running' | 'completed' | 'failed';
-  result?: PoBillAutomationResult;
-  error?: string;
+type ManualPoCheckJobView = {
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  result?: PoBillAutomationResult | null;
+  error?: string | null;
   startedAt: number;
   finishedAt?: number;
 };
-const manualPoCheckJobs = new Map<string, ManualPoCheckJob>();
 
 function parsePositiveInteger(value: unknown, fallback = 1) {
   const parsed = Number(value);
@@ -75,7 +80,7 @@ async function renderPage(
       pdfPage?: string;
     };
     loadRecentPdfs?: boolean;
-    manualJob?: { id: string; status: ManualPoCheckJob['status']; startedAt: number; finishedAt?: number } | null;
+    manualJob?: { id: string; status: ManualPoCheckJobView['status']; startedAt: number; finishedAt?: number } | null;
   },
 ) {
   const requestedPdfPage = parsePositiveInteger(options.form?.pdfPage, 1);
@@ -121,12 +126,20 @@ router.get('/po-bill-automation', async (req, res) => {
   const loadRecentPdfs =
     req.query.loadPdfs === '1' || requestedPdfPage > 1 || Boolean(String(req.query.attachmentId || '').trim());
   const manualJobId = String(req.query.jobId || '').trim();
-  const manualJob = manualJobId ? manualPoCheckJobs.get(manualJobId) || null : null;
+  const manualJob = manualJobId ? await getPoBillManualJobById(manualJobId).catch(() => null) : null;
+  const manualJobView = manualJob
+    ? {
+        id: manualJob.id,
+        status: manualJob.status,
+        startedAt: Date.parse(manualJob.startedAt || manualJob.createdAt) || Date.now(),
+        finishedAt: manualJob.completedAt ? Date.parse(manualJob.completedAt) : undefined,
+      }
+    : null;
 
   try {
     await renderPage(res, {
       status: manualJob?.status === 'failed'
-        ? { type: 'danger', message: manualJob.error || 'PO bill check failed.' }
+        ? { type: 'danger', message: manualJob.errorMessage || 'PO bill check failed.' }
         : manualJob?.status === 'completed'
           ? { type: 'success', message: 'PO bill check completed.' }
           : typeof req.query.message === 'string'
@@ -141,7 +154,7 @@ router.get('/po-bill-automation', async (req, res) => {
         pdfPage: String(requestedPdfPage),
       },
       result: manualJob?.status === 'completed' ? manualJob.result : null,
-      manualJob: manualJob ? { id: manualJobId, status: manualJob.status, startedAt: manualJob.startedAt, finishedAt: manualJob.finishedAt } : null,
+      manualJob: manualJobView,
       loadRecentPdfs,
     });
   } catch (error) {
@@ -213,42 +226,8 @@ router.post('/po-bill-automation/run', async (req, res) => {
     return res.redirect(`/po-bill-automation?error=${encodeURIComponent('Enter a valid Odoo attachment ID.')}`);
   }
 
-  const jobId = randomUUID();
-  const startedAt = Date.now();
-  manualPoCheckJobs.set(jobId, { status: 'running', startedAt });
-  setTimeout(() => manualPoCheckJobs.delete(jobId), 30 * 60 * 1000);
-
-  void (async () => {
-    try {
-      const { client, settings } = await buildClient();
-      const result = await runPoBillAutomation(client, {
-        attachmentId,
-        purchaseOrderSearch,
-        mode,
-        aiConfig: settings.ai,
-      });
-
-      manualPoCheckJobs.set(jobId, { status: 'completed', result, startedAt, finishedAt: Date.now() });
-
-      await logEvent('info', 'Manual PO bill check completed in background', {
-        attachmentId,
-        purchaseOrderSearch: purchaseOrderSearch || null,
-        mode,
-        canAutoProceed: result.canAutoProceed,
-        actionsTaken: result.actionsTaken,
-        actionsPending: result.actionsPending,
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown PO bill automation failure.';
-      manualPoCheckJobs.set(jobId, { status: 'failed', error: message, startedAt, finishedAt: Date.now() });
-      await logEvent('error', 'Manual PO bill check failed in background', {
-        attachmentId,
-        purchaseOrderSearch: purchaseOrderSearch || null,
-        mode,
-        error: message,
-      });
-    }
-  })();
+  const job = await createPoBillManualJob({ attachmentId, purchaseOrderSearch, mode });
+  wakePoBillManualJobWorker();
 
   await renderPage(res, {
     status: {
@@ -257,9 +236,18 @@ router.post('/po-bill-automation/run', async (req, res) => {
     },
     form,
     result: null,
-    manualJob: { id: jobId, status: 'running', startedAt },
+    manualJob: { id: job.id, status: job.status, startedAt: Date.parse(job.createdAt) || Date.now() },
     loadRecentPdfs,
   });
+});
+
+router.get('/po-bill-automation/manual-jobs/:jobId', async (req, res) => {
+  try {
+    const job = await getPoBillManualJobById(req.params.jobId);
+    res.json({ ok: true, job });
+  } catch (error) {
+    res.status(404).json({ ok: false, error: error instanceof Error ? error.message : 'PO bill job not found.' });
+  }
 });
 
 router.post('/po-bill-automation/run-scheduler', async (req, res) => {
