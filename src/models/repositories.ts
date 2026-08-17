@@ -4626,9 +4626,9 @@ export async function updateBoardIntakeQueueEntry(id: string, input: { status: '
     [input.status, input.stockQuantity ?? null, input.errorMessage || null, input.status, input.status, retryDelayMinutes, id]);
 }
 
-export async function getRecentBoardIntakeQueueEntries(limit = 12) {
-  return queryAll<any>(`SELECT id, product_name, customer_name, quantity, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at
-    FROM board_intake_queue ORDER BY created_at DESC LIMIT ?`, [Math.max(1, Math.min(50, limit))]);
+export async function getRecentBoardIntakeQueueEntries(limit = 12, offset = 0) {
+  return queryAll<any>(`SELECT id, product_name, customer_name, quantity, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at, reverted_at, reverted_by
+    FROM board_intake_queue ORDER BY created_at DESC LIMIT ? OFFSET ?`, [Math.max(1, Math.min(50, limit)), Math.max(0, offset)]);
 }
 
 export interface BoardIntakeQueueEntry {
@@ -4641,14 +4641,35 @@ export interface BoardIntakeQueueEntry {
   quantity: number;
   actor_name: string;
   actor_email: string | null;
-  status: 'pending' | 'processing' | 'synced' | 'failed';
+  status: 'pending' | 'processing' | 'synced' | 'failed' | 'reverting' | 'reverted';
   odoo_stock_quantity: number | null;
+  reverted_at: string | null;
+  reverted_by: string | null;
   retry_count: number;
   error_message: string | null;
 }
 
 export async function getBoardIntakeQueueEntry(id: string) {
   return queryOne<BoardIntakeQueueEntry>('SELECT * FROM board_intake_queue WHERE id = ?', [id]);
+}
+
+export async function claimBoardIntakeRevert(id: string) {
+  const result = await execute(`UPDATE board_intake_queue
+    SET status = 'reverting', updated_at = CURRENT_TIMESTAMP
+    WHERE id = ? AND status = 'synced' AND reverted_at IS NULL`, [id]);
+  return result.affectedRows > 0;
+}
+
+export async function finishBoardIntakeRevert(id: string, revertedBy: string, stockQuantity: number) {
+  await execute(`UPDATE board_intake_queue
+    SET status = 'reverted', odoo_stock_quantity = ?, reverted_at = CURRENT_TIMESTAMP, reverted_by = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ? AND status = 'reverting'`, [stockQuantity, revertedBy, id]);
+}
+
+export async function releaseBoardIntakeRevert(id: string, errorMessage: string) {
+  await execute(`UPDATE board_intake_queue
+    SET status = 'synced', error_message = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ? AND status = 'reverting'`, [errorMessage, id]);
 }
 
 export async function claimBoardIntakeQueueEntry(id: string) {

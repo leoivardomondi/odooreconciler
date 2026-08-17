@@ -847,6 +847,8 @@ async function ensureSqliteDatabase(config: RuntimeDatabaseConfig) {
       actor_email TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       odoo_stock_quantity REAL,
+      reverted_at TEXT,
+      reverted_by TEXT,
       retry_count INTEGER NOT NULL DEFAULT 0,
       last_attempt_at TEXT,
       next_retry_at TEXT,
@@ -925,6 +927,8 @@ async function ensureSqliteDatabase(config: RuntimeDatabaseConfig) {
   await ensureColumnSqlite(db, 'board_intake_queue', 'retry_count', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumnSqlite(db, 'board_intake_queue', 'last_attempt_at', 'TEXT');
   await ensureColumnSqlite(db, 'board_intake_queue', 'next_retry_at', 'TEXT');
+  await ensureColumnSqlite(db, 'board_intake_queue', 'reverted_at', 'TEXT');
+  await ensureColumnSqlite(db, 'board_intake_queue', 'reverted_by', 'TEXT');
   await ensureColumnSqlite(db, 'mpesa_extraction_jobs', 'retry_count', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumnSqlite(db, 'mpesa_extraction_jobs', 'next_retry_at', 'TEXT');
   await ensureColumnSqlite(db, 'invoice_extraction_jobs', 'retry_count', 'INTEGER NOT NULL DEFAULT 0');
@@ -1396,6 +1400,8 @@ async function ensureMysqlDatabase(config: RuntimeDatabaseConfig) {
       actor_email VARCHAR(255) NULL,
       status VARCHAR(32) NOT NULL DEFAULT 'pending',
       odoo_stock_quantity DECIMAL(16,4) NULL,
+      reverted_at DATETIME NULL,
+      reverted_by VARCHAR(255) NULL,
       retry_count INT NOT NULL DEFAULT 0,
       last_attempt_at DATETIME NULL,
       next_retry_at DATETIME NULL,
@@ -1484,6 +1490,8 @@ async function ensureMysqlDatabase(config: RuntimeDatabaseConfig) {
   await ensureColumnMysql(pool, 'board_intake_queue', 'retry_count', 'INT NOT NULL DEFAULT 0', config.mysqlDatabase);
   await ensureColumnMysql(pool, 'board_intake_queue', 'last_attempt_at', 'DATETIME NULL', config.mysqlDatabase);
   await ensureColumnMysql(pool, 'board_intake_queue', 'next_retry_at', 'DATETIME NULL', config.mysqlDatabase);
+  await ensureColumnMysql(pool, 'board_intake_queue', 'reverted_at', 'DATETIME NULL', config.mysqlDatabase);
+  await ensureColumnMysql(pool, 'board_intake_queue', 'reverted_by', 'VARCHAR(255) NULL', config.mysqlDatabase);
   await ensureColumnMysql(pool, 'mpesa_extraction_jobs', 'retry_count', 'INT NOT NULL DEFAULT 0', config.mysqlDatabase);
   await ensureColumnMysql(pool, 'mpesa_extraction_jobs', 'next_retry_at', 'DATETIME NULL', config.mysqlDatabase);
   await ensureColumnMysql(pool, 'invoice_extraction_jobs', 'retry_count', 'INT NOT NULL DEFAULT 0', config.mysqlDatabase);

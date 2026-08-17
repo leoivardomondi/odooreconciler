@@ -131,6 +131,9 @@ exports.createBoardIntakeQueueEntry = createBoardIntakeQueueEntry;
 exports.updateBoardIntakeQueueEntry = updateBoardIntakeQueueEntry;
 exports.getRecentBoardIntakeQueueEntries = getRecentBoardIntakeQueueEntries;
 exports.getBoardIntakeQueueEntry = getBoardIntakeQueueEntry;
+exports.claimBoardIntakeRevert = claimBoardIntakeRevert;
+exports.finishBoardIntakeRevert = finishBoardIntakeRevert;
+exports.releaseBoardIntakeRevert = releaseBoardIntakeRevert;
 exports.claimBoardIntakeQueueEntry = claimBoardIntakeQueueEntry;
 exports.getDueBoardIntakeQueueEntries = getDueBoardIntakeQueueEntries;
 exports.releaseStaleBoardIntakeQueueEntry = releaseStaleBoardIntakeQueueEntry;
@@ -3341,12 +3344,28 @@ async function updateBoardIntakeQueueEntry(id, input) {
     next_retry_at = CASE WHEN ? = 'failed' THEN ${(0, db_1.getDatabaseDialect)() === 'mysql' ? 'DATE_ADD(CURRENT_TIMESTAMP, INTERVAL ? MINUTE)' : "datetime(CURRENT_TIMESTAMP, '+' || ? || ' minutes')"} ELSE NULL END,
     updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [input.status, input.stockQuantity ?? null, input.errorMessage || null, input.status, input.status, retryDelayMinutes, id]);
 }
-async function getRecentBoardIntakeQueueEntries(limit = 12) {
-    return (0, db_1.queryAll)(`SELECT id, product_name, customer_name, quantity, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at
-    FROM board_intake_queue ORDER BY created_at DESC LIMIT ?`, [Math.max(1, Math.min(50, limit))]);
+async function getRecentBoardIntakeQueueEntries(limit = 12, offset = 0) {
+    return (0, db_1.queryAll)(`SELECT id, product_name, customer_name, quantity, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at, reverted_at, reverted_by
+    FROM board_intake_queue ORDER BY created_at DESC LIMIT ? OFFSET ?`, [Math.max(1, Math.min(50, limit)), Math.max(0, offset)]);
 }
 async function getBoardIntakeQueueEntry(id) {
     return (0, db_1.queryOne)('SELECT * FROM board_intake_queue WHERE id = ?', [id]);
+}
+async function claimBoardIntakeRevert(id) {
+    const result = await (0, db_1.execute)(`UPDATE board_intake_queue
+    SET status = 'reverting', updated_at = CURRENT_TIMESTAMP
+    WHERE id = ? AND status = 'synced' AND reverted_at IS NULL`, [id]);
+    return result.affectedRows > 0;
+}
+async function finishBoardIntakeRevert(id, revertedBy, stockQuantity) {
+    await (0, db_1.execute)(`UPDATE board_intake_queue
+    SET status = 'reverted', odoo_stock_quantity = ?, reverted_at = CURRENT_TIMESTAMP, reverted_by = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ? AND status = 'reverting'`, [stockQuantity, revertedBy, id]);
+}
+async function releaseBoardIntakeRevert(id, errorMessage) {
+    await (0, db_1.execute)(`UPDATE board_intake_queue
+    SET status = 'synced', error_message = ?, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ? AND status = 'reverting'`, [errorMessage, id]);
 }
 async function claimBoardIntakeQueueEntry(id) {
     const result = await (0, db_1.execute)(`UPDATE board_intake_queue

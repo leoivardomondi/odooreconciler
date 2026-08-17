@@ -13,7 +13,7 @@ import { renderWeeklyShopFloorReportPdf, sendWeeklyShopFloorReport } from '../se
 import { getConfirmedMoQueueSchedule, getMoOverdueState } from '../services/moOverdueService';
 import { isBoardProductName } from '../services/boardProductClassifier';
 import { getStockMirrorForPage, recordOptimisticStockAddition, refreshStockMirror } from '../services/stockMirrorService';
-import { syncBoardIntakeEntry } from '../services/boardIntakeSyncService';
+import { revertBoardIntakeEntry, syncBoardIntakeEntry } from '../services/boardIntakeSyncService';
 import { syncShopFloorOperatorAccess } from '../services/shopFloorOperatorAccessSyncService';
 import {
   getShopFloorIncidents,
@@ -1669,11 +1669,15 @@ router.get('/shop-floor/boards', async (req: Request, res: Response) => {
   }
 
   try {
-    const [settings, stockMirror, recentIntakes] = await Promise.all([
+    const boardLogPage = Math.max(1, Number.parseInt(String(req.query.boardLogPage || '1'), 10) || 1);
+    const boardLogPageSize = 12;
+    const [settings, stockMirror, recentIntakeRows] = await Promise.all([
       getSettings(),
       getStockMirrorForPage(req.query.refresh === 'true'),
-      getRecentBoardIntakeQueueEntries(),
+      getRecentBoardIntakeQueueEntries(boardLogPageSize + 1, (boardLogPage - 1) * boardLogPageSize),
     ]);
+    const hasNextBoardLogPage = recentIntakeRows.length > boardLogPageSize;
+    const recentIntakes = recentIntakeRows.slice(0, boardLogPageSize);
     const products = stockMirror.products;
     const viewedEmail = getViewedUserEmail(req);
     const dashboardCacheKey = `shop-floor-dashboard:v2:${viewedEmail.toLowerCase()}`;
@@ -1690,6 +1694,8 @@ router.get('/shop-floor/boards', async (req: Request, res: Response) => {
       products,
       stockMirror,
       recentIntakes,
+      boardLogPage,
+      hasNextBoardLogPage,
       stockAlerts: dashboardData.isLimitedDashboard ? [] : dashboardData.stockAlerts,
       customers: [],
       authUser: req.authUser,
@@ -2112,6 +2118,23 @@ router.post('/shop-floor/board-intake/:id/retry', async (req: Request, res: Resp
     res.redirect('/shop-floor/boards?message=' + encodeURIComponent('Board log synchronized with Odoo successfully.'));
   } catch (error) {
     res.redirect('/shop-floor/boards?error=' + encodeURIComponent(error instanceof Error ? error.message : 'Board log retry failed.'));
+  }
+});
+
+router.post('/shop-floor/board-intake/:id/revert', async (req: Request, res: Response) => {
+  if (!canManageShopFloor(req)) {
+    res.status(403).redirect('/shop-floor/boards?error=' + encodeURIComponent('Only Shop Floor administrators can revert board logs.'));
+    return;
+  }
+  try {
+    const result = await revertBoardIntakeEntry(String(req.params.id || ''), req.authUser?.displayName || req.authUser?.email || 'Administrator');
+    const message = result.alreadyReverted
+      ? 'This board log was already reverted.'
+      : 'Board log reverted in Odoo successfully.';
+    shopFloorCache.clearPrefix('shop-floor-dashboard:');
+    res.redirect('/shop-floor/boards?message=' + encodeURIComponent(message) + '&boardLogPage=' + encodeURIComponent(String(req.body.boardLogPage || '1')));
+  } catch (error) {
+    res.redirect('/shop-floor/boards?error=' + encodeURIComponent(error instanceof Error ? error.message : 'Could not revert board log.') + '&boardLogPage=' + encodeURIComponent(String(req.body.boardLogPage || '1')));
   }
 });
 

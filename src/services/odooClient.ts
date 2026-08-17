@@ -4095,6 +4095,29 @@ export class OdooClient {
     };
   }
 
+  /** Reverse a board-intake inventory adjustment at the same warehouse location. */
+  async removeBoardsFromStock(input: {
+    productId: number;
+    quantity: number;
+    locationId?: number;
+  }): Promise<{ locationId: number; previousQty: number; newQty: number }> {
+    if (!Number.isFinite(input.quantity) || input.quantity <= 0) {
+      throw new OdooClientError('The revert quantity must be positive.');
+    }
+    const locationId = input.locationId || await this.getMainWarehouseLocationId();
+    const quants = await this.getStockQuants(input.productId, locationId);
+    if (!quants.length) throw new OdooClientError('No Odoo stock record exists for this board, so the intake cannot be reverted.');
+    const quantId = quants[0].id;
+    const previousQty = Number(quants[0].quantity || 0);
+    const newQty = previousQty - input.quantity;
+    if (newQty < -0.0001) {
+      throw new OdooClientError(`Odoo currently has ${previousQty} board(s), but this log requires reverting ${input.quantity}. The stock may already have been used.`);
+    }
+    await this.writeRecord('stock.quant', [quantId], { inventory_quantity: Math.max(0, newQty) });
+    await this.callRecordMethod('stock.quant', 'action_apply_inventory', [quantId]);
+    return { locationId, previousQty, newQty: Math.max(0, newQty) };
+  }
+
   private async getVerifiedTargetWarehouse(warehouseId: number) {
     const targetCompanyId = await this.getTargetCompanyId();
     const warehouses = await this.searchReadRecords<{ id: number; name: string; code: string }>('stock.warehouse', {

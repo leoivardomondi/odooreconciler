@@ -1389,11 +1389,15 @@ router.get('/shop-floor/boards', async (req, res) => {
         return;
     }
     try {
-        const [settings, stockMirror, recentIntakes] = await Promise.all([
+        const boardLogPage = Math.max(1, Number.parseInt(String(req.query.boardLogPage || '1'), 10) || 1);
+        const boardLogPageSize = 12;
+        const [settings, stockMirror, recentIntakeRows] = await Promise.all([
             (0, repositories_1.getSettings)(),
             (0, stockMirrorService_1.getStockMirrorForPage)(req.query.refresh === 'true'),
-            (0, repositories_1.getRecentBoardIntakeQueueEntries)(),
+            (0, repositories_1.getRecentBoardIntakeQueueEntries)(boardLogPageSize + 1, (boardLogPage - 1) * boardLogPageSize),
         ]);
+        const hasNextBoardLogPage = recentIntakeRows.length > boardLogPageSize;
+        const recentIntakes = recentIntakeRows.slice(0, boardLogPageSize);
         const products = stockMirror.products;
         const viewedEmail = getViewedUserEmail(req);
         const dashboardCacheKey = `shop-floor-dashboard:v2:${viewedEmail.toLowerCase()}`;
@@ -1409,6 +1413,8 @@ router.get('/shop-floor/boards', async (req, res) => {
             products,
             stockMirror,
             recentIntakes,
+            boardLogPage,
+            hasNextBoardLogPage,
             stockAlerts: dashboardData.isLimitedDashboard ? [] : dashboardData.stockAlerts,
             customers: [],
             authUser: req.authUser,
@@ -1836,6 +1842,23 @@ router.post('/shop-floor/board-intake/:id/retry', async (req, res) => {
     }
     catch (error) {
         res.redirect('/shop-floor/boards?error=' + encodeURIComponent(error instanceof Error ? error.message : 'Board log retry failed.'));
+    }
+});
+router.post('/shop-floor/board-intake/:id/revert', async (req, res) => {
+    if (!canManageShopFloor(req)) {
+        res.status(403).redirect('/shop-floor/boards?error=' + encodeURIComponent('Only Shop Floor administrators can revert board logs.'));
+        return;
+    }
+    try {
+        const result = await (0, boardIntakeSyncService_1.revertBoardIntakeEntry)(String(req.params.id || ''), req.authUser?.displayName || req.authUser?.email || 'Administrator');
+        const message = result.alreadyReverted
+            ? 'This board log was already reverted.'
+            : 'Board log reverted in Odoo successfully.';
+        shopFloorCache.clearPrefix('shop-floor-dashboard:');
+        res.redirect('/shop-floor/boards?message=' + encodeURIComponent(message) + '&boardLogPage=' + encodeURIComponent(String(req.body.boardLogPage || '1')));
+    }
+    catch (error) {
+        res.redirect('/shop-floor/boards?error=' + encodeURIComponent(error instanceof Error ? error.message : 'Could not revert board log.') + '&boardLogPage=' + encodeURIComponent(String(req.body.boardLogPage || '1')));
     }
 });
 router.post('/shop-floor/receipts/:id/validate', async (req, res) => {

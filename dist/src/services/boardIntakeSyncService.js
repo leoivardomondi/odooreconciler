@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.syncBoardIntakeEntry = syncBoardIntakeEntry;
+exports.revertBoardIntakeEntry = revertBoardIntakeEntry;
 exports.retryDueBoardIntakeEntries = retryDueBoardIntakeEntries;
 exports.startBoardIntakeSyncInterval = startBoardIntakeSyncInterval;
 const repositories_1 = require("../models/repositories");
@@ -24,6 +25,8 @@ async function syncBoardIntakeEntry(id) {
     let entry = await (0, repositories_1.getBoardIntakeQueueEntry)(id);
     if (!entry)
         throw new Error('Board log was not found.');
+    if (entry.reverted_at || entry.status === 'reverted')
+        return { alreadyReverted: true };
     if (entry.status === 'synced')
         return { alreadySynced: true, stockQuantity: entry.odoo_stock_quantity };
     if (entry.status === 'processing') {
@@ -106,6 +109,39 @@ async function syncBoardIntakeEntry(id) {
             boardIntakeId: id,
             error: message,
         }).catch(() => undefined);
+        throw error;
+    }
+}
+async function revertBoardIntakeEntry(id, revertedBy) {
+    const entry = await (0, repositories_1.getBoardIntakeQueueEntry)(id);
+    if (!entry)
+        throw new Error('Board log was not found.');
+    if (entry.reverted_at || entry.status === 'reverted')
+        return { alreadyReverted: true };
+    if (entry.status !== 'synced')
+        throw new Error('Only a board log already synchronized with Odoo can be reverted.');
+    if (!await (0, repositories_1.claimBoardIntakeRevert)(id))
+        throw new Error('This board log is already being reverted or was reverted by another user.');
+    try {
+        const settings = await (0, repositories_2.getSettings)();
+        const result = await new odooClient_1.OdooClient(settings.odoo).removeBoardsFromStock({
+            productId: Number(entry.product_id),
+            quantity: Number(entry.quantity),
+        });
+        await (0, repositories_1.finishBoardIntakeRevert)(id, revertedBy, result.newQty);
+        await (0, stockMirrorService_1.recordExactStockQuantity)(Number(entry.product_id), entry.product_name, result.newQty, -Number(entry.quantity));
+        void (0, stockMirrorService_1.refreshStockMirror)();
+        await (0, logService_1.logEvent)('warn', 'Board intake reverted in Odoo', {
+            boardIntakeId: id,
+            productId: entry.product_id,
+            quantity: entry.quantity,
+            revertedBy,
+        }).catch(() => undefined);
+        return { alreadyReverted: false, stockQuantity: result.newQty };
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await (0, repositories_1.releaseBoardIntakeRevert)(id, message).catch(() => undefined);
         throw error;
     }
 }
