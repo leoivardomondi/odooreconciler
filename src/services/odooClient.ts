@@ -1932,6 +1932,41 @@ export class OdooClient {
   }
 
   /**
+   * Approve all pending purchase orders linked to a manufacturing order.
+   * The configured Odoo connection must belong to an account with purchase
+   * approval rights (the production deployment uses dbadmin for this).
+   */
+  async approvePurchaseOrdersForShopFloor(
+    purchaseOrders: Array<{ id: number; name: string; state: string }>,
+  ): Promise<Array<{ id: number; name: string; state: string }>> {
+    const results: Array<{ id: number; name: string; state: string }> = [];
+    for (const purchaseOrder of purchaseOrders) {
+      let current = String(purchaseOrder.state || '').toLowerCase();
+      if (['draft', 'sent'].includes(current)) {
+        await this.callRecordMethod<unknown>('purchase.order', 'button_confirm', [purchaseOrder.id]);
+        const confirmed = await this.readRecords<{ state: string }>('purchase.order', [purchaseOrder.id], ['state']);
+        current = String(confirmed[0]?.state || '').toLowerCase();
+      }
+      if (current === 'to approve') {
+        await this.callRecordMethod<unknown>('purchase.order', 'button_approve', [purchaseOrder.id]);
+      }
+      const refreshed = await this.readRecords<{ id: number; name: string; state: string }>(
+        'purchase.order',
+        [purchaseOrder.id],
+        ['id', 'name', 'state'],
+      );
+      const updated = refreshed[0];
+      if (!updated || !['purchase', 'done'].includes(String(updated.state || '').toLowerCase())) {
+        throw new OdooClientError(
+          `Purchase order ${purchaseOrder.name || purchaseOrder.id} could not be approved. Current state: ${updated?.state || 'unknown'}.`,
+        );
+      }
+      results.push(updated);
+    }
+    return results;
+  }
+
+  /**
    * Get client names for multiple sale order names in a single request.
    */
   async getBulkSaleOrderClients(soNames: string[]): Promise<Map<string, string>> {

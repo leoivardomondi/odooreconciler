@@ -1265,6 +1265,32 @@ class OdooClient {
         };
     }
     /**
+     * Approve all pending purchase orders linked to a manufacturing order.
+     * The configured Odoo connection must belong to an account with purchase
+     * approval rights (the production deployment uses dbadmin for this).
+     */
+    async approvePurchaseOrdersForShopFloor(purchaseOrders) {
+        const results = [];
+        for (const purchaseOrder of purchaseOrders) {
+            let current = String(purchaseOrder.state || '').toLowerCase();
+            if (['draft', 'sent'].includes(current)) {
+                await this.callRecordMethod('purchase.order', 'button_confirm', [purchaseOrder.id]);
+                const confirmed = await this.readRecords('purchase.order', [purchaseOrder.id], ['state']);
+                current = String(confirmed[0]?.state || '').toLowerCase();
+            }
+            if (current === 'to approve') {
+                await this.callRecordMethod('purchase.order', 'button_approve', [purchaseOrder.id]);
+            }
+            const refreshed = await this.readRecords('purchase.order', [purchaseOrder.id], ['id', 'name', 'state']);
+            const updated = refreshed[0];
+            if (!updated || !['purchase', 'done'].includes(String(updated.state || '').toLowerCase())) {
+                throw new OdooClientError(`Purchase order ${purchaseOrder.name || purchaseOrder.id} could not be approved. Current state: ${updated?.state || 'unknown'}.`);
+            }
+            results.push(updated);
+        }
+        return results;
+    }
+    /**
      * Get client names for multiple sale order names in a single request.
      */
     async getBulkSaleOrderClients(soNames) {

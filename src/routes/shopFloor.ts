@@ -1830,21 +1830,15 @@ router.post('/shop-floor/work-order/:id/advance', async (req: Request, res: Resp
           return;
         }
         if (pendingPurchaseOrders.length) {
-          const notification = await sendPurchaseApprovalRequest({
-            settings,
-            operatorName: employee.name,
-            operatorEmail: viewedEmail,
-            procurement,
-          });
-          const poNames = pendingPurchaseOrders.map((po) => po.name).join(', ');
-          const message = notification.throttled
-            ? `${poNames} still requires approval. DB Admin and Charles were already notified recently.`
-            : `${poNames} requires approval. An email has been sent to DB Admin and Charles.`;
+          const approved = await client.approvePurchaseOrdersForShopFloor(pendingPurchaseOrders);
+          const poNames = approved.map((po) => po.name).join(', ');
+          const message = `${poNames} approved automatically by the configured dbadmin Odoo account. Validate the incoming receipt before starting ${procurement.moName}.`;
+          const redirectTo = `/shop-floor/receipts?message=${encodeURIComponent(message)}&moId=${encodeURIComponent(String(moId))}`;
           if (wantsJson) {
-            res.status(409).json({ ok: false, code: 'purchase_approval_required', message });
+            res.status(409).json({ ok: false, code: 'receipt_required', message, redirectTo });
             return;
           }
-          res.redirect('/shop-floor?error=' + encodeURIComponent(message) + '#manufacturing-orders');
+          res.redirect(redirectTo);
           return;
         }
       }
