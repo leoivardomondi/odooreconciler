@@ -4,6 +4,10 @@ const express_1 = require("express");
 const repositories_1 = require("../models/repositories");
 const authService_1 = require("../services/authService");
 const router = (0, express_1.Router)();
+const IMPERSONATE_COOKIE = 'oj_impersonate';
+function clearImpersonation(res) {
+    res.clearCookie(IMPERSONATE_COOKIE, { path: '/' });
+}
 function renderForgotPasswordPage(res, options = {}) {
     res.render('forgot-password', {
         pageTitle: 'Reset Password',
@@ -75,6 +79,7 @@ router.post('/auth/login', async (req, res) => {
             userAgent: requestContext.userAgent,
             detail: 'Sign-in completed.',
         });
+        clearImpersonation(res);
         res.setHeader('Set-Cookie', verified.sessionCookie);
         return res.redirect(appendQueryMessage(verified.redirectPath || nextPath, 'Signed in successfully.'));
     }
@@ -241,6 +246,7 @@ router.post('/auth/verify-code', async (req, res) => {
             userAgent: requestContext.userAgent,
             detail: 'OTP sign-in completed.',
         });
+        clearImpersonation(res);
         res.setHeader('Set-Cookie', verified.sessionCookie);
         return res.redirect(appendQueryMessage(verified.redirectPath || nextPath, 'Signed in successfully.'));
     }
@@ -290,6 +296,7 @@ router.post('/auth/password-login', async (req, res) => {
             userAgent: requestContext.userAgent,
             detail: 'Password sign-in completed.',
         });
+        clearImpersonation(res);
         res.setHeader('Set-Cookie', verified.sessionCookie);
         return res.redirect(appendQueryMessage(verified.redirectPath || nextPath, 'Signed in successfully.'));
     }
@@ -320,6 +327,7 @@ router.post('/auth/password-login', async (req, res) => {
 router.post('/logout', async (req, res) => {
     await (0, authService_1.logoutAuthenticatedSession)(req);
     (0, authService_1.clearAuthCookie)(res);
+    clearImpersonation(res);
     res.redirect(appendQueryMessage('/login', 'Signed out successfully.'));
 });
 exports.default = router;

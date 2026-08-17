@@ -13,6 +13,11 @@ import {
 } from '../services/authService';
 
 const router = Router();
+const IMPERSONATE_COOKIE = 'oj_impersonate';
+
+function clearImpersonation(res: Response) {
+  res.clearCookie(IMPERSONATE_COOKIE, { path: '/' });
+}
 
 function renderForgotPasswordPage(res: Response, options: {
   status?: { type: string; message: string } | null;
@@ -104,6 +109,7 @@ router.post('/auth/login', async (req, res) => {
       detail: 'Sign-in completed.',
     });
 
+    clearImpersonation(res);
     res.setHeader('Set-Cookie', verified.sessionCookie);
     return res.redirect(appendQueryMessage(verified.redirectPath || nextPath, 'Signed in successfully.'));
   } catch (error) {
@@ -276,6 +282,7 @@ router.post('/auth/verify-code', async (req, res) => {
       detail: 'OTP sign-in completed.',
     });
 
+    clearImpersonation(res);
     res.setHeader('Set-Cookie', verified.sessionCookie);
     return res.redirect(appendQueryMessage(verified.redirectPath || nextPath, 'Signed in successfully.'));
   } catch (error) {
@@ -328,6 +335,7 @@ router.post('/auth/password-login', async (req, res) => {
       detail: 'Password sign-in completed.',
     });
 
+    clearImpersonation(res);
     res.setHeader('Set-Cookie', verified.sessionCookie);
     return res.redirect(appendQueryMessage(verified.redirectPath || nextPath, 'Signed in successfully.'));
   } catch (error) {
@@ -358,6 +366,7 @@ router.post('/auth/password-login', async (req, res) => {
 router.post('/logout', async (req, res) => {
   await logoutAuthenticatedSession(req);
   clearAuthCookie(res);
+  clearImpersonation(res);
   res.redirect(appendQueryMessage('/login', 'Signed out successfully.'));
 });
 

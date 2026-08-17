@@ -781,15 +781,22 @@ export async function attachAuthState(req: Request, res: Response, next: NextFun
 
   // ── Impersonation: admin can "Login As" another user ──
   const cookies = parseCookies(req.get('cookie'));
-  if ((state.user?.role === 'admin' || state.user?.apps?.includes('shop-floor-admin')) && cookies.oj_impersonate) {
+  const isAdministrativePath = req.path.startsWith('/settings') || req.path.startsWith('/setup');
+  if (isAdministrativePath && state.user?.role === 'admin' && cookies.oj_impersonate) {
+    res.clearCookie('oj_impersonate', { path: '/' });
+  } else if ((state.user?.role === 'admin' || state.user?.apps?.includes('shop-floor-admin')) && cookies.oj_impersonate) {
     try {
       const imp = JSON.parse(cookies.oj_impersonate);
       if (imp.email) {
         const currentImpersonatedAccess = await getApprovedAuthUserByEmail(String(imp.email));
+        if (!currentImpersonatedAccess?.active) {
+          res.clearCookie('oj_impersonate', { path: '/' });
+          return next();
+        }
         const impersonatedUser: AuthSessionUser = {
           email: imp.email,
-          role: currentImpersonatedAccess?.active ? currentImpersonatedAccess.role : (imp.role || 'user'),
-          apps: currentImpersonatedAccess?.active ? (currentImpersonatedAccess.apps || []) : imp.apps,
+          role: currentImpersonatedAccess.role,
+          apps: currentImpersonatedAccess.apps || [],
         };
         req.impersonatedBy = state.user;
         req.viewingAsUser = impersonatedUser;
