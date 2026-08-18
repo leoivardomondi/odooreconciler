@@ -404,6 +404,38 @@ async function renderWeeklyShopFloorReportPdf(reportInput, scope) {
     });
     document.moveDown(.4);
     document.font('Helvetica').fontSize(7).fillColor(muted).text('Legend: P = Present, A = Absent, NC = Checked in but no checkout.', 42, document.y, { width: contentWidth });
+    document.moveDown(.55);
+    section('Attendance system usage', 'This measures whether each scheduled shift was fully recorded in Odoo. Overtime check-ins are excluded from the regular-shift denominator.');
+    const usageCols = [
+        { label: 'EMPLOYEE', x: 48, width: 170 },
+        { label: 'CHECK-IN', x: 224, width: 68 },
+        { label: 'CHECK-OUT', x: 296, width: 76 },
+        { label: 'COMPLETE', x: 376, width: 74 },
+        { label: 'SYSTEM USAGE', x: 454, width: 92 },
+    ];
+    tableHeader(usageCols);
+    report.attendance.forEach((person, index) => {
+        ensureSpace(32);
+        if (document.y < 55)
+            tableHeader(usageCols);
+        const expectedDays = person.days.length;
+        const checkIns = person.days.filter((day) => day.status === 'Present' || day.status === 'No checkout').length;
+        const checkOuts = person.days.filter((day) => day.status === 'Present').length;
+        const completeShifts = checkOuts;
+        const checkInRate = expectedDays ? Math.round((checkIns / expectedDays) * 100) : 0;
+        const checkOutRate = expectedDays ? Math.round((checkOuts / expectedDays) * 100) : 0;
+        const systemRate = expectedDays ? Math.round((completeShifts / expectedDays) * 100) : 0;
+        const y = document.y;
+        document.rect(42, y, contentWidth, 29).fill(index % 2 ? '#f8fafc' : '#ffffff');
+        document.font('Helvetica-Bold').fontSize(7.5).fillColor(ink).text(person.name, 48, y + 9, { width: 170, lineBreak: false });
+        document.font('Helvetica').fontSize(7.5).fillColor(checkInRate >= 90 ? '#16a34a' : checkInRate >= 75 ? '#d97706' : '#dc2626').text(`${checkInRate}%`, 224, y + 9, { width: 68, align: 'center' });
+        document.fillColor(checkOutRate >= 90 ? '#16a34a' : checkOutRate >= 75 ? '#d97706' : '#dc2626').text(`${checkOutRate}%`, 296, y + 9, { width: 76, align: 'center' });
+        document.fillColor(ink).text(`${completeShifts}/${expectedDays}`, 376, y + 9, { width: 74, align: 'center' });
+        document.font('Helvetica-Bold').fillColor(systemRate >= 90 ? '#16a34a' : systemRate >= 75 ? '#d97706' : '#dc2626').text(`${systemRate}%`, 454, y + 9, { width: 92, align: 'center' });
+        document.y = y + 29;
+    });
+    document.moveDown(.3);
+    document.font('Helvetica').fontSize(7).fillColor(muted).text('System usage = complete check-in and check-out pairs ÷ scheduled working days. A separate overtime check-in does not count as a failed regular checkout.', 42, document.y, { width: contentWidth });
     document.end();
     return done;
 }
