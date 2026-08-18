@@ -12,29 +12,19 @@ const RECIPIENT_NAMES = ['dbadmin', 'charles', 'raphael'];
 
 function dateOnly(date: Date) { return date.toISOString().slice(0, 10); }
 function productName(value: unknown) { return Array.isArray(value) ? String(value[1] || '') : String(value || ''); }
-function parseOdooDate(value: string | null) {
-  if (!value) return null;
-  const normalized = value.trim().includes('T') ? value.trim() : value.trim().replace(' ', 'T');
-  const iso = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalized) ? normalized : `${normalized}Z`;
-  const parsed = new Date(iso);
-  return Number.isNaN(parsed.getTime()) ? null : parsed;
-}
 function nairobiDateTime(value: string | null) {
-  const parsed = parseOdooDate(value);
-  if (!parsed) return '-';
-  return new Intl.DateTimeFormat('en-KE', { timeZone: 'Africa/Nairobi', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true }).format(parsed);
+  if (!value) return '-';
+  return new Intl.DateTimeFormat('en-KE', { timeZone: 'Africa/Nairobi', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true }).format(new Date(value));
 }
 function isLateCheckIn(value: string | null) {
-  const parsed = parseOdooDate(value);
-  if (!parsed) return false;
-  const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Nairobi', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(parsed);
+  if (!value) return false;
+  const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Nairobi', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date(value));
   const get = (type: string) => Number(parts.find((part) => part.type === type)?.value || 0);
   return get('hour') > 8 || (get('hour') === 8 && get('minute') > 20);
 }
 function nairobiDateKey(value: string | null) {
-  const parsed = parseOdooDate(value);
-  if (!parsed) return '';
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Nairobi', year: 'numeric', month: '2-digit', day: '2-digit' }).format(parsed);
+  if (!value) return '';
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Nairobi', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(value));
 }
 function nextDate(value: string) {
   const date = new Date(`${value}T12:00:00Z`);
@@ -117,9 +107,7 @@ export async function buildWeeklyShopFloorReport(scope?: { fromDate?: string; to
         late: Boolean(record && isLateCheckIn(record.check_in)),
         checkIn: record?.check_in || null,
         checkOut: record?.check_out || null,
-        workedHours: Number(record?.worked_hours || (record?.check_in && record?.check_out
-          ? ((parseOdooDate(record.check_out)?.getTime() || 0) - (parseOdooDate(record.check_in)?.getTime() || 0)) / 3600000
-          : 0)),
+        workedHours: Number(record?.worked_hours || (record?.check_in && record?.check_out ? (new Date(record.check_out).getTime() - new Date(record.check_in).getTime()) / 3600000 : 0)),
         nextDayCheckIn: followingRecord?.check_in || null,
       };
     }),

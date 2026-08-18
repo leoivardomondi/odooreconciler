@@ -1529,8 +1529,7 @@ export class OdooClient {
     let lateCount = 0;
     for (const r of records) {
       if (!r.check_in) continue;
-      const normalized = r.check_in.includes('T') ? r.check_in : r.check_in.replace(' ', 'T');
-      const d = new Date(/(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalized) ? normalized : `${normalized}Z`);
+      const d = new Date(r.check_in.replace(' ', 'T'));
       if (d.getHours() > 8 || (d.getHours() === 8 && d.getMinutes() > 30)) {
         lateCount++;
       }
