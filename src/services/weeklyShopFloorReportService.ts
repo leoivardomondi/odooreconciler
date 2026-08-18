@@ -103,15 +103,16 @@ export async function buildWeeklyShopFloorReport(scope?: { fromDate?: string; to
       const employeeRecords = attendanceByDate[index].filter((entry) =>
         (Array.isArray(entry.employee_id) ? entry.employee_id[0] : entry.employee_id) === operator.id,
       );
+      const overtimeRecords = employeeRecords
+        .filter((entry) => isOvertimeCheckIn(entry.check_in))
+        .sort((left, right) => String(left.check_in).localeCompare(String(right.check_in)));
+      const regularRecords = employeeRecords.filter((entry) => !isOvertimeCheckIn(entry.check_in));
       // Odoo can return a completed regular shift and a later open overtime
       // check-in on the same day. Prefer the completed shift for attendance;
       // never let the overtime row create a false failed-checkout record.
-      const completedRecords = employeeRecords.filter((entry) => Boolean(entry.check_out));
-      const record = completedRecords[0] || employeeRecords[0] || null;
-      const overtimeRecord = employeeRecords
-        .filter((entry) => !entry.check_out && isOvertimeCheckIn(entry.check_in))
-        .sort((left, right) => String(right.check_in).localeCompare(String(left.check_in)))[0] || null;
-      const followingRecord = record && !record.check_out && !overtimeRecord
+      const completedRecords = regularRecords.filter((entry) => Boolean(entry.check_out));
+      const record = completedRecords[0] || regularRecords[0] || null;
+      const followingRecord = record && !record.check_out
         ? allAttendanceRecords.find((entry) =>
           (Array.isArray(entry.employee_id) ? entry.employee_id[0] : entry.employee_id) === operator.id &&
           nairobiDateKey(entry.check_in) === nextDate(date),
@@ -125,7 +126,13 @@ export async function buildWeeklyShopFloorReport(scope?: { fromDate?: string; to
         checkOut: record?.check_out || null,
         workedHours: Number(record?.worked_hours || (record?.check_in && record?.check_out ? (new Date(record.check_out).getTime() - new Date(record.check_in).getTime()) / 3600000 : 0)),
         nextDayCheckIn: followingRecord?.check_in || null,
-        overtimeCheckIn: overtimeRecord?.check_in || null,
+        overtimeSessions: overtimeRecords.map((overtimeRecord) => ({
+          checkIn: overtimeRecord.check_in,
+          checkOut: overtimeRecord.check_out,
+          workedHours: Number(overtimeRecord.worked_hours || (overtimeRecord.check_in && overtimeRecord.check_out
+            ? (new Date(overtimeRecord.check_out).getTime() - new Date(overtimeRecord.check_in).getTime()) / 3600000
+            : 0)),
+        })),
       };
     }),
   }));
@@ -257,24 +264,25 @@ export async function renderWeeklyShopFloorReportPdf(
   }
 
   const overtimeCheckIns = report.attendance.flatMap((person) => person.days
-    .filter((day) => day.overtimeCheckIn)
-    .map((day) => ({ name: person.name, day })));
+    .flatMap((day) => day.overtimeSessions.map((session) => ({ name: person.name, day, session }))));
   if (overtimeCheckIns.length) {
-    section('Probable overtime check-ins', 'A separate check-in after 5:00 PM is shown as probable overtime and requires confirmation.');
+    section('Overtime night-shift records', 'A separate check-in after 5:00 PM is shown with its checkout status and requires confirmation.');
     const overtimeCols = [
       { label: 'EMPLOYEE', x: 48, width: 190 },
       { label: 'DATE', x: 244, width: 70 },
-      { label: 'CHECK-IN', x: 318, width: 110 },
-      { label: 'STATUS', x: 432, width: 110 },
+      { label: 'CHECK-IN', x: 318, width: 72 },
+      { label: 'CHECK-OUT', x: 394, width: 72 },
+      { label: 'HOURS / STATUS', x: 470, width: 76 },
     ];
     tableHeader(overtimeCols);
-    overtimeCheckIns.forEach(({ name, day }, index) => {
+    overtimeCheckIns.forEach(({ name, day, session }, index) => {
       ensureSpace(30); if (document.y < 55) tableHeader(overtimeCols); const y = document.y;
       document.rect(42, y, contentWidth, 28).fill(index % 2 ? '#f8fafc' : '#ffffff');
       document.font('Helvetica-Bold').fontSize(7.5).fillColor(ink).text(name, 48, y + 9, { width: 190, lineBreak: false });
       document.font('Helvetica').fontSize(7.5).text(day.date, 244, y + 9, { width: 70, lineBreak: false });
-      document.font('Helvetica').fontSize(7.2).text(nairobiDateTime(day.overtimeCheckIn), 318, y + 9, { width: 110, lineBreak: false });
-      document.font('Helvetica-Bold').fontSize(7.2).fillColor('#b45309').text('Confirmation required', 432, y + 9, { width: 110, lineBreak: false });
+      document.font('Helvetica').fontSize(6.8).text(nairobiDateTime(session.checkIn), 318, y + 9, { width: 72, lineBreak: false });
+      document.text(session.checkOut ? nairobiDateTime(session.checkOut) : 'Open', 394, y + 9, { width: 72, lineBreak: false });
+      document.font('Helvetica-Bold').fontSize(6.8).fillColor(session.checkOut ? '#16a34a' : '#b45309').text(`${Number(session.workedHours || 0).toFixed(1)}h ${session.checkOut ? 'Complete' : 'Open'}`, 470, y + 9, { width: 76, lineBreak: false });
       document.y = y + 28;
     });
   }
