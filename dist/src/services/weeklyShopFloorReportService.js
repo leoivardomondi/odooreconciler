@@ -258,34 +258,6 @@ async function renderWeeklyShopFloorReportPdf(reportInput, scope) {
             document.y = y + 30;
         });
     }
-    section('Late check-in report', 'A check-in after 8:20 AM Nairobi time is counted as late.');
-    const lateCheckIns = report.attendance
-        .map((person) => ({
-        name: person.name,
-        days: person.days.filter((day) => day.late),
-    }))
-        .filter((person) => person.days.length > 0);
-    const lateCols = [
-        { label: 'EMPLOYEE', x: 48, width: 190 },
-        { label: 'LATE DAYS', x: 244, width: 62 },
-        { label: 'DATES / CHECK-IN TIMES', x: 314, width: 230 },
-    ];
-    tableHeader(lateCols);
-    if (!lateCheckIns.length) {
-        document.font('Helvetica').fontSize(9).fillColor('#16a34a').text('No late check-ins were recorded.', 48, document.y + 8);
-        document.y += 28;
-    }
-    lateCheckIns.forEach((person, index) => {
-        ensureSpace(30);
-        if (document.y < 55)
-            tableHeader(lateCols);
-        const y = document.y;
-        document.rect(42, y, contentWidth, 28).fill(index % 2 ? '#f8fafc' : '#ffffff');
-        document.font('Helvetica-Bold').fontSize(7.5).fillColor(ink).text(person.name, 48, y + 9, { width: 190, lineBreak: false });
-        document.font('Helvetica-Bold').fontSize(8).fillColor('#dc2626').text(String(person.days.length), 244, y + 9, { width: 62, align: 'center' });
-        document.font('Helvetica').fontSize(6.8).fillColor(ink).text(person.days.map((day) => `${day.date.slice(5)} ${day.checkIn ? nairobiDateTime(day.checkIn).split(', ').pop() : '-'}`).join(' | '), 314, y + 7, { width: 230, height: 18 });
-        document.y = y + 28;
-    });
     const boardLogTotals = report.boardLoggingByOperator.reduce((totals, operator) => {
         totals.records += operator.records;
         totals.boards += operator.boards;
