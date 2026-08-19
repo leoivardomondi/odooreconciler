@@ -361,17 +361,6 @@ export async function renderWeeklyShopFloorReportPdf(
     document.font('Helvetica-Bold').fillColor(item.overdueDays >= 8 ? '#dc2626' : '#d97706').text(`${item.overdueDays}d`, 512, y + 8, { width: 34, lineBreak: false }); document.y = y + 29;
   });
 
-  section('Weekly attendance scorecard', 'Sunday is excluded; Saturday is a working day. A missing checkout counts as attended but requires correction.');
-  const attCols = [{ label: 'EMPLOYEE', x: 48, width: 190 }, { label: 'PRESENT', x: 242, width: 52 }, { label: 'ABSENT', x: 300, width: 48 }, { label: 'NO OUT', x: 354, width: 48 }, { label: 'RATE', x: 408, width: 42 }, { label: 'DAILY STATUS', x: 456, width: 88 }];
-  tableHeader(attCols);
-  report.attendance.forEach((person, index) => {
-    ensureSpace(32); if (document.y < 55) tableHeader(attCols); const present = person.days.filter((day) => day.status === 'Present').length; const absent = person.days.filter((day) => day.status === 'Absent').length; const noCheckout = person.days.filter((day) => day.status === 'No checkout').length; const rate = person.days.length ? Math.round(((present + noCheckout) / person.days.length) * 100) : 0; const y = document.y;
-    document.rect(42, y, contentWidth, 29).fill(index % 2 ? '#f8fafc' : '#ffffff'); document.font('Helvetica-Bold').fontSize(7.5).fillColor(ink).text(person.name, 48, y + 9, { width: 190, lineBreak: false });
-    document.font('Helvetica').fontSize(7.5).text(String(present), 242, y + 9, { width: 52, align: 'center' }).text(String(absent), 300, y + 9, { width: 48, align: 'center' }).text(String(noCheckout), 354, y + 9, { width: 48, align: 'center' });
-    document.font('Helvetica-Bold').fillColor(rate >= 90 ? '#16a34a' : rate >= 75 ? '#d97706' : '#dc2626').text(`${rate}%`, 408, y + 9, { width: 42, align: 'center' });
-    document.font('Helvetica').fontSize(6.4).fillColor(muted).text(person.days.map((day) => `${day.date.slice(5)}:${day.status === 'Present' ? 'P' : day.status === 'Absent' ? 'A' : 'NC'}`).join(' '), 456, y + 5, { width: 88, height: 19 }); document.y = y + 29;
-  });
-  document.moveDown(.4); document.font('Helvetica').fontSize(7).fillColor(muted).text('Legend: P = Present, A = Absent, NC = Checked in but no checkout.', 42, document.y, { width: contentWidth });
   document.moveDown(.55);
   section('Attendance system usage', 'This measures whether each scheduled shift was fully recorded in Odoo. Overtime check-ins are excluded from the regular-shift denominator.');
   const usageCols = [
