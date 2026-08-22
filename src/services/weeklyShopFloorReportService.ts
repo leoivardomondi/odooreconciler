@@ -6,6 +6,7 @@ import { logEvent } from './logService';
 import { getConfirmedMoQueueSchedule, getMoOverdueState } from './moOverdueService';
 import { env } from '../utils/env';
 import { clampShopFloorReportingDate } from '../utils/shopFloorReporting';
+import { resolveFromProjectRoot } from '../utils/paths';
 
 const DEPARTMENTS = ['Operations', 'Production', 'Shop Floor', 'Manufacturing', 'Factory'];
 const RECIPIENT_NAMES = ['dbadmin', 'charles', 'raphael'];
@@ -28,7 +29,7 @@ function isLateCheckIn(value: string | null) {
   const get = (type: string) => Number(parts.find((part) => part.type === type)?.value || 0);
   return get('hour') > 8 || (get('hour') === 8 && get('minute') > 20);
 }
-function nairobiDateKey(value: string | null) {
+function nairobiDateKey(value: string | Date | null) {
   if (!value) return '';
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Nairobi', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(value));
 }
@@ -36,6 +37,39 @@ function nextDate(value: string) {
   const date = new Date(`${value}T12:00:00Z`);
   date.setUTCDate(date.getUTCDate() + 1);
   return dateOnly(date);
+}
+
+function previousDate(value: string) {
+  const date = new Date(`${value}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() - 1);
+  return dateOnly(date);
+}
+
+function addDays(value: string, days: number) {
+  const date = new Date(`${value}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return dateOnly(date);
+}
+
+function defaultReportWindow() {
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Africa/Nairobi',
+    weekday: 'short',
+    hour: '2-digit',
+    hour12: false,
+  }).formatToParts(now);
+  const get = (type: string) => parts.find((part) => part.type === type)?.value || '';
+  const weekday = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(get('weekday'));
+  const today = nairobiDateKey(now);
+  const daysSinceWednesday = (weekday - 3 + 7) % 7;
+
+  if (weekday === 3) {
+    return { start: addDays(today, -7), end: previousDate(today) };
+  }
+
+  const end = Number(get('hour')) >= 18 ? today : previousDate(today);
+  return { start: addDays(today, -daysSinceWednesday), end };
 }
 
 async function getOperators(client: OdooClient, companyId: number) {
@@ -60,11 +94,9 @@ export async function buildWeeklyShopFloorReport(scope?: { fromDate?: string; to
     reportStart = clampShopFloorReportingDate(String(scope.fromDate), reportingBaseline);
     reportEnd = clampShopFloorReportingDate(String(scope.toDate), reportingBaseline);
   } else {
-    const end = new Date();
-    const start = new Date(end);
-    start.setDate(end.getDate() - 6);
-    reportStart = clampShopFloorReportingDate(dateOnly(start), reportingBaseline);
-    reportEnd = clampShopFloorReportingDate(dateOnly(end), reportingBaseline);
+    const window = defaultReportWindow();
+    reportStart = clampShopFloorReportingDate(window.start, reportingBaseline);
+    reportEnd = clampShopFloorReportingDate(window.end, reportingBaseline);
   }
 
   const [boardSummary, penalties, orders, moCompletion, operators, boardLoggingByOperator] = await Promise.all([
@@ -150,6 +182,7 @@ export async function renderWeeklyShopFloorReportPdf(
   const done = new Promise<Buffer>((resolve, reject) => { document.on('end', () => resolve(Buffer.concat(chunks))); document.on('error', reject); });
   const navy = '#22213f'; const copper = '#cf8464'; const ink = '#1e293b'; const muted = '#64748b'; const border = '#dbe2ea';
   const pageWidth = 595.28; const contentWidth = pageWidth - 84;
+  const logoPath = resolveFromProjectRoot('src', 'public', 'icons', 'urban-vibe-logo-dark.png');
   const ensureSpace = (height: number) => { if (document.y + height > 762) document.addPage(); };
   const section = (title: string, subtitle?: string) => {
     ensureSpace(subtitle ? 48 : 32); document.moveDown(.65);
@@ -174,6 +207,7 @@ export async function renderWeeklyShopFloorReportPdf(
   document.font('Helvetica-Bold').fontSize(20).fillColor('#ffffff').text('Wednesday Shop Floor Report', 42, 30);
   document.font('Helvetica-Bold').fontSize(9).fillColor(copper).text(report.companyName, 42, 59);
   document.font('Helvetica').fontSize(8).fillColor('#dbe2ea').text(`Warehouse ${report.warehouseId}  |  Period ${report.start} to ${report.end}  |  Data baseline ${report.reportingBaseline}  |  Generated ${report.generatedAt.toLocaleString('en-KE', { timeZone: 'Africa/Nairobi' })}`, 42, 78);
+  document.image(logoPath, pageWidth - 150, 24, { fit: [108, 62], align: 'right', valign: 'center' });
   document.y = 130;
 
   const attendanceTotals = report.attendance.reduce((totals, person) => {
@@ -391,6 +425,16 @@ export async function renderWeeklyShopFloorReportPdf(
   });
   document.moveDown(.3);
   document.font('Helvetica').fontSize(7).fillColor(muted).text('System usage = complete check-in and check-out pairs ÷ scheduled working days. A separate overtime check-in does not count as a failed regular checkout.', 42, document.y, { width: contentWidth });
+  const footerUrl = String(env.APP_BASE_URL || 'https://app.urbanvibeinteriordesign.co.ke').replace(/\/+$/, '');
+  const footerRange = document.bufferedPageRange();
+  for (let pageIndex = footerRange.start; pageIndex < footerRange.start + footerRange.count; pageIndex += 1) {
+    document.switchToPage(pageIndex);
+    const footerY = document.page.height - 30;
+    document.moveTo(42, footerY - 6).lineTo(pageWidth - 42, footerY - 6).strokeColor(border).lineWidth(0.6).stroke();
+    document.font('Helvetica').fontSize(7).fillColor(muted)
+      .text(`Report source: ${footerUrl}`, 42, footerY, { width: contentWidth - 55, lineBreak: false })
+      .text(`Page ${pageIndex - footerRange.start + 1} of ${footerRange.count}`, pageWidth - 95, footerY, { width: 53, align: 'right', lineBreak: false });
+  }
   document.end();
   return done;
 }
