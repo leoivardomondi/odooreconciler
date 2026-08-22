@@ -20,11 +20,14 @@ import {
   hasOdooConfiguration,
   resolveFieldMappings,
 } from '../utils/helpers';
+import { env } from '../utils/env';
 import { logEvent } from './logService';
 import { isManufacturingOrderReady } from './manufacturingStatus';
 import { OdooClient } from './odooClient';
+import { createTodoActivity, findOpenActivities } from './odooActivityService';
 
 const ALLOWED_NOTIFICATION_USER_NAME = 'Leoivard Ongule';
+const MISSING_EDGE_BANDING_ACTIVITY_SUMMARY = 'MISSING EDGE BANDING ITEM(S)';
 
 interface AggregatedStockItem {
   extractedColor: string;
@@ -855,37 +858,58 @@ async function buildStockRun(orderId: number): Promise<{
   };
 }
 
-async function postMissingItemsToChatter(
+async function postMissingItemsToActivities(
   client: OdooClient,
   orderId: number,
   missingProducts: string[],
-  recipient?: StockAlertRecipient | null,
+  salespersonUserId?: number | null,
 ) {
   if (!missingProducts.length) {
     return;
   }
-  if (!recipient?.partnerId) {
-    await logEvent('warn', 'Skipped stock chatter alert because the allowed notification user was not resolved', {
+
+  const uniqueProducts = [...new Set(missingProducts)];
+  const dbAdmin = await client.findUserByLoginOrEmail(env.DBADMIN_EMAIL);
+  const assigneeIds = [...new Set([salespersonUserId || null, dbAdmin?.id || null].filter((id): id is number => Boolean(id)))];
+  if (!assigneeIds.length) {
+    await logEvent('warn', 'Skipped missing edge banding activity because no assignees were resolved', {
       orderId,
-      allowedUser: ALLOWED_NOTIFICATION_USER_NAME,
-      missingProducts,
+      missingProducts: uniqueProducts,
     });
     return;
   }
 
-  const uniqueProducts = [...new Set(missingProducts)];
-  const recipientPrefix = recipient?.userName ? `${recipient.userName}\n` : '';
-  await client.postChatterAlert(
-    orderId,
-    `${recipientPrefix}ATTENTION: The Sales Order has missing edge banding item(s) found in the Job Summary: ${uniqueProducts.join(', ')}.`,
-    recipient?.partnerId ? [recipient.partnerId] : [],
+  const existingActivities = await findOpenActivities(client, {
+    modelName: 'sale.order',
+    recordId: orderId,
+    summary: MISSING_EDGE_BANDING_ACTIVITY_SUMMARY,
+  });
+  const existingAssigneeIds = new Set(
+    existingActivities
+      .map((activity) => Array.isArray(activity.user_id) ? Number(activity.user_id[0]) : null)
+      .filter((id): id is number => Boolean(id)),
   );
+
+  for (const userId of assigneeIds) {
+    if (existingAssigneeIds.has(userId)) continue;
+    await createTodoActivity(client, {
+      modelName: 'sale.order',
+      recordId: orderId,
+      userId,
+      summary: MISSING_EDGE_BANDING_ACTIVITY_SUMMARY,
+      noteLines: [
+        'ATTENTION: The Sales Order has missing edge banding item(s) found in the Job Summary.',
+        `Missing item(s): ${uniqueProducts.join(', ')}`,
+      ],
+    });
+  }
 }
 
 export async function logMissingItemsToChatter(orderId: number, missingProducts: string[]) {
   const { client } = await getConfiguredClient();
-  const recipient = await resolveAllowedNotificationRecipient(client, 'manual_missing_items');
-  await postMissingItemsToChatter(client, orderId, missingProducts, recipient);
+  const order = await client.getSaleOrder(orderId);
+  const salespersonUserId = Array.isArray(order.user_id) ? Number(order.user_id[0]) : null;
+  await postMissingItemsToActivities(client, orderId, missingProducts, salespersonUserId);
 }
 
 async function resolveAllowedNotificationRecipient(
@@ -1072,7 +1096,6 @@ export async function processAllItems(
   try {
     const location = await resolveStockLocation(client);
     const lines = await client.getSaleOrderLines(orderId);
-    const missingSoAlertRecipient = preview ? null : await resolveAllowedNotificationRecipient(client, 'missing_so');
     const missingComponentAlertRecipient = preview
       ? null
       : await resolveAllowedNotificationRecipient(client, 'missing_component');
@@ -1173,7 +1196,9 @@ export async function processAllItems(
         }
       } else {
         if (missingSoProducts.length > 0) {
-          await postMissingItemsToChatter(client, orderId, missingSoProducts, missingSoAlertRecipient);
+          const order = await client.getSaleOrder(orderId);
+          const salespersonUserId = Array.isArray(order.user_id) ? Number(order.user_id[0]) : null;
+          await postMissingItemsToActivities(client, orderId, missingSoProducts, salespersonUserId);
         }
 
         for (const message of componentMissingMessages) {
@@ -1222,7 +1247,7 @@ export async function processAllItems(
       source: run.source,
       summary: finalResult.summary,
       missingSoProducts,
-      missingSoAlertRecipient: missingSoAlertRecipient?.configuredLogin || null,
+      missingEdgeBandingActivity: missingSoProducts.length > 0,
       missingComponentAlertRecipient: missingComponentAlertRecipient?.configuredLogin || null,
       items: finalResult.items.map<StockProcessingLogItemContext>((item: StockProcessingItemResult) => ({
         extractedColor: item.extractedColor,

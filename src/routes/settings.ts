@@ -1487,12 +1487,33 @@ router.post(
     if (provider === 'disabled') {
       return renderSettingsPage(res, { existing: currentSettings, source, status: { type: 'danger', message: 'Select an AI provider before testing.' } });
     }
-    if (!apiKey && !hasGeminiOAuth) {
+
+    let geminiOAuth: { accessToken: string; projectId: string } | null = null;
+    let geminiOAuthError: string | null = null;
+    if (hasGeminiOAuth) {
+      try {
+        geminiOAuth = await getGeminiOAuthAccessToken();
+      } catch (err) {
+        geminiOAuthError = err instanceof Error ? err.message : String(err);
+      }
+    }
+
+    if (!apiKey && !geminiOAuth) {
+      if (hasGeminiOAuth && geminiOAuthError) {
+        const isRevokedOrExpired = /expired|revoked|invalid_grant/i.test(geminiOAuthError);
+        const guidance = isRevokedOrExpired
+          ? 'Google Gemini OAuth token has expired or been revoked. Click "Reconnect with Google" under Google Gemini OAuth to re-authorize, or enter a Gemini API Key.'
+          : `Google Gemini OAuth error: ${geminiOAuthError}. Please reconnect with Google or provide a Gemini API Key.`;
+        return renderSettingsPage(res, {
+          existing: currentSettings,
+          source,
+          status: { type: 'danger', message: `API test failed for ${provider} / ${model}: ${guidance}` },
+        });
+      }
       return renderSettingsPage(res, { existing: currentSettings, source, status: { type: 'danger', message: `No API key or OAuth connection is configured for ${provider} / ${model}.` } });
     }
 
     try {
-      const geminiOAuth = hasGeminiOAuth ? await getGeminiOAuthAccessToken() : null;
       const configuredBaseUrl = req.body.aiBaseUrl?.trim() || currentSettings.ai.baseUrl;
       let endpoint = '';
       let headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -1591,10 +1612,13 @@ router.post(
         throw new Error('NVIDIA returned HTTP 200 without a chat completion result.');
       }
 
+      const note = geminiOAuthError
+        ? ` (Note: Google OAuth token error: "${geminiOAuthError}". Successfully tested using fallback Gemini API Key. Click "Reconnect with Google" to re-authorize OAuth.)`
+        : '';
       await renderSettingsPage(res, {
         existing: currentSettings,
         source,
-        status: { type: 'success', message: `API test succeeded for ${provider} / ${model}. The key and model are reachable.` },
+        status: { type: 'success', message: `API test succeeded for ${provider} / ${model}.${note}` },
       });
     } catch (error) {
       const message = error instanceof Error && /timeout|aborted/i.test(error.message)

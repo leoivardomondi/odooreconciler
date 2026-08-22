@@ -122,6 +122,12 @@ router.get('/forgot-password', (req, res) => {
         return res.redirect('/dashboard');
     return renderForgotPasswordPage(res, { email: String(req.query.email || '') });
 });
+router.get(['/privacy-policy', '/privacy'], (_req, res) => {
+    return res.render('privacy-policy');
+});
+router.get(['/terms-of-service', '/terms'], (_req, res) => {
+    return res.render('terms-of-service');
+});
 router.post('/auth/request-password-reset', async (req, res) => {
     const email = String(req.body.email || '');
     try {

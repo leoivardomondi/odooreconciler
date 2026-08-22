@@ -4,8 +4,13 @@ import { sendMailWithConfig } from './mailTransport';
 import { OdooClient } from './odooClient';
 
 const OVERTIME_BOARD_THRESHOLD = 50;
+const ELIGIBLE_PURCHASE_ORDER_STATES = new Set(['to approve', 'purchase']);
 let interval: NodeJS.Timeout | null = null;
 let lastSentKey = '';
+
+export function isEligiblePurchaseOrderState(state: string | null | undefined) {
+  return ELIGIBLE_PURCHASE_ORDER_STATES.has(String(state || '').trim().toLowerCase());
+}
 
 function nairobiParts() {
   const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Nairobi', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hour12: false }).formatToParts(new Date());
@@ -26,9 +31,15 @@ export async function sendMoOvertimeSuggestion(recipientOverride = '') {
   if (!recipient) throw new Error('No active user found to receive the overtime suggestion email.');
   const client = new OdooClient(settings.odoo);
   const orders = await client.getWarehouseScopedActiveWorkOrders(warehouseId, 500);
+  const origins = [...new Set(orders.map((order) => String(order.origin || '').trim()).filter(Boolean))];
+  const purchaseOrderStates = await client.getBulkRelatedPurchaseOrderStates(origins);
   const largeCuttingOrders = orders.filter((order) => {
     const product = Array.isArray(order.product_id) ? String(order.product_id[1] || '') : String(order.product_id || '');
-    return /^cutting\b/i.test(product) && Number(order.product_qty || 0) >= OVERTIME_BOARD_THRESHOLD && !['done', 'cancel'].includes(order.state);
+    const purchaseOrderState = purchaseOrderStates.get(String(order.origin || '').trim()) || null;
+    return /^cutting\b/i.test(product)
+      && Number(order.product_qty || 0) >= OVERTIME_BOARD_THRESHOLD
+      && !['done', 'cancel'].includes(order.state)
+      && isEligiblePurchaseOrderState(purchaseOrderState);
   });
   if (!largeCuttingOrders.length) return false;
   const rows = largeCuttingOrders.map((order) => `<tr><td>${order.name}</td><td>${Array.isArray(order.product_id) ? order.product_id[1] : order.product_id}</td><td>${order.product_qty}</td><td>${order.origin || '-'}</td></tr>`).join('');

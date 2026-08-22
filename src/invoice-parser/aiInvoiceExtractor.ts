@@ -583,8 +583,14 @@ async function resolveConfiguredCredential(
   }
 
   if (config.geminiOAuth?.connected) {
-    const oauth = await getGeminiOAuthAccessToken();
-    return { accessToken: oauth.accessToken, projectId: oauth.projectId };
+    try {
+      const oauth = await getGeminiOAuthAccessToken();
+      return { accessToken: oauth.accessToken, projectId: oauth.projectId };
+    } catch (err) {
+      const apiKey = resolveConfiguredApiKey(config, provider, model);
+      if (apiKey) return { apiKey };
+      throw err;
+    }
   }
 
   const apiKey = resolveConfiguredApiKey(config, provider, model);

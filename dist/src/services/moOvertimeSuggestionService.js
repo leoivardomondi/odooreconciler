@@ -1,5 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.isEligiblePurchaseOrderState = isEligiblePurchaseOrderState;
 exports.sendMoOvertimeSuggestion = sendMoOvertimeSuggestion;
 exports.startMoOvertimeSuggestionInterval = startMoOvertimeSuggestionInterval;
 const repositories_1 = require("../models/repositories");
@@ -7,8 +8,12 @@ const logService_1 = require("./logService");
 const mailTransport_1 = require("./mailTransport");
 const odooClient_1 = require("./odooClient");
 const OVERTIME_BOARD_THRESHOLD = 50;
+const ELIGIBLE_PURCHASE_ORDER_STATES = new Set(['to approve', 'purchase']);
 let interval = null;
 let lastSentKey = '';
+function isEligiblePurchaseOrderState(state) {
+    return ELIGIBLE_PURCHASE_ORDER_STATES.has(String(state || '').trim().toLowerCase());
+}
 function nairobiParts() {
     const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Nairobi', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hour12: false }).formatToParts(new Date());
     const get = (type) => parts.find((part) => part.type === type)?.value || '';
@@ -29,9 +34,15 @@ async function sendMoOvertimeSuggestion(recipientOverride = '') {
         throw new Error('No active user found to receive the overtime suggestion email.');
     const client = new odooClient_1.OdooClient(settings.odoo);
     const orders = await client.getWarehouseScopedActiveWorkOrders(warehouseId, 500);
+    const origins = [...new Set(orders.map((order) => String(order.origin || '').trim()).filter(Boolean))];
+    const purchaseOrderStates = await client.getBulkRelatedPurchaseOrderStates(origins);
     const largeCuttingOrders = orders.filter((order) => {
         const product = Array.isArray(order.product_id) ? String(order.product_id[1] || '') : String(order.product_id || '');
-        return /^cutting\b/i.test(product) && Number(order.product_qty || 0) >= OVERTIME_BOARD_THRESHOLD && !['done', 'cancel'].includes(order.state);
+        const purchaseOrderState = purchaseOrderStates.get(String(order.origin || '').trim()) || null;
+        return /^cutting\b/i.test(product)
+            && Number(order.product_qty || 0) >= OVERTIME_BOARD_THRESHOLD
+            && !['done', 'cancel'].includes(order.state)
+            && isEligiblePurchaseOrderState(purchaseOrderState);
     });
     if (!largeCuttingOrders.length)
         return false;

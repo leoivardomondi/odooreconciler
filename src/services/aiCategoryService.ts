@@ -1376,10 +1376,15 @@ async function tryAiCategorization(input: {
     let accessToken = '';
     let projectId = '';
     if (config.provider === 'gemini' && config.geminiOAuth?.connected) {
-      const oauth = await getGeminiOAuthAccessToken();
-      accessToken = oauth.accessToken;
-      projectId = oauth.projectId;
-      apiKey = '';
+      try {
+        const oauth = await getGeminiOAuthAccessToken();
+        accessToken = oauth.accessToken;
+        projectId = oauth.projectId;
+        apiKey = '';
+      } catch (err) {
+        console.warn('Google Gemini OAuth token refresh failed, attempting fallback to API Key if available:', err instanceof Error ? err.message : String(err));
+        apiKey = config.apiKeys?.gemini || '';
+      }
     }
     if (!apiKey && !accessToken) return null;
 

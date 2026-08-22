@@ -1855,7 +1855,10 @@ export class OdooClient {
 
     for (const po of pos) {
       if (po.origin) {
-        stateMap.set(po.origin, po.state);
+        // Prefer the most advanced relevant state when an SO has multiple POs.
+        const existing = stateMap.get(po.origin);
+        const rank = (state: string) => state === 'purchase' ? 3 : state === 'to approve' ? 2 : state === 'sent' ? 1 : 0;
+        if (!existing || rank(po.state) > rank(existing)) stateMap.set(po.origin, po.state);
       }
     }
     return stateMap;

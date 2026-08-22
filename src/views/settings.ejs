@@ -1256,6 +1256,7 @@
                   </div>
                   <div class="d-flex flex-wrap gap-2">
                     <% if (form.geminiOAuthConnected) { %>
+                      <a href="/settings/ai/gemini/connect" class="btn btn-sm btn-outline-primary me-1">Reconnect with Google</a>
                       <button type="submit" formaction="/settings/ai/gemini/disconnect" formmethod="post" class="btn btn-sm btn-outline-danger" data-confirm="Disconnect Google Gemini OAuth from this app?">Disconnect</button>
                     <% } else { %>
                       <a href="/settings/ai/gemini/connect" class="btn btn-sm btn-outline-primary">Connect with Google</a>
