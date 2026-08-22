@@ -395,7 +395,7 @@ function buildStatementTotalChecks(rawTextPreview, transactions) {
             difference,
             status,
             diagnosis: status === 'missing_summary'
-                ? 'The statement summary could not be read; verify the PDF text or re-upload a clearer copy.'
+                ? `No statement summary table printed on this PDF. Total calculated from ${transactions.length} extracted rows: Paid In = KSh ${extracted.paidIn.toLocaleString('en-KE', { minimumFractionDigits: 2 })}, Withdrawn = KSh ${extracted.withdrawn.toLocaleString('en-KE', { minimumFractionDigits: 2 })}.`
                 : status === 'match'
                     ? 'All extracted rows reconcile to the statement summary.'
                     : difference < 0

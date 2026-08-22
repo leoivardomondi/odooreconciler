@@ -177,7 +177,7 @@
     const totalChecks = statementTotalChecks || [];
     const shouldShowRetryExtraction = Boolean(selectedBatch);
     const totalCheckStatusLabel = (status) =>
-      status === 'match' ? 'Matched' : status === 'mismatch' ? 'Mismatch' : 'Summary missing';
+      status === 'match' ? 'Matched' : status === 'mismatch' ? 'Mismatch' : 'No Summary Printed';
     const salaryAdvanceCount = salaryAdvanceShare ? Number(salaryAdvanceShare.count || 0) : 0;
     const salaryAdvanceTotal = salaryAdvanceShare ? Number(salaryAdvanceShare.total || 0) : 0;
     const generalAdvanceCount = generalAdvanceShare ? Number(generalAdvanceShare.count || 0) : 0;
