@@ -256,6 +256,17 @@
             <% } %>
           </span>
           <% if (shouldShowRetryExtraction) { %>
+            <% if (authUser && authUser.role === 'admin') { %>
+              <button
+                type="button"
+                class="btn btn-sm btn-outline-dark"
+                data-bs-toggle="modal"
+                data-bs-target="#mpesaDiagnosticModal"
+                onclick="loadMpesaBatchDiagnostics('<%= selectedBatch.id %>')"
+              >
+                🔍 View Extraction & AI Log
+              </button>
+            <% } %>
             <form
               method="post"
               action="/mpesa-reconciliation/batches/<%= selectedBatch.id %>/reprocess"
@@ -755,5 +766,146 @@
   searchInput.addEventListener('input', filterRows);
 })();
 </script>
+
+<% if (authUser && authUser.role === 'admin') { %>
+  <!-- Admin Diagnostic Log Modal -->
+  <div class="modal fade" id="mpesaDiagnosticModal" tabindex="-1" aria-labelledby="mpesaDiagnosticModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+      <div class="modal-content">
+        <div class="modal-header bg-dark text-white">
+          <h5 class="modal-title" id="mpesaDiagnosticModalLabel">🔍 Document Extraction & AI Execution Log</h5>
+          <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body bg-light-subtle">
+          <div id="mpesa-diag-loading" class="text-center py-4">
+            <div class="spinner-border text-primary" role="status"></div>
+            <p class="small text-secondary mt-2 mb-0">Loading execution diagnostic log...</p>
+          </div>
+          <div id="mpesa-diag-content" class="d-none">
+            <div class="card mb-3 shadow-sm border-0">
+              <div class="card-header bg-primary text-white fw-bold small text-uppercase py-2">
+                🤖 Active AI & OCR Provider Settings
+              </div>
+              <div class="card-body">
+                <div class="row g-2 small">
+                  <div class="col-md-6"><strong>AI Provider:</strong> <span id="diag-ai-provider" class="badge text-bg-info ms-1"></span></div>
+                  <div class="col-md-6"><strong>AI Model:</strong> <code id="diag-ai-model"></code></div>
+                  <div class="col-md-6"><strong>OCR Engine:</strong> <span id="diag-ocr-provider" class="badge text-bg-secondary ms-1"></span></div>
+                  <div class="col-md-6"><strong>OCR Model:</strong> <code id="diag-ocr-model"></code></div>
+                  <div class="col-md-6"><strong>Google OAuth Status:</strong> <span id="diag-oauth-status"></span></div>
+                  <div class="col-md-6"><strong>Fallback API Key Saved:</strong> <span id="diag-apikey-status"></span></div>
+                </div>
+              </div>
+            </div>
+
+            <div class="card mb-3 shadow-sm border-0">
+              <div class="card-header bg-secondary text-white fw-bold small text-uppercase py-2">
+                📊 Execution Summary & Totals Reconciled
+              </div>
+              <div class="card-body">
+                <div class="row g-2 small mb-3">
+                  <div class="col-md-6"><strong>Original File Name:</strong> <span id="diag-file-name"></span></div>
+                  <div class="col-md-6"><strong>Batch ID:</strong> <code id="diag-batch-id"></code></div>
+                  <div class="col-md-6"><strong>Extraction Status:</strong> <span id="diag-status-badge"></span></div>
+                  <div class="col-md-6"><strong>Rows Extracted:</strong> <strong id="diag-row-count"></strong> (<span id="diag-matched-count"></span> matched)</div>
+                </div>
+                <div id="diag-total-checks-list" class="vstack gap-2"></div>
+              </div>
+            </div>
+
+            <div class="card mb-3 shadow-sm border-0">
+              <div class="card-header bg-warning text-dark fw-bold small text-uppercase py-2">
+                ⚠️ Diagnostic Warnings & Processing Log
+              </div>
+              <div class="card-body p-2">
+                <ul id="diag-warnings-list" class="list-group list-group-flush small mb-0"></ul>
+              </div>
+            </div>
+
+            <div class="card shadow-sm border-0">
+              <div class="card-header bg-dark text-white fw-bold small text-uppercase py-2">
+                📄 Extracted Document Raw Text Preview (First 6,000 characters)
+              </div>
+              <div class="card-body p-2 bg-dark text-light rounded-bottom">
+                <pre id="diag-raw-preview" class="font-monospace small mb-0 text-wrap" style="max-height: 250px; overflow-y: auto; white-space: pre-wrap; font-size: 0.75rem; color: #a7f3d0;"></pre>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close Log</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    async function loadMpesaBatchDiagnostics(batchId) {
+      const loading = document.getElementById('mpesa-diag-loading');
+      const content = document.getElementById('mpesa-diag-content');
+      if (!loading || !content) return;
+
+      loading.classList.remove('d-none');
+      content.classList.add('d-none');
+
+      try {
+        const res = await fetch('/mpesa-reconciliation/batches/' + encodeURIComponent(batchId) + '/diagnostics');
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || 'Failed to load log.');
+
+        document.getElementById('diag-ai-provider').textContent = data.aiInfo.provider;
+        document.getElementById('diag-ai-model').textContent = data.aiInfo.model || 'default';
+        document.getElementById('diag-ocr-provider').textContent = data.aiInfo.ocrProvider;
+        document.getElementById('diag-ocr-model').textContent = data.aiInfo.ocrModel || 'default';
+        document.getElementById('diag-oauth-status').innerHTML = data.aiInfo.geminiOAuthConnected
+          ? '<span class="badge text-bg-success">Connected (' + (data.aiInfo.geminiOAuthEmail || 'Active') + ')</span>'
+          : '<span class="badge text-bg-secondary">Not connected</span>';
+        document.getElementById('diag-apikey-status').innerHTML = data.aiInfo.hasGeminiApiKey
+          ? '<span class="badge text-bg-success">Yes</span>'
+          : '<span class="badge text-bg-warning">No</span>';
+
+        document.getElementById('diag-file-name').textContent = data.batch.originalFilename;
+        document.getElementById('diag-batch-id').textContent = data.batch.id;
+        document.getElementById('diag-status-badge').textContent = data.batch.status;
+        document.getElementById('diag-status-badge').className = 'badge text-bg-' + (data.batch.status === 'parsed' ? 'success' : 'warning');
+        document.getElementById('diag-row-count').textContent = data.batch.transactionCount;
+        document.getElementById('diag-matched-count').textContent = data.batch.matchedCount;
+
+        const checksContainer = document.getElementById('diag-total-checks-list');
+        checksContainer.innerHTML = (data.totalChecks || []).map(function(check) {
+          const moneyVal = function(val) {
+            return val === null || val === undefined ? '-' : 'KSh ' + Number(val).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+          };
+          const badgeClass = check.status === 'match' ? 'success' : check.status === 'mismatch' ? 'danger' : 'info';
+          const labelText = check.status === 'match' ? 'Matched' : check.status === 'mismatch' ? 'Mismatch' : 'No Summary Printed';
+          return '<div class="p-2 border rounded bg-white">' +
+            '<div class="d-flex justify-content-between align-items-center mb-1">' +
+            '<strong>' + check.label + '</strong>' +
+            '<span class="badge text-bg-' + badgeClass + '">' + labelText + '</span>' +
+            '</div>' +
+            '<div class="small text-secondary mb-1">Extracted Rows: ' + moneyVal(check.extracted) + '</div>' +
+            '<div class="small text-muted">' + check.diagnosis + '</div>' +
+            '</div>';
+        }).join('');
+
+        const warningsContainer = document.getElementById('diag-warnings-list');
+        if (!data.warnings || data.warnings.length === 0) {
+          warningsContainer.innerHTML = '<li class="list-group-item text-success small">No diagnostic warnings reported during parsing.</li>';
+        } else {
+          warningsContainer.innerHTML = data.warnings.map(function(w) {
+            return '<li class="list-group-item text-danger small">⚠️ ' + w + '</li>';
+          }).join('');
+        }
+
+        document.getElementById('diag-raw-preview').textContent = data.rawTextPreview || '(No raw text preview captured)';
+
+        loading.classList.add('d-none');
+        content.classList.remove('d-none');
+      } catch (err) {
+        loading.innerHTML = '<div class="alert alert-danger mb-0">' + (err.message || String(err)) + '</div>';
+      }
+    }
+  </script>
+<% } %>
 
 <%- include('partials/footer') %>

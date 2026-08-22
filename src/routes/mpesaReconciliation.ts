@@ -940,6 +940,55 @@ router.post('/mpesa-reconciliation/batches/:batchId/reupload', uploadSingleFile(
   }
 });
 
+router.get('/mpesa-reconciliation/batches/:batchId/diagnostics', async (req, res) => {
+  if (req.authUser?.role !== 'admin') {
+    return res.status(403).json({ ok: false, error: 'Only super admins can view diagnostic logs.' });
+  }
+
+  try {
+    const batchId = req.params.batchId;
+    const batch = await getMpesaStatementBatchById(batchId);
+    const transactions = await getMpesaTransactionsByBatchId(batchId);
+    const settings = await getSettings();
+    const totalChecks = buildStatementTotalChecks(batch.rawTextPreview, transactions);
+
+    const aiInfo = {
+      provider: settings.ai.provider,
+      model: settings.ai.model,
+      ocrProvider: settings.ai.ocr.provider,
+      ocrModel: settings.ai.ocr.model,
+      ocrEnabled: settings.ai.ocr.enabled,
+      geminiOAuthConnected: settings.ai.geminiOAuth.connected,
+      geminiOAuthEmail: settings.ai.geminiOAuth.email || null,
+      hasGeminiApiKey: Boolean(settings.ai.apiKeys.gemini),
+    };
+
+    return res.json({
+      ok: true,
+      batch: {
+        id: batch.id,
+        originalFilename: batch.originalFilename,
+        storedFilename: batch.storedFilename,
+        status: batch.status,
+        transactionCount: batch.transactionCount,
+        matchedCount: batch.matchedCount,
+        warningCount: batch.warningCount,
+        createdAt: batch.createdAt,
+        updatedAt: batch.updatedAt,
+      },
+      aiInfo,
+      totalChecks,
+      warnings: batch.warnings || [],
+      rawTextPreview: batch.rawTextPreview || '',
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      error: error instanceof Error ? error.message : 'Could not load diagnostic log.',
+    });
+  }
+});
+
 router.post('/mpesa-reconciliation/batches/:batchId/delete', async (req, res) => {
   try {
     const batch = await deleteMpesaStatementBatch(req.params.batchId);
