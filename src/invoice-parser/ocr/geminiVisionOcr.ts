@@ -93,9 +93,9 @@ export async function geminiVisionOcr(
         }),
       });
 
-      if (response.status === 429) {
-        // Wait 5 seconds for Google Cloud rate limit window to clear before retrying
-        await new Promise((resolve) => setTimeout(resolve, 5000));
+      if (response.status === 429 || response.status === 503 || response.status === 500 || response.status === 504) {
+        // Wait 2.5 seconds for Google Cloud rate limits or temporary high demand spikes to clear before retrying
+        await new Promise((resolve) => setTimeout(resolve, 2500));
         response = await fetch(endpoint, {
           method: 'POST',
           signal: AbortSignal.timeout(30000),

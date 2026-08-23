@@ -188,7 +188,6 @@ class OdooClient {
         const baseFields = [
             'id',
             'name',
-            'ref',
             'company_id',
             'partner_id',
             'date',
@@ -199,7 +198,7 @@ class OdooClient {
             'partner_type',
             'paid_by',
         ];
-        const optionalFields = await this.getModelFields('account.payment', ['reconciled_invoice_ids'])
+        const optionalFields = await this.getModelFields('account.payment', ['ref', 'reconciled_invoice_ids'])
             .then((fields) => fields.map((field) => field.name))
             .catch(() => []);
         return this.request('account.payment', 'search_read', {
