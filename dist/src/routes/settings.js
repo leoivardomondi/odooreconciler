@@ -11,6 +11,7 @@ const helpers_1 = require("../utils/helpers");
 const shopFloorReporting_1 = require("../utils/shopFloorReporting");
 const geminiOAuthService_1 = require("../services/geminiOAuthService");
 const router = (0, express_1.Router)();
+const DEFAULT_GEMINI_MODEL = 'gemini-3.6-flash';
 const NVIDIA_AI_MODELS = [
     'google/gemma-4-31b-it',
     'z-ai/glm-5.2',
@@ -21,11 +22,15 @@ const NVIDIA_AI_MODELS = [
     'meta/llama-3.2-11b-vision-instruct',
 ];
 const GEMINI_AI_MODELS = [
+    'gemini-3.7-flash',
     'gemini-3.6-flash',
     'gemini-3.5-flash',
+    'gemini-3.5-flash-lite',
+    'gemini-3.1-flash-lite',
     'gemini-3.1-pro',
     'gemini-2.5-pro',
     'gemini-2.5-flash',
+    'gemini-2.5-flash-lite',
     'gemini-2.0-flash',
     'gemini-2.0-flash-lite',
     'gemini-2.0-pro-exp-02-05',
@@ -63,7 +68,7 @@ function nvidiaModelFieldName(model) {
 function normalizeAiModelForProvider(provider, model) {
     const trimmed = model.trim();
     if (provider === 'gemini' && (!trimmed || NVIDIA_AI_MODELS.includes(trimmed) || OPENAI_AI_MODELS.includes(trimmed))) {
-        return 'gemini-flash-latest';
+        return DEFAULT_GEMINI_MODEL;
     }
     if (provider === 'nvidia' && (!trimmed || GEMINI_AI_MODELS.includes(trimmed) || OPENAI_AI_MODELS.includes(trimmed))) {
         return 'google/gemma-4-31b-it';
@@ -455,8 +460,8 @@ async function buildFormValues(source, existing, availableFields = []) {
     const resolvedMappings = (0, helpers_1.resolveFieldMappings)(resolvedExisting.fieldMappings, availableFields);
     const ocrProvider = source.ocrProvider ?? resolvedExisting.ai.ocr.provider;
     const submittedOcrModel = source.ocrModel ?? resolvedExisting.ai.ocr.model;
-    const ocrModel = ocrProvider === 'gemini_vision' && /^nvidia\//i.test(submittedOcrModel)
-        ? 'gemini-flash-latest'
+    const ocrModel = ocrProvider === 'gemini_vision' && (/^nvidia\//i.test(submittedOcrModel) || submittedOcrModel === 'gemini-flash-latest')
+        ? DEFAULT_GEMINI_MODEL
         : submittedOcrModel;
     return {
         baseUrl: source.baseUrl ?? resolvedExisting.odoo.baseUrl,
@@ -1074,9 +1079,9 @@ router.post('/settings', validators, async (req, res) => {
         const aiModel = normalizeAiModelForProvider(aiProvider, submittedAiModel || currentSettings.ai.model);
         const ocrProvider = req.body.ocrProvider?.trim() || currentSettings.ai.ocr?.provider || 'disabled';
         const submittedOcrModel = req.body.ocrModel?.trim() || '';
-        const ocrModel = ocrProvider === 'gemini_vision' && /^nvidia\//i.test(submittedOcrModel)
-            ? 'gemini-flash-latest'
-            : submittedOcrModel || currentSettings.ai.ocr?.model || (ocrProvider === 'gemini_vision' ? 'gemini-flash-latest' : 'nvidia/nemotron-ocr-v2');
+        const ocrModel = ocrProvider === 'gemini_vision' && (/^nvidia\//i.test(submittedOcrModel) || submittedOcrModel === 'gemini-flash-latest')
+            ? DEFAULT_GEMINI_MODEL
+            : submittedOcrModel || currentSettings.ai.ocr?.model || (ocrProvider === 'gemini_vision' ? DEFAULT_GEMINI_MODEL : 'nvidia/nemotron-ocr-v2');
         const submittedOcrEndpoint = req.body.ocrEndpoint?.trim() || '';
         const ocrEndpoint = ocrProvider === 'gemini_vision' && /ai\.api\.nvidia\.com|\/cv\/nvidia\//i.test(submittedOcrEndpoint)
             ? 'https://generativelanguage.googleapis.com/v1beta'

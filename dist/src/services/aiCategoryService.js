@@ -895,7 +895,7 @@ function isTextOnlyNvidiaModel(model) {
 function defaultModelForProvider(provider) {
     switch (provider) {
         case 'nvidia': return 'openai/gpt-oss-20b';
-        case 'gemini': return 'gemini-flash-latest';
+        case 'gemini': return 'gemini-3.6-flash';
         case 'anthropic': return 'claude-sonnet-4-5-20250929';
         case 'openrouter': return 'openai/gpt-4.1';
         case 'openai':

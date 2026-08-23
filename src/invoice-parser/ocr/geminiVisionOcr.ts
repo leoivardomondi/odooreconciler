@@ -2,6 +2,8 @@ import fs from 'fs/promises';
 import { AiInvoiceExtractionConfig, OcrPageResult } from '../types';
 import { getGeminiOAuthAccessToken } from '../../services/geminiOAuthService';
 
+const DEFAULT_GEMINI_OCR_MODEL = 'gemini-3.6-flash';
+
 export async function geminiVisionOcr(
   imagePaths: Array<{ pageNumber: number; imagePath: string }>,
   ocrConfig?: AiInvoiceExtractionConfig['ocr'],
@@ -41,9 +43,12 @@ export async function geminiVisionOcr(
   }
   if (oauth) warnings.push('Google Gemini Vision OCR using the connected OAuth account.');
 
-  const model = (ocrConfig?.model && ocrConfig.model.trim() && ocrConfig.model !== 'nvidia/nemotron-ocr-v2')
-    ? ocrConfig.model.trim()
-    : 'gemini-flash-latest';
+  const configuredModel = ocrConfig?.model?.trim();
+  const model = configuredModel &&
+    configuredModel !== 'nvidia/nemotron-ocr-v2' &&
+    configuredModel !== 'gemini-flash-latest'
+    ? configuredModel
+    : DEFAULT_GEMINI_OCR_MODEL;
   const configuredBaseUrl = ocrConfig?.endpoint?.trim().replace(/\/+$/, '');
   const baseUrl = configuredBaseUrl &&
     !/ai\.api\.nvidia\.com|\/cv\/nvidia\//i.test(configuredBaseUrl)

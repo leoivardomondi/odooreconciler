@@ -1603,7 +1603,6 @@ export async function extractMpesaStatement(input: {
     warnings.push(...pdfText.warnings);
 
     let ocrText = '';
-    const extension = path.extname(input.filePath).toLowerCase();
     let renderedPageImages: Array<{ pageNumber: number; imagePath: string }> | null = null;
     let pageCount = 0;
 
@@ -1640,7 +1639,9 @@ export async function extractMpesaStatement(input: {
       });
     }
 
-    const shouldOcr = input.aiConfig?.ocr?.enabled || pdfText.text.length < 500 || extension !== '.pdf';
+    // M-Pesa imports always run the dedicated NVIDIA OCR pass, even when the
+    // PDF also contains embedded text, so table rows are consistently checked.
+    const shouldOcr = true;
     if (shouldOcr) {
       const imageInputs = await getRenderedPageImages();
       const preprocessed = await Promise.all(
@@ -1651,11 +1652,34 @@ export async function extractMpesaStatement(input: {
           return { pageNumber: image.pageNumber, imagePath: processed.imagePath };
         }),
       );
-      const preferredOcr = input.preferredOcr || (input.aiConfig?.ocr?.provider as PreferredOcr) || 'auto';
+      // M-Pesa statements are tabular financial documents. Keep their primary
+      // OCR engine independent from the global invoice OCR selection so a
+      // Gemini invoice setting cannot silently replace NVIDIA Nemotron OCR.
+      const configuredNvidiaOcr = input.aiConfig?.ocr?.provider === 'nvidia_nemoretriever';
+      const mpesaOcrConfig = {
+        ...(input.aiConfig?.ocr || {}),
+        enabled: true,
+        // Keep M-Pesa traffic bounded: NVIDIA is the required OCR engine and
+        // its failure falls through to local/other OCR engines, not Gemini.
+        geminiFallbackEnabled: false,
+        provider: 'nvidia_nemoretriever' as const,
+        model: configuredNvidiaOcr
+          ? input.aiConfig?.ocr?.model || 'nvidia/nemotron-ocr-v2'
+          : 'nvidia/nemotron-ocr-v2',
+        endpoint: configuredNvidiaOcr
+          ? input.aiConfig?.ocr?.endpoint || 'https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr-v2'
+          : process.env.NVIDIA_OCR_ENDPOINT || 'https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr-v2',
+        apiKey:
+          input.aiConfig?.ocr?.apiKey ||
+          input.aiConfig?.apiKeys?.nvidia ||
+          process.env.NVIDIA_API_KEY ||
+          '',
+      };
+      const preferredOcr: PreferredOcr = 'nvidia_nemoretriever';
       const ocr = await runOcr(
         preprocessed,
         preferredOcr,
-        input.aiConfig?.ocr,
+        mpesaOcrConfig,
         input.aiConfig?.apiKeys?.gemini || process.env.GEMINI_API_KEY,
         input.aiConfig?.geminiOAuth?.connected,
       );

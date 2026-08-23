@@ -544,7 +544,7 @@ function defaultModelForProvider(provider: AiInvoiceExtractionConfig['provider']
     case 'nvidia':
       return 'google/gemma-4-31b-it';
     case 'gemini':
-      return 'gemini-flash-latest';
+      return 'gemini-3.6-flash';
     case 'anthropic':
       return 'claude-sonnet-4-5-20250929';
     case 'openrouter':

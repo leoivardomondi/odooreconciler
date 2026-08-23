@@ -633,6 +633,25 @@
               Save Odoo
             </button>
           </div>
+          <div class="card border-secondary-subtle mb-3">
+            <div class="card-body py-3">
+              <h3 class="h6 mb-1">Which document mini-app uses these settings?</h3>
+              <div class="small text-secondary mb-2">The settings are shared, but each mini-app uses a different part of the pipeline.</div>
+              <div class="table-responsive">
+                <table class="table table-sm align-middle mb-0">
+                  <thead>
+                    <tr><th>Mini-app / document</th><th>OCR</th><th>AI reasoning</th><th>Fallback / final processing</th></tr>
+                  </thead>
+                  <tbody>
+                    <tr><td><strong>PO Bill Automation</strong><br><span class="text-secondary">Supplier invoices and bills</span></td><td>Scanned or unreadable invoices</td><td>Supplier, invoice, items, tax and totals</td><td>Supplier parser, PO matching and safety checks</td></tr>
+                    <tr><td><strong>Invoice Parser</strong><br><span class="text-secondary">Manual invoice uploads</span></td><td>Missing or poor PDF text</td><td>Structured invoice interpretation when enabled</td><td>Local PDF/parser rules and confidence checks</td></tr>
+                    <tr><td><strong>M-Pesa Reconciliation</strong><br><span class="text-secondary">M-Pesa statements</span></td><td><strong>NVIDIA Nemotron OCR</strong> is always primary; optional Gemini second pass may run if enabled</td><td>Optional transaction categorisation; trained rules are checked first</td><td>Embedded PDF text, learned category rules, keyword rules and Odoo matching</td></tr>
+                    <tr><td><strong>Sales Orders / Job Summary</strong><br><span class="text-secondary">MaxCut and edge-banding PDFs</span></td><td>Not the shared AI OCR by default</td><td>Not used</td><td>Dedicated local parser, signatures, stock reconciliation and activities</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
           <div class="row g-3">
             <div class="col-12">
               <label class="form-label">Odoo Base URL</label>
@@ -1037,27 +1056,30 @@
           <hr class="my-4" />
 
           <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3" id="section-ai-parser">
-            <h2 class="h4 mb-0">AI Invoice Extraction</h2>
+            <div>
+              <div class="text-uppercase small fw-bold text-secondary mb-1">Downstream stage</div>
+              <h2 class="h4 mb-0">AI reasoning & structured extraction</h2>
+            </div>
             <div class="d-flex gap-2">
               <button type="submit" name="settingsSection" value="ai" class="btn btn-sm btn-primary">Save AI</button>
               <button type="submit" formaction="/settings/test-ai-connection" name="settingsSection" value="ai" class="btn btn-sm btn-outline-primary">Test selected AI connection</button>
             </div>
           </div>
-          <div class="alert alert-light border small" role="alert">
-            With Gemma 4 selected, the AI reads original and enhanced invoice images first; Nemotron OCR is used only as fallback. Other AI models retain the OCR-first pipeline, followed by PO matching safety gates.
+          <div class="alert alert-primary border small" role="alert">
+            <strong>Execution order:</strong> PDF/image <span class="mx-1">→</span> <strong>OCR</strong> converts pixels to text <span class="mx-1">→</span> this section uses an AI model to reason over the extracted text, identify invoice fields and totals, and apply supplier/PO safety checks. Vision models such as NVIDIA Gemma may read invoice images directly; that is still AI reasoning, not OCR.
           </div>
           <div class="row g-3">
             <div class="col-12">
               <div class="form-check">
                 <input class="form-check-input" type="checkbox" name="aiEnabled" id="aiEnabled" <%= form.aiEnabled ? 'checked' : '' %> />
                 <label class="form-check-label" for="aiEnabled">
-                  Use AI to improve scanned supplier invoice reading when OCR confidence is low
+                  Enable AI reasoning for supplier invoice fields and totals
                 </label>
-                <div class="form-text">Choosing a provider below also enables AI, even if this box is left unchecked.</div>
+                <div class="form-text">This controls structured extraction and interpretation. It does not select the OCR engine below. Choosing a provider below also enables AI.</div>
               </div>
             </div>
             <div class="col-md-4">
-              <label class="form-label">AI Provider</label>
+              <label class="form-label">Reasoning provider</label>
               <select class="form-select" name="aiProvider">
                 <option value="disabled" <%= form.aiProvider === 'disabled' ? 'selected' : '' %>>Disabled</option>
                 <option value="nvidia" <%= form.aiProvider === 'nvidia' ? 'selected' : '' %>>NVIDIA NIM</option>
@@ -1068,7 +1090,7 @@
               </select>
             </div>
             <div class="col-md-4">
-              <label class="form-label">Model</label>
+              <label class="form-label">Reasoning model</label>
               <select class="form-select" name="aiModelPreset">
                 <option data-provider="nvidia" value="google/gemma-4-31b-it" <%= form.aiModel === 'google/gemma-4-31b-it' || !form.aiModel ? 'selected' : '' %>>
                   Google Gemma 4 31B IT (Vision)
@@ -1091,11 +1113,20 @@
                 <option data-provider="nvidia" value="meta/llama-3.2-11b-vision-instruct" <%= form.aiModel === 'meta/llama-3.2-11b-vision-instruct' ? 'selected' : '' %>>
                   Llama 3.2 11B Vision
                 </option>
+                <option data-provider="gemini" value="gemini-3.7-flash" <%= form.aiModel === 'gemini-3.7-flash' ? 'selected' : '' %>>
+                  Google Gemini 3.7 Flash (stable)
+                </option>
                 <option data-provider="gemini" value="gemini-3.6-flash" <%= form.aiModel === 'gemini-3.6-flash' ? 'selected' : '' %>>
-                  Google Gemini 3.6 Flash
+                  Google Gemini 3.6 Flash (stable)
                 </option>
                 <option data-provider="gemini" value="gemini-3.5-flash" <%= form.aiModel === 'gemini-3.5-flash' ? 'selected' : '' %>>
-                  Google Gemini 3.5 Flash
+                  Google Gemini 3.5 Flash (stable)
+                </option>
+                <option data-provider="gemini" value="gemini-3.5-flash-lite" <%= form.aiModel === 'gemini-3.5-flash-lite' ? 'selected' : '' %>>
+                  Google Gemini 3.5 Flash-Lite (high throughput)
+                </option>
+                <option data-provider="gemini" value="gemini-3.1-flash-lite" <%= form.aiModel === 'gemini-3.1-flash-lite' ? 'selected' : '' %>>
+                  Google Gemini 3.1 Flash-Lite (high throughput)
                 </option>
                 <option data-provider="gemini" value="gemini-3.1-pro" <%= form.aiModel === 'gemini-3.1-pro' ? 'selected' : '' %>>
                   Google Gemini 3.1 Pro
@@ -1106,26 +1137,8 @@
                 <option data-provider="gemini" value="gemini-2.5-flash" <%= form.aiModel === 'gemini-2.5-flash' ? 'selected' : '' %>>
                   Google Gemini 2.5 Flash
                 </option>
-                <option data-provider="gemini" value="gemini-2.0-flash" <%= form.aiModel === 'gemini-2.0-flash' ? 'selected' : '' %>>
-                  Google Gemini 2.0 Flash
-                </option>
-                <option data-provider="gemini" value="gemini-2.0-flash-lite" <%= form.aiModel === 'gemini-2.0-flash-lite' ? 'selected' : '' %>>
-                  Google Gemini 2.0 Flash Lite
-                </option>
-                <option data-provider="gemini" value="gemini-2.0-pro-exp-02-05" <%= form.aiModel === 'gemini-2.0-pro-exp-02-05' ? 'selected' : '' %>>
-                  Google Gemini 2.0 Pro Experimental
-                </option>
-                <option data-provider="gemini" value="gemini-1.5-pro" <%= form.aiModel === 'gemini-1.5-pro' ? 'selected' : '' %>>
-                  Google Gemini 1.5 Pro
-                </option>
-                <option data-provider="gemini" value="gemini-1.5-flash" <%= form.aiModel === 'gemini-1.5-flash' ? 'selected' : '' %>>
-                  Google Gemini 1.5 Flash
-                </option>
-                <option data-provider="gemini" value="gemini-flash-latest" <%= form.aiModel === 'gemini-flash-latest' ? 'selected' : '' %>>
-                  Google Gemini Flash Latest
-                </option>
-                <option data-provider="gemini" value="gemini-pro-latest" <%= form.aiModel === 'gemini-pro-latest' ? 'selected' : '' %>>
-                  Google Gemini Pro Latest
+                <option data-provider="gemini" value="gemini-2.5-flash-lite" <%= form.aiModel === 'gemini-2.5-flash-lite' ? 'selected' : '' %>>
+                  Google Gemini 2.5 Flash-Lite (budget)
                 </option>
                 <option data-provider="anthropic" value="claude-sonnet-4.6" <%= form.aiModel === 'claude-sonnet-4.6' || form.aiModel === 'claude-sonnet-4-6-thinking' ? 'selected' : '' %>>
                   Anthropic Claude Sonnet 4.6 (Thinking)
@@ -1163,7 +1176,7 @@
                 <option data-provider="openrouter" value="qwen/qwen-2.5-72b-instruct" <%= form.aiModel === 'qwen/qwen-2.5-72b-instruct' ? 'selected' : '' %>>
                   OpenRouter Qwen 2.5 72B Instruct
                 </option>
-                <option data-provider="all" value="custom" <%= form.aiModel && !['google/gemma-4-31b-it', 'z-ai/glm-5.2', 'openai/gpt-oss-20b', 'openai/gpt-oss-120b', 'nvidia/llama-3.1-nemotron-nano-vl-8b-v1', 'meta/llama-3.2-90b-vision-instruct', 'meta/llama-3.2-11b-vision-instruct', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.1-pro', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-2.0-pro-exp-02-05', 'gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-flash-latest', 'gemini-pro-latest', 'claude-sonnet-4.6', 'claude-opus-4.6', 'claude-sonnet-4-6-thinking', 'claude-opus-4-6-thinking', 'claude-3-5-sonnet-latest', 'claude-3-5-haiku-latest', 'gpt-4o', 'gpt-4o-mini', 'o3-mini', 'o1', 'gpt-4.1', 'deepseek/deepseek-r1', 'meta-llama/llama-3.3-70b-instruct', 'qwen/qwen-2.5-72b-instruct'].includes(form.aiModel) ? 'selected' : '' %>>
+                <option data-provider="all" value="custom" <%= form.aiModel && !['google/gemma-4-31b-it', 'z-ai/glm-5.2', 'openai/gpt-oss-20b', 'openai/gpt-oss-120b', 'nvidia/llama-3.1-nemotron-nano-vl-8b-v1', 'meta/llama-3.2-90b-vision-instruct', 'meta/llama-3.2-11b-vision-instruct', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.1-pro', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-2.0-pro-exp-02-05', 'gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-flash-latest', 'gemini-pro-latest', 'claude-sonnet-4.6', 'claude-opus-4.6', 'claude-sonnet-4-6-thinking', 'claude-opus-4-6-thinking', 'claude-3-5-sonnet-latest', 'claude-3-5-haiku-latest', 'gpt-4o', 'gpt-4o-mini', 'o3-mini', 'o1', 'gpt-4.1', 'deepseek/deepseek-r1', 'meta-llama/llama-3.3-70b-instruct', 'qwen/qwen-2.5-72b-instruct'].includes(form.aiModel) ? 'selected' : '' %>>
                   Custom model
                 </option>
               </select>
@@ -1227,16 +1240,16 @@
               });
             </script>
             <div class="col-md-4">
-              <label class="form-label">Max Images</label>
+              <label class="form-label">Max images for vision reasoning</label>
               <input type="number" min="1" max="10" class="form-control" name="aiMaxImages" value="<%= form.aiMaxImages %>" />
-              <div class="form-text">Gemma prioritizes one original image per PDF page, then uses remaining slots for enhanced variants.</div>
+              <div class="form-text">Used by vision-capable reasoning models. Text-only models use OCR/PDF text instead.</div>
             </div>
             <div class="col-md-8">
-              <label class="form-label">Custom Base URL</label>
+              <label class="form-label">Reasoning custom base URL</label>
               <input type="url" class="form-control font-monospace" name="aiBaseUrl" value="<%= form.aiBaseUrl %>" placeholder="Optional for self-hosted or proxy endpoints" />
             </div>
             <div class="col-md-4">
-              <label class="form-label">Confidence Threshold</label>
+              <label class="form-label">Reasoning confidence threshold</label>
               <input type="number" min="0" max="1" step="0.01" class="form-control" name="aiConfidenceThreshold" value="<%= form.aiConfidenceThreshold %>" />
             </div>
             <div class="col-12">
@@ -1293,8 +1306,14 @@
                 </div>
               </div>
             </div>
+            <div class="col-12 mt-2">
+              <div class="border rounded p-3 bg-body-tertiary">
+                <h3 class="h6 mb-1">Reasoning provider credentials & fallbacks</h3>
+                <div class="small text-secondary">These credentials are used by the structured-extraction AI above. Keep multiple providers active if you want automatic fallback after a provider error, quota limit, or unavailable model. They are separate from the dedicated OCR credential below.</div>
+              </div>
+            </div>
             <div class="col-md-6">
-              <label class="form-label">NVIDIA API Key</label>
+              <label class="form-label">NVIDIA reasoning API key</label>
               <input type="password" class="form-control" name="nvidiaApiKey" placeholder="<%= form.hasNvidiaApiKey ? 'Leave blank to keep stored NVIDIA key' : 'Paste NVIDIA API key' %>" />
               <div class="form-check mt-2">
                 <input class="form-check-input" type="checkbox" name="clearNvidiaApiKey" id="clearNvidiaApiKey" />
@@ -1302,7 +1321,7 @@
               </div>
             </div>
             <div class="col-md-6">
-              <label class="form-label">OpenAI API Key</label>
+              <label class="form-label">OpenAI reasoning API key</label>
               <input type="password" class="form-control" name="openaiApiKey" placeholder="<%= form.hasOpenaiApiKey ? 'Leave blank to keep stored OpenAI key' : 'Paste OpenAI API key' %>" />
               <div class="form-check mt-2">
                 <input class="form-check-input" type="checkbox" name="clearOpenaiApiKey" id="clearOpenaiApiKey" />
@@ -1310,7 +1329,7 @@
               </div>
             </div>
             <div class="col-md-4">
-              <label class="form-label">Google Gemini API Key (optional fallback)</label>
+              <label class="form-label">Google Gemini reasoning API key</label>
               <input type="password" class="form-control" name="geminiApiKey" placeholder="<%= form.hasGeminiApiKey ? 'Keep stored Google key' : 'Paste Google AI Studio key' %>" />
               <div class="form-check mt-2">
                 <input class="form-check-input" type="checkbox" name="clearGeminiApiKey" id="clearGeminiApiKey" />
@@ -1318,7 +1337,7 @@
               </div>
             </div>
             <div class="col-md-4">
-              <label class="form-label">Anthropic API Key</label>
+              <label class="form-label">Anthropic reasoning API key</label>
               <input type="password" class="form-control" name="anthropicApiKey" placeholder="<%= form.hasAnthropicApiKey ? 'Keep stored key' : 'Paste key' %>" />
               <div class="form-check mt-2">
                 <input class="form-check-input" type="checkbox" name="clearAnthropicApiKey" id="clearAnthropicApiKey" />
@@ -1326,7 +1345,7 @@
               </div>
             </div>
             <div class="col-md-4">
-              <label class="form-label">OpenRouter API Key</label>
+              <label class="form-label">OpenRouter reasoning API key</label>
               <input type="password" class="form-control" name="openrouterApiKey" placeholder="<%= form.hasOpenrouterApiKey ? 'Keep stored key' : 'Paste key' %>" />
               <div class="form-check mt-2">
                 <input class="form-check-input" type="checkbox" name="clearOpenrouterApiKey" id="clearOpenrouterApiKey" />
@@ -1344,8 +1363,8 @@
                 ['meta/llama-3.2-11b-vision-instruct', 'Llama 3.2 11B Vision'],
               ]; %>
               <div class="border rounded p-3">
-                <strong>Separate NVIDIA model API keys</strong>
-                <div class="small text-secondary mb-3">Optional. A model-specific key overrides the shared NVIDIA key for that model.</div>
+                <strong>Reasoning model-specific NVIDIA key overrides</strong>
+                <div class="small text-secondary mb-3">Optional. These override the shared NVIDIA reasoning key for the selected model. They do not configure NVIDIA OCR.</div>
                 <div class="row g-3">
                   <% nvidiaModelKeyFields.forEach(([model, label]) => { const field = `nvidiaModelKey_${model.replace(/[^a-zA-Z0-9]+/g, '_')}`; const hasKey = Boolean(form.nvidiaModelKeys && form.nvidiaModelKeys[model]); %>
                     <div class="col-md-6">
@@ -1362,7 +1381,7 @@
             </div>
             <div class="col-12 mt-2">
               <div class="small text-secondary border rounded bg-body-tertiary p-2">
-                <strong>Multi-Provider Fallback Active:</strong> If your selected primary provider (e.g. <code><%= form.aiProvider %></code>) hits rate limits or quota errors, the system automatically attempts any other API keys provided above before falling back to local OCR.
+                <strong>Reasoning fallback:</strong> the selected provider is tried first (<code><%= form.aiProvider %></code>). Other reasoning providers with saved credentials may then be tried. OCR fallback is controlled separately in the OCR section and is never enabled by adding a reasoning key alone.
               </div>
             </div>
           </div>
@@ -1370,29 +1389,35 @@
           <hr class="my-4" />
 
           <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3" id="section-ocr-engine">
-            <h2 class="h4 mb-0">OCR Provider</h2>
+            <div>
+              <div class="text-uppercase small fw-bold text-secondary mb-1">Input stage</div>
+              <h2 class="h4 mb-0">OCR: image-to-text conversion</h2>
+            </div>
             <button type="submit" name="settingsSection" value="ocr" class="btn btn-sm btn-primary">
               Save OCR
             </button>
+          </div>
+          <div class="alert alert-warning border small" role="alert">
+            <strong>OCR is not the reasoning model.</strong> OCR reads characters from scanned images. Select one OCR provider and its matching OCR model/endpoint/key here. The result is then passed to the reasoning section above or to the supplier parser.
           </div>
           <div class="row g-3">
             <div class="col-12">
               <div class="form-check">
                 <input class="form-check-input" type="checkbox" name="ocrEnabled" id="ocrEnabled" <%= form.ocrEnabled ? 'checked' : '' %> />
                 <label class="form-check-label" for="ocrEnabled">
-                  Enable OCR for scanned invoice text extraction
+                  Enable the primary OCR engine for scanned invoice text extraction
                 </label>
               </div>
               <div class="form-check mt-2">
                 <input class="form-check-input" type="checkbox" name="geminiOcrFallbackEnabled" id="geminiOcrFallbackEnabled" <%= form.geminiOcrFallbackEnabled ? 'checked' : '' %> />
                 <label class="form-check-label" for="geminiOcrFallbackEnabled">
-                  Use Gemini Vision as a second pass for difficult OCR
-                </label>
-                <div class="form-text">Runs only when the first OCR result is fragmented, duplicated, or incomplete. Requires a Gemini API key or connected Google Gemini OAuth.</div>
+                    Allow Gemini Vision as an OCR-only second pass
+                  </label>
+                <div class="form-text">Runs only after the primary OCR result is fragmented, duplicated, or incomplete. It uses Gemini OCR credentials (OAuth or Gemini API key), not NVIDIA/OpenAI/Anthropic reasoning keys. Disable this when Gemini quota is unavailable.</div>
               </div>
             </div>
             <div class="col-md-4">
-              <label class="form-label">OCR Provider</label>
+              <label class="form-label">Primary OCR provider</label>
               <select class="form-select" name="ocrProvider">
                 <option value="disabled" <%= form.ocrProvider === 'disabled' ? 'selected' : '' %>>Disabled</option>
                 <option value="gemini_vision" <%= form.ocrProvider === 'gemini_vision' ? 'selected' : '' %>>Google Gemini Vision OCR</option>
@@ -1401,19 +1426,25 @@
               </select>
             </div>
             <div class="col-md-4">
-              <label class="form-label">OCR Model</label>
-              <% const ocrModelOptions = ['gemini-flash-latest', 'nvidia/nemotron-ocr-v2']; %>
+              <label class="form-label">OCR model for selected provider</label>
+              <% const ocrModelOptions = ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'nvidia/nemotron-ocr-v2']; %>
               <select class="form-select font-monospace" name="ocrModel" id="ocrModel">
-                <option value="gemini-flash-latest" <%= form.ocrModel === 'gemini-flash-latest' ? 'selected' : '' %>>gemini-flash-latest (Gemini)</option>
+                <option value="gemini-3.7-flash" <%= form.ocrModel === 'gemini-3.7-flash' ? 'selected' : '' %>>gemini-3.7-flash (Gemini — stable)</option>
+                <option value="gemini-3.6-flash" <%= form.ocrModel === 'gemini-3.6-flash' ? 'selected' : '' %>>gemini-3.6-flash (Gemini — stable default)</option>
+                <option value="gemini-3.5-flash" <%= form.ocrModel === 'gemini-3.5-flash' ? 'selected' : '' %>>gemini-3.5-flash (Gemini — stable)</option>
+                <option value="gemini-3.5-flash-lite" <%= form.ocrModel === 'gemini-3.5-flash-lite' ? 'selected' : '' %>>gemini-3.5-flash-lite (Gemini — high throughput)</option>
+                <option value="gemini-3.1-flash-lite" <%= form.ocrModel === 'gemini-3.1-flash-lite' ? 'selected' : '' %>>gemini-3.1-flash-lite (Gemini — high throughput)</option>
+                <option value="gemini-2.5-flash" <%= form.ocrModel === 'gemini-2.5-flash' ? 'selected' : '' %>>gemini-2.5-flash (Gemini)</option>
+                <option value="gemini-2.5-flash-lite" <%= form.ocrModel === 'gemini-2.5-flash-lite' ? 'selected' : '' %>>gemini-2.5-flash-lite (Gemini — budget)</option>
                 <option value="nvidia/nemotron-ocr-v2" <%= form.ocrModel === 'nvidia/nemotron-ocr-v2' ? 'selected' : '' %>>nvidia/nemotron-ocr-v2 (NVIDIA)</option>
                 <% if (form.ocrModel && !ocrModelOptions.includes(form.ocrModel)) { %>
                   <option value="<%= form.ocrModel %>" selected><%= form.ocrModel %> (saved custom model)</option>
                 <% } %>
               </select>
-              <div class="form-text">Choose <code>gemini-flash-latest</code> when using Gemini Vision OCR.</div>
+              <div class="form-text">Use pinned model IDs only. Gemini defaults to <code>gemini-3.6-flash</code>; Flash-Lite models are the lower-traffic choices. NVIDIA uses <code>nvidia/nemotron-ocr-v2</code>.</div>
             </div>
             <div class="col-md-4">
-              <label class="form-label">OCR API Key (optional)</label>
+              <label class="form-label">Dedicated OCR API key</label>
               <input type="password" class="form-control" name="ocrApiKey" placeholder="<%= form.hasOcrApiKey ? 'Keep stored OCR key' : 'Paste NVIDIA or Gemini OCR key' %>" />
               <div class="form-check mt-2">
                 <input class="form-check-input" type="checkbox" name="clearOcrApiKey" id="clearOcrApiKey" />
@@ -1421,9 +1452,9 @@
               </div>
             </div>
             <div class="col-12">
-              <label class="form-label">OCR Endpoint</label>
+              <label class="form-label">OCR endpoint</label>
               <input type="url" class="form-control font-monospace" name="ocrEndpoint" value="<%= form.ocrEndpoint %>" />
-              <div class="form-text">NVIDIA: <code>https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr-v2</code>. Gemini uses <code>https://generativelanguage.googleapis.com/v1beta</code> automatically when this field still contains the NVIDIA endpoint.</div>
+              <div class="form-text">NVIDIA: <code>https://ai.api.nvidia.com/v1/cv/nvidia/nemotron-ocr-v2</code>. Gemini: <code>https://generativelanguage.googleapis.com/v1beta</code>. The application normalizes a mismatched NVIDIA endpoint when Gemini is selected.</div>
             </div>
           </div>
 
