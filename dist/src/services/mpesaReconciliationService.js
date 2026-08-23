@@ -37,6 +37,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.extractMpesaStatement = extractMpesaStatement;
+exports.matchMpesaStatementTransactions = matchMpesaStatementTransactions;
 const path_1 = __importDefault(require("path"));
 const axios_1 = __importDefault(require("axios"));
 const promises_1 = require("fs/promises");
@@ -1422,7 +1423,9 @@ async function extractMpesaStatement(input) {
         if (transactions.length === 0) {
             warnings.push('No M-Pesa transaction rows were detected. The PDF may need table extraction or a cleaner statement export.');
         }
-        transactions = await addOdooReconciliationCandidates(transactions, input.odooClient || null, warnings);
+        if (input.matchCandidates) {
+            transactions = await addOdooReconciliationCandidates(transactions, input.odooClient || null, warnings);
+        }
         return {
             transactions,
             warnings: [...new Set(warnings)],
@@ -1437,4 +1440,7 @@ async function extractMpesaStatement(input) {
             }
         }
     }
+}
+async function matchMpesaStatementTransactions(transactions, client, warnings) {
+    return addOdooReconciliationCandidates(transactions, client, warnings);
 }

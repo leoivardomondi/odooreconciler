@@ -9,7 +9,7 @@ import {
   scheduleMpesaExtractionJobRetry,
   touchMpesaExtractionJob,
 } from '../models/repositories';
-import { extractMpesaStatement } from './mpesaReconciliationService';
+import { extractMpesaStatement, matchMpesaStatementTransactions } from './mpesaReconciliationService';
 import { OdooClient } from './odooClient';
 import { hasOdooConfiguration, sanitizeBaseUrl } from '../utils/helpers';
 import { resolveProjectFile } from '../utils/paths';
@@ -77,13 +77,19 @@ async function processNextMpesaExtractionJob() {
         filePath: resolveStoredFile(job.storedFilename),
         originalFilename: job.originalFilename,
         aiConfig: settings.ai,
-        odooClient: client,
+        // Persist the OCR/table extraction before any Odoo lookups. Matching
+        // must never prevent a completed statement from becoming reviewable.
+        odooClient: null,
+        matchCandidates: false,
       });
 
+      const extractionStatus = extraction.pageCount > 0 && extraction.transactions.length > 0
+        ? 'needs_review' as const
+        : 'failed' as const;
       await replaceMpesaStatementBatchExtraction(job.batchId, {
         originalFilename: job.originalFilename,
         storedFilename: job.storedFilename,
-        status: extraction.transactions.length > 0 ? 'needs_review' : 'failed',
+        status: extractionStatus,
         warnings: extraction.warnings,
         rawTextPreview: extraction.rawTextPreview,
         transactions: extraction.transactions,
@@ -98,6 +104,38 @@ async function processNextMpesaExtractionJob() {
         status: 'completed',
         transactionCount: extraction.transactions.length,
       });
+
+      // Matching is deliberately a second phase. The extraction is already
+      // saved and visible even if Odoo is slow, unavailable, or has a
+      // different account.payment schema.
+      if (extractionStatus === 'needs_review' && client) {
+        try {
+          const matchingWarnings = [...extraction.warnings];
+          const matchedTransactions = await matchMpesaStatementTransactions(
+            extraction.transactions,
+            client,
+            matchingWarnings,
+          );
+          await replaceMpesaStatementBatchExtraction(job.batchId, {
+            originalFilename: job.originalFilename,
+            storedFilename: job.storedFilename,
+            status: extractionStatus,
+            warnings: matchingWarnings,
+            rawTextPreview: extraction.rawTextPreview,
+            transactions: matchedTransactions,
+          });
+        } catch (error) {
+          const matchingMessage = error instanceof Error ? error.message : String(error);
+          await replaceMpesaStatementBatchExtraction(job.batchId, {
+            originalFilename: job.originalFilename,
+            storedFilename: job.storedFilename,
+            status: extractionStatus,
+            warnings: [...extraction.warnings, `Post-extraction matching skipped: ${matchingMessage}`],
+            rawTextPreview: extraction.rawTextPreview,
+            transactions: extraction.transactions,
+          }).catch(() => undefined);
+        }
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       await markMpesaStatementBatchExtractionFailed(job.batchId, message).catch(() => undefined);

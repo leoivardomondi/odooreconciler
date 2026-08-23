@@ -1590,6 +1590,7 @@ export async function extractMpesaStatement(input: {
   preferredOcr?: PreferredOcr;
   aiConfig?: AiExtractionConfig | null;
   odooClient?: OdooClient | null;
+  matchCandidates?: boolean;
 }): Promise<{
   transactions: ParsedMpesaTransaction[];
   warnings: string[];
@@ -1692,7 +1693,9 @@ export async function extractMpesaStatement(input: {
     if (transactions.length === 0) {
       warnings.push('No M-Pesa transaction rows were detected. The PDF may need table extraction or a cleaner statement export.');
     }
-    transactions = await addOdooReconciliationCandidates(transactions, input.odooClient || null, warnings);
+    if (input.matchCandidates) {
+      transactions = await addOdooReconciliationCandidates(transactions, input.odooClient || null, warnings);
+    }
 
     return {
       transactions,
@@ -1707,4 +1710,12 @@ export async function extractMpesaStatement(input: {
       }
     }
   }
+}
+
+export async function matchMpesaStatementTransactions(
+  transactions: ParsedMpesaTransaction[],
+  client: OdooClient | null,
+  warnings: string[],
+) {
+  return addOdooReconciliationCandidates(transactions, client, warnings);
 }

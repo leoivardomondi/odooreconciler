@@ -72,12 +72,18 @@ async function processNextMpesaExtractionJob() {
                 filePath: resolveStoredFile(job.storedFilename),
                 originalFilename: job.originalFilename,
                 aiConfig: settings.ai,
-                odooClient: client,
+                // Persist the OCR/table extraction before any Odoo lookups. Matching
+                // must never prevent a completed statement from becoming reviewable.
+                odooClient: null,
+                matchCandidates: false,
             });
+            const extractionStatus = extraction.pageCount > 0 && extraction.transactions.length > 0
+                ? 'needs_review'
+                : 'failed';
             await (0, repositories_1.replaceMpesaStatementBatchExtraction)(job.batchId, {
                 originalFilename: job.originalFilename,
                 storedFilename: job.storedFilename,
-                status: extraction.transactions.length > 0 ? 'needs_review' : 'failed',
+                status: extractionStatus,
                 warnings: extraction.warnings,
                 rawTextPreview: extraction.rawTextPreview,
                 transactions: extraction.transactions,
@@ -90,6 +96,34 @@ async function processNextMpesaExtractionJob() {
                 status: 'completed',
                 transactionCount: extraction.transactions.length,
             });
+            // Matching is deliberately a second phase. The extraction is already
+            // saved and visible even if Odoo is slow, unavailable, or has a
+            // different account.payment schema.
+            if (extractionStatus === 'needs_review' && client) {
+                try {
+                    const matchingWarnings = [...extraction.warnings];
+                    const matchedTransactions = await (0, mpesaReconciliationService_1.matchMpesaStatementTransactions)(extraction.transactions, client, matchingWarnings);
+                    await (0, repositories_1.replaceMpesaStatementBatchExtraction)(job.batchId, {
+                        originalFilename: job.originalFilename,
+                        storedFilename: job.storedFilename,
+                        status: extractionStatus,
+                        warnings: matchingWarnings,
+                        rawTextPreview: extraction.rawTextPreview,
+                        transactions: matchedTransactions,
+                    });
+                }
+                catch (error) {
+                    const matchingMessage = error instanceof Error ? error.message : String(error);
+                    await (0, repositories_1.replaceMpesaStatementBatchExtraction)(job.batchId, {
+                        originalFilename: job.originalFilename,
+                        storedFilename: job.storedFilename,
+                        status: extractionStatus,
+                        warnings: [...extraction.warnings, `Post-extraction matching skipped: ${matchingMessage}`],
+                        rawTextPreview: extraction.rawTextPreview,
+                        transactions: extraction.transactions,
+                    }).catch(() => undefined);
+                }
+            }
         }
         catch (error) {
             const message = error instanceof Error ? error.message : String(error);
