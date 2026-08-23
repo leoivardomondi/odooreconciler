@@ -111,7 +111,7 @@ async function autoOrientImage(imagePath) {
         }
     }
 }
-async function preprocessImage(imagePath) {
+async function preprocessImage(imagePath, options) {
     const warnings = [];
     if (process.env.OCR_PREPROCESS_IMAGES === 'false') {
         return { imagePath, warnings };
@@ -152,7 +152,9 @@ async function preprocessImage(imagePath) {
         thresholdContext.putImageData(thresholdImageData, 0, 0);
         const handwritingPath = path_1.default.join(parsed.dir, `${parsed.name}-handwriting.png`);
         await promises_1.default.writeFile(handwritingPath, await thresholdCanvas.encode('png'));
-        const oriented = await autoOrientImage(processedPath);
+        const oriented = options?.autoOrient === false
+            ? { imagePath: processedPath, warnings: [] }
+            : await autoOrientImage(processedPath);
         warnings.push(...oriented.warnings);
         return { imagePath: oriented.imagePath, variantPaths: [handwritingPath], warnings };
     }

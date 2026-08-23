@@ -1386,7 +1386,10 @@ async function extractMpesaStatement(input) {
         if (shouldOcr) {
             const imageInputs = await getRenderedPageImages();
             const preprocessed = await Promise.all(imageInputs.map(async (image) => {
-                const processed = await (0, imagePreprocess_1.preprocessImage)(image.imagePath);
+                // M-Pesa statements are rendered from PDF pages with their native
+                // A4 orientation already applied. Avoid the four-angle Tesseract
+                // probe, which adds no value here and can hit EAGAIN under load.
+                const processed = await (0, imagePreprocess_1.preprocessImage)(image.imagePath, { autoOrient: false });
                 warnings.push(...processed.warnings);
                 tempFilesToClean.add(processed.imagePath);
                 return { pageNumber: image.pageNumber, imagePath: processed.imagePath };
