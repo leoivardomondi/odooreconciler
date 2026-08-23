@@ -8,11 +8,13 @@ export async function extractPdfText(filePath: string) {
     const parsed = await pdfParse(buffer);
     return {
       text: normalizeText(parsed.text || ''),
+      pageCount: Number(parsed.numpages || 0),
       warnings: [] as string[],
     };
   } catch (error) {
     return {
       text: '',
+      pageCount: 0,
       warnings: [
         `PDF text extraction failed: ${error instanceof Error ? error.message : String(error)}`,
       ],

@@ -1100,6 +1100,26 @@ function parseTransactionsFromText(text: string) {
     .filter((transaction): transaction is ParsedMpesaTransaction => Boolean(transaction));
 }
 
+function hasUsableEmbeddedMpesaText(text: string, transactions: ParsedMpesaTransaction[]) {
+  const normalized = prepareMpesaStatementText(text);
+  const receiptCount = new Set(
+    [...normalized.matchAll(new RegExp(MPESA_RECEIPT_PATTERN.source, 'gi'))]
+      .map((match) => match[0].toUpperCase()),
+  ).size;
+  const headerSignals = [
+    /receipt\s*no/i,
+    /paid\s*in/i,
+    /withdrawn/i,
+    /balance/i,
+    /transaction\s*type/i,
+  ].filter((pattern) => pattern.test(normalized)).length;
+
+  return normalized.length >= 500 &&
+    transactions.length > 0 &&
+    receiptCount >= transactions.length &&
+    headerSignals >= 3;
+}
+
 function vendorTokens(value: string | null | undefined) {
   return normalizeSearch(expandKnownMpesaPartyAliases(value))
     .split(' ')
@@ -1605,7 +1625,7 @@ export async function extractMpesaStatement(input: {
 
     let ocrText = '';
     let renderedPageImages: Array<{ pageNumber: number; imagePath: string }> | null = null;
-    let pageCount = 0;
+    let pageCount = pdfText.pageCount || 0;
 
     const getRenderedPageImages = async () => {
       if (renderedPageImages) {
@@ -1621,6 +1641,14 @@ export async function extractMpesaStatement(input: {
       return renderedPageImages;
     };
 
+    let transactions = parseTransactionsFromText(pdfText.text);
+    const hasUsablePdfText = hasUsableEmbeddedMpesaText(pdfText.text, transactions);
+    if (hasUsablePdfText) {
+      warnings.push(
+        `Embedded PDF text extracted ${transactions.length} M-Pesa transaction row(s); image OCR was skipped.`,
+      );
+    }
+
     const nvidiaTableApiKey =
       input.aiConfig?.apiKeys?.nvidia ||
       input.aiConfig?.ocr?.apiKey ||
@@ -1631,7 +1659,7 @@ export async function extractMpesaStatement(input: {
       input.aiConfig?.provider === 'nvidia' ||
       input.aiConfig?.ocr?.provider === 'nvidia_nemoretriever';
 
-    if (shouldRunNvidiaTableStructure) {
+    if (shouldRunNvidiaTableStructure && !hasUsablePdfText) {
       const tableImages = await getRenderedPageImages();
       await runNvidiaTableStructure({
         images: tableImages,
@@ -1640,9 +1668,9 @@ export async function extractMpesaStatement(input: {
       });
     }
 
-    // M-Pesa imports always run the dedicated NVIDIA OCR pass, even when the
-    // PDF also contains embedded text, so table rows are consistently checked.
-    const shouldOcr = true;
+    // Prefer the embedded PDF text. Only render pages and run OCR when the
+    // text layer is missing, fragmented, or does not contain complete rows.
+    const shouldOcr = !hasUsablePdfText;
     if (shouldOcr) {
       const imageInputs = await getRenderedPageImages();
       const preprocessed = await Promise.all(
@@ -1692,7 +1720,9 @@ export async function extractMpesaStatement(input: {
     }
 
     const combinedText = normalizeSpaces([pdfText.text, ocrText].filter(Boolean).join('\n\n'));
-    let transactions = parseTransactionsFromText(combinedText);
+    if (shouldOcr) {
+      transactions = parseTransactionsFromText(combinedText);
+    }
     if (transactions.length === 0) {
       warnings.push('No M-Pesa transaction rows were detected. The PDF may need table extraction or a cleaner statement export.');
     }

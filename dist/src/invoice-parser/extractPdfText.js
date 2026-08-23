@@ -13,12 +13,14 @@ async function extractPdfText(filePath) {
         const parsed = await (0, pdf_parse_1.default)(buffer);
         return {
             text: (0, normalizeText_1.normalizeText)(parsed.text || ''),
+            pageCount: Number(parsed.numpages || 0),
             warnings: [],
         };
     }
     catch (error) {
         return {
             text: '',
+            pageCount: 0,
             warnings: [
                 `PDF text extraction failed: ${error instanceof Error ? error.message : String(error)}`,
             ],
