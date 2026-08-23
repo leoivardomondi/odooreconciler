@@ -3,7 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="csrf-token" content="<%= csrfToken || '' %>" />
+    <% const safeCsrfToken = typeof csrfToken === 'undefined' ? '' : (csrfToken || ''); %>
+    <meta name="csrf-token" content="<%= safeCsrfToken %>" />
     <meta name="theme-color" content="#22213f" />
     <meta name="msapplication-TileColor" content="#22213f" />
     <meta name="mobile-web-app-capable" content="yes" />
