@@ -177,7 +177,7 @@
     const totalChecks = statementTotalChecks || [];
     const shouldShowRetryExtraction = Boolean(selectedBatch);
     const totalCheckStatusLabel = (status) =>
-      status === 'match' ? 'Matched' : status === 'mismatch' ? 'Mismatch' : 'No Summary Printed';
+      status === 'match' ? 'Matched' : status === 'mismatch' ? 'Mismatch' : status === 'verified' ? 'Verified' : 'Needs Review';
     const salaryAdvanceCount = salaryAdvanceShare ? Number(salaryAdvanceShare.count || 0) : 0;
     const salaryAdvanceTotal = salaryAdvanceShare ? Number(salaryAdvanceShare.total || 0) : 0;
     const generalAdvanceCount = generalAdvanceShare ? Number(generalAdvanceShare.count || 0) : 0;
@@ -201,7 +201,7 @@
           type="file"
           class="form-control"
           name="file"
-          accept=".pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff"
+          accept=".pdf,.png,.jpg,.jpeg,.webp,.tif,.tiff,.xls,.xlsx"
           required
         />
       </div>
@@ -443,7 +443,11 @@
                   <span><%= check.label %></span>
                   <strong><%= totalCheckStatusLabel(check.status) %></strong>
                   <div>
-                    Statement <%= money(check.expected) %> - Rows <%= money(check.extracted) %>
+                    <% if (check.validationMode === 'summary') { %>
+                      Statement <%= money(check.expected) %> - Rows <%= money(check.extracted) %>
+                    <% } else { %>
+                      Rows <%= money(check.extracted) %> - <%= check.validatedRows %> of <%= selectedBatch.transactionCount %> validated
+                    <% } %>
                   </div>
                   <% if (check.difference !== null && Math.abs(check.difference) > 0.01) { %>
                     <small>Difference <%= money(check.difference) %></small>
@@ -876,14 +880,14 @@
           const moneyVal = function(val) {
             return val === null || val === undefined ? '-' : 'KSh ' + Number(val).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
           };
-          const badgeClass = check.status === 'match' ? 'success' : check.status === 'mismatch' ? 'danger' : 'info';
-          const labelText = check.status === 'match' ? 'Matched' : check.status === 'mismatch' ? 'Mismatch' : 'No Summary Printed';
+          const badgeClass = check.status === 'match' || check.status === 'verified' ? 'success' : check.status === 'mismatch' ? 'danger' : 'warning';
+          const labelText = check.status === 'match' ? 'Matched' : check.status === 'mismatch' ? 'Mismatch' : check.status === 'verified' ? 'Verified' : 'Needs Review';
           return '<div class="p-2 border rounded bg-white">' +
             '<div class="d-flex justify-content-between align-items-center mb-1">' +
             '<strong>' + check.label + '</strong>' +
             '<span class="badge text-bg-' + badgeClass + '">' + labelText + '</span>' +
             '</div>' +
-            '<div class="small text-secondary mb-1">Extracted Rows: ' + moneyVal(check.extracted) + '</div>' +
+            '<div class="small text-secondary mb-1">' + (check.validationMode === 'summary' ? 'Extracted Rows: ' + moneyVal(check.extracted) : 'Validated Rows: ' + check.validatedRows + ' of ' + check.totalRows) + '</div>' +
             '<div class="small text-muted">' + check.diagnosis + '</div>' +
             '</div>';
         }).join('');

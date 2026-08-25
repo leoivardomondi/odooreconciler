@@ -17,7 +17,7 @@ import {
 import { OdooClient } from './odooClient';
 import { analyzeTransportKeywords } from './aiCategoryService';
 
-type ParsedMpesaTransaction = Omit<MpesaTransaction, 'id' | 'batchId' | 'createdAt' | 'updatedAt'>;
+export type ParsedMpesaTransaction = Omit<MpesaTransaction, 'id' | 'batchId' | 'createdAt' | 'updatedAt'>;
 
 const FULL_PAGE_IMAGE_PATTERN = /-page-\d+\.[a-z]+$/i;
 const NVIDIA_DIRECT_UPLOAD_BASE64_LIMIT = 180_000;
@@ -790,7 +790,7 @@ function trimTrailingTransactionOverlap(details: string): string {
   return details;
 }
 
-function parseTransactionRow(row: string, rowIndex: number): ParsedMpesaTransaction | null {
+function parseTransactionRow(row: string, rowIndex: number, forcedMoneyValues?: number[]): ParsedMpesaTransaction | null {
   const receiptDateMatch = row.match(new RegExp(`^\\s*(${MPESA_RECEIPT_PATTERN.source})\\s*(\\d{4}[-/]\\d{1,2}[-/]\\d{1,2})`, 'i'));
   const receiptNumber = (receiptDateMatch?.[1] || row.match(MPESA_RECEIPT_PATTERN)?.[0] || null)?.toUpperCase() || null;
   const normalizedRow = receiptDateMatch
@@ -800,7 +800,7 @@ function parseTransactionRow(row: string, rowIndex: number): ParsedMpesaTransact
   const textWithoutDateAndReceipt = normalizedRow
     .replace(date.matchedText, ' ')
     .replace(receiptNumber || '', ' ');
-  const moneyValues = collectMoneyValues(textWithoutDateAndReceipt);
+  const moneyValues = forcedMoneyValues || collectMoneyValues(textWithoutDateAndReceipt);
 
   if (!receiptNumber && !date.transactionDate && moneyValues.length < 2) {
     return null;
@@ -818,7 +818,15 @@ function parseTransactionRow(row: string, rowIndex: number): ParsedMpesaTransact
     withdrawn = moneyValues[moneyValues.length - 2] || null;
     balance = moneyValues[moneyValues.length - 1] || null;
   } else if (moneyValues.length === 2) {
+    // Embedded M-Pesa PDF text omits the blank Paid In/Withdrawn column.
+    // The remaining amount keeps its sign, followed by the balance.
+    const signedAmount = moneyValues[0];
     balance = moneyValues[1];
+    if (signedAmount > 0) {
+      paidIn = signedAmount;
+    } else if (signedAmount < 0) {
+      withdrawn = Math.abs(signedAmount);
+    }
   }
 
   const rawDetails = cleanupDetails(normalizedRow, receiptNumber, date.matchedText);
@@ -826,9 +834,9 @@ function parseTransactionRow(row: string, rowIndex: number): ParsedMpesaTransact
 
   if (moneyValues.length === 2) {
     if (preliminary.direction === 'in') {
-      paidIn = moneyValues[0];
+      paidIn = Math.abs(moneyValues[0]);
     } else {
-      withdrawn = moneyValues[0];
+      withdrawn = Math.abs(moneyValues[0]);
     }
   }
 
@@ -1090,6 +1098,11 @@ function collectPotentialRows(text: string) {
 }
 
 function parseTransactionsFromText(text: string) {
+  const embeddedRows = parseEmbeddedPdfTransactions(text);
+  if (embeddedRows.length > 0) {
+    return embeddedRows;
+  }
+
   const structured = parseStructuredTransactionsFromText(text);
   if (structured.length > 0) {
     return structured;
@@ -1100,12 +1113,53 @@ function parseTransactionsFromText(text: string) {
     .filter((transaction): transaction is ParsedMpesaTransaction => Boolean(transaction));
 }
 
+function parseEmbeddedPdfTransactions(text: string) {
+  const prepared = prepareMpesaStatementText(text);
+  const startPattern = new RegExp(
+    `\\b(${MPESA_RECEIPT_PATTERN.source})(?=\\s*20\\d{2}[-/]\\d{1,2}[-/]\\d{1,2})`,
+    'gi',
+  );
+  const starts = [...prepared.matchAll(startPattern)];
+  if (starts.length === 0) {
+    return [];
+  }
+
+  const parsed = starts
+    .map((match, index) => {
+      const start = match.index ?? 0;
+      const end = starts[index + 1]?.index ?? prepared.length;
+      const block = prepared.slice(start, end);
+      const completionIndex = block.search(/Completed/i);
+      const completionTail = completionIndex >= 0
+        ? block.slice(completionIndex).match(/Completed\b([\s\S]{0,100})/i)?.[1] || ''
+        : '';
+      const completionAmounts = (completionTail.match(/-?\s*\d[\d,]*\.\d{2}/g) || [])
+        .slice(0, 3)
+        .map((value) => parseMoney(value.replace(/\s+/g, '')))
+        .filter((value): value is number => value !== null);
+      if (completionAmounts.length < 2) {
+        return null;
+      }
+
+      // Keep party descriptions, but remove incidental phone/account numbers
+      // before handing the row to the normal classifier. The only numeric
+      // values that should be parsed here are the signed amount and balance.
+      const header = block.slice(0, completionIndex).replace(/\b(20\d{2}[-/]\d{1,2}[-/]\d{1,2})\s+(\d{1,2}:\d{2}(?::\d{2})?)\b/, '$1 $2');
+      const sanitizedHeader = header.replace(/\d[\d* -]*/g, ' ');
+      const receipt = match[1];
+      const dateTime = header.match(/20\d{2}[-/]\d{1,2}[-/]\d{1,2}\s+\d{1,2}:\d{2}(?::\d{2})?/i)?.[0] || '';
+      const row = `${receipt} ${dateTime} ${sanitizedHeader} Completed ${completionAmounts.join(' ')}`;
+      const forcedMoneyValues = completionAmounts;
+      const parsedRow = parseTransactionRow(row, index + 1, forcedMoneyValues);
+      return parsedRow;
+    })
+    .filter((transaction): transaction is ParsedMpesaTransaction => Boolean(transaction));
+  return parsed;
+}
+
 function hasUsableEmbeddedMpesaText(text: string, transactions: ParsedMpesaTransaction[]) {
   const normalized = prepareMpesaStatementText(text);
-  const receiptCount = new Set(
-    [...normalized.matchAll(new RegExp(MPESA_RECEIPT_PATTERN.source, 'gi'))]
-      .map((match) => match[0].toUpperCase()),
-  ).size;
+  const receiptCount = [...normalized.matchAll(new RegExp(MPESA_RECEIPT_PATTERN.source, 'gi'))].length;
   const headerSignals = [
     /receipt\s*no/i,
     /paid\s*in/i,
@@ -1547,44 +1601,60 @@ async function addOdooReconciliationCandidates(
 
     // ── Auto-match by PO reference in transaction text ──
     // If the notes/rawDetails mention a PO number, find and match it directly
+    const notesText = String(transaction.notes || '');
+    const notePoRefs = [...notesText.matchAll(/\bPO\s*[:#-]?\s*(\d{2,7})\b/gi)].map((match) => match[1]);
+    const chainedNotePoRefs = notePoRefs.length === 1
+      ? [...notesText.matchAll(/\b(?:AND|&)\s*(?:PO\s*[:#-]?\s*)?(\d{2,7})\b/gi)].map((match) => match[1])
+      : [];
+    const notePoNumbers = [...new Set([...notePoRefs, ...chainedNotePoRefs])];
     const searchText = [
       transaction.details,
       transaction.counterparty || '',
-      transaction.notes || '',
       typeof transaction.raw?.rawDetails === 'string' ? transaction.raw.rawDetails : '',
       typeof transaction.raw?.otherPartyText === 'string' ? transaction.raw.otherPartyText : '',
     ].join(' ');
-
-    const poRefMatch = searchText.match(/\b(?:PO[:\s#-]*)?(\d{2,7})\b/i);
-    if (poRefMatch) {
-      const poIdStr = poRefMatch[1];
-      const poIdNum = parseInt(poIdStr, 10);
-      // Try matching by exact PO name containing the number (both string and numeric)
-      const exactPo = purchaseOrders.find((po) => {
-        const poDigits = po.name.replace(/\D/g, '');
-        return poDigits === poIdStr ||
-          parseInt(poDigits, 10) === poIdNum ||
-          po.name.toLowerCase().includes(`p${poIdStr.toLowerCase()}`) ||
-          po.name.toLowerCase().includes(`po${poIdStr.toLowerCase()}`);
-      });
-      if (exactPo) {
-        const vendorName = Array.isArray(exactPo.partner_id) ? exactPo.partner_id[1] : null;
-        return {
-          ...transaction,
-          candidates: [{
-            id: exactPo.id,
-            name: exactPo.name,
-            vendorName,
-            dateOrder: exactPo.date_order || null,
-            amountTotal: exactPo.amount_total || null,
-            score: 100,
-            reasons: [`PO referenced in transaction text: "${poRefMatch[0].trim()}".`],
-          }],
-          matchedPoId: exactPo.id,
-          matchedPoName: exactPo.name,
-          matchConfidence: 100,
-        };
-      }
+    const fallbackPoRef = notePoNumbers.length === 0
+      ? searchText.match(/\bPO\s*[:#-]?\s*(\d{2,7})\b/i)?.[1] || null
+      : null;
+    const poNumbers = notePoNumbers.length > 0 ? notePoNumbers : fallbackPoRef ? [fallbackPoRef] : [];
+    const exactPos = poNumbers
+      .map((poIdStr) => {
+        const poIdNum = parseInt(poIdStr, 10);
+        return purchaseOrders.find((po) => {
+          const poDigits = po.name.replace(/\D/g, '');
+          return poDigits === poIdStr ||
+            parseInt(poDigits, 10) === poIdNum ||
+            po.name.toLowerCase().includes(`p${poIdStr.toLowerCase()}`) ||
+            po.name.toLowerCase().includes(`po${poIdStr.toLowerCase()}`);
+        });
+      })
+      .filter((po): po is NonNullable<typeof po> => Boolean(po))
+      .filter((po, index, all) => all.findIndex((candidate) => candidate.id === po.id) === index);
+    if (exactPos.length > 0) {
+      const poTotal = exactPos.reduce((sum, po) => sum + Number(po.amount_total || 0), 0);
+      const withdrawalAmount = Number(transaction.withdrawn || 0);
+      const variance = Math.round((withdrawalAmount - poTotal) * 100) / 100;
+      const amountReason = withdrawalAmount > 0 && poTotal > 0
+        ? ` Withdrawal KSh ${withdrawalAmount.toLocaleString('en-KE', { minimumFractionDigits: 2 })}; referenced PO total KSh ${poTotal.toLocaleString('en-KE', { minimumFractionDigits: 2 })}; variance KSh ${variance.toLocaleString('en-KE', { minimumFractionDigits: 2 })} is informational.`
+        : '';
+      const candidates = exactPos.map((po) => ({
+        id: po.id,
+        name: po.name,
+        vendorName: Array.isArray(po.partner_id) ? po.partner_id[1] : null,
+        dateOrder: po.date_order || null,
+        amountTotal: po.amount_total || null,
+        score: 100,
+        reasons: [`PO referenced in Notes: ${poNumbers.map((number) => `PO ${number}`).join(' and ')}.${amountReason}`],
+      }));
+      const singlePo = exactPos.length === 1 ? exactPos[0] : null;
+      return {
+        ...transaction,
+        candidates,
+        matchedPoId: singlePo ? singlePo.id : null,
+        matchedPoName: singlePo ? singlePo.name : null,
+        matchConfidence: singlePo ? 100 : null,
+        reviewStatus: singlePo ? transaction.reviewStatus : 'needs_followup',
+      };
     }
 
     const candidates = purchaseOrders
@@ -1617,6 +1687,20 @@ export async function extractMpesaStatement(input: {
   rawTextPreview: string;
   pageCount: number;
 }> {
+  const extension = path.extname(input.filePath).toLowerCase();
+  if (extension === '.xls' || extension === '.xlsx') {
+    const { extractMpesaSpreadsheet } = await import('./mpesaSpreadsheetService');
+    const spreadsheetExtraction = await extractMpesaSpreadsheet(input);
+    if (input.matchCandidates) {
+      spreadsheetExtraction.transactions = await addOdooReconciliationCandidates(
+        spreadsheetExtraction.transactions,
+        input.odooClient || null,
+        spreadsheetExtraction.warnings,
+      );
+    }
+    return spreadsheetExtraction;
+  }
+
   const warnings: string[] = [];
   const tempFilesToClean = new Set<string>();
   try {

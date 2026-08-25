@@ -801,6 +801,24 @@ body {
   color: #92400e;
 }
 
+.mpesa-total-check-verified {
+  border-left-color: #087236;
+  background: #f4fff7;
+}
+
+.mpesa-total-check-verified strong {
+  color: #087236;
+}
+
+.mpesa-total-check-needs_review {
+  border-left-color: #d97706;
+  background: #fffaf0;
+}
+
+.mpesa-total-check-needs_review strong {
+  color: #92400e;
+}
+
 .mpesa-grid-toolbar {
   display: flex;
   flex-wrap: wrap;

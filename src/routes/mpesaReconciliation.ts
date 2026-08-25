@@ -56,7 +56,12 @@ type MpesaStatementTotalCheck = {
   expected: number | null;
   extracted: number;
   difference: number | null;
-  status: 'match' | 'mismatch' | 'missing_summary';
+  status: 'match' | 'mismatch' | 'verified' | 'needs_review';
+  validationMode: 'summary' | 'rows';
+  validatedRows: number;
+  balanceChecks: number;
+  balanceMismatches: number;
+  totalRows: number;
   diagnosis?: string;
 };
 
@@ -127,12 +132,12 @@ const upload = multer({
   limits: { fileSize: 25 * 1024 * 1024 },
   fileFilter: (_req, file, callback) => {
     const extension = path.extname(file.originalname).toLowerCase();
-    const allowed = ['.pdf', '.png', '.jpg', '.jpeg', '.webp', '.tif', '.tiff'];
+    const allowed = ['.pdf', '.png', '.jpg', '.jpeg', '.webp', '.tif', '.tiff', '.xls', '.xlsx'];
     if (allowed.includes(extension)) {
       callback(null, true);
       return;
     }
-    callback(new Error('Upload an M-Pesa statement PDF or image file.'));
+    callback(new Error('Upload an M-Pesa statement PDF, image, or Excel file.'));
   },
 });
 
@@ -511,13 +516,39 @@ function buildStatementTotalChecks(
     withdrawn: roundMoney(transactions.reduce((sum, transaction) => sum + Number(transaction.withdrawn || 0), 0)),
   };
 
+  const rowChecks = transactions.reduce(
+    (result, transaction, index) => {
+      const hasAmount = Number(transaction.paidIn || 0) > 0 || Number(transaction.withdrawn || 0) > 0;
+      if (transaction.receiptNumber && transaction.completionTime && transaction.balance !== null && hasAmount) {
+        result.validatedRows += 1;
+      }
+
+      const next = transactions[index + 1];
+      if (next && transaction.balance !== null && next.balance !== null && hasAmount) {
+        const signedAmount = Number(transaction.paidIn || 0) - Number(transaction.withdrawn || 0);
+        const expectedPreviousBalance = roundMoney(Number(transaction.balance) - signedAmount);
+        result.balanceChecks += 1;
+        if (Math.abs(expectedPreviousBalance - Number(next.balance)) > 0.01) {
+          result.balanceMismatches += 1;
+        }
+      }
+
+      return result;
+    },
+    { validatedRows: 0, balanceChecks: 0, balanceMismatches: 0 },
+  );
+  const rowsVerified = transactions.length > 0 &&
+    rowChecks.validatedRows === transactions.length &&
+    rowChecks.balanceChecks > 0;
+
   return [
     { key: 'paidIn' as const, label: 'Paid in match status', expected: expected.paidIn, extracted: extracted.paidIn },
     { key: 'withdrawn' as const, label: 'Withdrawn match status', expected: expected.withdrawn, extracted: extracted.withdrawn },
   ].map((check) => {
     const difference = check.expected === null ? null : roundMoney(check.extracted - check.expected);
-    const status = check.expected === null
-      ? 'missing_summary' as const
+    const hasSummaryValue = check.expected !== null;
+    const status = !hasSummaryValue
+      ? rowsVerified ? 'verified' as const : 'needs_review' as const
       : Math.abs(difference || 0) <= 0.01
         ? 'match' as const
         : 'mismatch' as const;
@@ -525,9 +556,16 @@ function buildStatementTotalChecks(
       ...check,
       difference,
       status,
+      validationMode: hasSummaryValue ? 'summary' as const : 'rows' as const,
+      validatedRows: rowChecks.validatedRows,
+      balanceChecks: rowChecks.balanceChecks,
+      balanceMismatches: rowChecks.balanceMismatches,
+      totalRows: transactions.length,
       diagnosis:
-        status === 'missing_summary'
-          ? `No statement summary table printed on this PDF. Total calculated from ${transactions.length} extracted rows: Paid In = KSh ${extracted.paidIn.toLocaleString('en-KE', { minimumFractionDigits: 2 })}, Withdrawn = KSh ${extracted.withdrawn.toLocaleString('en-KE', { minimumFractionDigits: 2 })}.`
+        status === 'verified'
+          ? `No summary printed. Verified ${rowChecks.validatedRows} extracted rows. Running-balance checks: ${rowChecks.balanceChecks - rowChecks.balanceMismatches} passed, ${rowChecks.balanceMismatches} flagged for review.`
+          : status === 'needs_review'
+            ? `No summary printed. ${rowChecks.validatedRows} of ${transactions.length} rows have complete fields; ${rowChecks.balanceMismatches} of ${rowChecks.balanceChecks} running-balance checks failed.`
           : status === 'match'
             ? 'All extracted rows reconcile to the statement summary.'
             : difference! < 0
@@ -544,7 +582,7 @@ function uploadSingleFile(fieldName: string) {
         const batchIdParam = req.params.batchId ? `batch=${encodeURIComponent(req.params.batchId)}&` : '';
         const message = err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE'
           ? 'The statement is too large. Maximum upload size is 25 MB.'
-          : err instanceof Error ? err.message : 'Upload an M-Pesa statement PDF or image file.';
+          : err instanceof Error ? err.message : 'Upload an M-Pesa statement PDF, image, or Excel file.';
         return res.redirect(`/mpesa-reconciliation?${batchIdParam}error=${encodeURIComponent(message)}`);
       }
       next();
@@ -568,6 +606,8 @@ function contentTypeForStatementFile(filename: string) {
   if (extension === '.jpg' || extension === '.jpeg') return 'image/jpeg';
   if (extension === '.webp') return 'image/webp';
   if (extension === '.tif' || extension === '.tiff') return 'image/tiff';
+  if (extension === '.xls') return 'application/vnd.ms-excel';
+  if (extension === '.xlsx') return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
   return 'application/octet-stream';
 }
 
@@ -833,7 +873,7 @@ router.get('/mpesa-reconciliation/batches/:batchId/download', async (req, res) =
 router.post('/mpesa-reconciliation/upload', uploadSingleFile('file'), async (req, res) => {
   try {
     if (!req.file) {
-      throw new Error('Upload an M-Pesa statement PDF or image file.');
+      throw new Error('Upload an M-Pesa statement PDF, image, or Excel file.');
     }
     const batch = await createMpesaStatementBatch({
       originalFilename: req.file.originalname,
@@ -908,7 +948,7 @@ router.post('/mpesa-reconciliation/batches/:batchId/reupload', uploadSingleFile(
     }
 
     if (!req.file) {
-      throw new Error('Upload a replacement M-Pesa statement PDF or image file.');
+      throw new Error('Upload a replacement M-Pesa statement PDF, image, or Excel file.');
     }
 
     const batch = await getMpesaStatementBatchById(batchId);
@@ -1456,36 +1496,85 @@ async function matchTransactionsByNotesPoRef(
   const purchaseOrders = await odooClient.searchPurchaseOrders({ limit: 500 });
 
   for (const tx of transactions) {
-    const searchText = [
-      tx.notes || '',
-      tx.details || '',
-      tx.counterparty || '',
-    ].join(' ');
+    const noteText = tx.notes || '';
+    const explicitPoRefs = [...noteText.matchAll(/\bPO\s*[:#-]?\s*(\d{2,7})\b/gi)]
+      .map((match) => match[1]);
+    const chainedPoRefs = explicitPoRefs.length === 1
+      ? [...noteText.slice(noteText.search(/\bPO\s*[:#-]?\s*\d{2,7}\b/i) + 1)
+        .matchAll(/\b(?:AND|&)\s*(?:PO\s*[:#-]?\s*)?(\d{2,7})\b/gi)]
+        .map((match) => match[1])
+      : [];
+    const poRefs = [...new Set([...explicitPoRefs, ...chainedPoRefs])];
 
-    const poRefMatch = searchText.match(/\b(?:PO[:\s#-]*)?(\d{2,7})\b/i);
-    if (!poRefMatch) continue;
+    // Keep the older fallback for rows whose details contain a bare PO-like
+    // reference, but prefer explicit PO references in Notes so dates, amounts,
+    // and phone numbers are not mistaken for purchase orders.
+    const searchText = [tx.notes || '', tx.details || '', tx.counterparty || ''].join(' ');
+    const fallbackPoRef = poRefs.length === 0
+      ? searchText.match(/\b(?:PO[:\s#-]*)(\d{2,7})\b/i)?.[1] || null
+      : null;
+    const resolvedPoRefs = poRefs.length > 0 ? poRefs : fallbackPoRef ? [fallbackPoRef] : [];
+    if (resolvedPoRefs.length === 0) continue;
 
-    const poIdStr = poRefMatch[1];
-    const poIdNum = parseInt(poIdStr, 10);
-    const exactPo = purchaseOrders.find((po) => {
-      const poDigits = po.name.replace(/\D/g, '');
-      return poDigits === poIdStr ||
-        parseInt(poDigits, 10) === poIdNum ||
-        po.name.toLowerCase().includes(`p${poIdStr.toLowerCase()}`) ||
-        po.name.toLowerCase().includes(`po${poIdStr.toLowerCase()}`);
-    });
+    const exactPos = resolvedPoRefs
+      .map((poIdStr) => {
+        const poIdNum = parseInt(poIdStr, 10);
+        return purchaseOrders.find((po) => {
+          const poDigits = po.name.replace(/\D/g, '');
+          return poDigits === poIdStr ||
+            parseInt(poDigits, 10) === poIdNum ||
+            po.name.toLowerCase().includes(`p${poIdStr.toLowerCase()}`) ||
+            po.name.toLowerCase().includes(`po${poIdStr.toLowerCase()}`);
+        });
+      })
+      .filter((po): po is NonNullable<typeof po> => Boolean(po))
+      .filter((po, index, all) => all.findIndex((candidate) => candidate.id === po.id) === index);
 
-    if (!exactPo) continue;
+    if (exactPos.length === 0) continue;
+
+    const withdrawalAmount = Number(tx.withdrawn || 0);
+    const referencedPoTotal = exactPos.reduce((sum, po) => sum + Number(po.amount_total || 0), 0);
+    const amountVariance = Math.round((withdrawalAmount - referencedPoTotal) * 100) / 100;
+    const amountExplanation = withdrawalAmount > 0 && referencedPoTotal > 0
+      ? ` Withdrawal KSh ${withdrawalAmount.toLocaleString('en-KE', { minimumFractionDigits: 2 })}; referenced PO total KSh ${referencedPoTotal.toLocaleString('en-KE', { minimumFractionDigits: 2 })}; variance KSh ${amountVariance.toLocaleString('en-KE', { minimumFractionDigits: 2 })} is informational for recipient withdrawals.`
+      : '';
 
     // If already matched to THIS PO, skip
-    if (tx.matchedPoId === exactPo.id) continue;
+    if (exactPos.length === 1 && tx.matchedPoId === exactPos[0].id) continue;
 
-    const vendorName = Array.isArray(exactPo.partner_id) ? exactPo.partner_id[1] : null;
-    const reason = `PO referenced in transaction notes: "${poRefMatch[0].trim()}" → ${exactPo.name}.`;
+    const candidates = exactPos.map((exactPo) => {
+      const vendorName = Array.isArray(exactPo.partner_id) ? exactPo.partner_id[1] : null;
+      return {
+        id: exactPo.id,
+        name: exactPo.name,
+        vendorName,
+        dateOrder: exactPo.date_order || null,
+        amountTotal: exactPo.amount_total || null,
+        score: 100,
+        reasons: [`PO referenced in transaction notes: ${resolvedPoRefs.map((ref) => `PO ${ref}`).join(' and ')}.${amountExplanation}`],
+      };
+    });
+
+    // A single transaction cannot safely be assigned to multiple POs. Keep all
+    // referenced POs available for manual selection instead of guessing.
+    if (exactPos.length > 1 && !tx.matchedPoId) {
+      patches.push({
+        id: tx.id,
+        matchedPoId: null,
+        matchedPoName: null,
+        matchConfidence: null,
+        candidates,
+        reviewStatus: 'needs_followup',
+        notes: tx.notes,
+      });
+      continue;
+    }
+
+    const exactPo = exactPos[0];
 
     // If already matched to a DIFFERENT PO, add a note but don't overwrite
     if (tx.matchedPoId) {
-      const conflictNote = (tx.notes || '') + ` [NOTE: Notes suggest ${exactPo.name} but already matched to ${tx.matchedPoName || '#' + tx.matchedPoId}]`;
+      const conflictNote = (tx.notes || '') + ` [NOTE: Notes suggest ${exactPos.map((po) => po.name).join(' and ')} but already matched to ${tx.matchedPoName || '#' + tx.matchedPoId}]`;
       patches.push({
         id: tx.id,
         notes: conflictNote.trim(),
@@ -1498,15 +1587,7 @@ async function matchTransactionsByNotesPoRef(
       matchedPoId: exactPo.id,
       matchedPoName: exactPo.name,
       matchConfidence: 100,
-      candidates: [{
-        id: exactPo.id,
-        name: exactPo.name,
-        vendorName,
-        dateOrder: exactPo.date_order || null,
-        amountTotal: exactPo.amount_total || null,
-        score: 100,
-        reasons: [reason],
-      }],
+      candidates,
       reviewStatus: 'reviewed',
       notes: tx.notes,
     });
@@ -1548,6 +1629,7 @@ router.post('/mpesa-reconciliation/batches/:batchId/auto-match', async (req, res
       originalFilename: batch.originalFilename,
       aiConfig: settings.ai,
       odooClient: client,
+      matchCandidates: true,
     });
 
     // Build a map of existing transactions keyed by receipt number + date for matching
