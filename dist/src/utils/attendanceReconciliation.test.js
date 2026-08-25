@@ -29,3 +29,8 @@ const attendanceReconciliation_1 = require("./attendanceReconciliation");
     strict_1.default.equal(result.status, 'Present');
     strict_1.default.equal(result.missingCheckoutRecords.length, 0);
 });
+(0, node_test_1.default)('completed overnight overtime covers the following workday without becoming an absence', () => {
+    const record = { check_in: '2026-08-24T19:57:00+03:00', check_out: '2026-08-25T17:05:00+03:00' };
+    const dateKey = (value) => value.slice(0, 10);
+    strict_1.default.equal((0, attendanceReconciliation_1.completedAttendanceCoversWorkday)(record, '2026-08-25', dateKey), true);
+});

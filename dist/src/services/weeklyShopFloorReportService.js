@@ -143,31 +143,40 @@ async function buildWeeklyShopFloorReport(scope) {
         value.setUTCDate(reportStartDate.getUTCDate() + index);
         return dateOnly(value);
     }).filter((date) => new Intl.DateTimeFormat('en-US', { timeZone: 'Africa/Nairobi', weekday: 'short' }).format(new Date(`${date}T12:00:00Z`)) !== 'Sun');
-    // Query by check-in date. Overnight/overtime rows remain attached to the
-    // shift they started and are shown separately from regular attendance.
-    const attendanceQueryDates = dates;
+    // Include the previous day so a completed overnight overtime row can cover
+    // the following workday when its checkout is recorded on that date.
+    const attendanceQueryDates = [...new Set([previousDate(reportStart), ...dates])];
     const attendanceByDate = operators.length
         ? await Promise.all(attendanceQueryDates.map((date) => client.getBulkAttendance(operators.map((operator) => operator.id), date).catch(() => [])))
         : attendanceQueryDates.map(() => []);
+    const allAttendanceRecords = attendanceByDate.flat();
     const attendance = operators.map((operator) => ({
         name: operator.name,
         days: dates.map((date, index) => {
-            const employeeRecords = attendanceByDate[index].filter((entry) => (Array.isArray(entry.employee_id) ? entry.employee_id[0] : entry.employee_id) === operator.id);
-            const regularRecords = employeeRecords.filter((entry) => !isOvertimeCheckIn(entry.check_in));
+            const employeeRecords = allAttendanceRecords.filter((entry) => (Array.isArray(entry.employee_id) ? entry.employee_id[0] : entry.employee_id) === operator.id).filter((entry) => {
+                const startsOnWorkday = nairobiDateKey(entry.check_in) === date;
+                const coversWorkday = isOvertimeCheckIn(entry.check_in)
+                    && (0, attendanceReconciliation_1.completedAttendanceCoversWorkday)(entry, date, nairobiDateKey);
+                return startsOnWorkday || coversWorkday;
+            });
+            const regularRecords = employeeRecords.filter((entry) => nairobiDateKey(entry.check_in) === date && !isOvertimeCheckIn(entry.check_in));
             const classification = (0, attendanceReconciliation_1.classifyAttendanceRecords)(regularRecords);
-            const record = classification.record;
+            const overnightCoverage = employeeRecords.find((entry) => nairobiDateKey(entry.check_in) !== date
+                && isOvertimeCheckIn(entry.check_in)
+                && (0, attendanceReconciliation_1.completedAttendanceCoversWorkday)(entry, date, nairobiDateKey));
+            const record = classification.record || overnightCoverage || null;
             const overtimeRecords = employeeRecords
-                .filter((entry) => entry !== record && isOvertimeCheckIn(entry.check_in))
+                .filter((entry) => nairobiDateKey(entry.check_in) === date && entry !== record && isOvertimeCheckIn(entry.check_in))
                 .sort((left, right) => String(left.check_in).localeCompare(String(right.check_in)));
             return {
                 date,
-                status: classification.status,
-                late: Boolean(record && isLateCheckIn(record.check_in)),
+                status: classification.status === 'Absent' && overnightCoverage ? 'Overtime covered' : classification.status,
+                late: Boolean(record && nairobiDateKey(record.check_in) === date && isLateCheckIn(record.check_in)),
                 checkIn: record?.check_in || null,
                 checkOut: record?.check_out || null,
                 workedHours: Number(record?.worked_hours || (record?.check_in && record?.check_out ? ((parseOdooDateTime(record.check_out)?.getTime() || 0) - (parseOdooDateTime(record.check_in)?.getTime() || 0)) / 3600000 : 0)),
-                missingCheckoutRecords: employeeRecords.filter((entry) => !entry.check_out),
-                overnight: Boolean(record?.check_in && record?.check_out && nairobiDateKey(record.check_in) !== nairobiDateKey(record.check_out)),
+                missingCheckoutRecords: employeeRecords.filter((entry) => nairobiDateKey(entry.check_in) === date && !entry.check_out),
+                overnight: Boolean(record?.check_in && record?.check_out && nairobiDateKey(record.check_in) === date && nairobiDateKey(record.check_in) !== nairobiDateKey(record.check_out)),
                 overtimeSessions: overtimeRecords.map((overtimeRecord) => ({
                     checkIn: overtimeRecord.check_in,
                     checkOut: overtimeRecord.check_out,
@@ -227,7 +236,7 @@ async function renderWeeklyShopFloorReportPdf(reportInput, scope) {
     document.y = 130;
     const attendanceTotals = report.attendance.reduce((totals, person) => {
         person.days.forEach((day) => {
-            if (day.status === 'Present')
+            if (day.status === 'Present' || day.status === 'Overtime covered')
                 totals.present += 1;
             else if (day.status === 'Absent')
                 totals.absent += 1;
@@ -436,7 +445,7 @@ async function renderWeeklyShopFloorReportPdf(reportInput, scope) {
         document.y = y + 29;
     });
     document.moveDown(.55);
-    section('Attendance system usage', 'Attendance rate measures regular scheduled-shift coverage. Checkout data integrity measures whether recorded Odoo rows have a checkout. Completed overnight/overtime rows are listed separately and do not replace a regular-shift check-in.');
+    section('Attendance system usage', 'Attendance rate measures scheduled-shift coverage. A completed overnight overtime row covers the following workday and is shown separately; it does not create an absence or no-check-in exception. Checkout data integrity measures whether recorded Odoo rows have a checkout.');
     const usageCols = [
         { label: 'EMPLOYEE', x: 48, width: 170 },
         { label: 'CHECK-IN', x: 224, width: 68 },
@@ -450,8 +459,8 @@ async function renderWeeklyShopFloorReportPdf(reportInput, scope) {
         if (document.y < 55)
             tableHeader(usageCols);
         const expectedDays = person.days.length;
-        const checkIns = person.days.filter((day) => day.status === 'Present' || day.status === 'No checkout').length;
-        const checkOuts = person.days.filter((day) => day.status === 'Present').length;
+        const checkIns = person.days.filter((day) => ['Present', 'Overtime covered', 'No checkout'].includes(day.status)).length;
+        const checkOuts = person.days.filter((day) => ['Present', 'Overtime covered'].includes(day.status)).length;
         const completeShifts = checkOuts;
         const checkInRate = expectedDays ? Math.round((checkIns / expectedDays) * 100) : 0;
         const checkOutRate = expectedDays ? Math.round((checkOuts / expectedDays) * 100) : 0;
@@ -466,7 +475,7 @@ async function renderWeeklyShopFloorReportPdf(reportInput, scope) {
         document.y = y + 29;
     });
     document.moveDown(.3);
-    document.font('Helvetica').fontSize(7).fillColor(muted).text('Attendance rate = regular scheduled shifts with a regular check-in ÷ scheduled working days. Checkout data integrity = scheduled attendance denominator less blank checkouts; it does not treat a regular absence as a missing checkout. Separate overtime records are shown in the overnight/overtime section.', 42, document.y, { width: contentWidth });
+    document.font('Helvetica').fontSize(7).fillColor(muted).text('Attendance rate = scheduled workdays covered by a regular check-in or a completed overnight overtime row ÷ scheduled working days. Checkout data integrity = scheduled attendance denominator less blank checkouts; it does not treat an absence as a missing checkout. Overnight overtime rows are shown separately and cover the following workday when their checkout is recorded on that date.', 42, document.y, { width: contentWidth });
     const footerUrl = String(env_1.env.APP_BASE_URL || 'https://app.urbanvibeinteriordesign.co.ke').replace(/\/+$/, '');
     const footerRange = document.bufferedPageRange();
     for (let pageIndex = footerRange.start; pageIndex < footerRange.start + footerRange.count; pageIndex += 1) {

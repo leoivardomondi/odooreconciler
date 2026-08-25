@@ -6,10 +6,19 @@ export type AttendanceRecord = {
   worked_hours?: number | null;
 };
 
-export type AttendanceStatus = 'Present' | 'No checkout' | 'Absent';
+export type AttendanceStatus = 'Present' | 'Overtime covered' | 'No checkout' | 'Absent';
 
 export function hasAttendanceCheckout(record: AttendanceRecord) {
   return Boolean(record.check_out);
+}
+
+export function completedAttendanceCoversWorkday(
+  record: AttendanceRecord,
+  workday: string,
+  dateKey: (value: string) => string,
+) {
+  if (!record.check_in || !record.check_out) return false;
+  return dateKey(record.check_in) < workday && dateKey(record.check_out) === workday;
 }
 
 /**
