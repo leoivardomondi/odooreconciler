@@ -454,7 +454,9 @@ export async function renderWeeklyShopFloorReportPdf(
   const footerRange = document.bufferedPageRange();
   for (let pageIndex = footerRange.start; pageIndex < footerRange.start + footerRange.count; pageIndex += 1) {
     document.switchToPage(pageIndex);
-    const footerY = document.page.height - 30;
+    // Keep the footer inside PDFKit's bottom margin; placing it lower causes
+    // PDFKit to create a new footer-only page for each buffered page.
+    const footerY = document.page.height - 52;
     document.moveTo(42, footerY - 6).lineTo(pageWidth - 42, footerY - 6).strokeColor(border).lineWidth(0.6).stroke();
     document.font('Helvetica').fontSize(7).fillColor(muted)
       .text(`Report source: ${footerUrl}`, 42, footerY, { width: contentWidth - 55, lineBreak: false })
