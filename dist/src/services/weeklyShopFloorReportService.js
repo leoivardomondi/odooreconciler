@@ -21,29 +21,47 @@ const DEPARTMENTS = ['Operations', 'Production', 'Shop Floor', 'Manufacturing', 
 const RECIPIENT_NAMES = ['dbadmin', 'charles', 'raphael'];
 function dateOnly(date) { return date.toISOString().slice(0, 10); }
 function productName(value) { return Array.isArray(value) ? String(value[1] || '') : String(value || ''); }
+function parseOdooDateTime(value) {
+    if (!value)
+        return null;
+    if (value instanceof Date)
+        return value;
+    // Odoo JSON-2 returns naive UTC datetimes such as "2026-08-24 16:57:04".
+    // Mark them as UTC before formatting them in the Nairobi timezone.
+    const normalized = value.includes('T') ? value : `${value.replace(' ', 'T')}Z`;
+    return new Date(normalized);
+}
 function nairobiDateTime(value) {
     if (!value)
         return '-';
-    return new Intl.DateTimeFormat('en-KE', { timeZone: 'Africa/Nairobi', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true }).format(new Date(value));
+    const date = parseOdooDateTime(value);
+    return date ? new Intl.DateTimeFormat('en-KE', { timeZone: 'Africa/Nairobi', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true }).format(date) : '-';
 }
 function isOvertimeCheckIn(value) {
     if (!value)
         return false;
-    const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Nairobi', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date(value));
+    const date = parseOdooDateTime(value);
+    if (!date)
+        return false;
+    const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Nairobi', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(date);
     const hour = Number(parts.find((part) => part.type === 'hour')?.value || 0);
     return hour >= 17;
 }
 function isLateCheckIn(value) {
     if (!value)
         return false;
-    const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Nairobi', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(new Date(value));
+    const date = parseOdooDateTime(value);
+    if (!date)
+        return false;
+    const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Nairobi', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(date);
     const get = (type) => Number(parts.find((part) => part.type === type)?.value || 0);
     return get('hour') > 8 || (get('hour') === 8 && get('minute') > 20);
 }
 function nairobiDateKey(value) {
     if (!value)
         return '';
-    return new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Nairobi', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(value));
+    const date = parseOdooDateTime(value);
+    return date ? new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Nairobi', year: 'numeric', month: '2-digit', day: '2-digit' }).format(date) : '';
 }
 function previousDate(value) {
     const date = new Date(`${value}T12:00:00Z`);
@@ -147,14 +165,14 @@ async function buildWeeklyShopFloorReport(scope) {
                 late: Boolean(record && isLateCheckIn(record.check_in)),
                 checkIn: record?.check_in || null,
                 checkOut: record?.check_out || null,
-                workedHours: Number(record?.worked_hours || (record?.check_in && record?.check_out ? (new Date(record.check_out).getTime() - new Date(record.check_in).getTime()) / 3600000 : 0)),
+                workedHours: Number(record?.worked_hours || (record?.check_in && record?.check_out ? ((parseOdooDateTime(record.check_out)?.getTime() || 0) - (parseOdooDateTime(record.check_in)?.getTime() || 0)) / 3600000 : 0)),
                 missingCheckoutRecords: employeeRecords.filter((entry) => !entry.check_out),
                 overnight: Boolean(record?.check_in && record?.check_out && nairobiDateKey(record.check_in) !== nairobiDateKey(record.check_out)),
                 overtimeSessions: overtimeRecords.map((overtimeRecord) => ({
                     checkIn: overtimeRecord.check_in,
                     checkOut: overtimeRecord.check_out,
                     workedHours: Number(overtimeRecord.worked_hours || (overtimeRecord.check_in && overtimeRecord.check_out
-                        ? (new Date(overtimeRecord.check_out).getTime() - new Date(overtimeRecord.check_in).getTime()) / 3600000
+                        ? ((parseOdooDateTime(overtimeRecord.check_out)?.getTime() || 0) - (parseOdooDateTime(overtimeRecord.check_in)?.getTime() || 0)) / 3600000
                         : 0)),
                 })),
             };
