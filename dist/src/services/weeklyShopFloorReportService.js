@@ -125,16 +125,17 @@ async function buildWeeklyShopFloorReport(scope) {
         value.setUTCDate(reportStartDate.getUTCDate() + index);
         return dateOnly(value);
     }).filter((date) => new Intl.DateTimeFormat('en-US', { timeZone: 'Africa/Nairobi', weekday: 'short' }).format(new Date(`${date}T12:00:00Z`)) !== 'Sun');
-    // Query by check-in date. Each Odoo hr.attendance row owns its checkout,
-    // so a checkout on the following day remains attached to this same row.
-    const attendanceQueryDates = dates;
+    // Query the day before the report as well so a completed overnight row can
+    // cover the following scheduled workday by its checkout date.
+    const attendanceQueryDates = [...new Set([previousDate(reportStart), ...dates])];
     const attendanceByDate = operators.length
         ? await Promise.all(attendanceQueryDates.map((date) => client.getBulkAttendance(operators.map((operator) => operator.id), date).catch(() => [])))
         : attendanceQueryDates.map(() => []);
+    const allAttendanceRecords = attendanceByDate.flat();
     const attendance = operators.map((operator) => ({
         name: operator.name,
         days: dates.map((date, index) => {
-            const employeeRecords = attendanceByDate[index].filter((entry) => (Array.isArray(entry.employee_id) ? entry.employee_id[0] : entry.employee_id) === operator.id);
+            const employeeRecords = allAttendanceRecords.filter((entry) => (Array.isArray(entry.employee_id) ? entry.employee_id[0] : entry.employee_id) === operator.id).filter((entry) => (0, attendanceReconciliation_1.attendanceRecordCoversWorkday)(entry, date, nairobiDateKey));
             const classification = (0, attendanceReconciliation_1.classifyAttendanceRecords)(employeeRecords);
             const record = classification.record;
             const overtimeRecords = employeeRecords
@@ -143,7 +144,7 @@ async function buildWeeklyShopFloorReport(scope) {
             return {
                 date,
                 status: classification.status,
-                late: Boolean(record && isLateCheckIn(record.check_in)),
+                late: Boolean(record && nairobiDateKey(record.check_in) === date && isLateCheckIn(record.check_in)),
                 checkIn: record?.check_in || null,
                 checkOut: record?.check_out || null,
                 workedHours: Number(record?.worked_hours || (record?.check_in && record?.check_out ? (new Date(record.check_out).getTime() - new Date(record.check_in).getTime()) / 3600000 : 0)),
@@ -305,7 +306,7 @@ async function renderWeeklyShopFloorReportPdf(reportInput, scope) {
     }
     const overtimeCheckIns = report.attendance.flatMap((person) => person.days
         .flatMap((day) => [
-        ...(day.overnight && day.checkIn && day.checkOut ? [{ name: person.name, day, session: { checkIn: day.checkIn, checkOut: day.checkOut, workedHours: day.workedHours } }] : []),
+        ...(day.overnight && day.checkIn && day.checkOut && nairobiDateKey(day.checkIn) === day.date ? [{ name: person.name, day, session: { checkIn: day.checkIn, checkOut: day.checkOut, workedHours: day.workedHours } }] : []),
         ...day.overtimeSessions.map((session) => ({ name: person.name, day, session })),
     ]));
     if (overtimeCheckIns.length) {

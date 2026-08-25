@@ -12,6 +12,21 @@ export function hasAttendanceCheckout(record: AttendanceRecord) {
   return Boolean(record.check_out);
 }
 
+export function attendanceRecordCoversWorkday(
+  record: AttendanceRecord,
+  workday: string,
+  dateKey: (value: string) => string,
+) {
+  if (!record.check_in) return false;
+  const checkInDate = dateKey(record.check_in);
+  if (checkInDate === workday) return true;
+  return Boolean(
+    record.check_out
+      && checkInDate < workday
+      && dateKey(record.check_out) === workday,
+  );
+}
+
 /**
  * Odoo hr.attendance is one record containing both timestamps. A checkout on
  * another calendar day is still a completed record; the dates are never used
