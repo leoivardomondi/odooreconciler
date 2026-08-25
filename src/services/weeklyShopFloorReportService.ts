@@ -7,7 +7,7 @@ import { getConfirmedMoQueueSchedule, getMoOverdueState } from './moOverdueServi
 import { env } from '../utils/env';
 import { clampShopFloorReportingDate } from '../utils/shopFloorReporting';
 import { resolveFromProjectRoot } from '../utils/paths';
-import { attendanceRecordCoversWorkday, classifyAttendanceRecords, type AttendanceRecord } from '../utils/attendanceReconciliation';
+import { classifyAttendanceRecords, type AttendanceRecord } from '../utils/attendanceReconciliation';
 
 const DEPARTMENTS = ['Operations', 'Production', 'Shop Floor', 'Manufacturing', 'Factory'];
 const RECIPIENT_NAMES = ['dbadmin', 'charles', 'raphael'];
@@ -119,20 +119,20 @@ export async function buildWeeklyShopFloorReport(scope?: { fromDate?: string; to
   const dates = Array.from({ length: reportingDayCount }, (_, index) => {
     const value = new Date(reportStartDate); value.setUTCDate(reportStartDate.getUTCDate() + index); return dateOnly(value);
   }).filter((date) => new Intl.DateTimeFormat('en-US', { timeZone: 'Africa/Nairobi', weekday: 'short' }).format(new Date(`${date}T12:00:00Z`)) !== 'Sun');
-  // Query the day before the report as well so a completed overnight row can
-  // cover the following scheduled workday by its checkout date.
-  const attendanceQueryDates = [...new Set([previousDate(reportStart), ...dates])];
+  // Query by check-in date. Overnight/overtime rows remain attached to the
+  // shift they started and are shown separately from regular attendance.
+  const attendanceQueryDates = dates;
   const attendanceByDate = operators.length
     ? await Promise.all(attendanceQueryDates.map((date) => client.getBulkAttendance(operators.map((operator) => operator.id), date).catch(() => [])))
     : attendanceQueryDates.map(() => []);
-  const allAttendanceRecords = attendanceByDate.flat() as AttendanceRecord[];
   const attendance = operators.map((operator) => ({
     name: operator.name,
     days: dates.map((date, index) => {
-      const employeeRecords = allAttendanceRecords.filter((entry) =>
+      const employeeRecords = attendanceByDate[index].filter((entry) =>
         (Array.isArray(entry.employee_id) ? entry.employee_id[0] : entry.employee_id) === operator.id,
-      ).filter((entry) => attendanceRecordCoversWorkday(entry, date, nairobiDateKey));
-      const classification = classifyAttendanceRecords(employeeRecords);
+      ) as AttendanceRecord[];
+      const regularRecords = employeeRecords.filter((entry) => !isOvertimeCheckIn(entry.check_in));
+      const classification = classifyAttendanceRecords(regularRecords);
       const record = classification.record;
       const overtimeRecords = employeeRecords
         .filter((entry) => entry !== record && isOvertimeCheckIn(entry.check_in))
@@ -140,11 +140,11 @@ export async function buildWeeklyShopFloorReport(scope?: { fromDate?: string; to
       return {
         date,
         status: classification.status,
-        late: Boolean(record && nairobiDateKey(record.check_in) === date && isLateCheckIn(record.check_in)),
+        late: Boolean(record && isLateCheckIn(record.check_in)),
         checkIn: record?.check_in || null,
         checkOut: record?.check_out || null,
         workedHours: Number(record?.worked_hours || (record?.check_in && record?.check_out ? (new Date(record.check_out).getTime() - new Date(record.check_in).getTime()) / 3600000 : 0)),
-        missingCheckoutRecords: classification.missingCheckoutRecords,
+        missingCheckoutRecords: employeeRecords.filter((entry) => !entry.check_out),
         overnight: Boolean(record?.check_in && record?.check_out && nairobiDateKey(record.check_in) !== nairobiDateKey(record.check_out)),
         overtimeSessions: overtimeRecords.map((overtimeRecord) => ({
           checkIn: overtimeRecord.check_in,

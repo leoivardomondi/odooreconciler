@@ -1,20 +1,9 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.hasAttendanceCheckout = hasAttendanceCheckout;
-exports.attendanceRecordCoversWorkday = attendanceRecordCoversWorkday;
 exports.classifyAttendanceRecords = classifyAttendanceRecords;
 function hasAttendanceCheckout(record) {
     return Boolean(record.check_out);
-}
-function attendanceRecordCoversWorkday(record, workday, dateKey) {
-    if (!record.check_in)
-        return false;
-    const checkInDate = dateKey(record.check_in);
-    if (checkInDate === workday)
-        return true;
-    return Boolean(record.check_out
-        && checkInDate < workday
-        && dateKey(record.check_out) === workday);
 }
 /**
  * Odoo hr.attendance is one record containing both timestamps. A checkout on
