@@ -266,7 +266,7 @@ async function renderWeeklyShopFloorReportPdf(reportInput, scope) {
         { label: 'MO board logging', score: coverage, issue: `${report.boardSummary?.missingBoards || 0} MOs missing` },
         { label: 'Receipt validation', score: receiptUsageScore, issue: `${report.penalties?.undoneReceipts || 0} pending` },
         { label: 'MO completion rate', score: moUsageScore, issue: `${report.moCompletion.completed}/${report.moCompletion.eligible} completed; ${report.moCompletion.open} open` },
-        { label: 'Attendance completion', score: attendanceDataCompleteness, issue: `${attendanceTotals.noCheckout} missing checkout` },
+        { label: 'Checkout data integrity', score: attendanceDataCompleteness, issue: `${attendanceTotals.noCheckout} blank checkout; ${attendanceTotals.absent} regular absence(s)` },
     ];
     usageEvidence.forEach((item, index) => {
         const x = 165 + (index % 2) * 194;
@@ -277,7 +277,7 @@ async function renderWeeklyShopFloorReportPdf(reportInput, scope) {
     });
     document.y = assessmentY + 64;
     const usageActions = usageEvidence.filter((item) => item.score < 90).map((item) => item.label);
-    document.font('Helvetica-Bold').fontSize(7.5).fillColor(usageActions.length ? '#dc2626' : '#16a34a').text(usageActions.length ? `DIRECTOR ACTION: Require completion of ${usageActions.join(', ')} and review exceptions with the responsible operators.` : 'DIRECTOR NOTE: All monitored workflows show strong system adoption this week.', 42, document.y, { width: contentWidth, lineGap: 2 });
+    document.font('Helvetica-Bold').fontSize(7.5).fillColor(usageActions.length ? '#dc2626' : '#16a34a').text(usageActions.length ? `DIRECTOR ACTION: Require completion of ${usageActions.join(', ')} and review exceptions with the responsible operators.` : `DIRECTOR NOTE: Checkout data integrity is complete. ${attendanceTotals.absent} regular-shift absence(s) and separate overnight/overtime records are reported independently.`, 42, document.y, { width: contentWidth, lineGap: 2 });
     document.moveDown(.5);
     const checkoutRows = report.attendance.flatMap((person) => person.days.flatMap((day) => day.missingCheckoutRecords.map((record) => ({ person, day, record }))));
     if (checkoutRows.length) {
@@ -418,7 +418,7 @@ async function renderWeeklyShopFloorReportPdf(reportInput, scope) {
         document.y = y + 29;
     });
     document.moveDown(.55);
-    section('Attendance system usage', 'This measures whether each scheduled shift has an Odoo attendance record. Completed overnight rows count as present; only blank check_out values count as missing checkout.');
+    section('Attendance system usage', 'Attendance rate measures regular scheduled-shift coverage. Checkout data integrity measures whether recorded Odoo rows have a checkout. Completed overnight/overtime rows are listed separately and do not replace a regular-shift check-in.');
     const usageCols = [
         { label: 'EMPLOYEE', x: 48, width: 170 },
         { label: 'CHECK-IN', x: 224, width: 68 },
@@ -448,7 +448,7 @@ async function renderWeeklyShopFloorReportPdf(reportInput, scope) {
         document.y = y + 29;
     });
     document.moveDown(.3);
-    document.font('Helvetica').fontSize(7).fillColor(muted).text('System usage = complete check-in and check-out pairs ÷ scheduled working days. A separate overtime check-in does not count as a failed regular checkout.', 42, document.y, { width: contentWidth });
+    document.font('Helvetica').fontSize(7).fillColor(muted).text('Attendance rate = regular scheduled shifts with a regular check-in ÷ scheduled working days. Checkout data integrity = scheduled attendance denominator less blank checkouts; it does not treat a regular absence as a missing checkout. Separate overtime records are shown in the overnight/overtime section.', 42, document.y, { width: contentWidth });
     const footerUrl = String(env_1.env.APP_BASE_URL || 'https://app.urbanvibeinteriordesign.co.ke').replace(/\/+$/, '');
     const footerRange = document.bufferedPageRange();
     for (let pageIndex = footerRange.start; pageIndex < footerRange.start + footerRange.count; pageIndex += 1) {
