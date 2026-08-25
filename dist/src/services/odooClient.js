@@ -1420,16 +1420,16 @@ class OdooClient {
         }
     }
     /**
-     * Get failed checkouts for an employee (e.g. worked hours > 16 or missing check out for > 24 hours).
+     * Get attendance rows whose Odoo checkout value is blank. The timestamps
+     * may span calendar days; only the row's check_out value determines whether
+     * checkout is missing.
      */
     async getFailedCheckouts(employeeId) {
         try {
             const records = await this.request('hr.attendance', 'search_read', {
                 domain: [
                     ['employee_id', '=', employeeId],
-                    '|',
                     ['check_out', '=', false],
-                    ['worked_hours', '>', 16],
                 ],
                 fields: ['check_in', 'check_out', 'worked_hours'],
                 order: 'check_in desc',
@@ -1442,13 +1442,11 @@ class OdooClient {
                 limit: 100,
             });
             const failed = [];
-            const now = new Date();
             for (const rec of records) {
                 if (!rec.check_in)
                     continue;
                 const checkInDate = new Date(rec.check_in.includes('T') ? rec.check_in : rec.check_in.replace(' ', 'T') + 'Z');
-                // If check out is missing and it's been more than 24 hours since check in, or worked hours > 16
-                if ((!rec.check_out && (now.getTime() - checkInDate.getTime()) > 24 * 60 * 60 * 1000) || rec.worked_hours > 16) {
+                if (!rec.check_out) {
                     const dateStr = checkInDate.toISOString().split('T')[0];
                     const nextDate = new Date(checkInDate);
                     nextDate.setDate(nextDate.getDate() + 1);

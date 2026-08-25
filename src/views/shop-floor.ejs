@@ -168,8 +168,8 @@
       <div class="alert alert-danger rounded-4 mb-4 d-flex align-items-center gap-3 border border-danger-subtle" style="background:#fef2f2;color:#991b1b;box-shadow:0 1px 3px rgba(0,0,0,0.04)">
         <i class="bi bi-exclamation-triangle-fill fs-3 text-danger flex-shrink-0"></i>
         <div>
-          <div class="fw-bold fs-6 mb-1" data-i18n="failed_checkout_title">Failed Checkout Detected</div>
-          <p class="mb-0 small" style="opacity: 0.9" data-i18n="failed_checkout_desc">Your checkout was missing on the dates below. Each attendance session stayed open longer than expected.</p>
+          <div class="fw-bold fs-6 mb-1" data-i18n="failed_checkout_title">Missing Checkout Detected</div>
+          <p class="mb-0 small" style="opacity: 0.9" data-i18n="failed_checkout_desc">The Odoo attendance rows below have a check-in but no recorded checkout. Overnight rows with a recorded next-day checkout are not included.</p>
           <ul class="list-unstyled mb-0 mt-3 small">
             <% data.failedCheckouts.forEach(fc => { %>
               <li class="mb-2 pb-2 border-bottom border-danger-subtle">
