@@ -32,6 +32,7 @@ exports.env = {
     SALE_ORDER_READ_TIMEOUT_MS: process.env.SALE_ORDER_READ_TIMEOUT_MS || '60000',
     ATTACHMENT_DOWNLOAD_TIMEOUT_MS: process.env.ATTACHMENT_DOWNLOAD_TIMEOUT_MS || '60000',
     TRUST_PROXY: process.env.TRUST_PROXY || 'false',
+    ATTENDANCE_ALLOWED_IPS: process.env.ATTENDANCE_ALLOWED_IPS || '41.139.216.177',
     APP_SESSION_SECRET: process.env.APP_SESSION_SECRET || process.env.APP_ENCRYPTION_KEY || '',
     AUTH_ALLOWED_DOMAINS: process.env.AUTH_ALLOWED_DOMAINS || 'urbanvibeinteriordesign.co.ke,flowcode.co.ke',
     AUTH_OTP_TTL_MINUTES: process.env.AUTH_OTP_TTL_MINUTES || '10',

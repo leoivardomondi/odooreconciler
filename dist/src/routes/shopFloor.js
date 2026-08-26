@@ -17,6 +17,7 @@ const boardProductClassifier_1 = require("../services/boardProductClassifier");
 const stockMirrorService_1 = require("../services/stockMirrorService");
 const boardIntakeSyncService_1 = require("../services/boardIntakeSyncService");
 const shopFloorOperatorAccessSyncService_1 = require("../services/shopFloorOperatorAccessSyncService");
+const siteAttendanceAccess_1 = require("../utils/siteAttendanceAccess");
 const repositories_3 = require("../models/repositories");
 const router = (0, express_1.Router)();
 // Department names to search for operators (case-insensitive match)
@@ -77,6 +78,9 @@ async function sendPurchaseApprovalRequest(input) {
 }
 function canManageShopFloor(req) {
     return Boolean(req.authUser && (req.authUser.role === 'admin' || req.authUser.apps?.includes('shop-floor-admin')));
+}
+function canUseSiteAttendance(req) {
+    return (0, siteAttendanceAccess_1.isAllowedAttendanceIp)(req.ip || req.socket.remoteAddress, env_1.env.ATTENDANCE_ALLOWED_IPS);
 }
 function getViewedUserEmail(req) {
     return String(req.viewingAsUser?.email || req.authUser?.email || '').trim();
@@ -806,6 +810,7 @@ router.get('/shop-floor', async (req, res) => {
             featureFlags,
             canManageFeatures: canManageShopFloor(req),
             csrfToken: req.csrfToken || null,
+            attendanceSiteAllowed: canUseSiteAttendance(req),
             message: typeof req.query.message === 'string' ? req.query.message : null,
             error: typeof req.query.error === 'string' ? req.query.error : null,
         });
@@ -817,6 +822,62 @@ router.get('/shop-floor', async (req, res) => {
             details: [],
             csrfToken: req.csrfToken || null,
         });
+    }
+});
+async function resolveAttendanceEmployee(req, client) {
+    return client.findEmployeeByUserEmail(req.authUser.email)
+        || client.findEmployeeByWorkEmail(req.authUser.email);
+}
+router.post('/shop-floor/attendance/check-in', async (req, res) => {
+    if (!req.authUser) {
+        res.status(401).json({ ok: false, error: 'Please sign in first.' });
+        return;
+    }
+    if (!canUseSiteAttendance(req)) {
+        res.status(403).json({ ok: false, error: 'Attendance check-in is available only while connected to the site network.' });
+        return;
+    }
+    try {
+        const settings = await (0, repositories_1.getSettings)();
+        const client = new odooClient_1.OdooClient(settings.odoo);
+        const employee = await resolveAttendanceEmployee(req, client);
+        if (!employee) {
+            res.status(404).json({ ok: false, error: 'No Odoo employee record is linked to this account.' });
+            return;
+        }
+        const result = await client.checkInAttendance(employee.id);
+        res.json({ ok: true, action: result.created ? 'checked_in' : 'already_checked_in', checkIn: result.record.check_in });
+    }
+    catch (error) {
+        res.status(500).json({ ok: false, error: error instanceof Error ? error.message : 'Could not check in to Odoo.' });
+    }
+});
+router.post('/shop-floor/attendance/check-out', async (req, res) => {
+    if (!req.authUser) {
+        res.status(401).json({ ok: false, error: 'Please sign in first.' });
+        return;
+    }
+    if (!canUseSiteAttendance(req)) {
+        res.status(403).json({ ok: false, error: 'Attendance check-out is available only while connected to the site network.' });
+        return;
+    }
+    try {
+        const settings = await (0, repositories_1.getSettings)();
+        const client = new odooClient_1.OdooClient(settings.odoo);
+        const employee = await resolveAttendanceEmployee(req, client);
+        if (!employee) {
+            res.status(404).json({ ok: false, error: 'No Odoo employee record is linked to this account.' });
+            return;
+        }
+        const result = await client.checkOutAttendance(employee.id);
+        if (!result.updated) {
+            res.status(409).json({ ok: false, error: 'No open Odoo attendance record was found.' });
+            return;
+        }
+        res.json({ ok: true, action: 'checked_out', checkIn: result.record?.check_in || null, checkOut: result.record?.check_out || null });
+    }
+    catch (error) {
+        res.status(500).json({ ok: false, error: error instanceof Error ? error.message : 'Could not check out from Odoo.' });
     }
 });
 router.get('/shop-floor/stock-alerts/notifications', async (req, res) => {

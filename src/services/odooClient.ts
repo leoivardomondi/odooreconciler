@@ -1454,6 +1454,54 @@ export class OdooClient {
     return records;
   }
 
+  async getOpenAttendance(employeeId: number) {
+    return this.request<Array<{
+      id: number;
+      check_in: string;
+      check_out: string | null;
+      worked_hours: number;
+    }>>('hr.attendance', 'search_read', {
+      domain: [
+        ['employee_id', '=', employeeId],
+        ['check_out', '=', false],
+      ],
+      fields: ['id', 'check_in', 'check_out', 'worked_hours'],
+      order: 'check_in desc',
+      limit: 5,
+    });
+  }
+
+  async checkInAttendance(employeeId: number) {
+    const openRecords = await this.getOpenAttendance(employeeId);
+    if (openRecords[0]) return { created: false, record: openRecords[0] };
+
+    const id = await this.createRecord('hr.attendance', {
+      employee_id: employeeId,
+      check_in: new Date().toISOString().slice(0, 19).replace('T', ' '),
+    });
+    const record = (await this.request<Array<{
+      id: number;
+      check_in: string;
+      check_out: string | null;
+      worked_hours: number;
+    }>>('hr.attendance', 'read', {
+      ids: [id],
+      fields: ['id', 'check_in', 'check_out', 'worked_hours'],
+    }))[0];
+    return { created: true, record: record || { id, check_in: '', check_out: null, worked_hours: 0 } };
+  }
+
+  async checkOutAttendance(employeeId: number) {
+    const openRecords = await this.getOpenAttendance(employeeId);
+    const record = openRecords[0];
+    if (!record) return { updated: false, record: null };
+
+    await this.writeRecord('hr.attendance', [record.id], {
+      check_out: new Date().toISOString().slice(0, 19).replace('T', ' '),
+    });
+    return { updated: true, record: { ...record, check_out: new Date().toISOString().slice(0, 19).replace('T', ' ') } };
+  }
+
   /**
    * Get today's attendance status for an employee.
    */
