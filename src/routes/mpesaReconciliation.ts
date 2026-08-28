@@ -84,6 +84,7 @@ const MPESA_CATEGORY_OPTIONS = [
   ['staff_lunch_expense', 'Staff lunch'],
   ['staff_transport_expense', 'Staff transport'],
   ['staff_overtime_expense', 'Staff overtime'],
+  ['staff_loading_expense', 'Loading'],
   ['advance_salary', 'Advance Salary'],
   ['staff_loan', 'Staff loan'],
   ['transport_expense', 'Transport'],
@@ -276,6 +277,56 @@ async function trainMpesaCategoryRulesFromPatches(
       })
       .filter((entry): entry is Promise<void> => Boolean(entry)),
   );
+}
+
+async function autoMatchCategoriesOnGridSave(
+  transactions: MpesaTransaction[],
+  patches: Array<{
+    id: string;
+    userCategory?: string | null;
+    notes?: string | null;
+    reviewStatus?: MpesaTransaction['reviewStatus'];
+    [key: string]: any;
+  }>,
+) {
+  const transactionById = new Map(transactions.map((tx) => [tx.id, tx]));
+
+  for (const patch of patches) {
+    const existing = transactionById.get(patch.id);
+    const effectiveNote = patch.notes !== undefined ? patch.notes : existing?.notes || '';
+    const noteText = String(effectiveNote || '').trim();
+
+    if (!noteText) continue;
+
+    const userCategorySubmitted = patch.userCategory;
+    const existingCategory = existing?.userCategory || 'unknown';
+    const isCategoryUnset =
+      !userCategorySubmitted ||
+      userCategorySubmitted === 'unknown' ||
+      userCategorySubmitted === existingCategory;
+
+    // Run category matching from note text
+    const result = await categorizeWithAi({
+      details: existing?.details || '',
+      counterparty: existing?.counterparty || null,
+      direction: existing?.direction || 'out',
+      paidIn: existing?.paidIn || null,
+      withdrawn: existing?.withdrawn || null,
+      phoneNumber: existing?.phoneNumber || null,
+      notes: noteText,
+      rawDetails: typeof existing?.raw?.rawDetails === 'string' ? existing.raw.rawDetails : undefined,
+    }).catch(() => null);
+
+    if (result && result.category !== 'unknown') {
+      // Auto-assign if category was unset/unknown or note match is high confidence
+      if (isCategoryUnset || result.confidence >= 0.85) {
+        patch.userCategory = result.category;
+        if (patch.reviewStatus === 'new' || !patch.reviewStatus) {
+          patch.reviewStatus = 'reviewed';
+        }
+      }
+    }
+  }
 }
 
 function findSelectedCandidate(
@@ -838,8 +889,9 @@ router.post('/mpesa-reconciliation/transactions', async (req, res) => {
       notes: notes[index]?.trim() || undefined,
     }));
 
-    const touchedBatchCount = await updateMpesaTransactionAdminReviewFields(patches);
     const transactions = await getMpesaTransactionsByIds(patches.map((patch) => patch.id));
+    await autoMatchCategoriesOnGridSave(transactions, patches);
+    const touchedBatchCount = await updateMpesaTransactionAdminReviewFields(patches);
     await trainMpesaCategoryRulesFromPatches(transactions, patches);
     res.redirect(
       `/mpesa-reconciliation/transactions${transactionExplorerQueryString(filters, {
@@ -1153,6 +1205,7 @@ router.post('/mpesa-reconciliation/batches/:batchId/transactions', async (req, r
       };
     });
 
+    await autoMatchCategoriesOnGridSave(existingTransactions, patches);
     await updateMpesaTransactions(batchId, patches);
     await trainMpesaCategoryRulesFromPatches(existingTransactions, patches);
     res.redirect(

@@ -26,7 +26,7 @@ test('overtime 24th -> staff_overtime_expense', async () => {
   assert.equal(result.category, 'staff_overtime_expense', `Expected staff_overtime_expense, got ${result.category} (reason: ${result.reason})`);
 });
 
-test('casuals offloaded -> staff_overtime_expense', async () => {
+test('casuals offloaded -> staff_loading_expense', async () => {
   const result = await categorizeWithAi({
     details: 'Customer Payment',
     counterparty: 'Casual Crew',
@@ -35,7 +35,7 @@ test('casuals offloaded -> staff_overtime_expense', async () => {
     withdrawn: 2000,
     notes: 'casuals offloaded Odera\'s order',
   });
-  assert.equal(result.category, 'staff_overtime_expense', `Expected staff_overtime_expense, got ${result.category} (reason: ${result.reason})`);
+  assert.equal(result.category, 'staff_loading_expense', `Expected staff_loading_expense, got ${result.category} (reason: ${result.reason})`);
 });
 
 test('luch for staff -> staff_lunch_expense', async () => {
@@ -48,4 +48,16 @@ test('luch for staff -> staff_lunch_expense', async () => {
     notes: 'luch for staff',
   });
   assert.equal(result.category, 'staff_lunch_expense', `Expected staff_lunch_expense, got ${result.category} (reason: ${result.reason})`);
+});
+
+test('refund to customer -> refunds', async () => {
+  const result = await categorizeWithAi({
+    details: 'Customer Refund',
+    counterparty: 'Jane Doe',
+    direction: 'out',
+    paidIn: null,
+    withdrawn: 3000,
+    notes: 'refund to customer',
+  });
+  assert.equal(result.category, 'refunds', `Expected refunds, got ${result.category} (reason: ${result.reason})`);
 });
