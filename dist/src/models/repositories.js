@@ -3345,7 +3345,7 @@ async function updateBoardIntakeQueueEntry(id, input) {
     updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [input.status, input.stockQuantity ?? null, input.errorMessage || null, input.status, input.status, retryDelayMinutes, id]);
 }
 async function getRecentBoardIntakeQueueEntries(limit = 12, offset = 0) {
-    return (0, db_1.queryAll)(`SELECT id, product_name, customer_name, quantity, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at, reverted_at, reverted_by
+    return (0, db_1.queryAll)(`SELECT id, product_name, customer_name, quantity, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at, reverted_at, reverted_by, actor_name, actor_email
     FROM board_intake_queue ORDER BY created_at DESC LIMIT ? OFFSET ?`, [Math.max(1, Math.min(50, limit)), Math.max(0, offset)]);
 }
 async function getBoardIntakeQueueEntry(id) {

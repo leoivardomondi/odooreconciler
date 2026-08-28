@@ -110,7 +110,11 @@ export async function renderPdfToImages(filePath: string): Promise<{
     return { images: [], warnings };
   } finally {
     if (pdf) {
-      await pdf.destroy().catch(() => undefined);
+    // Some pdfjs/pdf-parse implementations do not expose destroy(). Cleanup
+    // must never turn an otherwise successful PDF render into a failed job.
+    if (typeof (pdf as any).destroy === 'function') {
+      await (pdf as any).destroy().catch(() => undefined);
+    }
     }
   }
 }

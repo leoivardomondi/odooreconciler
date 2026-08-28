@@ -21,6 +21,7 @@ import { logEvent } from './logService';
 import { env } from '../utils/env';
 import { appDateTimeFromNow } from '../utils/dateTime';
 import { sendMailWithConfig } from './mailTransport';
+import { isAccountDeactivated } from '../utils/accountStatus';
 
 const AUTH_COOKIE_NAME = 'oj_auth';
 const OTP_LENGTH = 6;
@@ -28,6 +29,13 @@ const OTP_ATTEMPTS = 5;
 const PASSWORD_HASH_KEY_LENGTH = 64;
 const PASSWORD_HASH_PREFIX = 'scrypt';
 export const APPROVED_USER_PASSWORD_MIN_LENGTH = 8;
+
+export class AccountDeactivatedError extends Error {
+  constructor() {
+    super('This account has been deactivated. Contact an administrator if you believe this is a mistake.');
+    this.name = 'AccountDeactivatedError';
+  }
+}
 
 export const AUTH_ROLES: AuthRole[] = ['admin', 'user'];
 
@@ -118,6 +126,11 @@ async function getOdooAccess(email: string): Promise<{ allowed: boolean; role: A
 
 export function normalizeEmailAddress(value: string): string {
   return value.trim().toLowerCase();
+}
+
+function isConfiguredLocalAdmin(email: string): boolean {
+  return Boolean(env.AUTH_LOCAL_ADMIN_EMAIL)
+    && normalizeEmailAddress(env.AUTH_LOCAL_ADMIN_EMAIL) === normalizeEmailAddress(email);
 }
 
 export function isAllowedEmailDomain(email: string): boolean {
@@ -515,6 +528,11 @@ export async function requestLoginCode(input: {
     throw new Error('Enter a valid work email address.');
   }
 
+  const approvedUser = await getApprovedAuthUserByEmail(email);
+  if (approvedUser && isAccountDeactivated(approvedUser.active, isConfiguredLocalAdmin(email))) {
+    throw new AccountDeactivatedError();
+  }
+
   if (!(await getOdooAccess(email)).allowed) {
     throw new Error('This email address is not an active approved app user.');
   }
@@ -621,6 +639,12 @@ export async function verifyLoginCode(input: {
     throw new Error('The login code is invalid. Check the email and try again.');
   }
 
+  const approvedUser = await getApprovedAuthUserByEmail(email);
+  if (approvedUser && isAccountDeactivated(approvedUser.active, isConfiguredLocalAdmin(email))) {
+    await updateAuthLoginChallenge(challenge.id, { consumed: true });
+    throw new AccountDeactivatedError();
+  }
+
   const approvedAccess = await getOdooAccess(email);
   if (!approvedAccess.allowed) {
     await updateAuthLoginChallenge(challenge.id, { consumed: true });
@@ -664,6 +688,9 @@ export async function verifyLocalPasswordLogin(input: {
   }
 
   const approvedUser = await getApprovedAuthUserByEmail(email);
+  if (approvedUser && isAccountDeactivated(approvedUser.active, isConfiguredLocalAdmin(email))) {
+    throw new AccountDeactivatedError();
+  }
   if (
     approvedUser?.active &&
     approvedUser?.passwordHash &&
@@ -727,35 +754,44 @@ export function getAuthenticationState(req: Request): {
   user: AuthSessionUser | null;
   csrfToken: string | null;
   sessionId: string | null;
+  accountDeactivated: boolean;
+  deactivatedEmail: string | null;
 } {
   // Storage is async now, so auth state is attached through attachAuthState.
-  return { user: null, csrfToken: null, sessionId: null };
+  return { user: null, csrfToken: null, sessionId: null, accountDeactivated: false, deactivatedEmail: null };
 }
 
 export async function getAuthenticationStateAsync(req: Request): Promise<{
   user: AuthSessionUser | null;
   csrfToken: string | null;
   sessionId: string | null;
+  accountDeactivated: boolean;
+  deactivatedEmail: string | null;
 }> {
   const cookies = parseCookies(req.headers.cookie);
   const signedCookie = cookies[AUTH_COOKIE_NAME];
   if (!signedCookie) {
-    return { user: null, csrfToken: null, sessionId: null };
+    return { user: null, csrfToken: null, sessionId: null, accountDeactivated: false, deactivatedEmail: null };
   }
 
   const sessionId = unsignCookieValue(signedCookie);
   if (!sessionId) {
-    return { user: null, csrfToken: null, sessionId: null };
+    return { user: null, csrfToken: null, sessionId: null, accountDeactivated: false, deactivatedEmail: null };
   }
 
   const session = await getAuthSession(sessionId);
   if (!session || session.revokedAt) {
-    return { user: null, csrfToken: null, sessionId: null };
+    return { user: null, csrfToken: null, sessionId: null, accountDeactivated: false, deactivatedEmail: null };
   }
 
   await touchAuthSession(sessionId, getSessionExpiryIso());
   const currentAccess = await getApprovedAuthUserByEmail(session.user.email);
-  const currentUser = currentAccess?.active
+  const accountDeactivated = Boolean(
+    currentAccess && isAccountDeactivated(currentAccess.active, isConfiguredLocalAdmin(session.user.email)),
+  );
+  const currentUser = accountDeactivated
+    ? null
+    : currentAccess?.active
     ? {
         ...session.user,
         role: normalizeAuthRole(currentAccess.role),
@@ -767,6 +803,8 @@ export async function getAuthenticationStateAsync(req: Request): Promise<{
     user: currentUser,
     csrfToken: session.csrfToken,
     sessionId,
+    accountDeactivated,
+    deactivatedEmail: accountDeactivated ? session.user.email : null,
   };
 }
 
@@ -775,9 +813,13 @@ export async function attachAuthState(req: Request, res: Response, next: NextFun
   req.authUser = state.user;
   req.authSessionId = state.sessionId;
   req.csrfToken = state.csrfToken;
+  req.accountDeactivated = state.accountDeactivated;
+  req.deactivatedEmail = state.deactivatedEmail;
   res.locals.authUser = state.user;
   res.locals.csrfToken = state.csrfToken;
   res.locals.isAuthenticated = Boolean(state.user);
+  res.locals.accountDeactivated = state.accountDeactivated;
+  res.locals.deactivatedEmail = state.deactivatedEmail;
 
   // ── Impersonation: admin can "Login As" another user ──
   const cookies = parseCookies(req.get('cookie'));

@@ -17,7 +17,7 @@ async function syncShopFloorOperatorAccess() {
         const client = new odooClient_1.OdooClient(settings.odoo);
         const departmentResults = await Promise.all(OPERATOR_DEPARTMENT_NAMES.map((name) => client.findDepartmentByName(name)));
         const departments = [...new Map(departmentResults.flat().map((department) => [department.id, department])).values()];
-        const employeeResults = await Promise.all(departments.map((department) => client.getEmployeesByDepartment(department.id)));
+        const employeeResults = await Promise.all(departments.map((department) => client.getEmployeesByDepartment(department.id, undefined, true)));
         const employees = [...new Map(employeeResults.flat().map((employee) => [employee.id, employee])).values()]
             .filter((employee) => String(employee.work_email || '').trim());
         let added = 0;
@@ -28,9 +28,9 @@ async function syncShopFloorOperatorAccess() {
             const apps = [...new Set([...(existing?.apps || []), 'shop-floor'])];
             if (!existing)
                 added += 1;
-            else if (!existing.active || !existing.apps?.includes('shop-floor'))
+            else if (!existing.active || !existing.apps?.includes('shop-floor') || employee.active === false)
                 updated += 1;
-            await (0, repositories_1.upsertApprovedAuthUser)(email, existing?.role || 'user', apps, true, null);
+            await (0, repositories_1.upsertApprovedAuthUser)(email, existing?.role || 'user', apps, employee.active !== false, null);
         }
         if (added || updated) {
             await (0, logService_1.logEvent)('info', 'Automatically synchronized Odoo operators to Shop Floor access', {

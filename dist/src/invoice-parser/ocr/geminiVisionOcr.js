@@ -56,43 +56,11 @@ async function geminiVisionOcr(imagePaths, ocrConfig, geminiApiKey, geminiOAuthC
             const buffer = await promises_1.default.readFile(image.imagePath);
             const base64 = buffer.toString('base64');
             const endpoint = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent`;
-            let response = await fetch(endpoint, {
-                method: 'POST',
-                signal: AbortSignal.timeout(30000),
-                headers: {
-                    'Content-Type': 'application/json',
-                    ...(oauth
-                        ? {
-                            Authorization: `Bearer ${oauth.accessToken}`,
-                            'x-goog-user-project': oauth.projectId,
-                        }
-                        : { 'X-goog-api-key': apiKey || '' }),
-                },
-                body: JSON.stringify({
-                    contents: [
-                        {
-                            role: 'user',
-                            parts: [
-                                {
-                                    text: 'Transcribe all text from this scanned image page exactly as written line-by-line. Output only the extracted plain text without code blocks, markdown wrappers, or extra explanations.',
-                                },
-                                {
-                                    inline_data: {
-                                        mime_type: 'image/png',
-                                        data: base64,
-                                    },
-                                },
-                            ],
-                        },
-                    ],
-                    generationConfig: {
-                        temperature: 0,
-                    },
-                }),
-            });
-            if (response.status === 429 || response.status === 503 || response.status === 500 || response.status === 504) {
-                // Wait 2.5 seconds for Google Cloud rate limits or temporary high demand spikes to clear before retrying
-                await new Promise((resolve) => setTimeout(resolve, 2500));
+            let attempt = 0;
+            let response = null;
+            let detail = '';
+            while (attempt <= 2) {
+                attempt += 1;
                 response = await fetch(endpoint, {
                     method: 'POST',
                     signal: AbortSignal.timeout(30000),
@@ -127,15 +95,32 @@ async function geminiVisionOcr(imagePaths, ocrConfig, geminiApiKey, geminiOAuthC
                         },
                     }),
                 });
+                if (response.ok)
+                    break;
+                const errJson = await response.clone().json().catch(() => null);
+                detail = errJson?.error?.message || 'API error';
+                if (attempt <= 2 && [429, 500, 502, 503, 504].includes(response.status)) {
+                    const match = detail.match(/retry\s+in\s+([\d.]+)\s*s/i);
+                    const seconds = match?.[1] ? parseFloat(match[1]) : NaN;
+                    const backoffMs = !Number.isNaN(seconds) && seconds > 0
+                        ? Math.min(Math.round(seconds * 1000), 8000)
+                        : attempt * 2500;
+                    await new Promise((resolve) => setTimeout(resolve, backoffMs));
+                    continue;
+                }
+                break;
             }
-            if (!response.ok) {
-                const errJson = await response.json().catch(() => null);
-                const detail = errJson?.error?.message || 'API error';
-                if ([400, 401, 403].includes(response.status)) {
-                    warnings.push(`Google Gemini Vision OCR stopped after a credential/configuration error (HTTP ${response.status}): ${detail}. Falling back to the other OCR engines.`);
+            if (!response || !response.ok) {
+                if ([400, 401, 403].includes(response?.status || 0)) {
+                    warnings.push(`Google Gemini Vision OCR stopped after a credential/configuration error (HTTP ${response?.status}): ${detail}. Falling back to the other OCR engines.`);
                     break;
                 }
-                warnings.push(`Google Gemini Vision OCR page ${image.pageNumber} failed (HTTP ${response.status}): ${detail}`);
+                if (response?.status === 429) {
+                    warnings.push(`Google Gemini Vision OCR rate limited page ${image.pageNumber} (HTTP 429): ${detail}. Falling back to other OCR engines.`);
+                }
+                else {
+                    warnings.push(`Google Gemini Vision OCR page ${image.pageNumber} failed (HTTP ${response?.status || '#'}): ${detail}`);
+                }
                 continue;
             }
             const resJson = await response.json();

@@ -20,8 +20,12 @@ function buildSignature(kind, provider, model, message) {
         .digest('hex');
 }
 function failureSignalFromLog(log) {
+    const isRateLimitOrTemporaryError = /quota|rate\s*limit|limit:\s*\d+|resource_exhausted|\b429\b|too\s+many\s+requests|retry\s+in|high\s+demand|overloaded|service\s+unavailable|\b500\b|\b502\b|\b503\b|\b504\b/i.test(log);
+    if (isRateLimitOrTemporaryError && !/unauthori[sz]ed|invalid\s+(?:api\s*)?key|\b401\b|\b403\b/i.test(log)) {
+        return null;
+    }
     const invalidApiKey = /api\s*key\s+(?:is\s+)?(?:not\s+valid|invalid)|invalid\s+(?:api\s*)?key|invalid\s+credential|unauthori[sz]ed|\bHTTP\s+(?:401|403)\b/i.test(log);
-    const oauthFailure = /(?:oauth|refresh\s+token|access\s+token|google\s+gemini).*(?:failed|failure|error|invalid|expired|missing|not\s+connected|not\s+configured|unable|denied|reconnect|skipped)|(?:failed|failure|error|invalid|expired|missing|not\s+connected|not\s+configured|unable|denied|reconnect|skipped).*oauth/i.test(log);
+    const oauthFailure = /(?:oauth|refresh\s+token|access\s+token|gemini\s+oauth).*(?:failed|failure|error|invalid|expired|missing|not\s+connected|not\s+configured|unable|denied|reconnect|skipped)|(?:failed|failure|error|invalid|expired|missing|not\s+connected|not\s+configured|unable|denied|reconnect|skipped).*(?:oauth|refresh\s+token|access\s+token)|google\s+gemini\s+oauth\s+connection\s+failed/i.test(log);
     if (!invalidApiKey && !oauthFailure)
         return null;
     const providerMatch = log.match(/AI provider\s+"([^"]+)"\s*\(([^)]+)\)/i);

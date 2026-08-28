@@ -1900,12 +1900,28 @@ router.post('/shop-floor/board-intake/:id/retry', async (req, res) => {
     }
 });
 router.post('/shop-floor/board-intake/:id/revert', async (req, res) => {
-    if (!canManageShopFloor(req)) {
-        res.status(403).redirect('/shop-floor/boards?error=' + encodeURIComponent('Only Shop Floor administrators can revert board logs.'));
+    if (!req.authUser) {
+        res.redirect('/login');
+        return;
+    }
+    const entryId = String(req.params.id || '');
+    const entry = await (0, repositories_1.getBoardIntakeQueueEntry)(entryId);
+    if (!entry) {
+        res.redirect('/shop-floor/boards?error=' + encodeURIComponent('Board log not found.') + '&boardLogPage=' + encodeURIComponent(String(req.body.boardLogPage || '1')));
+        return;
+    }
+    const isAdmin = canManageShopFloor(req);
+    const userEmail = (req.authUser.email || '').trim().toLowerCase();
+    const actorEmail = (entry.actor_email || '').trim().toLowerCase();
+    const userName = (req.authUser.displayName || req.authUser.email || '').trim().toLowerCase();
+    const actorName = (entry.actor_name || '').trim().toLowerCase();
+    const isOwner = Boolean((userEmail && actorEmail && userEmail === actorEmail) || (userName && actorName && userName === actorName));
+    if (!isAdmin && !isOwner) {
+        res.status(403).redirect('/shop-floor/boards?error=' + encodeURIComponent('You can only revert board logs that you logged.') + '&boardLogPage=' + encodeURIComponent(String(req.body.boardLogPage || '1')));
         return;
     }
     try {
-        const result = await (0, boardIntakeSyncService_1.revertBoardIntakeEntry)(String(req.params.id || ''), req.authUser?.displayName || req.authUser?.email || 'Administrator');
+        const result = await (0, boardIntakeSyncService_1.revertBoardIntakeEntry)(entryId, req.authUser.displayName || req.authUser.email || 'Operator');
         const message = result.alreadyReverted
             ? 'This board log was already reverted.'
             : 'Board log reverted in Odoo successfully.';

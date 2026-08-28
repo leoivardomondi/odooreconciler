@@ -345,6 +345,27 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 
 app.use(attachAuthState);
 
+app.use((req: Request, res: Response, next: NextFunction) => {
+  if (!req.accountDeactivated || req.path === '/logout') {
+    next();
+    return;
+  }
+
+  if (req.get('accept')?.includes('application/json') || req.xhr) {
+    res.status(403).json({
+      ok: false,
+      code: 'account_deactivated',
+      message: 'Your account has been deactivated.',
+    });
+    return;
+  }
+
+  res.status(403).render('account-deactivated', {
+    pageTitle: 'Account Deactivated',
+    email: req.deactivatedEmail,
+  });
+});
+
 app.use(async (req: Request, res: Response, next: NextFunction) => {
   try {
     const settings = await getSettings();
@@ -420,6 +441,7 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     '/health',
     '/login',
     '/forgot-password',
+    '/logout',
     '/install',
     '/jobs/attachment-uploaded',
     '/jobs/attachment-uploaded/test',

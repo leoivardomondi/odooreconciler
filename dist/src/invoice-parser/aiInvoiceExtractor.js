@@ -650,42 +650,61 @@ async function callOpenAiCompatibleInvoiceAi(input) {
 async function callGeminiInvoiceAi(input) {
     const baseUrl = input.baseUrl.replace(/\/+$/, '') || GEMINI_BASE_URL;
     const endpoint = `${baseUrl}/models/${encodeURIComponent(input.model)}:generateContent`;
-    const response = await fetch(endpoint, {
-        method: 'POST',
-        signal: AbortSignal.timeout(60000),
-        headers: {
-            'Content-Type': 'application/json',
-            ...(input.accessToken
-                ? {
-                    Authorization: `Bearer ${input.accessToken}`,
-                    'x-goog-user-project': input.projectId || '',
-                }
-                : { 'X-goog-api-key': input.apiKey || '' }),
-        },
-        body: JSON.stringify({
-            contents: [
-                {
-                    role: 'user',
-                    parts: [
-                        { text: input.prompt },
-                        ...input.images.map((image) => ({
-                            inline_data: {
-                                mime_type: image.mediaType,
-                                data: image.base64,
-                            },
-                        })),
-                    ],
-                },
-            ],
-            generationConfig: {
-                temperature: 0,
-                response_mime_type: 'application/json',
+    let attempt = 0;
+    let response = null;
+    let responseJson = null;
+    while (attempt <= 2) {
+        attempt += 1;
+        response = await fetch(endpoint, {
+            method: 'POST',
+            signal: AbortSignal.timeout(60000),
+            headers: {
+                'Content-Type': 'application/json',
+                ...(input.accessToken
+                    ? {
+                        Authorization: `Bearer ${input.accessToken}`,
+                        'x-goog-user-project': input.projectId || '',
+                    }
+                    : { 'X-goog-api-key': input.apiKey || '' }),
             },
-        }),
-    });
-    const responseJson = await response.json().catch(() => null);
-    if (!response.ok) {
-        throw new Error(responseJson?.error?.message || `Gemini API returned HTTP ${response.status}.`);
+            body: JSON.stringify({
+                contents: [
+                    {
+                        role: 'user',
+                        parts: [
+                            { text: input.prompt },
+                            ...input.images.map((image) => ({
+                                inline_data: {
+                                    mime_type: image.mediaType,
+                                    data: image.base64,
+                                },
+                            })),
+                        ],
+                    },
+                ],
+                generationConfig: {
+                    temperature: 0,
+                    response_mime_type: 'application/json',
+                },
+            }),
+        });
+        responseJson = await response.json().catch(() => null);
+        if (response.ok)
+            break;
+        if (attempt <= 2 && [429, 500, 502, 503, 504].includes(response.status)) {
+            const detail = responseJson?.error?.message || '';
+            const match = detail.match(/retry\s+in\s+([\d.]+)\s*s/i);
+            const seconds = match?.[1] ? parseFloat(match[1]) : NaN;
+            const backoffMs = !Number.isNaN(seconds) && seconds > 0
+                ? Math.min(Math.round(seconds * 1000), 8000)
+                : attempt * 2500;
+            await new Promise((resolve) => setTimeout(resolve, backoffMs));
+            continue;
+        }
+        break;
+    }
+    if (!response || !response.ok) {
+        throw new Error(responseJson?.error?.message || `Gemini API returned HTTP ${response?.status || '#'}.`);
     }
     return extractGeminiOutputText(responseJson);
 }

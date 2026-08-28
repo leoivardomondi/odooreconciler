@@ -6,6 +6,8 @@ declare global {
       authUser?: AuthSessionUser | null;
       authSessionId?: string | null;
       csrfToken?: string | null;
+      accountDeactivated?: boolean;
+      deactivatedEmail?: string | null;
       impersonatedBy?: AuthSessionUser | null;
       viewingAsUser?: AuthSessionUser | null;
     }

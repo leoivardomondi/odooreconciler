@@ -291,6 +291,24 @@ app.use((req, res, next) => {
     });
 });
 app.use(authService_1.attachAuthState);
+app.use((req, res, next) => {
+    if (!req.accountDeactivated || req.path === '/logout') {
+        next();
+        return;
+    }
+    if (req.get('accept')?.includes('application/json') || req.xhr) {
+        res.status(403).json({
+            ok: false,
+            code: 'account_deactivated',
+            message: 'Your account has been deactivated.',
+        });
+        return;
+    }
+    res.status(403).render('account-deactivated', {
+        pageTitle: 'Account Deactivated',
+        email: req.deactivatedEmail,
+    });
+});
 app.use(async (req, res, next) => {
     try {
         const settings = await (0, repositories_1.getSettings)();
@@ -360,6 +378,7 @@ app.use((req, res, next) => {
         '/health',
         '/login',
         '/forgot-password',
+        '/logout',
         '/install',
         '/jobs/attachment-uploaded',
         '/jobs/attachment-uploaded/test',

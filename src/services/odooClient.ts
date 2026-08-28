@@ -1401,10 +1401,11 @@ export class OdooClient {
   /**
    * Get all employees in a department.
    */
-  async getEmployeesByDepartment(departmentId: number, companyId?: number) {
+  async getEmployeesByDepartment(departmentId: number, companyId?: number, includeArchived = false) {
     return this.request<Array<{
       id: number;
       name: string;
+      active: boolean;
       job_title: string | null;
       department_id: [number, string] | null;
       work_email: string | null;
@@ -1419,7 +1420,8 @@ export class OdooClient {
           ['department_id', '=', departmentId],
           ...(companyId ? [['company_id', '=', companyId]] : []),
         ],
-        fields: ['id', 'name', 'job_title', 'department_id', 'work_email', 'mobile_phone', 'user_id', 'parent_id'],
+        fields: ['id', 'name', 'active', 'job_title', 'department_id', 'work_email', 'mobile_phone', 'user_id', 'parent_id'],
+        ...(includeArchived ? { context: { active_test: false } } : {}),
         limit: 200,
       },
     );
@@ -4305,6 +4307,56 @@ export class OdooClient {
       return null;
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * Attribute the stock move created by a board inventory adjustment to the
+   * operator who logged the boards. Odoo creates this move as a side effect
+   * of action_apply_inventory, so it must be located after that action.
+   */
+  async populateInventoryAdjustmentOperator(productId: number, operatorName: string): Promise<boolean> {
+    if (!Number.isFinite(productId) || productId <= 0 || !operatorName.trim()) return false;
+    try {
+      const since = new Date(Date.now() - 15 * 60 * 1000).toISOString().replace('T', ' ').substring(0, 19);
+      const moves = await this.searchReadRecords<any>('stock.move', {
+        domain: [
+          ['product_id', '=', productId],
+          ['state', '=', 'done'],
+          ['date', '>=', since],
+        ],
+        fields: ['id', 'reference', 'origin', 'date'],
+        order: 'date desc, id desc',
+        limit: 20,
+      });
+      const move = moves.find((candidate) => {
+        const text = `${candidate.reference || ''} ${candidate.origin || ''}`.toLowerCase();
+        return text.includes('inventory') || text.includes('adjustment') || /\binv\//.test(text);
+      });
+      if (!move?.id) return false;
+
+      const [operatorMoveField, operatorLineField] = await Promise.all([
+        this.getOperatorOnlineFieldName('stock.move'),
+        this.getOperatorOnlineFieldName('stock.move.line'),
+      ]);
+      const moveId = Number(move.id);
+      const lines = await this.searchReadRecords<any>('stock.move.line', {
+        domain: [['move_id', '=', moveId]],
+        fields: ['id'],
+        limit: 100,
+      });
+      const lineIds = lines.map((line) => Number(line.id)).filter((id) => id > 0);
+      const writes: Promise<unknown>[] = [];
+      if (operatorMoveField) {
+        writes.push(this.writeRecord('stock.move', [moveId], { [operatorMoveField]: operatorName.trim() }));
+      }
+      if (operatorLineField && lineIds.length) {
+        writes.push(this.writeRecord('stock.move.line', lineIds, { [operatorLineField]: operatorName.trim() }));
+      }
+      await Promise.all(writes);
+      return writes.length > 0;
+    } catch {
+      return false;
     }
   }
 

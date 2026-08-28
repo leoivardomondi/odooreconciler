@@ -4627,7 +4627,7 @@ export async function updateBoardIntakeQueueEntry(id: string, input: { status: '
 }
 
 export async function getRecentBoardIntakeQueueEntries(limit = 12, offset = 0) {
-  return queryAll<any>(`SELECT id, product_name, customer_name, quantity, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at, reverted_at, reverted_by
+  return queryAll<any>(`SELECT id, product_name, customer_name, quantity, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at, reverted_at, reverted_by, actor_name, actor_email
     FROM board_intake_queue ORDER BY created_at DESC LIMIT ? OFFSET ?`, [Math.max(1, Math.min(50, limit)), Math.max(0, offset)]);
 }
 

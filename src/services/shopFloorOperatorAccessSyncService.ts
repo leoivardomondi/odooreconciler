@@ -18,7 +18,7 @@ export async function syncShopFloorOperatorAccess() {
     );
     const departments = [...new Map(departmentResults.flat().map((department) => [department.id, department])).values()];
     const employeeResults = await Promise.all(
-      departments.map((department) => client.getEmployeesByDepartment(department.id)),
+      departments.map((department) => client.getEmployeesByDepartment(department.id, undefined, true)),
     );
     const employees = [...new Map(employeeResults.flat().map((employee) => [employee.id, employee])).values()]
       .filter((employee) => String(employee.work_email || '').trim());
@@ -30,14 +30,15 @@ export async function syncShopFloorOperatorAccess() {
       const existing = await getApprovedAuthUserByEmail(email);
       const apps = [...new Set<AppFeature>([...(existing?.apps || []), 'shop-floor'])];
       if (!existing) added += 1;
-      else if (!existing.active || !existing.apps?.includes('shop-floor')) updated += 1;
+      else if (!existing.active || !existing.apps?.includes('shop-floor') || employee.active === false) updated += 1;
       await upsertApprovedAuthUser(
         email,
         existing?.role || 'user',
         apps,
-        true,
+        employee.active !== false,
         null,
       );
+
     }
 
     if (added || updated) {

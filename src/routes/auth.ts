@@ -2,6 +2,7 @@ import { Response, Router } from 'express';
 import { getApprovedAuthUserByEmail, upsertApprovedAuthUser } from '../models/repositories';
 import {
   clearAuthCookie,
+  AccountDeactivatedError,
   getRequestContext,
   getSafeRedirectPath,
   hashApprovedUserPassword,
@@ -113,6 +114,12 @@ router.post('/auth/login', async (req, res) => {
     res.setHeader('Set-Cookie', verified.sessionCookie);
     return res.redirect(appendQueryMessage(verified.redirectPath || nextPath, 'Signed in successfully.'));
   } catch (error) {
+    if (error instanceof AccountDeactivatedError) {
+      return res.status(403).render('account-deactivated', {
+        pageTitle: 'Account Deactivated',
+        email: email.trim().toLowerCase(),
+      });
+    }
     const message = error instanceof Error ? error.message : 'Could not sign in.';
     await recordAuthLoginEvent({
       email,
@@ -252,6 +259,12 @@ router.post('/auth/request-code', async (req, res) => {
       verificationReady: true,
     });
   } catch (error) {
+    if (error instanceof AccountDeactivatedError) {
+      return res.status(403).render('account-deactivated', {
+        pageTitle: 'Account Deactivated',
+        email: email.trim().toLowerCase(),
+      });
+    }
     const message = error instanceof Error ? error.message : 'Could not send a login code.';
     return renderLoginPage(res.status(400), {
       status: {
@@ -294,6 +307,12 @@ router.post('/auth/verify-code', async (req, res) => {
     res.setHeader('Set-Cookie', verified.sessionCookie);
     return res.redirect(appendQueryMessage(verified.redirectPath || nextPath, 'Signed in successfully.'));
   } catch (error) {
+    if (error instanceof AccountDeactivatedError) {
+      return res.status(403).render('account-deactivated', {
+        pageTitle: 'Account Deactivated',
+        email: email.trim().toLowerCase(),
+      });
+    }
     const message = error instanceof Error ? error.message : 'Could not verify the login code.';
     const requestContext = getRequestContext(req);
     await recordAuthLoginEvent({
@@ -347,6 +366,12 @@ router.post('/auth/password-login', async (req, res) => {
     res.setHeader('Set-Cookie', verified.sessionCookie);
     return res.redirect(appendQueryMessage(verified.redirectPath || nextPath, 'Signed in successfully.'));
   } catch (error) {
+    if (error instanceof AccountDeactivatedError) {
+      return res.status(403).render('account-deactivated', {
+        pageTitle: 'Account Deactivated',
+        email: email.trim().toLowerCase(),
+      });
+    }
     const message = error instanceof Error ? error.message : 'Could not sign in with password.';
     const requestContext = getRequestContext(req);
     await recordAuthLoginEvent({

@@ -84,6 +84,12 @@ router.post('/auth/login', async (req, res) => {
         return res.redirect(appendQueryMessage(verified.redirectPath || nextPath, 'Signed in successfully.'));
     }
     catch (error) {
+        if (error instanceof authService_1.AccountDeactivatedError) {
+            return res.status(403).render('account-deactivated', {
+                pageTitle: 'Account Deactivated',
+                email: email.trim().toLowerCase(),
+            });
+        }
         const message = error instanceof Error ? error.message : 'Could not sign in.';
         await (0, authService_1.recordAuthLoginEvent)({
             email,
@@ -218,6 +224,12 @@ router.post('/auth/request-code', async (req, res) => {
         });
     }
     catch (error) {
+        if (error instanceof authService_1.AccountDeactivatedError) {
+            return res.status(403).render('account-deactivated', {
+                pageTitle: 'Account Deactivated',
+                email: email.trim().toLowerCase(),
+            });
+        }
         const message = error instanceof Error ? error.message : 'Could not send a login code.';
         return renderLoginPage(res.status(400), {
             status: {
@@ -257,6 +269,12 @@ router.post('/auth/verify-code', async (req, res) => {
         return res.redirect(appendQueryMessage(verified.redirectPath || nextPath, 'Signed in successfully.'));
     }
     catch (error) {
+        if (error instanceof authService_1.AccountDeactivatedError) {
+            return res.status(403).render('account-deactivated', {
+                pageTitle: 'Account Deactivated',
+                email: email.trim().toLowerCase(),
+            });
+        }
         const message = error instanceof Error ? error.message : 'Could not verify the login code.';
         const requestContext = (0, authService_1.getRequestContext)(req);
         await (0, authService_1.recordAuthLoginEvent)({
@@ -307,6 +325,12 @@ router.post('/auth/password-login', async (req, res) => {
         return res.redirect(appendQueryMessage(verified.redirectPath || nextPath, 'Signed in successfully.'));
     }
     catch (error) {
+        if (error instanceof authService_1.AccountDeactivatedError) {
+            return res.status(403).render('account-deactivated', {
+                pageTitle: 'Account Deactivated',
+                email: email.trim().toLowerCase(),
+            });
+        }
         const message = error instanceof Error ? error.message : 'Could not sign in with password.';
         const requestContext = (0, authService_1.getRequestContext)(req);
         await (0, authService_1.recordAuthLoginEvent)({

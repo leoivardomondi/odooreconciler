@@ -16,6 +16,7 @@ cpanel-upload-*/
 
 # Temporary Files, Logs & AI Test Scripts
 tmp/
+uploads/
 tmp_xlsx_read/
 *.log
 stderr.log

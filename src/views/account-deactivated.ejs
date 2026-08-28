@@ -1,0 +1,33 @@
+<%- include('partials/head') %>
+
+<main class="login-only-page d-flex align-items-center justify-content-center px-3 py-4">
+  <div class="login-only-panel w-100">
+    <div class="text-center mb-4">
+      <img class="login-only-logo" src="/public/icons/urban-vibe-logo-light.png" alt="Urban Vibe Interior Design LTD" />
+    </div>
+    <div class="card shadow-sm border-0">
+      <div class="card-body p-4 p-sm-5 text-center">
+        <p class="eyebrow mb-2">Account status</p>
+        <h1 class="h4 mb-3">Account deactivated</h1>
+        <p class="text-secondary mb-3">This account is no longer active and cannot access the application.</p>
+        <% if (email) { %>
+          <p class="small text-secondary mb-3"><%= email %></p>
+        <% } %>
+        <p class="small text-secondary mb-4">Contact an administrator if you believe this is a mistake.</p>
+        <form method="post" action="/logout">
+          <button type="submit" class="btn btn-primary w-100">Sign out</button>
+        </form>
+      </div>
+    </div>
+  </div>
+</main>
+
+<style>
+  .login-only-page{min-height:100vh;background:#f8fafc}
+  .login-only-panel{max-width:420px}
+  .login-only-logo{display:block;width:min(290px,82vw);height:auto;margin:0 auto}
+  .login-only-panel .card{border-radius:1rem;box-shadow:0 18px 45px rgba(15,23,42,.08)!important}
+  .login-only-panel .btn{min-height:48px;font-weight:700}
+</style>
+
+<%- include('partials/footer') %>

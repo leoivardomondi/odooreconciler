@@ -325,8 +325,28 @@
         </div>
         <div class="vstack gap-2">
           <% recentIntakes.forEach((item) => { %>
+            <%
+              const isAdminUser = authUser && (authUser.role === 'admin' || authUser.apps?.includes('shop-floor-admin'));
+              const userEmail = (authUser?.email || '').trim().toLowerCase();
+              const itemEmail = (item.actor_email || '').trim().toLowerCase();
+              const userName = (authUser?.displayName || authUser?.email || '').trim().toLowerCase();
+              const itemName = (item.actor_name || '').trim().toLowerCase();
+              const isOwner = Boolean((userEmail && itemEmail && userEmail === itemEmail) || (userName && itemName && userName === itemName));
+              const canRevert = isAdminUser || isOwner;
+            %>
             <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 border rounded-3 px-3 py-2">
-              <div><strong><%= item.quantity %> × <%= item.product_name %></strong><div class="small text-muted"><%= item.customer_name %> · <%= formatDateTime(item.created_at) %></div></div>
+              <div>
+                <strong><%= item.quantity %> × <%= item.product_name %></strong>
+                <div class="small text-muted">
+                  <%= item.customer_name %> · <%= formatDateTime(item.created_at) %>
+                  <% if (item.actor_name) { %>
+                    · Logged by <strong><%= item.actor_name %></strong>
+                  <% } %>
+                  <% if (item.reverted_by) { %>
+                    · Reverted by <strong><%= item.reverted_by %></strong>
+                  <% } %>
+                </div>
+              </div>
               <div class="d-flex align-items-center gap-2">
                 <div class="text-end">
                   <span class="badge rounded-pill <%= item.reverted_at || item.status === 'reverted' ? 'bg-secondary-subtle text-secondary' : item.status === 'synced' ? 'bg-success-subtle text-success' : item.status === 'failed' ? 'bg-danger-subtle text-danger' : 'bg-warning-subtle text-warning-emphasis' %>" title="<%= item.error_message || '' %>"><%= item.reverted_at || item.status === 'reverted' ? 'Reverted in Odoo' : item.status === 'synced' ? 'Synced to Odoo' : item.status === 'failed' ? 'Sync failed' : item.status === 'reverting' ? 'Reverting' : 'Syncing' %></span>
@@ -343,7 +363,7 @@
                 <form method="post" action="/shop-floor/board-intake/<%= encodeURIComponent(item.id) %>/revert" data-disable-submit="true" data-loading-message="Reverting board log in Odoo..." onsubmit="return confirm('Revert this board intake in Odoo? This will remove the logged quantity from stock.');">
                   <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>">
                   <input type="hidden" name="boardLogPage" value="<%= boardLogPage || 1 %>">
-                  <button type="submit" class="btn btn-sm btn-outline-danger rounded-pill" <%= item.status !== 'synced' || item.reverted_at || item.status === 'reverted' ? 'disabled title="Only a synced, unreverted log can be reverted"' : '' %>>Revert</button>
+                  <button type="submit" class="btn btn-sm btn-outline-danger rounded-pill" <%= item.status !== 'synced' || item.reverted_at || item.status === 'reverted' || !canRevert ? 'disabled title="' + (!canRevert ? 'You can only revert board logs that you logged' : 'Only a synced, unreverted log can be reverted') + '"' : '' %>>Revert</button>
                 </form>
               </div>
             </div>

@@ -1,6 +1,6 @@
 import { Request, Response, Router } from 'express';
 import { randomUUID } from 'crypto';
-import { createBoardIntakeQueueEntry, getApprovedAuthUsers, getRecentBoardIntakeQueueEntries, getSettings, getShopFloorFeatureFlags, saveShopFloorFeatureFlags, upsertApprovedAuthUser } from '../models/repositories';
+import { createBoardIntakeQueueEntry, getApprovedAuthUsers, getBoardIntakeQueueEntry, getRecentBoardIntakeQueueEntries, getSettings, getShopFloorFeatureFlags, saveShopFloorFeatureFlags, upsertApprovedAuthUser } from '../models/repositories';
 import { ShopFloorFeatureFlags, ShopFloorFeatureKey } from '../models/types';
 import { OdooClient } from '../services/odooClient';
 import { buildPayrollAdvanceRecords } from '../services/payrollBridgeService';
@@ -2164,12 +2164,31 @@ router.post('/shop-floor/board-intake/:id/retry', async (req: Request, res: Resp
 });
 
 router.post('/shop-floor/board-intake/:id/revert', async (req: Request, res: Response) => {
-  if (!canManageShopFloor(req)) {
-    res.status(403).redirect('/shop-floor/boards?error=' + encodeURIComponent('Only Shop Floor administrators can revert board logs.'));
+  if (!req.authUser) {
+    res.redirect('/login');
     return;
   }
+  const entryId = String(req.params.id || '');
+  const entry = await getBoardIntakeQueueEntry(entryId);
+  if (!entry) {
+    res.redirect('/shop-floor/boards?error=' + encodeURIComponent('Board log not found.') + '&boardLogPage=' + encodeURIComponent(String(req.body.boardLogPage || '1')));
+    return;
+  }
+
+  const isAdmin = canManageShopFloor(req);
+  const userEmail = (req.authUser.email || '').trim().toLowerCase();
+  const actorEmail = (entry.actor_email || '').trim().toLowerCase();
+  const userName = (req.authUser.displayName || req.authUser.email || '').trim().toLowerCase();
+  const actorName = (entry.actor_name || '').trim().toLowerCase();
+  const isOwner = Boolean((userEmail && actorEmail && userEmail === actorEmail) || (userName && actorName && userName === actorName));
+
+  if (!isAdmin && !isOwner) {
+    res.status(403).redirect('/shop-floor/boards?error=' + encodeURIComponent('You can only revert board logs that you logged.') + '&boardLogPage=' + encodeURIComponent(String(req.body.boardLogPage || '1')));
+    return;
+  }
+
   try {
-    const result = await revertBoardIntakeEntry(String(req.params.id || ''), req.authUser?.displayName || req.authUser?.email || 'Administrator');
+    const result = await revertBoardIntakeEntry(entryId, req.authUser.displayName || req.authUser.email || 'Operator');
     const message = result.alreadyReverted
       ? 'This board log was already reverted.'
       : 'Board log reverted in Odoo successfully.';

@@ -74,6 +74,18 @@ export async function syncBoardIntakeEntry(id: string) {
       await recordExactStockQuantity(Number(entry.product_id), entry.product_name, stockQuantity);
     }
 
+    const operatorAttributed = await client.populateInventoryAdjustmentOperator(
+      Number(entry.product_id),
+      entry.actor_name,
+    );
+    if (!operatorAttributed) {
+      await logEvent('warn', 'Odoo board inventory adjustment was not attributed to the operator', {
+        boardIntakeId: id,
+        productId: entry.product_id,
+        operatorName: entry.actor_name,
+      }).catch(() => undefined);
+    }
+
     const matchingMOs = await client.findMOsForBoardIntake({
       productId: Number(entry.product_id),
       partnerId: Number(entry.partner_id),

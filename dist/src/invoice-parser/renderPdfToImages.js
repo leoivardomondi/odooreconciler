@@ -124,7 +124,11 @@ async function renderPdfToImages(filePath) {
     }
     finally {
         if (pdf) {
-            await pdf.destroy().catch(() => undefined);
+            // Some pdfjs/pdf-parse implementations do not expose destroy(). Cleanup
+            // must never turn an otherwise successful PDF render into a failed job.
+            if (typeof pdf.destroy === 'function') {
+                await pdf.destroy().catch(() => undefined);
+            }
         }
     }
 }
