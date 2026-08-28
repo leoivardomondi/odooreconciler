@@ -1297,13 +1297,23 @@ function scorePurchaseOrderCandidate(
   }
 
   const vendorName = Array.isArray(purchaseOrder.partner_id) ? purchaseOrder.partner_id[1] : null;
-  const transactionTokens = new Set(vendorTokens(`${transaction.counterparty || ''} ${transaction.details}`));
+  const partySourceText = [
+    transaction.userSupplier || '',
+    transaction.counterparty || '',
+    typeof transaction.raw?.otherPartyText === 'string' ? transaction.raw.otherPartyText : '',
+    transaction.notes || '',
+    transaction.details || '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  const partyTokens = new Set(vendorTokens(partySourceText));
   const poTokens = vendorTokens(vendorName);
-  const overlap = poTokens.filter((token) => transactionTokens.has(token));
+  const overlap = poTokens.filter((token) => partyTokens.has(token));
   if (overlap.length > 0) {
-    const vendorScore = Math.min(25, 10 + overlap.length * 8);
+    const vendorScore = Math.min(40, 15 + overlap.length * 10);
     score += vendorScore;
-    reasons.push(`Vendor text overlaps on ${overlap.slice(0, 4).join(', ')}.`);
+    reasons.push(`Vendor name in Other Party column / details matches "${overlap.slice(0, 4).join(', ')}".`);
   }
 
   if (transaction.transactionDate && purchaseOrder.date_order) {
@@ -1433,7 +1443,15 @@ function scoreCustomerInvoiceCandidate(
       return `${payment.name || ''} ${payment.ref || ''} ${paymentPartner}`;
     })
     .join(' ');
-  const transactionText = `${transaction.counterparty || ''} ${transaction.details}`;
+  const transactionText = [
+    transaction.userSupplier || '',
+    transaction.counterparty || '',
+    typeof transaction.raw?.otherPartyText === 'string' ? transaction.raw.otherPartyText : '',
+    transaction.details || '',
+    transaction.notes || '',
+  ]
+    .filter(Boolean)
+    .join(' ');
   const invoiceText = `${customerName || ''} ${invoice.ref || ''} ${invoice.name} ${paymentText}`;
   const knownAlias = findKnownMpesaPayerAlias(transactionText, invoiceText);
   if (knownAlias) {
