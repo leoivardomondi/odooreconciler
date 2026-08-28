@@ -14,6 +14,54 @@ test('boda service -> staff_transport_expense', async () => {
   assert.equal(result.category, 'staff_transport_expense', `Expected staff_transport_expense, got ${result.category} (reason: ${result.reason})`);
 });
 
+test('tuktuk service -> transport_expense', async () => {
+  const result = await categorizeWithAi({
+    details: 'Completed Pay Merchant',
+    counterparty: 'Tuktuk Rider',
+    direction: 'out',
+    paidIn: null,
+    withdrawn: 350,
+    notes: 'tuktuk service',
+  });
+  assert.equal(result.category, 'transport_expense', `Expected transport_expense, got ${result.category} (reason: ${result.reason})`);
+});
+
+test('pickup -> transport_expense', async () => {
+  const result = await categorizeWithAi({
+    details: 'Pay Merchant',
+    counterparty: 'Pickup Driver',
+    direction: 'out',
+    paidIn: null,
+    withdrawn: 1200,
+    notes: 'pick up to site',
+  });
+  assert.equal(result.category, 'transport_expense', `Expected transport_expense, got ${result.category} (reason: ${result.reason})`);
+});
+
+test('deposited to bank -> bank_transfer', async () => {
+  const result = await categorizeWithAi({
+    details: 'Customer Payment',
+    counterparty: 'KCB Bank',
+    direction: 'out',
+    paidIn: null,
+    withdrawn: 50000,
+    notes: 'deposited to bank',
+  });
+  assert.equal(result.category, 'bank_transfer', `Expected bank_transfer, got ${result.category} (reason: ${result.reason})`);
+});
+
+test('advance salary -> advance_salary', async () => {
+  const result = await categorizeWithAi({
+    details: 'Customer Payment',
+    counterparty: 'Peter Omondi',
+    direction: 'out',
+    paidIn: null,
+    withdrawn: 4000,
+    notes: 'advance salary',
+  });
+  assert.equal(result.category, 'advance_salary', `Expected advance_salary, got ${result.category} (reason: ${result.reason})`);
+});
+
 test('overtime 24th -> staff_overtime_expense', async () => {
   const result = await categorizeWithAi({
     details: 'Customer Payment',

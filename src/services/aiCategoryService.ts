@@ -611,9 +611,9 @@ const OTHER_CATEGORY_KEYWORDS: CategoryKeywordRule[] = [
   {
     category: 'staff_transport_expense',
     patterns: [
-      /\b(boda[ -]?boda|bodaboda|boda\s*service|boda\s*fare|boda|tuk[ -]?tuk|tuktuk|matatu|taxi|uber|bolt|fare|nduthi|cab|rider)\b/i,
-      /\b(staff|employee|worker|casuals?)\b.*\b(transport|fare|boda|tuk|taxi|uber|matatu|bus)\b/i,
-      /\b(transport|fare|boda|tuk|taxi|uber)\b.*\b(staff|employee|worker|casuals?)\b/i,
+      /\b(boda[ -]?boda|bodaboda|boda\s*service|boda\s*fare|boda|matatu|taxi|uber|bolt|fare|nduthi|cab|rider)\b/i,
+      /\b(staff|employee|worker|casuals?)\b.*\b(transport|fare|boda|taxi|uber|matatu|bus)\b/i,
+      /\b(transport|fare|boda|taxi|uber)\b.*\b(staff|employee|worker|casuals?)\b/i,
     ],
   },
   {
@@ -646,8 +646,9 @@ const OTHER_CATEGORY_KEYWORDS: CategoryKeywordRule[] = [
   {
     category: 'transport_expense',
     patterns: [
-      /\b(carrying|transport|deliver|load)\s+(boards?|timber|materials?|marine|plywood|mdf)\b/i,
-      /\b(lorry|canter|truck|fuso|pickup|trailer)\s*(transport|carrying|delivery)?\b/i,
+      /\b(pick[ -]?up|pickup|tuk[ -]?tuk|tuktuk|tuk tuk)\b/i,
+      /\b(lorry|canter|truck|fuso|trailer)\s*(transport|carrying|delivery)?\b/i,
+      /\b(carrying|transport|deliver|load)\s+(boards?|timber|materials?|marine|plywood|mdf|goods|cargo|order)?\b/i,
     ],
   },
   {
@@ -692,8 +693,10 @@ const OTHER_CATEGORY_KEYWORDS: CategoryKeywordRule[] = [
   {
     category: 'bank_transfer',
     patterns: [
+      /\b(deposited?\s*(to|into|in)\s*(the\s+)?(bank|account|kcb|equity|coop|cooperative|stanbic|absa|ncba|dtb|family\s*bank)?)\b/i,
+      /\b(bank\s*transfer|transfer\s*to\s*bank|bank\s*deposit|deposit\s*to\s*bank|sent?\s*to\s*(the\s+)?bank)\b/i,
       /\b(bank|kcb|equity|coop|cooperative|nbk|stanbic|absa|standard\s*chartered|ncba|dtb|family\s*bank)\b.*\b(transfer|send|deposit)\b/i,
-      /\b(transfer|send)\b.*\b(bank|account)\b/i,
+      /\b(transfer|send|deposit)\b.*\b(bank|account)\b/i,
     ],
   },
   {
