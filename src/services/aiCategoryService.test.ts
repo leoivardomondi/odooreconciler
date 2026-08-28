@@ -50,6 +50,18 @@ test('deposited to bank -> bank_transfer', async () => {
   assert.equal(result.category, 'bank_transfer', `Expected bank_transfer, got ${result.category} (reason: ${result.reason})`);
 });
 
+test('deposited to ABC bank -> bank_transfer', async () => {
+  const result = await categorizeWithAi({
+    details: 'Pay Merchant',
+    counterparty: 'ABC Bank Account',
+    direction: 'out',
+    paidIn: null,
+    withdrawn: 25000,
+    notes: 'deposited to ABC bank',
+  });
+  assert.equal(result.category, 'bank_transfer', `Expected bank_transfer, got ${result.category} (reason: ${result.reason})`);
+});
+
 test('advance salary -> advance_salary', async () => {
   const result = await categorizeWithAi({
     details: 'Customer Payment',

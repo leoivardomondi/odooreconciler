@@ -115,9 +115,13 @@
       matchKindForTransaction(transaction) === 'Invoice' ? 'Customer unreadable' : 'Supplier unreadable';
     const matchLabelForCandidate = (candidate) => {
       const documentNumber = String(candidate.name || `Match ${candidate.id}`).replace(/^Invoice\s+/i, '');
-      return candidate.amountTotal !== null && candidate.amountTotal !== undefined
-        ? `${documentNumber} - ${money(candidate.amountTotal)}`
-        : documentNumber;
+      const rawVendorName = String(candidate.vendorName || '').trim();
+      const vendorFirstName = rawVendorName.split(/[\s,-]+/)[0] || '';
+      const amountStr = candidate.amountTotal !== null && candidate.amountTotal !== undefined
+        ? money(candidate.amountTotal)
+        : '';
+      const parts = [documentNumber, amountStr, vendorFirstName].filter(Boolean);
+      return parts.join(' - ');
     };
     const categoryOptions = [
       ['staff_lunch_expense', 'Staff lunch'],

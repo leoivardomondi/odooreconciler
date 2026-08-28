@@ -693,7 +693,8 @@ const OTHER_CATEGORY_KEYWORDS: CategoryKeywordRule[] = [
   {
     category: 'bank_transfer',
     patterns: [
-      /\b(deposited?\s*(to|into|in)\s*(the\s+)?(bank|account|kcb|equity|coop|cooperative|stanbic|absa|ncba|dtb|family\s*bank)?)\b/i,
+      /\b(deposited?\s+(to|into|in)\s+([a-z0-9\s]{1,30}\s+)?bank)\b/i,
+      /\b(deposited?\s*(to|into|in)\s*(the\s+)?(abc|kcb|equity|coop|cooperative|nbk|stanbic|absa|ncba|dtb|family|stanchart|citibank)?(\s*bank)?)\b/i,
       /\b(bank\s*transfer|transfer\s*to\s*bank|bank\s*deposit|deposit\s*to\s*bank|sent?\s*to\s*(the\s+)?bank)\b/i,
       /\b(bank|kcb|equity|coop|cooperative|nbk|stanbic|absa|standard\s*chartered|ncba|dtb|family\s*bank)\b.*\b(transfer|send|deposit)\b/i,
       /\b(transfer|send|deposit)\b.*\b(bank|account)\b/i,
