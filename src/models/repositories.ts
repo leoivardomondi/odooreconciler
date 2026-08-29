@@ -4611,10 +4611,10 @@ export async function finishStaffOnboardingApproval(id: string, input: { employe
 
 export async function createBoardIntakeQueueEntry(input: {
   id: string; productId: number; productName: string; partnerId: number; customerName: string;
-  quantity: number; actorName: string; actorEmail?: string; vehicleRegistration?: string;
+  quantity: number; actorName: string; actorEmail?: string; vehicleRegistration?: string; arrivalTime?: string;
 }) {
-  await execute(`INSERT INTO board_intake_queue (id, product_id, product_name, partner_id, customer_name, quantity, actor_name, actor_email, vehicle_registration, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`, [input.id, input.productId, input.productName, input.partnerId, input.customerName, input.quantity, input.actorName, input.actorEmail || null, input.vehicleRegistration || null]);
+  await execute(`INSERT INTO board_intake_queue (id, product_id, product_name, partner_id, customer_name, quantity, actor_name, actor_email, vehicle_registration, arrival_time, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`, [input.id, input.productId, input.productName, input.partnerId, input.customerName, input.quantity, input.actorName, input.actorEmail || null, input.vehicleRegistration || null, input.arrivalTime || null]);
 }
 
 export async function updateBoardIntakeQueueEntry(id: string, input: { status: 'processing' | 'synced' | 'failed'; stockQuantity?: number; errorMessage?: string }) {
@@ -4628,11 +4628,12 @@ export async function updateBoardIntakeQueueEntry(id: string, input: { status: '
 
 export async function getRecentBoardIntakeQueueEntries(limit = 12, offset = 0) {
   try {
-    return await queryAll<any>(`SELECT id, product_name, customer_name, quantity, vehicle_registration, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at, reverted_at, reverted_by, actor_name, actor_email
+    return await queryAll<any>(`SELECT id, product_name, customer_name, quantity, vehicle_registration, arrival_time, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at, reverted_at, reverted_by, actor_name, actor_email
       FROM board_intake_queue ORDER BY created_at DESC LIMIT ? OFFSET ?`, [Math.max(1, Math.min(50, limit)), Math.max(0, offset)]);
   } catch (_error) {
     await execute(`ALTER TABLE board_intake_queue ADD COLUMN vehicle_registration VARCHAR(100) NULL`).catch(() => {});
-    return queryAll<any>(`SELECT id, product_name, customer_name, quantity, vehicle_registration, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at, reverted_at, reverted_by, actor_name, actor_email
+    await execute(`ALTER TABLE board_intake_queue ADD COLUMN arrival_time VARCHAR(50) NULL`).catch(() => {});
+    return queryAll<any>(`SELECT id, product_name, customer_name, quantity, vehicle_registration, arrival_time, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at, reverted_at, reverted_by, actor_name, actor_email
       FROM board_intake_queue ORDER BY created_at DESC LIMIT ? OFFSET ?`, [Math.max(1, Math.min(50, limit)), Math.max(0, offset)]);
   }
 }
@@ -4648,6 +4649,7 @@ export interface BoardIntakeQueueEntry {
   actor_name: string;
   actor_email: string | null;
   vehicle_registration: string | null;
+  arrival_time: string | null;
   status: 'pending' | 'processing' | 'synced' | 'failed' | 'reverting' | 'reverted';
   odoo_stock_quantity: number | null;
   reverted_at: string | null;
@@ -4766,6 +4768,7 @@ function ensureShopFloorTables() {
   execute(createIncidentsTable).catch(() => {});
   execute(createAssignedItemsTable).catch(() => {});
   execute(`ALTER TABLE board_intake_queue ADD COLUMN vehicle_registration VARCHAR(100) NULL`).catch(() => {});
+  execute(`ALTER TABLE board_intake_queue ADD COLUMN arrival_time VARCHAR(50) NULL`).catch(() => {});
 
   if (dialect === 'mysql') {
     execute(`ALTER TABLE shop_floor_assigned_items ADD COLUMN quantity INTEGER NOT NULL DEFAULT 1`).catch(() => {});

@@ -240,11 +240,19 @@
             </div>
 
             <!-- Vehicle Registration -->
-            <div class="mb-4">
+            <div class="mb-3">
               <label for="vehicleRegistration" class="form-label fw-semibold" style="font-size: 0.92rem; color: #334155;">
                 Vehicle Registration <span class="text-muted font-normal">(optional, e.g. KTW 123A)</span>
               </label>
               <input type="text" name="vehicle_registration" id="vehicleRegistration" class="form-control" placeholder="KTW 123A" style="font-size: 1rem; padding: 0.65rem 0.75rem; text-transform: uppercase;">
+            </div>
+
+            <!-- Arrival Time -->
+            <div class="mb-4">
+              <label for="arrivalTime" class="form-label fw-semibold" style="font-size: 0.92rem; color: #334155;">
+                What Time Did Boards Arrive? <span class="text-muted font-normal">(optional)</span>
+              </label>
+              <input type="time" name="arrival_time" id="arrivalTime" class="form-control" style="font-size: 1rem; padding: 0.65rem 0.75rem;">
             </div>
 
             <!-- Submit Button -->
@@ -347,6 +355,9 @@
                 <strong><%= item.quantity %> × <%= item.product_name %></strong>
                 <div class="small text-muted">
                   <%= item.customer_name %> · <%= formatDateTime(item.created_at) %>
+                  <% if (item.arrival_time) { %>
+                    · Arrived: <strong><%= item.arrival_time %></strong>
+                  <% } %>
                   <% if (item.vehicle_registration) { %>
                     · Vehicle: <strong><%= item.vehicle_registration %></strong>
                   <% } %>
@@ -397,6 +408,13 @@
 
 <script>
   (function() {
+    var arrivalTimeInput = document.getElementById('arrivalTime');
+    if (arrivalTimeInput && !arrivalTimeInput.value) {
+      var now = new Date();
+      var hh = String(now.getHours()).padStart(2, '0');
+      var mm = String(now.getMinutes()).padStart(2, '0');
+      arrivalTimeInput.value = hh + ':' + mm;
+    }
     // Reusable Custom searchable Combobox setup
     function setupCombobox(containerId, inputId, hiddenId, listId, onSelectCallback) {
       var container = document.getElementById(containerId);
