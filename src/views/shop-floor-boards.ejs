@@ -248,11 +248,32 @@
             </div>
 
             <!-- Arrival Time -->
-            <div class="mb-4">
+            <div class="mb-3">
               <label for="arrivalTime" class="form-label fw-semibold" style="font-size: 0.92rem; color: #334155;">
                 What Time Did Boards Arrive? <span class="text-muted font-normal">(optional)</span>
               </label>
               <input type="time" name="arrival_time" id="arrivalTime" class="form-control" style="font-size: 1rem; padding: 0.65rem 0.75rem;">
+            </div>
+
+            <!-- Receiving Gate -->
+            <div class="mb-4">
+              <label class="form-label fw-semibold" style="font-size: 0.92rem; color: #334155;">
+                Receiving Gate <span class="text-danger">*</span>
+              </label>
+              <div class="d-flex gap-3">
+                <div class="form-check flex-fill p-3 border rounded-3 text-center" style="background:#f8fafc; cursor:pointer;">
+                  <input class="form-check-input ms-0 me-2" type="radio" name="gate" id="gateFront" value="Front Gate" checked>
+                  <label class="form-check-label fw-semibold" for="gateFront" style="cursor:pointer; color:#1e293b;">
+                    🚪 Front Gate
+                  </label>
+                </div>
+                <div class="form-check flex-fill p-3 border rounded-3 text-center" style="background:#f8fafc; cursor:pointer;">
+                  <input class="form-check-input ms-0 me-2" type="radio" name="gate" id="gateBack" value="Back Gate">
+                  <label class="form-check-label fw-semibold" for="gateBack" style="cursor:pointer; color:#1e293b;">
+                    🚚 Back Gate
+                  </label>
+                </div>
+              </div>
             </div>
 
             <!-- Submit Button -->
@@ -355,6 +376,9 @@
                 <strong><%= item.quantity %> × <%= item.product_name %></strong>
                 <div class="small text-muted">
                   <%= item.customer_name %> · <%= formatDateTime(item.created_at) %>
+                  <% if (item.gate) { %>
+                    · <strong><%= item.gate %></strong>
+                  <% } %>
                   <% if (item.arrival_time) { %>
                     · Arrived: <strong><%= item.arrival_time %></strong>
                   <% } %>
