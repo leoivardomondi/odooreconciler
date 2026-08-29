@@ -1980,16 +1980,18 @@ router.post('/shop-floor/board-intake', async (req: Request, res: Response) => {
   try {
     const productName = String(req.body.product_name || '').trim() || `Product #${productId}`;
     const customerName = String(req.body.partner_name || '').trim() || `Client #${partnerId}`;
+    const vehicleRegistration = String(req.body.vehicle_registration || '').trim().toUpperCase();
     const actorName = req.authUser.displayName || req.authUser.email;
     const optimisticId = randomUUID();
     await createBoardIntakeQueueEntry({
       id: optimisticId, productId, productName, partnerId, customerName,
       quantity: qty, actorName, actorEmail: req.authUser.email,
+      vehicleRegistration,
     });
     await recordOptimisticStockAddition(productId, productName, qty);
     optimisticBoardIntakes.push({ id: optimisticId, partnerId, productId, productName, customerName, quantity: qty, expiresAt: Date.now() + 10 * 60 * 1000 });
     shopFloorCache.clearPrefix('shop-floor-dashboard:');
-    res.redirect('/shop-floor/boards?message=' + encodeURIComponent(`Boards saved immediately: ${qty} x ${productName} for ${customerName}. Odoo synchronization and MO reservation are continuing automatically.`));
+    res.redirect('/shop-floor/boards?message=' + encodeURIComponent(`Boards saved immediately: ${qty} x ${productName} for ${customerName}${vehicleRegistration ? ` (${vehicleRegistration})` : ''}. Odoo synchronization and MO reservation are continuing automatically.`));
 
     void (async () => {
       try {
@@ -1998,13 +2000,14 @@ router.post('/shop-floor/board-intake', async (req: Request, res: Response) => {
         const reportDate = new Intl.DateTimeFormat('en-CA', { timeZone: env.APP_TIMEZONE || 'Africa/Nairobi', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
         const safeCustomerName = escapeHtml(customerName);
         const safeProductName = escapeHtml(productName);
+        const safeVehicleReg = escapeHtml(vehicleRegistration || '—');
         const safeActorEmail = escapeHtml(actorName);
         const subjectCustomerName = customerName.replace(/[\r\n]+/g, ' ').trim();
         await sendMailWithConfig(settings.mail, {
           to: 'sharon@urbanvibeinteriordesign.co.ke',
           subject: `${subjectCustomerName} - Board Log - ${reportDate}`,
-          html: `<p><strong>Board log completed</strong></p><p>Client: ${safeCustomerName}<br>Board: ${safeProductName}<br>Quantity: ${qty}<br>Date: ${reportDate}<br>Logged by: ${safeActorEmail}</p>`,
-        }).catch((mailError) => logEvent('error', 'Board log email to Sharon failed', { customerName, productName, quantity: qty, actor: actorName, actorEmail: req.authUser?.email, error: mailError instanceof Error ? mailError.message : String(mailError) }));
+          html: `<p><strong>Board log completed</strong></p><p>Client: ${safeCustomerName}<br>Board: ${safeProductName}<br>Quantity: ${qty}<br>Vehicle Reg: ${safeVehicleReg}<br>Date: ${reportDate}<br>Logged by: ${safeActorEmail}</p>`,
+        }).catch((mailError) => logEvent('error', 'Board log email to Sharon failed', { customerName, productName, quantity: qty, vehicleRegistration, actor: actorName, actorEmail: req.authUser?.email, error: mailError instanceof Error ? mailError.message : String(mailError) }));
         const optimisticIndex = optimisticBoardIntakes.findIndex((entry) => entry.id === optimisticId);
         if (optimisticIndex >= 0) optimisticBoardIntakes.splice(optimisticIndex, 1);
         shopFloorCache.clearPrefix('shop-floor-dashboard:');

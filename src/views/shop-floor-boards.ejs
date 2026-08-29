@@ -230,13 +230,21 @@
             </div>
 
             <!-- Quantity -->
-            <div class="mb-4">
+            <div class="mb-3">
               <label for="intakeQty" class="form-label fw-semibold" style="font-size: 0.92rem; color: #334155;">
                 Number of Boards <span class="text-danger">*</span>
               </label>
               <input type="number" name="quantity" id="intakeQty" class="form-control" placeholder="How many boards were brought in..." min="0.01" step="0.01" inputmode="decimal" required style="font-size: 1rem; padding: 0.65rem 0.75rem;">
               <div class="invalid-feedback" id="qtyFeedback">Please enter a positive quantity, including decimals if needed.</div>
               <div class="text-muted mt-1" id="qtyCurrentStock" style="font-size: 0.75rem; display: none;"></div>
+            </div>
+
+            <!-- Vehicle Registration -->
+            <div class="mb-4">
+              <label for="vehicleRegistration" class="form-label fw-semibold" style="font-size: 0.92rem; color: #334155;">
+                Vehicle Registration <span class="text-muted font-normal">(optional, e.g. KTW 123A)</span>
+              </label>
+              <input type="text" name="vehicle_registration" id="vehicleRegistration" class="form-control" placeholder="e.g. KTW 123A..." style="font-size: 1rem; padding: 0.65rem 0.75rem; text-transform: uppercase;">
             </div>
 
             <!-- Submit Button -->
@@ -339,6 +347,9 @@
                 <strong><%= item.quantity %> × <%= item.product_name %></strong>
                 <div class="small text-muted">
                   <%= item.customer_name %> · <%= formatDateTime(item.created_at) %>
+                  <% if (item.vehicle_registration) { %>
+                    · Vehicle: <strong><%= item.vehicle_registration %></strong>
+                  <% } %>
                   <% if (item.actor_name) { %>
                     · Logged by <strong><%= item.actor_name %></strong>
                   <% } %>
