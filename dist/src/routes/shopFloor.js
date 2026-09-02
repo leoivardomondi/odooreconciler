@@ -1136,65 +1136,6 @@ function buildOperatorWelcomeEmail(op, appUrl) {
 }
 /**
  * POST /shop-floor/operators/send-invite
- * Sends welcome emails to selected operators with login instructions.
- */
-router.post('/shop-floor/operators/send-invite', async (req, res) => {
-    const isAdmin = req.authUser?.role === 'admin';
-    const isShopFloorAdmin = req.authUser?.apps?.includes('shop-floor-admin');
-    if (!req.authUser || (!isAdmin && !isShopFloorAdmin)) {
-        res.status(403).json({ ok: false, error: 'Access denied.' });
-        return;
-    }
-    const ids = Array.isArray(req.body.ids) ? req.body.ids : (req.body.ids ? [String(req.body.ids)] : []);
-    if (ids.length === 0) {
-        res.redirect('/shop-floor/operators?error=' + encodeURIComponent('Select at least one operator.'));
-        return;
-    }
-    try {
-        const settings = await (0, repositories_1.getSettings)();
-        const client = new odooClient_1.OdooClient(settings.odoo);
-        // Fetch operator details
-        const operatorIds = ids.map(Number).filter((n) => !isNaN(n));
-        const allOperators = [];
-        for (const deptName of OPERATOR_DEPARTMENT_NAMES) {
-            const depts = await client.findDepartmentByName(deptName);
-            for (const dept of depts) {
-                const emps = await client.getEmployeesByDepartment(dept.id);
-                for (const emp of emps) {
-                    if (operatorIds.includes(emp.id) && emp.work_email) {
-                        allOperators.push({ id: emp.id, name: emp.name, workEmail: emp.work_email });
-                    }
-                }
-            }
-        }
-        const appUrl = env_1.env.APP_BASE_URL || `http://localhost:${process.env.PORT || 3001}`;
-        let sent = 0;
-        const errors = [];
-        for (const op of allOperators) {
-            if (!op.workEmail) {
-                errors.push(`${op.name}: no work email`);
-                continue;
-            }
-            try {
-                const { subject, html } = buildOperatorWelcomeEmail({ name: op.name, workEmail: op.workEmail }, appUrl);
-                void (0, mailTransport_1.sendMailWithConfig)(settings.mail, {
-                    to: op.workEmail,
-                    subject,
-                    html,
-                });
-                sent++;
-            }
-            catch (err) {
-                errors.push(`${op.name}: ${err instanceof Error ? err.message : 'send failed'}`);
-            }
-        }
-        const msg = `Sent ${sent} welcome email(s)${errors.length ? '. Errors: ' + errors.join('; ') : ''}`;
-        res.redirect(`/shop-floor/operators?message=${encodeURIComponent(msg)}`);
-    }
-    catch (err) {
-        res.redirect(`/shop-floor/operators?error=${encodeURIComponent(err instanceof Error ? err.message : 'Failed to send invites.')}`);
-    }
-});
 /**
  * POST /shop-floor/operators/send-invite
  * Sends welcome emails to selected operators with login instructions.
@@ -1781,16 +1722,20 @@ router.post('/shop-floor/board-intake', async (req, res) => {
     try {
         const productName = String(req.body.product_name || '').trim() || `Product #${productId}`;
         const customerName = String(req.body.partner_name || '').trim() || `Client #${partnerId}`;
+        const vehicleRegistration = String(req.body.vehicle_registration || '').trim().toUpperCase();
+        const arrivalTime = String(req.body.arrival_time || '').trim();
+        const gate = String(req.body.gate || '').trim();
         const actorName = req.authUser.displayName || req.authUser.email;
         const optimisticId = (0, crypto_1.randomUUID)();
         await (0, repositories_1.createBoardIntakeQueueEntry)({
             id: optimisticId, productId, productName, partnerId, customerName,
             quantity: qty, actorName, actorEmail: req.authUser.email,
+            vehicleRegistration, arrivalTime, gate,
         });
         await (0, stockMirrorService_1.recordOptimisticStockAddition)(productId, productName, qty);
         optimisticBoardIntakes.push({ id: optimisticId, partnerId, productId, productName, customerName, quantity: qty, expiresAt: Date.now() + 10 * 60 * 1000 });
         shopFloorCache.clearPrefix('shop-floor-dashboard:');
-        res.redirect('/shop-floor/boards?message=' + encodeURIComponent(`Boards saved immediately: ${qty} x ${productName} for ${customerName}. Odoo synchronization and MO reservation are continuing automatically.`));
+        res.redirect('/shop-floor/boards?message=' + encodeURIComponent(`Boards saved immediately: ${qty} x ${productName} for ${customerName}${vehicleRegistration ? ` (${vehicleRegistration})` : ''}. Odoo synchronization and MO reservation are continuing automatically.`));
         void (async () => {
             try {
                 const syncResult = await (0, boardIntakeSyncService_1.syncBoardIntakeEntry)(optimisticId);
@@ -1798,13 +1743,16 @@ router.post('/shop-floor/board-intake', async (req, res) => {
                 const reportDate = new Intl.DateTimeFormat('en-CA', { timeZone: env_1.env.APP_TIMEZONE || 'Africa/Nairobi', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
                 const safeCustomerName = escapeHtml(customerName);
                 const safeProductName = escapeHtml(productName);
+                const safeVehicleReg = escapeHtml(vehicleRegistration || '—');
+                const safeArrivalTime = escapeHtml(arrivalTime || '—');
+                const safeGate = escapeHtml(gate || '—');
                 const safeActorEmail = escapeHtml(actorName);
                 const subjectCustomerName = customerName.replace(/[\r\n]+/g, ' ').trim();
                 await (0, mailTransport_1.sendMailWithConfig)(settings.mail, {
                     to: 'sharon@urbanvibeinteriordesign.co.ke',
                     subject: `${subjectCustomerName} - Board Log - ${reportDate}`,
-                    html: `<p><strong>Board log completed</strong></p><p>Client: ${safeCustomerName}<br>Board: ${safeProductName}<br>Quantity: ${qty}<br>Date: ${reportDate}<br>Logged by: ${safeActorEmail}</p>`,
-                }).catch((mailError) => (0, logService_1.logEvent)('error', 'Board log email to Sharon failed', { customerName, productName, quantity: qty, actor: actorName, actorEmail: req.authUser?.email, error: mailError instanceof Error ? mailError.message : String(mailError) }));
+                    html: `<p><strong>Board log completed</strong></p><p>Client: ${safeCustomerName}<br>Board: ${safeProductName}<br>Quantity: ${qty}<br>Gate: ${safeGate}<br>Vehicle Reg: ${safeVehicleReg}<br>Arrival Time: ${safeArrivalTime}<br>Date: ${reportDate}<br>Logged by: ${safeActorEmail}</p>`,
+                }).catch((mailError) => (0, logService_1.logEvent)('error', 'Board log email to Sharon failed', { customerName, productName, quantity: qty, vehicleRegistration, arrivalTime, gate, actor: actorName, actorEmail: req.authUser?.email, error: mailError instanceof Error ? mailError.message : String(mailError) }));
                 const optimisticIndex = optimisticBoardIntakes.findIndex((entry) => entry.id === optimisticId);
                 if (optimisticIndex >= 0)
                     optimisticBoardIntakes.splice(optimisticIndex, 1);

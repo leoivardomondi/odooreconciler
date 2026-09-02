@@ -1442,7 +1442,7 @@ router.post('/settings/test-connection', [...credentialValidators, ...mappingVal
             form,
             status: {
                 type: 'success',
-                message: `Connection successful. Odoo version ${result.version}.`,
+                message: `Connection successful. Odoo version ${result.version} (User: ${result.user?.name || req.body.username}, Response time: ${result.latencyMs ?? 0}ms).`,
             },
             validationErrors: [],
             connection: (await (0, repositories_1.getSettings)()).connection,

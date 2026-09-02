@@ -26,6 +26,7 @@ const MPESA_CATEGORIES = [
     'staff_lunch_expense',
     'staff_transport_expense',
     'staff_overtime_expense',
+    'staff_loading_expense',
     'advance_salary',
     'staff_loan',
     'transport_expense',
@@ -45,6 +46,7 @@ const CATEGORY_LABELS = {
     staff_lunch_expense: 'Staff lunch',
     staff_transport_expense: 'Staff transport',
     staff_overtime_expense: 'Staff overtime',
+    staff_loading_expense: 'Loading',
     advance_salary: 'Advance Salary',
     staff_loan: 'Staff loan',
     transport_expense: 'Transport',
@@ -64,6 +66,7 @@ const CATEGORY_DESCRIPTIONS = {
     staff_lunch_expense: 'Payment for staff meals/lunch, usually smaller amounts paid around mid-morning or lunchtime',
     staff_transport_expense: 'Transport fare for staff members, e.g. paying boda boda, tuk-tuk, matatu, uber, taxi for work-related staff movement',
     staff_overtime_expense: 'Overtime payment to staff members',
+    staff_loading_expense: 'Payment for loading or offloading cargo, materials, boards, or trucks (e.g. paying casuals or workers for loading/offloading orders)',
     advance_salary: 'Salary advance given to an employee before payday',
     staff_loan: 'Loan given to a staff member',
     transport_expense: 'General transport expense — carrying/delivering goods/materials, paying for truck/lorry/tuktuk/pickup transport, fuel for delivery, logistics. Includes paying boda boda, tuk-tuk, or any vehicle for moving items between locations (e.g. "carrying boards from timsales", "transport of marine boards", "delivery to site")',
@@ -464,35 +467,52 @@ const OTHER_CATEGORY_KEYWORDS = [
     {
         category: 'staff_lunch_expense',
         patterns: [
-            /\b(lunch|food|meal|eating|breakfast|dinner|supper|snacks?|chai|tea)\b/i,
+            /\b(lunch|luch|lunc|lunck|food|meal|eating|breakfast|dinner|supper|snacks?|chai|tea)\b/i,
             /\b(restaurant|cafe|hotel|kibandaski|eatery)\b/i,
-            /\b(lunch|food)\s+(for|ya)\s+(staff|workers?|employees?|wafanyi)\b/i,
+            /\b(lunch|luch|lunc|food)\s+(for|ya)\s+(staff|workers?|employees?|wafanyi|casuals?)\b/i,
         ],
     },
     {
         category: 'staff_transport_expense',
         patterns: [
-            /\b(staff|employee|worker)\b.*\b(transport|fare|boda|tuk|taxi|uber|matatu|bus)\b/i,
-            /\b(transport|fare|boda|tuk|taxi|uber)\b.*\b(staff|employee|worker)\b/i,
+            /\b(boda[ -]?boda|bodaboda|boda\s*service|boda\s*fare|boda|matatu|taxi|uber|bolt|fare|nduthi|cab|rider)\b/i,
+            /\b(staff|employee|worker|casuals?)\b.*\b(transport|fare|boda|taxi|uber|matatu|bus)\b/i,
+            /\b(transport|fare|boda|taxi|uber)\b.*\b(staff|employee|worker|casuals?)\b/i,
         ],
     },
     {
         category: 'staff_overtime_expense',
         patterns: [
             /\b(overtime|ot\b|extra\s*hours|night\s*shift|weekend\s*work)\b/i,
-            /\b(overtime\s*(done|worked|on))\b/i,
+            /\b(overtime\s*(done|worked|on|\d+th|\d+st|\d+nd|\d+rd)?)\b/i,
+        ],
+    },
+    {
+        category: 'staff_loading_expense',
+        patterns: [
+            /\b(loading|offloading|offloaded|loaded|offload|unload|unloading)\b/i,
+            /\b(casuals?|casual|vibaria|kibarua)\b.*\b(loading|offloading|load|offload)\b/i,
+            /\b(loading|offloading|load|offload)\b.*\b(casuals?|casual|order|boards?)\b/i,
         ],
     },
     {
         category: 'advance_salary',
         patterns: [
-            /\b(salary\s*advance|advance\s*salary|advance\s*pay|wages?\s*advance)\b/i,
+            /\b(salary\s*advance|advance\s*salary|advance\s*pay|wages?\s*advance|adv\s*salary|salary\s*adv|adv\s*pay)\b/i,
         ],
     },
     {
         category: 'staff_loan',
         patterns: [
             /\b(loan|staff\s*loan|employee\s*loan|mkopo)\b/i,
+        ],
+    },
+    {
+        category: 'transport_expense',
+        patterns: [
+            /\b(pick[ -]?up|pickup|tuk[ -]?tuk|tuktuk|tuk tuk)\b/i,
+            /\b(lorry|canter|truck|fuso|trailer)\s*(transport|carrying|delivery)?\b/i,
+            /\b(carrying|transport|deliver|load)\s+(boards?|timber|materials?|marine|plywood|mdf|goods|cargo|order)?\b/i,
         ],
     },
     {
@@ -506,6 +526,12 @@ const OTHER_CATEGORY_KEYWORDS = [
         patterns: [
             /\b(supplier|vendor|wholesale|distributor|merchant|till|paybill|pay\s*bill|buy\s*goods)\b/i,
             /\b(payment\s*(to|for)\s*(supplier|vendor|company))\b/i,
+        ],
+    },
+    {
+        category: 'customer_receipt',
+        patterns: [
+            /\b(customer|client)\b.*\b(receipt|deposit|payment)\b/i,
         ],
     },
     {
@@ -531,8 +557,11 @@ const OTHER_CATEGORY_KEYWORDS = [
     {
         category: 'bank_transfer',
         patterns: [
+            /\b(deposited?\s+(to|into|in)\s+([a-z0-9\s]{1,30}\s+)?bank)\b/i,
+            /\b(deposited?\s*(to|into|in)\s*(the\s+)?(abc|kcb|equity|coop|cooperative|nbk|stanbic|absa|ncba|dtb|family|stanchart|citibank)?(\s*bank)?)\b/i,
+            /\b(bank\s*transfer|transfer\s*to\s*bank|bank\s*deposit|deposit\s*to\s*bank|sent?\s*to\s*(the\s+)?bank)\b/i,
             /\b(bank|kcb|equity|coop|cooperative|nbk|stanbic|absa|standard\s*chartered|ncba|dtb|family\s*bank)\b.*\b(transfer|send|deposit)\b/i,
-            /\b(transfer|send)\b.*\b(bank|account)\b/i,
+            /\b(transfer|send|deposit)\b.*\b(bank|account)\b/i,
         ],
     },
     {
@@ -565,17 +594,23 @@ function buildCategoryPrompt(input) {
         categoryList,
         '',
         'KEY GUIDELINES:',
-        '- "transport_expense" is for moving GOODS/MATERIALS (e.g. carrying boards, delivering items, paying lorry/truck/tuktuk/boda/pickup for cargo, rider bringing equipment). Look for mentions of vehicles (tuktuk, lorry, truck, boda, pickup, canter, rider), carrying/transporting/delivering/loading materials, "pickup that loaded boards from...", or paying for fuel/delivery.',
-        '- "staff_transport_expense" is for STAFF fare ONLY — a person traveling for work, NOT goods being moved.',
+        '- "staff_transport_expense" is for STAFF fare & transport services (e.g. mention of "boda", "boda service", "boda fare", "fare", "tuktuk", "matatu", "taxi", "uber", "bolt", "cab") unless heavy goods/materials are specified.',
+        '- "transport_expense" is for moving HEAVY GOODS/MATERIALS (e.g. carrying boards, timber, delivering items, lorry/truck/canter cargo).',
+        '- "staff_overtime_expense" is for overtime payments to staff/casuals (e.g. "overtime 24th", "ot").',
+        '- "staff_loading_expense" is for loading and offloading payments (e.g. "casuals offloaded...", "offloading", "loading", "unloading").',
+        '- "staff_lunch_expense" is for buying food/meals for staff/casuals (e.g. "lunch for staff", "luch", "food").',
+        '- "advance_salary" is for salary advances to employees (e.g. "salary advance", "adv salary").',
+        '- "staff_loan" is for loans to employees (e.g. "staff loan", "mkopo").',
         '- "supplier_payment" is for paying a business/vendor/merchant for products/services (till, paybill, merchant payment).',
-        '- "staff_lunch_expense" is for buying food/meals for staff (e.g. "lunch for staff").',
-        '- "staff_overtime_expense" is for overtime payments to staff (e.g. "overtime done on 19th").',
-        '- "advance_salary" is for salary advances to employees (e.g. "salary advance").',
         '- "customer_receipt" is money RECEIVED (paidIn), not sent.',
         '- "office_water_expense" is specifically for drinking water/dispenser refills.',
         '- "refunds" is for returning money (refunds, sales refund, reversal, commission/token payments e.g. "token to beatrice comply").',
         '- "internal_transfer" is for money sent/deposited to own bank accounts (e.g. "sent to the bank", "deposited to ABC bank").',
         '- "bank_transfer" is for transfers between different bank accounts.',
+        '- If the note mentions "boda" or "boda service" or "fare", choose "staff_transport_expense".',
+        '- If the note mentions "loading" or "offloading", choose "staff_loading_expense".',
+        '- If the note mentions "overtime", choose "staff_overtime_expense".',
+        '- If the note mentions "luch" or "lunch" or "food", choose "staff_lunch_expense".',
         '- If the note says refund/reversal/return money, choose "refunds" even when the transaction is an outgoing payment.',
         '- If the note mentions lunch/meal/food for staff, choose "staff_lunch_expense".',
         '- If the note is clearly describing a different business rule, trust the note first, then the details, then the counterparty, then raw details.',
@@ -810,9 +845,13 @@ async function resolveStrongCategorizationOverride(input) {
     if (!bestManual && !bestTraining) {
         return null;
     }
-    const chosen = bestTraining && (!bestManual || bestTraining.score >= 20 || bestTraining.confidence > bestManual.confidence)
-        ? bestTraining
-        : bestManual;
+    // Explicit note keyword match (0.98 confidence) takes precedence over generic or low-specificity training rules
+    const isGenericTraining = bestTraining?.category === 'outgoing_payment' || bestTraining?.category === 'unknown';
+    const chosen = bestManual && bestManual.confidence >= 0.98 && (isGenericTraining || bestManual.category !== bestTraining?.category)
+        ? bestManual
+        : bestTraining && (!bestManual || (!isGenericTraining && bestTraining.score >= 20) || bestTraining.confidence > bestManual.confidence)
+            ? bestTraining
+            : bestManual;
     if (!chosen) {
         return null;
     }

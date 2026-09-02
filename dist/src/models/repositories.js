@@ -3334,8 +3334,8 @@ async function finishStaffOnboardingApproval(id, input) {
     await (0, db_1.execute)(`UPDATE staff_onboarding_applications SET status = ?, odoo_employee_id = COALESCE(?, odoo_employee_id), error_message = ?, reviewed_at = ?, reviewed_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [input.employeeId ? 'approved' : 'approval_failed', input.employeeId || null, input.errorMessage || null, (0, dateTime_1.appDateTime)(), input.reviewedBy, id]);
 }
 async function createBoardIntakeQueueEntry(input) {
-    await (0, db_1.execute)(`INSERT INTO board_intake_queue (id, product_id, product_name, partner_id, customer_name, quantity, actor_name, actor_email, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')`, [input.id, input.productId, input.productName, input.partnerId, input.customerName, input.quantity, input.actorName, input.actorEmail || null]);
+    await (0, db_1.execute)(`INSERT INTO board_intake_queue (id, product_id, product_name, partner_id, customer_name, quantity, actor_name, actor_email, vehicle_registration, arrival_time, gate, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`, [input.id, input.productId, input.productName, input.partnerId, input.customerName, input.quantity, input.actorName, input.actorEmail || null, input.vehicleRegistration || null, input.arrivalTime || null, input.gate || null]);
 }
 async function updateBoardIntakeQueueEntry(id, input) {
     const retryDelayMinutes = input.status === 'failed' ? 2 : 0;
@@ -3345,8 +3345,17 @@ async function updateBoardIntakeQueueEntry(id, input) {
     updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [input.status, input.stockQuantity ?? null, input.errorMessage || null, input.status, input.status, retryDelayMinutes, id]);
 }
 async function getRecentBoardIntakeQueueEntries(limit = 12, offset = 0) {
-    return (0, db_1.queryAll)(`SELECT id, product_name, customer_name, quantity, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at, reverted_at, reverted_by, actor_name, actor_email
-    FROM board_intake_queue ORDER BY created_at DESC LIMIT ? OFFSET ?`, [Math.max(1, Math.min(50, limit)), Math.max(0, offset)]);
+    try {
+        return await (0, db_1.queryAll)(`SELECT id, product_name, customer_name, quantity, vehicle_registration, arrival_time, gate, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at, reverted_at, reverted_by, actor_name, actor_email
+      FROM board_intake_queue ORDER BY created_at DESC LIMIT ? OFFSET ?`, [Math.max(1, Math.min(50, limit)), Math.max(0, offset)]);
+    }
+    catch (_error) {
+        await (0, db_1.execute)(`ALTER TABLE board_intake_queue ADD COLUMN vehicle_registration VARCHAR(100) NULL`).catch(() => { });
+        await (0, db_1.execute)(`ALTER TABLE board_intake_queue ADD COLUMN arrival_time VARCHAR(50) NULL`).catch(() => { });
+        await (0, db_1.execute)(`ALTER TABLE board_intake_queue ADD COLUMN gate VARCHAR(50) NULL`).catch(() => { });
+        return (0, db_1.queryAll)(`SELECT id, product_name, customer_name, quantity, vehicle_registration, arrival_time, gate, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at, reverted_at, reverted_by, actor_name, actor_email
+      FROM board_intake_queue ORDER BY created_at DESC LIMIT ? OFFSET ?`, [Math.max(1, Math.min(50, limit)), Math.max(0, offset)]);
+    }
 }
 async function getBoardIntakeQueueEntry(id) {
     return (0, db_1.queryOne)('SELECT * FROM board_intake_queue WHERE id = ?', [id]);
@@ -3434,6 +3443,9 @@ function ensureShopFloorTables() {
     )`;
     (0, db_1.execute)(createIncidentsTable).catch(() => { });
     (0, db_1.execute)(createAssignedItemsTable).catch(() => { });
+    (0, db_1.execute)(`ALTER TABLE board_intake_queue ADD COLUMN vehicle_registration VARCHAR(100) NULL`).catch(() => { });
+    (0, db_1.execute)(`ALTER TABLE board_intake_queue ADD COLUMN arrival_time VARCHAR(50) NULL`).catch(() => { });
+    (0, db_1.execute)(`ALTER TABLE board_intake_queue ADD COLUMN gate VARCHAR(50) NULL`).catch(() => { });
     if (dialect === 'mysql') {
         (0, db_1.execute)(`ALTER TABLE shop_floor_assigned_items ADD COLUMN quantity INTEGER NOT NULL DEFAULT 1`).catch(() => { });
     }

@@ -154,37 +154,98 @@ export class OdooClient {
   }
 
   async testConnection() {
-    const versionResponse = await axios.get<{ version?: string; version_info?: unknown[] }>(
-      `${this.baseUrl}/web/version`,
-      {
-        timeout: this.timeoutMs,
-        validateStatus: () => true,
-      },
-    );
+    const startTime = Date.now();
+    let versionResponse;
+    try {
+      versionResponse = await axios.get<{ version?: string; version_info?: unknown[] }>(
+        `${this.baseUrl}/web/version`,
+        {
+          timeout: this.timeoutMs,
+          validateStatus: () => true,
+        },
+      );
+    } catch (netErr: any) {
+      const code = netErr?.code || 'UNKNOWN_NET_ERROR';
+      if (code === 'ECONNREFUSED') {
+        throw new OdooClientError(
+          `Outbound connection refused (ECONNREFUSED) to ${this.baseUrl}. If running on live hosting/cPanel, your web host's firewall (CSF) may be blocking outbound TCP connections on port 443.`,
+          502,
+          { code, baseUrl: this.baseUrl },
+        );
+      }
+      if (code === 'ENOTFOUND') {
+        throw new OdooClientError(
+          `DNS resolution failed (ENOTFOUND) for ${this.baseUrl}. Please check that the URL domain is spelled correctly.`,
+          502,
+          { code, baseUrl: this.baseUrl },
+        );
+      }
+      if (code === 'ETIMEDOUT') {
+        throw new OdooClientError(
+          `Connection timed out (ETIMEDOUT) reaching ${this.baseUrl} after ${this.timeoutMs}ms.`,
+          504,
+          { code, baseUrl: this.baseUrl },
+        );
+      }
+      throw new OdooClientError(
+        `Network error (${code}) reaching ${this.baseUrl}: ${netErr?.message || 'Failed to connect'}.`,
+        502,
+        { code, baseUrl: this.baseUrl },
+      );
+    }
+
+    const latencyMs = Date.now() - startTime;
 
     if (versionResponse.status < 200 || versionResponse.status >= 300) {
       throw new OdooClientError(
-        `Could not reach ${this.baseUrl}/web/version (${versionResponse.status}).`,
+        `Could not reach ${this.baseUrl}/web/version (HTTP ${versionResponse.status}). Server returned non-200 status.`,
         versionResponse.status,
         versionResponse.data,
       );
     }
 
-    const userList = await this.request<Array<{ id: number; name: string; login: string }>>(
-      'res.users',
-      'search_read',
-      {
-        domain: [['login', '=', this.credentials.username]],
-        fields: ['id', 'name', 'login'],
-        limit: 1,
-      },
-    );
+    const apiKey = this.credentials.apiKey?.trim() || '';
+    if (!apiKey) {
+      throw new OdooClientError(
+        `No API Key configured. Please paste an Odoo Developer API Key in connection settings.`,
+        401,
+      );
+    }
+
+    let userList: Array<{ id: number; name: string; login: string }> = [];
+    try {
+      userList = await this.request<Array<{ id: number; name: string; login: string }>>(
+        'res.users',
+        'search_read',
+        {
+          domain: [['login', '=', this.credentials.username]],
+          fields: ['id', 'name', 'login'],
+          limit: 1,
+        },
+      );
+    } catch (authErr: any) {
+      const errMessage = authErr instanceof Error ? authErr.message : String(authErr);
+      const isAuthIssue = /not authenticated|unauthorized|bearer|access denied|login/i.test(errMessage) || authErr?.status === 401 || authErr?.status === 403;
+      
+      let hint = '';
+      if (isAuthIssue) {
+        hint = ` [Diagnostic Hint]: Authentication failed for user '${this.credentials.username}' on database '${this.credentials.database}'. If 2FA (Two-Factor Authentication) is enabled on this account, regular web passwords will be rejected by Odoo. Generate an API Key under User Profile -> Account Security -> Developer API Keys in Odoo and paste it into Settings.`;
+      }
+
+      throw new OdooClientError(
+        `Odoo API authentication failed (${errMessage}).${hint}`,
+        authErr?.status || 401,
+        authErr?.responseData || null,
+      );
+    }
 
     return {
       version:
         versionResponse.data?.version ||
         String(versionResponse.data?.version_info?.[0] || 'unknown'),
       user: userList[0] || null,
+      latencyMs,
+      keyLength: apiKey.length,
     };
   }
 
