@@ -57,6 +57,48 @@ interface SharedOdooWebSession {
 
 const sharedOdooWebSessions = new Map<string, SharedOdooWebSession>();
 
+let isOdooTrafficPausedFlag = env.ODOO_PAUSE_TRAFFIC === 'true';
+
+export function isOdooTrafficPaused(): boolean {
+  return isOdooTrafficPausedFlag;
+}
+
+export function setOdooTrafficPaused(paused: boolean): void {
+  isOdooTrafficPausedFlag = paused;
+}
+
+let lastOdooRequestEndTime = 0;
+let odooRequestQueue: Promise<unknown> = Promise.resolve();
+
+export function enqueueOdooRequest<T>(fn: () => Promise<T>): Promise<T> {
+  const minIntervalMs = Math.max(0, Number(env.ODOO_RATE_LIMIT_MIN_INTERVAL_MS) || 1000);
+
+  const nextTask = odooRequestQueue.then(async () => {
+    if (isOdooTrafficPaused()) {
+      throw new OdooClientError(
+        'Odoo API traffic is currently paused by administrative setting (firewall block / rate limit resolution).',
+        429,
+      );
+    }
+
+    const now = Date.now();
+    const elapsed = now - lastOdooRequestEndTime;
+    if (minIntervalMs > 0 && elapsed < minIntervalMs) {
+      await new Promise((resolve) => setTimeout(resolve, minIntervalMs - elapsed));
+    }
+
+    try {
+      return await fn();
+    } finally {
+      lastOdooRequestEndTime = Date.now();
+    }
+  });
+
+  odooRequestQueue = nextTask.catch(() => undefined);
+
+  return nextTask;
+}
+
 function parseOdooDateTime(value: string | null | undefined): Date | null {
   if (!value) {
     return null;
@@ -157,12 +199,14 @@ export class OdooClient {
     const startTime = Date.now();
     let versionResponse;
     try {
-      versionResponse = await axios.get<{ version?: string; version_info?: unknown[] }>(
-        `${this.baseUrl}/web/version`,
-        {
-          timeout: this.timeoutMs,
-          validateStatus: () => true,
-        },
+      versionResponse = await enqueueOdooRequest(() =>
+        axios.get<{ version?: string; version_info?: unknown[] }>(
+          `${this.baseUrl}/web/version`,
+          {
+            timeout: this.timeoutMs,
+            validateStatus: () => true,
+          },
+        ),
       );
     } catch (netErr: any) {
       const code = netErr?.code || 'UNKNOWN_NET_ERROR';
@@ -2206,10 +2250,12 @@ export class OdooClient {
           const token = match[1];
           const downloadUrl = `${this.baseUrl}/documents/content/${token}`;
           try {
-            const response = await axios.get(downloadUrl, {
-              responseType: 'arraybuffer',
-              timeout: 15000,
-            });
+            const response = await enqueueOdooRequest(() =>
+              axios.get(downloadUrl, {
+                responseType: 'arraybuffer',
+                timeout: 15000,
+              }),
+            );
             if (response.status === 200 && response.data) {
               return {
                 filename: slips[0].name ? `${slips[0].name.replace(/[<>:"/\\|?*]/g, '').trim()}.pdf` : `payslip-${payslipId}.pdf`,
@@ -3183,14 +3229,16 @@ export class OdooClient {
     let attempt = 0;
     try {
       while (true) {
-        const response = await axios.post<T | OdooErrorResponse>(
-          `${this.json2BaseUrl}/${model}/${method}`,
-          payload,
-          {
-            headers: this.buildHeaders(),
-            timeout: options?.timeoutMs ?? this.timeoutMs,
-            validateStatus: () => true,
-          },
+        const response = await enqueueOdooRequest(() =>
+          axios.post<T | OdooErrorResponse>(
+            `${this.json2BaseUrl}/${model}/${method}`,
+            payload,
+            {
+              headers: this.buildHeaders(),
+              timeout: options?.timeoutMs ?? this.timeoutMs,
+              validateStatus: () => true,
+            },
+          ),
         );
 
         if (response.status >= 200 && response.status < 300) {
@@ -3262,29 +3310,31 @@ export class OdooClient {
       return;
     }
 
-    const response = await axios.post<OdooJsonRpcResponse<{
-      uid?: number;
-      user_context?: Record<string, unknown>;
-    }>>(
-      `${this.baseUrl}/web/session/authenticate`,
-      {
-        jsonrpc: '2.0',
-        method: 'call',
-        params: {
-          db: this.credentials.database.trim(),
-          login: this.credentials.username,
-          password: this.credentials.shopFloorPassword || this.credentials.apiKey,
+    const response = await enqueueOdooRequest(() =>
+      axios.post<OdooJsonRpcResponse<{
+        uid?: number;
+        user_context?: Record<string, unknown>;
+      }>>(
+        `${this.baseUrl}/web/session/authenticate`,
+        {
+          jsonrpc: '2.0',
+          method: 'call',
+          params: {
+            db: this.credentials.database.trim(),
+            login: this.credentials.username,
+            password: this.credentials.shopFloorPassword || this.credentials.apiKey,
+          },
+          id: ++this.webRpcSequence,
         },
-        id: ++this.webRpcSequence,
-      },
-      {
-        headers: {
-          'Content-Type': 'application/json; charset=utf-8',
-          'User-Agent': 'odoo-job-summary-extractor-node',
+        {
+          headers: {
+            'Content-Type': 'application/json; charset=utf-8',
+            'User-Agent': 'odoo-job-summary-extractor-node',
+          },
+          timeout: this.timeoutMs,
+          validateStatus: () => true,
         },
-        timeout: this.timeoutMs,
-        validateStatus: () => true,
-      },
+      ),
     );
 
     const responseCookie = this.mergeResponseCookies('', response.headers['set-cookie']);
@@ -3319,21 +3369,23 @@ export class OdooClient {
 
     if (!response.data?.result?.uid) {
       if (responseCookie) {
-        const sessionProbe = await axios.post<OdooJsonRpcResponse<{
-          uid?: number;
-          user_context?: Record<string, unknown>;
-        }>>(
-          `${this.baseUrl}/web/session/get_session_info`,
-          { jsonrpc: '2.0', method: 'call', params: {}, id: ++this.webRpcSequence },
-          {
-            headers: {
-              'Content-Type': 'application/json; charset=utf-8',
-              Cookie: responseCookie,
-              'User-Agent': 'odoo-job-summary-extractor-node',
+        const sessionProbe = await enqueueOdooRequest(() =>
+          axios.post<OdooJsonRpcResponse<{
+            uid?: number;
+            user_context?: Record<string, unknown>;
+          }>>(
+            `${this.baseUrl}/web/session/get_session_info`,
+            { jsonrpc: '2.0', method: 'call', params: {}, id: ++this.webRpcSequence },
+            {
+              headers: {
+                'Content-Type': 'application/json; charset=utf-8',
+                Cookie: responseCookie,
+                'User-Agent': 'odoo-job-summary-extractor-node',
+              },
+              timeout: this.timeoutMs,
+              validateStatus: () => true,
             },
-            timeout: this.timeoutMs,
-            validateStatus: () => true,
-          },
+          ),
         );
         if (
           sessionProbe.status >= 200 &&
@@ -3404,16 +3456,18 @@ export class OdooClient {
     this.webSessionCookie = null;
     this.webSessionContext = {};
 
-    const loginPage = await axios.get<string>(
-      `${this.baseUrl}/web/login`,
-      {
-        params: { db: this.credentials.database.trim(), redirect: '/web' },
-        headers: { 'User-Agent': 'odoo-job-summary-extractor-node' },
-        timeout: this.timeoutMs,
-        maxRedirects: 0,
-        responseType: 'text',
-        validateStatus: () => true,
-      },
+    const loginPage = await enqueueOdooRequest(() =>
+      axios.get<string>(
+        `${this.baseUrl}/web/login`,
+        {
+          params: { db: this.credentials.database.trim(), redirect: '/web' },
+          headers: { 'User-Agent': 'odoo-job-summary-extractor-node' },
+          timeout: this.timeoutMs,
+          maxRedirects: 0,
+          responseType: 'text',
+          validateStatus: () => true,
+        },
+      ),
     );
     if (loginPage.status < 200 || loginPage.status >= 400) {
       throw new OdooClientError(
@@ -3436,20 +3490,22 @@ export class OdooClient {
       password: this.credentials.shopFloorPassword || '',
       redirect: '/web',
     }).toString();
-    const loginResponse = await axios.post<string>(
-      `${this.baseUrl}/web/login`,
-      loginBody,
-      {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          Cookie: initialCookie,
-          'User-Agent': 'odoo-job-summary-extractor-node',
+    const loginResponse = await enqueueOdooRequest(() =>
+      axios.post<string>(
+        `${this.baseUrl}/web/login`,
+        loginBody,
+        {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            Cookie: initialCookie,
+            'User-Agent': 'odoo-job-summary-extractor-node',
+          },
+          timeout: this.timeoutMs,
+          maxRedirects: 0,
+          responseType: 'text',
+          validateStatus: () => true,
         },
-        timeout: this.timeoutMs,
-        maxRedirects: 0,
-        responseType: 'text',
-        validateStatus: () => true,
-      },
+      ),
     );
     const loginCookie = this.mergeResponseCookies(
       initialCookie,
@@ -3458,18 +3514,20 @@ export class OdooClient {
     const location = String(loginResponse.headers.location || '');
 
     if (/\/web\/login\/totp/i.test(location)) {
-      const otpPage = await axios.get<string>(
-        new URL(location, this.baseUrl).toString(),
-        {
-          headers: {
-            Cookie: loginCookie,
-            'User-Agent': 'odoo-job-summary-extractor-node',
+      const otpPage = await enqueueOdooRequest(() =>
+        axios.get<string>(
+          new URL(location, this.baseUrl).toString(),
+          {
+            headers: {
+              Cookie: loginCookie,
+              'User-Agent': 'odoo-job-summary-extractor-node',
+            },
+            timeout: this.timeoutMs,
+            maxRedirects: 0,
+            responseType: 'text',
+            validateStatus: () => true,
           },
-          timeout: this.timeoutMs,
-          maxRedirects: 0,
-          responseType: 'text',
-          validateStatus: () => true,
-        },
+        ),
       );
       const otpCookie = this.mergeResponseCookies(loginCookie, otpPage.headers['set-cookie']);
       const otpCsrfToken =
@@ -3487,21 +3545,23 @@ export class OdooClient {
       return { connected: false, requiresOtp: true };
     }
 
-    const sessionInfoResponse = await axios.post<OdooJsonRpcResponse<{
-      uid?: number;
-      user_context?: Record<string, unknown>;
-    }>>(
-      `${this.baseUrl}/web/session/get_session_info`,
-      { jsonrpc: '2.0', method: 'call', params: {}, id: ++this.webRpcSequence },
-      {
-        headers: {
-          'Content-Type': 'application/json; charset=utf-8',
-          Cookie: loginCookie,
-          'User-Agent': 'odoo-job-summary-extractor-node',
+    const sessionInfoResponse = await enqueueOdooRequest(() =>
+      axios.post<OdooJsonRpcResponse<{
+        uid?: number;
+        user_context?: Record<string, unknown>;
+      }>>(
+        `${this.baseUrl}/web/session/get_session_info`,
+        { jsonrpc: '2.0', method: 'call', params: {}, id: ++this.webRpcSequence },
+        {
+          headers: {
+            'Content-Type': 'application/json; charset=utf-8',
+            Cookie: loginCookie,
+            'User-Agent': 'odoo-job-summary-extractor-node',
+          },
+          timeout: this.timeoutMs,
+          validateStatus: () => true,
         },
-        timeout: this.timeoutMs,
-        validateStatus: () => true,
-      },
+      ),
     );
     if (
       sessionInfoResponse.status < 200 ||
@@ -3551,41 +3611,45 @@ export class OdooClient {
       redirect: '/web',
       remember: '1',
     }).toString();
-    const response = await axios.post(
-      `${this.baseUrl}/web/login/totp`,
-      formBody,
-      {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          Cookie: pendingSession.cookie,
-          'User-Agent': 'odoo-job-summary-extractor-node',
+    const response = await enqueueOdooRequest(() =>
+      axios.post(
+        `${this.baseUrl}/web/login/totp`,
+        formBody,
+        {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            Cookie: pendingSession.cookie,
+            'User-Agent': 'odoo-job-summary-extractor-node',
+          },
+          maxRedirects: 0,
+          timeout: this.timeoutMs,
+          responseType: 'text',
+          validateStatus: () => true,
         },
-        maxRedirects: 0,
-        timeout: this.timeoutMs,
-        responseType: 'text',
-        validateStatus: () => true,
-      },
+      ),
     );
     const cookie = this.mergeResponseCookies(
       pendingSession.cookie,
       response.headers['set-cookie'],
     );
 
-    const sessionInfoResponse = await axios.post<OdooJsonRpcResponse<{
-      uid?: number;
-      user_context?: Record<string, unknown>;
-    }>>(
-      `${this.baseUrl}/web/session/get_session_info`,
-      { jsonrpc: '2.0', method: 'call', params: {}, id: ++this.webRpcSequence },
-      {
-        headers: {
-          'Content-Type': 'application/json; charset=utf-8',
-          Cookie: cookie,
-          'User-Agent': 'odoo-job-summary-extractor-node',
+    const sessionInfoResponse = await enqueueOdooRequest(() =>
+      axios.post<OdooJsonRpcResponse<{
+        uid?: number;
+        user_context?: Record<string, unknown>;
+      }>>(
+        `${this.baseUrl}/web/session/get_session_info`,
+        { jsonrpc: '2.0', method: 'call', params: {}, id: ++this.webRpcSequence },
+        {
+          headers: {
+            'Content-Type': 'application/json; charset=utf-8',
+            Cookie: cookie,
+            'User-Agent': 'odoo-job-summary-extractor-node',
+          },
+          timeout: this.timeoutMs,
+          validateStatus: () => true,
         },
-        timeout: this.timeoutMs,
-        validateStatus: () => true,
-      },
+      ),
     );
     if (
       sessionInfoResponse.status < 200 ||
@@ -3654,32 +3718,34 @@ export class OdooClient {
           : {}
       ),
     };
-    const response = await axios.post<OdooJsonRpcResponse<T>>(
-      `${this.baseUrl}/web/dataset/call_kw/${encodeURIComponent(model)}/${encodeURIComponent(method)}`,
-      {
-        jsonrpc: '2.0',
-        method: 'call',
-        params: {
-          model,
-          method,
-          args,
-          kwargs: {
-            ...kwargs,
-            context,
+    const response = await enqueueOdooRequest(() =>
+      axios.post<OdooJsonRpcResponse<T>>(
+        `${this.baseUrl}/web/dataset/call_kw/${encodeURIComponent(model)}/${encodeURIComponent(method)}`,
+        {
+          jsonrpc: '2.0',
+          method: 'call',
+          params: {
+            model,
+            method,
+            args,
+            kwargs: {
+              ...kwargs,
+              context,
+            },
           },
+          id: ++this.webRpcSequence,
         },
-        id: ++this.webRpcSequence,
-      },
-      {
-        headers: {
-          'Content-Type': 'application/json; charset=utf-8',
-          Cookie: this.webSessionCookie || '',
-          'User-Agent': 'odoo-job-summary-extractor-node',
-          'X-Requested-With': 'XMLHttpRequest',
+        {
+          headers: {
+            'Content-Type': 'application/json; charset=utf-8',
+            Cookie: this.webSessionCookie || '',
+            'User-Agent': 'odoo-job-summary-extractor-node',
+            'X-Requested-With': 'XMLHttpRequest',
+          },
+          timeout: this.timeoutMs,
+          validateStatus: () => true,
         },
-        timeout: this.timeoutMs,
-        validateStatus: () => true,
-      },
+      ),
     );
 
     const sessionExpired =

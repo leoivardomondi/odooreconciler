@@ -21,7 +21,7 @@ import {
 } from '../models/types';
 import { logEvent } from '../services/logService';
 import { sendMailWithConfig } from '../services/mailTransport';
-import { OdooClient } from '../services/odooClient';
+import { OdooClient, isOdooTrafficPaused, setOdooTrafficPaused } from '../services/odooClient';
 import { testPayrollBridgeConnection } from '../services/payrollBridgeService';
 import {
   createEmptyFieldMappings,
@@ -1807,6 +1807,27 @@ router.post('/settings/clear-cache', async (_req: Request, res: Response) => {
 
 router.get('/settings/clear-cache', (_req: Request, res: Response) => {
   res.redirect('/settings?message=Use the Clear Cache button to clear cached field lists.');
+});
+
+router.get('/settings/odoo-traffic-pause', (_req: Request, res: Response) => {
+  res.json({
+    paused: isOdooTrafficPaused(),
+    minIntervalMs: Number(process.env.ODOO_RATE_LIMIT_MIN_INTERVAL_MS) || 1000,
+    policy: '1 call/sec, 0 parallel calls',
+  });
+});
+
+router.post('/settings/odoo-traffic-pause', async (req: Request, res: Response) => {
+  const pause = Boolean(req.body.paused);
+  setOdooTrafficPaused(pause);
+  await logEvent('info', `Odoo traffic pause state changed`, { paused: pause });
+  res.json({
+    success: true,
+    paused: isOdooTrafficPaused(),
+    message: pause
+      ? 'Odoo API traffic has been completely paused.'
+      : 'Odoo API traffic has been unpaused and rate-limited to 1 call/sec.',
+  });
 });
 
 export default router;

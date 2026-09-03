@@ -21,7 +21,7 @@ import {
   ensureMissingJobSummaryReminder,
 } from './jobSummaryReminderService';
 import { logEvent } from './logService';
-import { OdooClient } from './odooClient';
+import { OdooClient, isOdooTrafficPaused } from './odooClient';
 import {
   getRecentDocumentPdfs,
   markPoBillDocumentSkipped,
@@ -595,6 +595,23 @@ export async function runPoBillSchedulerCycle(
   const toDate = formatOdooDateTime(new Date());
   const batchSize = Math.max(1, Number(settings.poBillScheduler.batchSize || CAMPAIGN_BATCH_SIZE));
 
+  if (isOdooTrafficPaused()) {
+    const run = await insertSchedulerRun({
+      status: 'skipped',
+      trigger,
+      summary: 'Odoo API traffic is paused for firewall unban resolution.',
+      context: {
+        jobType: PO_BILL_SCHEDULER_JOB_TYPE,
+        schedulerName: 'PO Bill Scheduler',
+        fromDate,
+        toDate,
+        batchSize,
+      },
+    });
+
+    return { run, scannedCount: 0, processedCount: 0, skippedCount: 0, failedCount: 0 };
+  }
+
   if (!settings.poBillScheduler.enabled) {
     const run = await insertSchedulerRun({
       status: 'skipped',
@@ -1038,18 +1055,40 @@ export async function runSchedulerCycle(
     adaptiveLookbackHours,
   );
 
+  if (isOdooTrafficPaused()) {
+    const run = await insertSchedulerRun({
+      status: 'skipped',
+      trigger,
+      summary: 'Odoo API traffic is paused for firewall unban resolution.',
+      context: {
+        confirmedFromDate: settings.scheduler.confirmedFromDate,
+        effectiveConfirmedFromDate,
+        jobType: SALES_ORDER_SCHEDULER_JOB_TYPE,
+        schedulerName: 'Sales Order Scheduler',
+      },
+    });
+
+    return {
+      run,
+      scannedCount: 0,
+      processedCount: 0,
+      skippedCount: 0,
+      failedCount: 0,
+    };
+  }
+
   if (!settings.scheduler.enabled) {
     const run = await insertSchedulerRun({
       status: 'skipped',
       trigger,
-        summary: 'Scheduler is disabled.',
-        context: {
-          confirmedFromDate: settings.scheduler.confirmedFromDate,
-          effectiveConfirmedFromDate,
-          jobType: SALES_ORDER_SCHEDULER_JOB_TYPE,
-          schedulerName: 'Sales Order Scheduler',
-        },
-      });
+      summary: 'Scheduler is disabled.',
+      context: {
+        confirmedFromDate: settings.scheduler.confirmedFromDate,
+        effectiveConfirmedFromDate,
+        jobType: SALES_ORDER_SCHEDULER_JOB_TYPE,
+        schedulerName: 'Sales Order Scheduler',
+      },
+    });
 
     return {
       run,
