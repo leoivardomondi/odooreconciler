@@ -574,10 +574,10 @@ export async function getSettings(): Promise<AppSettings> {
 
   return {
     odoo: {
-      baseUrl: row.odoo_base_url || '',
-      database: row.odoo_database || '',
-      username: row.odoo_username || '',
-      apiKey: odooApiKey,
+      baseUrl: row.odoo_base_url || env.ODOO_BASE_URL || '',
+      database: row.odoo_database || env.ODOO_DATABASE || '',
+      username: row.odoo_username || env.ODOO_USERNAME || '',
+      apiKey: odooApiKey || env.ODOO_API_KEY || '',
       shopFloorPassword: odooShopFloorPassword,
     },
     fieldMappings,

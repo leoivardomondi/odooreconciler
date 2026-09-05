@@ -1,4 +1,24 @@
 import axios, { AxiosError } from 'axios';
+import http from 'http';
+import https from 'https';
+
+const odooHttpsAgent = new https.Agent({
+  keepAlive: false,
+  maxSockets: 1,
+});
+
+const odooHttpAgent = new http.Agent({
+  keepAlive: false,
+  maxSockets: 1,
+});
+
+const odooAxios = axios.create({
+  httpAgent: odooHttpAgent,
+  httpsAgent: odooHttpsAgent,
+  headers: {
+    Connection: 'close',
+  },
+});
 import {
   AttachmentInfo,
   CustomerInvoiceSummary,
@@ -71,7 +91,7 @@ let lastOdooRequestEndTime = 0;
 let odooRequestQueue: Promise<unknown> = Promise.resolve();
 
 export function enqueueOdooRequest<T>(fn: () => Promise<T>): Promise<T> {
-  const minIntervalMs = Math.max(0, Number(env.ODOO_RATE_LIMIT_MIN_INTERVAL_MS) || 1000);
+  const minIntervalMs = Math.max(0, Number(env.ODOO_RATE_LIMIT_MIN_INTERVAL_MS) || 2500);
 
   const nextTask = odooRequestQueue.then(async () => {
     if (isOdooTrafficPaused()) {
@@ -200,7 +220,7 @@ export class OdooClient {
     let versionResponse;
     try {
       versionResponse = await enqueueOdooRequest(() =>
-        axios.get<{ version?: string; version_info?: unknown[] }>(
+        odooAxios.get<{ version?: string; version_info?: unknown[] }>(
           `${this.baseUrl}/web/version`,
           {
             timeout: this.timeoutMs,
@@ -2251,7 +2271,7 @@ export class OdooClient {
           const downloadUrl = `${this.baseUrl}/documents/content/${token}`;
           try {
             const response = await enqueueOdooRequest(() =>
-              axios.get(downloadUrl, {
+              odooAxios.get(downloadUrl, {
                 responseType: 'arraybuffer',
                 timeout: 15000,
               }),
@@ -3230,7 +3250,7 @@ export class OdooClient {
     try {
       while (true) {
         const response = await enqueueOdooRequest(() =>
-          axios.post<T | OdooErrorResponse>(
+          odooAxios.post<T | OdooErrorResponse>(
             `${this.json2BaseUrl}/${model}/${method}`,
             payload,
             {
@@ -3290,6 +3310,7 @@ export class OdooClient {
         ? { 'X-Odoo-Database': this.credentials.database.trim() }
         : {}),
       'User-Agent': 'odoo-job-summary-extractor-node',
+      Connection: 'close',
     };
   }
 
@@ -3311,7 +3332,7 @@ export class OdooClient {
     }
 
     const response = await enqueueOdooRequest(() =>
-      axios.post<OdooJsonRpcResponse<{
+      odooAxios.post<OdooJsonRpcResponse<{
         uid?: number;
         user_context?: Record<string, unknown>;
       }>>(
@@ -3370,7 +3391,7 @@ export class OdooClient {
     if (!response.data?.result?.uid) {
       if (responseCookie) {
         const sessionProbe = await enqueueOdooRequest(() =>
-          axios.post<OdooJsonRpcResponse<{
+          odooAxios.post<OdooJsonRpcResponse<{
             uid?: number;
             user_context?: Record<string, unknown>;
           }>>(
@@ -3457,7 +3478,7 @@ export class OdooClient {
     this.webSessionContext = {};
 
     const loginPage = await enqueueOdooRequest(() =>
-      axios.get<string>(
+      odooAxios.get<string>(
         `${this.baseUrl}/web/login`,
         {
           params: { db: this.credentials.database.trim(), redirect: '/web' },
@@ -3491,7 +3512,7 @@ export class OdooClient {
       redirect: '/web',
     }).toString();
     const loginResponse = await enqueueOdooRequest(() =>
-      axios.post<string>(
+      odooAxios.post<string>(
         `${this.baseUrl}/web/login`,
         loginBody,
         {
@@ -3515,7 +3536,7 @@ export class OdooClient {
 
     if (/\/web\/login\/totp/i.test(location)) {
       const otpPage = await enqueueOdooRequest(() =>
-        axios.get<string>(
+        odooAxios.get<string>(
           new URL(location, this.baseUrl).toString(),
           {
             headers: {
@@ -3546,7 +3567,7 @@ export class OdooClient {
     }
 
     const sessionInfoResponse = await enqueueOdooRequest(() =>
-      axios.post<OdooJsonRpcResponse<{
+      odooAxios.post<OdooJsonRpcResponse<{
         uid?: number;
         user_context?: Record<string, unknown>;
       }>>(
@@ -3612,7 +3633,7 @@ export class OdooClient {
       remember: '1',
     }).toString();
     const response = await enqueueOdooRequest(() =>
-      axios.post(
+      odooAxios.post(
         `${this.baseUrl}/web/login/totp`,
         formBody,
         {
@@ -3634,7 +3655,7 @@ export class OdooClient {
     );
 
     const sessionInfoResponse = await enqueueOdooRequest(() =>
-      axios.post<OdooJsonRpcResponse<{
+      odooAxios.post<OdooJsonRpcResponse<{
         uid?: number;
         user_context?: Record<string, unknown>;
       }>>(
@@ -3719,7 +3740,7 @@ export class OdooClient {
       ),
     };
     const response = await enqueueOdooRequest(() =>
-      axios.post<OdooJsonRpcResponse<T>>(
+      odooAxios.post<OdooJsonRpcResponse<T>>(
         `${this.baseUrl}/web/dataset/call_kw/${encodeURIComponent(model)}/${encodeURIComponent(method)}`,
         {
           jsonrpc: '2.0',
