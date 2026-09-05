@@ -1531,4 +1531,23 @@ router.post('/settings/clear-cache', async (_req, res) => {
 router.get('/settings/clear-cache', (_req, res) => {
     res.redirect('/settings?message=Use the Clear Cache button to clear cached field lists.');
 });
+router.get('/settings/odoo-traffic-pause', (_req, res) => {
+    res.json({
+        paused: (0, odooClient_1.isOdooTrafficPaused)(),
+        minIntervalMs: Number(process.env.ODOO_RATE_LIMIT_MIN_INTERVAL_MS) || 1000,
+        policy: '1 call/sec, 0 parallel calls',
+    });
+});
+router.post('/settings/odoo-traffic-pause', async (req, res) => {
+    const pause = Boolean(req.body.paused);
+    (0, odooClient_1.setOdooTrafficPaused)(pause);
+    await (0, logService_1.logEvent)('info', `Odoo traffic pause state changed`, { paused: pause });
+    res.json({
+        success: true,
+        paused: (0, odooClient_1.isOdooTrafficPaused)(),
+        message: pause
+            ? 'Odoo API traffic has been completely paused.'
+            : 'Odoo API traffic has been unpaused and rate-limited to 1 call/sec.',
+    });
+});
 exports.default = router;

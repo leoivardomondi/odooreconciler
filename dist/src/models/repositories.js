@@ -577,10 +577,10 @@ async function getSettings() {
     }
     return {
         odoo: {
-            baseUrl: row.odoo_base_url || '',
-            database: row.odoo_database || '',
-            username: row.odoo_username || '',
-            apiKey: odooApiKey,
+            baseUrl: row.odoo_base_url || env_1.env.ODOO_BASE_URL || '',
+            database: row.odoo_database || env_1.env.ODOO_DATABASE || '',
+            username: row.odoo_username || env_1.env.ODOO_USERNAME || '',
+            apiKey: odooApiKey || env_1.env.ODOO_API_KEY || '',
             shopFloorPassword: odooShopFloorPassword,
         },
         fieldMappings,
