@@ -410,7 +410,7 @@ app.use(async (req: Request, res: Response, next: NextFunction) => {
 const recentUserActivity = new Map<string, number>();
 app.use((req: Request, _res: Response, next: NextFunction) => {
   const user = req.authUser;
-  if (user && !req.path.startsWith('/public') && !req.path.startsWith('/notifications/')) {
+  if (user && !req.path.startsWith('/public') && !req.path.startsWith('/notifications/') && !req.path.includes('notifications')) {
     const isAction = !['GET', 'HEAD', 'OPTIONS'].includes(req.method);
     const activityKey = `${user.email}:${req.method}:${req.path}`;
     const lastRecordedAt = recentUserActivity.get(activityKey) || 0;
