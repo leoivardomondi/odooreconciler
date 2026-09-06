@@ -1,6 +1,6 @@
 import { Request, Response, Router } from 'express';
 import { randomUUID } from 'crypto';
-import { createBoardIntakeQueueEntry, getApprovedAuthUsers, getBoardIntakeQueueEntry, getRecentBoardIntakeQueueEntries, getSettings, getShopFloorFeatureFlags, saveShopFloorFeatureFlags, upsertApprovedAuthUser } from '../models/repositories';
+import { createBoardIntakeQueueEntry, getApprovedAuthUsers, getBoardIntakeQueueEntry, getRecentBoardIntakeQueueEntries, getSettings, getShopFloorFeatureFlags, saveShopFloorFeatureFlags, upsertApprovedAuthUser, getShopFloorDashboardSnapshot, saveShopFloorDashboardSnapshot, getShopFloorSharedCache, saveShopFloorSharedCache, deleteShopFloorSharedCache, deleteShopFloorDashboardSnapshot } from '../models/repositories';
 import { ShopFloorFeatureFlags, ShopFloorFeatureKey } from '../models/types';
 import { OdooClient } from '../services/odooClient';
 import { buildPayrollAdvanceRecords } from '../services/payrollBridgeService';
@@ -342,6 +342,7 @@ class MemoryCache {
 
   delete(key: string): void {
     this.cache.delete(key);
+    void deleteShopFloorSharedCache(key).catch(() => {});
   }
 
   clearPrefix(prefix: string): void {
@@ -349,6 +350,10 @@ class MemoryCache {
       if (key.startsWith(prefix)) {
         this.cache.delete(key);
       }
+    }
+    if (prefix === 'shop-floor-dashboard:') {
+      this.cache.delete('shop-floor:shared-work-orders:v1');
+      void deleteShopFloorSharedCache('shop-floor:shared-work-orders:v1').catch(() => {});
     }
   }
 
@@ -398,6 +403,109 @@ class MemoryCache {
     const promise = fetcher()
       .then((fresh) => {
         this.set(key, fresh, maxTtlMs, freshTtlMs);
+        return fresh;
+      })
+      .finally(() => {
+        this.inFlight.delete(key);
+      });
+
+    this.inFlight.set(key, promise);
+    return promise;
+  }
+
+  isStale(key: string): boolean {
+    const entry = this.cache.get(key);
+    return !entry || Date.now() > entry.freshUntil;
+  }
+
+  isInFlight(key: string): boolean {
+    return this.inFlight.has(key);
+  }
+
+  /**
+   * Multi-tier Stale-While-Revalidate:
+   * 1. Check in-memory RAM cache (instant < 1ms)
+   * 2. Check MySQL persistent shared cache (instant < 10ms)
+   * 3. SWR background revalidation updates both RAM and MySQL
+   * 4. Cold miss fetches fresh and persists to both RAM and MySQL
+   */
+  async getOrFetchTieredSWR<T>(
+    key: string,
+    freshTtlMs: number,
+    maxTtlMs: number,
+    fetcher: () => Promise<T>,
+  ): Promise<T> {
+    const now = Date.now();
+    const entry = this.cache.get(key);
+
+    if (entry && now <= entry.expiresAt) {
+      if (now > entry.freshUntil && !this.inFlight.has(key)) {
+        const bgPromise = fetcher()
+          .then(async (fresh) => {
+            this.set(key, fresh, maxTtlMs, freshTtlMs);
+            try {
+              await saveShopFloorSharedCache(key, fresh);
+            } catch (err) {
+              console.warn(`[shopFloorCache] MySQL save failed for ${key}:`, err);
+            }
+            return fresh;
+          })
+          .catch((err) => {
+            console.warn(`[shopFloorCache] Background refresh failed for ${key}:`, err?.message || err);
+            return entry.value;
+          })
+          .finally(() => {
+            this.inFlight.delete(key);
+          });
+        this.inFlight.set(key, bgPromise);
+      }
+      return entry.value;
+    }
+
+    // Check MySQL persistent shared cache if not in RAM
+    try {
+      const dbEntry = await getShopFloorSharedCache<T>(key);
+      if (dbEntry && dbEntry.data) {
+        this.set(key, dbEntry.data, maxTtlMs, freshTtlMs);
+        const ageMs = Math.max(0, now - new Date(dbEntry.syncedAt).getTime());
+        if (ageMs > freshTtlMs && !this.inFlight.has(key)) {
+          const bgPromise = fetcher()
+            .then(async (fresh) => {
+              this.set(key, fresh, maxTtlMs, freshTtlMs);
+              try {
+                await saveShopFloorSharedCache(key, fresh);
+              } catch (err) {
+                console.warn(`[shopFloorCache] MySQL save failed for ${key}:`, err);
+              }
+              return fresh;
+            })
+            .catch((err) => {
+              console.warn(`[shopFloorCache] Background refresh failed for ${key}:`, err?.message || err);
+              return dbEntry.data;
+            })
+            .finally(() => {
+              this.inFlight.delete(key);
+            });
+          this.inFlight.set(key, bgPromise);
+        }
+        return dbEntry.data;
+      }
+    } catch (err) {
+      console.warn(`[shopFloorCache] MySQL read failed for ${key}:`, err);
+    }
+
+    if (this.inFlight.has(key)) {
+      return this.inFlight.get(key) as Promise<T>;
+    }
+
+    const promise = fetcher()
+      .then(async (fresh) => {
+        this.set(key, fresh, maxTtlMs, freshTtlMs);
+        try {
+          await saveShopFloorSharedCache(key, fresh);
+        } catch (err) {
+          console.warn(`[shopFloorCache] MySQL save failed for ${key}:`, err);
+        }
         return fresh;
       })
       .finally(() => {
@@ -596,232 +704,251 @@ export async function buildOperatorDashboard(
       client.getTodayAttendance(employee.id),
       // 2. Late count this month
       client.getLateCountThisMonth(employee.id),
-    // 3. Work orders and stock alerts
+    // 3. Work orders and stock alerts (Shared factory data: cached in RAM + MySQL!)
       (async () => {
-        const [allOrdersRaw, performanceOrders] = await Promise.all([
-          client.getAllActiveWorkOrders(100),
-          client.getManufacturingPerformanceOrders(),
-        ]);
-        const allOrders = allOrdersRaw.filter(o => o.name.startsWith('WH/MO/'));
-        const originsToFetch = [...new Set([...allOrders, ...performanceOrders].map(o => o.origin).filter(Boolean))] as string[];
-        const moIds = allOrders.map(o => o.id);
+        const sharedMoData = await shopFloorCache.getOrFetchTieredSWR(
+          'shop-floor:shared-work-orders:v1',
+          3 * 60 * 1000,   // 3 minutes fresh
+          30 * 60 * 1000,  // 30 minutes max stale
+          async () => {
+            const [allOrdersRaw, performanceOrders] = await Promise.all([
+              client.getAllActiveWorkOrders(100),
+              client.getManufacturingPerformanceOrders(),
+            ]);
+            const allOrders = allOrdersRaw.filter(o => o.name.startsWith('WH/MO/'));
+            const originsToFetch = [...new Set([...allOrders, ...performanceOrders].map(o => o.origin).filter(Boolean))] as string[];
+            const moIds = allOrders.map(o => o.id);
 
-        const [clientMap, saleOrderDateMap, allComponents, poStateMap, workOrderStateMap] = await Promise.all([
-          client.getBulkSaleOrderClients(originsToFetch).catch(() => new Map<string, string>()),
-          client.getBulkSaleOrderConfirmationDates(originsToFetch).catch(() => new Map<string, string>()),
-          client.getBulkManufacturingOrderComponents(moIds).catch(() => []),
-          client.getBulkRelatedPurchaseOrderStates(originsToFetch).catch(() => new Map<string, string>()),
-          client.getBulkWorkOrderStates(moIds).catch(() => new Map<number, string>()),
-        ]);
+            const [clientMap, saleOrderDateMap, allComponents, poStateMap, workOrderStateMap] = await Promise.all([
+              client.getBulkSaleOrderClients(originsToFetch).catch(() => new Map<string, string>()),
+              client.getBulkSaleOrderConfirmationDates(originsToFetch).catch(() => new Map<string, string>()),
+              client.getBulkManufacturingOrderComponents(moIds).catch(() => []),
+              client.getBulkRelatedPurchaseOrderStates(originsToFetch).catch(() => new Map<string, string>()),
+              client.getBulkWorkOrderStates(moIds).catch(() => new Map<number, string>()),
+            ]);
 
-        const componentsByMoId = new Map<number, any[]>();
-        for (const comp of allComponents) {
-          if (comp.raw_material_production_id) {
-            const moId = comp.raw_material_production_id[0];
-            if (!componentsByMoId.has(moId)) {
-              componentsByMoId.set(moId, []);
-            }
-            componentsByMoId.get(moId)!.push(comp);
-          }
-        }
-
-        const moIdsWithStockIssues = new Set<number>();
-        const localStockAlerts: StockAlert[] = [];
-        const moStockStatus = new Map<number, 'ready' | 'incoming' | 'no_stock'>();
-        let reservedBoardsCount = 0;
-
-        for (const o of allOrders) {
-          const manufacturedProductName = Array.isArray(o.product_id) ? o.product_id[1] : String(o.product_id || '');
-          if (isStockExemptEdgeBandingService(manufacturedProductName)) {
-            moStockStatus.set(o.id, 'ready');
-            continue;
-          }
-
-          const components = componentsByMoId.get(o.id) || [];
-          for (const comp of components) {
-            const componentName = Array.isArray(comp.product_id) ? comp.product_id[1] : '';
-            if (isBoardComponentName(componentName)) {
-              reservedBoardsCount += (comp.quantity || 0);
-            }
-          }
-
-          if (o.state === 'done' || o.state === 'cancel') {
-            moStockStatus.set(o.id, 'ready');
-            continue;
-          }
-          const unavailable = components.filter((c) => {
-            if (c.state === 'done' || c.state === 'cancel' || c.state === 'draft' || c.state === 'assigned') {
-              return false;
-            }
-            if (['confirmed', 'waiting', 'partially_available'].includes(c.state)) {
-              return true;
-            }
-            return !c.forecast_availability || c.forecast_availability === 'unavailable';
-          });
-          if (unavailable.length > 0) {
-            const poState = o.origin ? poStateMap.get(o.origin) || null : null;
-            const needsAlert = !poState || ['draft', 'sent'].includes(poState);
-            if (needsAlert) {
-              moStockStatus.set(o.id, 'no_stock');
-              moIdsWithStockIssues.add(o.id);
-              const confirmedAt = o.origin ? saleOrderDateMap.get(o.origin) || null : null;
-              const overdueDays = getOverdueDaysFromDateOrder(confirmedAt);
-              for (const comp of unavailable) {
-                const componentName = Array.isArray(comp.product_id) ? comp.product_id[1] : '';
-                if (!isBoardComponentName(componentName)) {
-                  continue;
+            const componentsByMoId = new Map<number, any[]>();
+            for (const comp of allComponents) {
+              if (comp.raw_material_production_id) {
+                const moId = comp.raw_material_production_id[0];
+                if (!componentsByMoId.has(moId)) {
+                  componentsByMoId.set(moId, []);
                 }
-                localStockAlerts.push({
-                  moName: o.name,
-                  product: Array.isArray(o.product_id) ? o.product_id[1] : '',
-                  component: componentName,
-                  qtyNeeded: comp.product_uom_qty - (comp.quantity || 0),
-                  client: clientMap.get(o.origin || '') || null,
-                  moId: o.id,
-                  confirmedAt,
-                  overdueDays,
-                });
+                componentsByMoId.get(moId)!.push(comp);
               }
-            } else {
-              moStockStatus.set(o.id, 'incoming');
             }
-          } else {
-            moStockStatus.set(o.id, 'ready');
-          }
-        }
 
-        const confirmedQueueSchedule = getConfirmedMoQueueSchedule(allOrders);
-        const mappedWorkOrders = allOrders.map((o) => {
-          const baseTiming = getMoOverdueState({ createDate: o.create_date, plannedStart: o.date_start, clientDeadline: o.date_deadline, quantity: o.product_qty, productName: Array.isArray(o.product_id) ? o.product_id[1] : String(o.product_id || '') });
-          const queueTiming = confirmedQueueSchedule.get(o.id);
-          const rawWoState = workOrderStateMap.get(o.id);
-          const isManuallyPaused = manuallyPausedMoIds.has(o.id);
-          const effectiveState = isManuallyPaused || rawWoState === 'pending'
-            ? 'paused'
-            : rawWoState === 'progress' || o.state === 'progress'
-              ? 'progress'
-              : o.state || 'draft';
-          return {
-            ...baseTiming,
-            ...queueTiming,
-            isOverdue: !baseTiming.createdToday && (baseTiming.overdueReason !== null || Boolean(queueTiming && new Date() > new Date(queueTiming.estimatedFinishAt))),
-            id: o.id,
-            name: o.name,
-            product: Array.isArray(o.product_id) ? o.product_id[1] : String(o.product_id),
-            qty: o.product_qty || 0,
-            produced: o.qty_produced || 0,
-            state: effectiveState,
-            plannedStart: o.date_start || null,
-            dateStarted: o.date_start || null,
-            dateFinished: o.date_finished || null,
-            dateDeadline: o.date_deadline || null,
-            createdAt: o.create_date || null,
-            progress: o.product_qty > 0 ? Math.round(((o.qty_produced || 0) / o.product_qty) * 100) : 0,
-            origin: o.origin || null,
-            client: o.origin ? clientMap.get(o.origin) || null : null,
-            assignedTo: Array.isArray(o.user_id) ? o.user_id[1] : null,
-            area: detectArea(Array.isArray(o.product_id) ? o.product_id[1] : ''),
-            hasStockIssue: moIdsWithStockIssues.has(o.id),
-            stockStatus: moStockStatus.get(o.id) || 'ready',
-          };
-        }).sort((a, b) => {
-          if (a.state === 'progress' && b.state !== 'progress') return -1;
-          if (a.state !== 'progress' && b.state === 'progress') return 1;
-          if (a.state === 'paused' && b.state !== 'paused') return -1;
-          if (a.state !== 'paused' && b.state === 'paused') return 1;
-          if (a.stockStatus === 'ready' && b.stockStatus !== 'ready') return -1;
-          if (a.stockStatus !== 'ready' && b.stockStatus === 'ready') return 1;
-          return 0;
-        });
+            const moIdsWithStockIssues = new Set<number>();
+            const localStockAlerts: StockAlert[] = [];
+            const moStockStatus = new Map<number, 'ready' | 'incoming' | 'no_stock'>();
+            let reservedBoardsCount = 0;
 
-        const completedAreaStats = new Map<string, {
-          totalOrders: number;
-          completedOrders: number;
-          onTimeOrders: number;
-          overdueQuickClose: number;
-          days: number[];
-        }>();
+            for (const o of allOrders) {
+              const manufacturedProductName = Array.isArray(o.product_id) ? o.product_id[1] : String(o.product_id || '');
+              if (isStockExemptEdgeBandingService(manufacturedProductName)) {
+                moStockStatus.set(o.id, 'ready');
+                continue;
+              }
 
-        for (const o of performanceOrders) {
-          const area = detectArea(Array.isArray(o.product_id) ? o.product_id[1] : '');
-          if (!completedAreaStats.has(area)) {
-            completedAreaStats.set(area, { totalOrders: 0, completedOrders: 0, onTimeOrders: 0, overdueQuickClose: 0, days: [] });
-          }
-          const stats = completedAreaStats.get(area)!;
-          stats.totalOrders += 1;
+              const components = componentsByMoId.get(o.id) || [];
+              for (const comp of components) {
+                const componentName = Array.isArray(comp.product_id) ? comp.product_id[1] : '';
+                if (isBoardComponentName(componentName)) {
+                  reservedBoardsCount += (comp.quantity || 0);
+                }
+              }
 
-          if (o.state !== 'done' || !o.origin || !o.date_finished) {
-            continue;
-          }
+              if (o.state === 'done' || o.state === 'cancel') {
+                moStockStatus.set(o.id, 'ready');
+                continue;
+              }
+              const unavailable = components.filter((c) => {
+                if (c.state === 'done' || c.state === 'cancel' || c.state === 'draft' || c.state === 'assigned') {
+                  return false;
+                }
+                if (['confirmed', 'waiting', 'partially_available'].includes(c.state)) {
+                  return true;
+                }
+                return !c.forecast_availability || c.forecast_availability === 'unavailable';
+              });
+              if (unavailable.length > 0) {
+                const poState = o.origin ? poStateMap.get(o.origin) || null : null;
+                const needsAlert = !poState || ['draft', 'sent'].includes(poState);
+                if (needsAlert) {
+                  moStockStatus.set(o.id, 'no_stock');
+                  moIdsWithStockIssues.add(o.id);
+                  const confirmedAt = o.origin ? saleOrderDateMap.get(o.origin) || null : null;
+                  const overdueDays = getOverdueDaysFromDateOrder(confirmedAt);
+                  for (const comp of unavailable) {
+                    const componentName = Array.isArray(comp.product_id) ? comp.product_id[1] : '';
+                    if (!isBoardComponentName(componentName)) {
+                      continue;
+                    }
+                    localStockAlerts.push({
+                      moName: o.name,
+                      product: Array.isArray(o.product_id) ? o.product_id[1] : '',
+                      component: componentName,
+                      qtyNeeded: comp.product_uom_qty - (comp.quantity || 0),
+                      client: clientMap.get(o.origin || '') || null,
+                      moId: o.id,
+                      confirmedAt,
+                      overdueDays,
+                    });
+                  }
+                } else {
+                  moStockStatus.set(o.id, 'incoming');
+                }
+              } else {
+                moStockStatus.set(o.id, 'ready');
+              }
+            }
 
-          const confirmedAt = saleOrderDateMap.get(o.origin) || null;
-          if (!confirmedAt) {
-            continue;
-          }
+            const confirmedQueueSchedule = getConfirmedMoQueueSchedule(allOrders);
+            const mappedWorkOrders = allOrders.map((o) => {
+              const baseTiming = getMoOverdueState({ createDate: o.create_date, plannedStart: o.date_start, clientDeadline: o.date_deadline, quantity: o.product_qty, productName: Array.isArray(o.product_id) ? o.product_id[1] : String(o.product_id || '') });
+              const queueTiming = confirmedQueueSchedule.get(o.id);
+              const rawWoState = workOrderStateMap.get(o.id);
+              const isManuallyPaused = manuallyPausedMoIds.has(o.id);
+              const effectiveState = isManuallyPaused || rawWoState === 'pending'
+                ? 'paused'
+                : rawWoState === 'progress' || o.state === 'progress'
+                  ? 'progress'
+                  : o.state || 'draft';
+              return {
+                ...baseTiming,
+                ...queueTiming,
+                isOverdue: !baseTiming.createdToday && (baseTiming.overdueReason !== null || Boolean(queueTiming && new Date() > new Date(queueTiming.estimatedFinishAt))),
+                id: o.id,
+                name: o.name,
+                product: Array.isArray(o.product_id) ? o.product_id[1] : String(o.product_id),
+                qty: o.product_qty || 0,
+                produced: o.qty_produced || 0,
+                state: effectiveState,
+                plannedStart: o.date_start || null,
+                dateStarted: o.date_start || null,
+                dateFinished: o.date_finished || null,
+                dateDeadline: o.date_deadline || null,
+                createdAt: o.create_date || null,
+                progress: o.product_qty > 0 ? Math.round(((o.qty_produced || 0) / o.product_qty) * 100) : 0,
+                origin: o.origin || null,
+                client: o.origin ? clientMap.get(o.origin) || null : null,
+                assignedTo: Array.isArray(o.user_id) ? o.user_id[1] : null,
+                area: detectArea(Array.isArray(o.product_id) ? o.product_id[1] : ''),
+                hasStockIssue: moIdsWithStockIssues.has(o.id),
+                stockStatus: moStockStatus.get(o.id) || 'ready',
+              };
+            }).sort((a, b) => {
+              if (a.state === 'progress' && b.state !== 'progress') return -1;
+              if (a.state !== 'progress' && b.state === 'progress') return 1;
+              if (a.state === 'paused' && b.state !== 'paused') return -1;
+              if (a.state !== 'paused' && b.state === 'paused') return 1;
+              if (a.stockStatus === 'ready' && b.stockStatus !== 'ready') return -1;
+              if (a.stockStatus !== 'ready' && b.stockStatus === 'ready') return 1;
+              return 0;
+            });
 
-          const soConfirmed = new Date(confirmedAt.includes('T') ? confirmedAt : confirmedAt.replace(' ', 'T') + 'Z');
-          const startedAt = o.date_start ? new Date(o.date_start.includes('T') ? o.date_start : o.date_start.replace(' ', 'T') + 'Z') : null;
-          const finishedAt = new Date(o.date_finished.includes('T') ? o.date_finished : o.date_finished.replace(' ', 'T') + 'Z');
-          const minPerfDate = new Date('2026-08-05T00:00:00Z');
-          if (soConfirmed.getTime() < minPerfDate.getTime()) {
-            continue;
-          }
+            const completedAreaStats = new Map<string, {
+              totalOrders: number;
+              completedOrders: number;
+              onTimeOrders: number;
+              overdueQuickClose: number;
+              days: number[];
+            }>();
 
-          stats.completedOrders += 1;
-          const daysToComplete = (finishedAt.getTime() - soConfirmed.getTime()) / (1000 * 60 * 60 * 24);
-          const hoursToStart = startedAt ? (startedAt.getTime() - soConfirmed.getTime()) / (1000 * 60 * 60) : null;
-          const minutesFromStartToFinish = startedAt ? (finishedAt.getTime() - startedAt.getTime()) / (1000 * 60) : null;
-          const overdueQuickClose = hoursToStart !== null
-            && minutesFromStartToFinish !== null
-            && hoursToStart > 24
-            && minutesFromStartToFinish >= 0
-            && minutesFromStartToFinish <= 30;
+            for (const o of performanceOrders) {
+              const area = detectArea(Array.isArray(o.product_id) ? o.product_id[1] : '');
+              if (!completedAreaStats.has(area)) {
+                completedAreaStats.set(area, { totalOrders: 0, completedOrders: 0, onTimeOrders: 0, overdueQuickClose: 0, days: [] });
+              }
+              const stats = completedAreaStats.get(area)!;
+              stats.totalOrders += 1;
 
-          if (daysToComplete >= 0) {
-            stats.days.push(daysToComplete);
-          }
-          if (daysToComplete >= 0 && daysToComplete <= 3 && !overdueQuickClose) {
-            stats.onTimeOrders += 1;
-          }
-          if (overdueQuickClose) {
-            stats.overdueQuickClose += 1;
-          }
-        }
+              if (o.state !== 'done' || !o.origin || !o.date_finished) {
+                continue;
+              }
 
-        const areaPerformanceRates = Array.from(completedAreaStats.entries())
-          .map(([area, stats]) => {
-            const percentage = stats.completedOrders > 0
-              ? Math.round((stats.onTimeOrders / stats.completedOrders) * 100)
-              : 0;
-            const avgDaysToComplete = stats.days.length > 0
-              ? Math.round((stats.days.reduce((sum, value) => sum + value, 0) / stats.days.length) * 10) / 10
-              : 0;
-            const color = percentage >= 75 ? 'green' : percentage >= 50 ? 'orange' : 'red';
+              const confirmedAt = saleOrderDateMap.get(o.origin) || null;
+              if (!confirmedAt) {
+                continue;
+              }
+
+              const soConfirmed = new Date(confirmedAt.includes('T') ? confirmedAt : confirmedAt.replace(' ', 'T') + 'Z');
+              const startedAt = o.date_start ? new Date(o.date_start.includes('T') ? o.date_start : o.date_start.replace(' ', 'T') + 'Z') : null;
+              const finishedAt = new Date(o.date_finished.includes('T') ? o.date_finished : o.date_finished.replace(' ', 'T') + 'Z');
+              const minPerfDate = new Date('2026-08-05T00:00:00Z');
+              if (soConfirmed.getTime() < minPerfDate.getTime()) {
+                continue;
+              }
+
+              stats.completedOrders += 1;
+              const daysToComplete = (finishedAt.getTime() - soConfirmed.getTime()) / (1000 * 60 * 60 * 24);
+              const hoursToStart = startedAt ? (startedAt.getTime() - soConfirmed.getTime()) / (1000 * 60 * 60) : null;
+              const minutesFromStartToFinish = startedAt ? (finishedAt.getTime() - startedAt.getTime()) / (1000 * 60) : null;
+              const overdueQuickClose = hoursToStart !== null
+                && minutesFromStartToFinish !== null
+                && hoursToStart > 24
+                && minutesFromStartToFinish >= 0
+                && minutesFromStartToFinish <= 30;
+
+              if (daysToComplete >= 0) {
+                stats.days.push(daysToComplete);
+              }
+              if (daysToComplete >= 0 && daysToComplete <= 3 && !overdueQuickClose) {
+                stats.onTimeOrders += 1;
+              }
+              if (overdueQuickClose) {
+                stats.overdueQuickClose += 1;
+              }
+            }
+
+            const areaPerformanceRates = Array.from(completedAreaStats.entries())
+              .map(([area, stats]) => {
+                const percentage = stats.completedOrders > 0
+                  ? Math.round((stats.onTimeOrders / stats.completedOrders) * 100)
+                  : 0;
+                const avgDaysToComplete = stats.days.length > 0
+                  ? Math.round((stats.days.reduce((sum, value) => sum + value, 0) / stats.days.length) * 10) / 10
+                  : 0;
+                const color = percentage >= 75 ? 'green' : percentage >= 50 ? 'orange' : 'red';
+                return {
+                  area,
+                  percentage,
+                  color,
+                  totalOrders: stats.totalOrders,
+                  completedOrders: stats.completedOrders,
+                  onTimeOrders: stats.onTimeOrders,
+                  overdueQuickClose: stats.overdueQuickClose,
+                  avgDaysToComplete,
+                };
+              })
+              .sort((a, b) => {
+                const order = MANUFACTURING_AREAS;
+                const aIndex = order.indexOf(a.area);
+                const bIndex = order.indexOf(b.area);
+                if (aIndex === -1 && bIndex === -1) return a.area.localeCompare(b.area);
+                if (aIndex === -1) return 1;
+                if (bIndex === -1) return -1;
+                return aIndex - bIndex;
+              });
+
             return {
-              area,
-              percentage,
-              color,
-              totalOrders: stats.totalOrders,
-              completedOrders: stats.completedOrders,
-              onTimeOrders: stats.onTimeOrders,
-              overdueQuickClose: stats.overdueQuickClose,
-              avgDaysToComplete,
+              workOrders: mappedWorkOrders,
+              rawStockAlerts: localStockAlerts,
+              areaPerformanceRates,
+              reservedBoardsCount,
             };
-          })
-          .sort((a, b) => {
-            const order = MANUFACTURING_AREAS;
-            const aIndex = order.indexOf(a.area);
-            const bIndex = order.indexOf(b.area);
-            if (aIndex === -1 && bIndex === -1) return a.area.localeCompare(b.area);
-            if (aIndex === -1) return 1;
-            if (bIndex === -1) return -1;
-            return aIndex - bIndex;
-          });
+          },
+        );
 
-        return { workOrders: mappedWorkOrders, stockAlerts: applyOptimisticStockAlerts(localStockAlerts), areaPerformanceRates, reservedBoardsCount };
+        return {
+          workOrders: sharedMoData.workOrders,
+          stockAlerts: applyOptimisticStockAlerts(sharedMoData.rawStockAlerts),
+          areaPerformanceRates: sharedMoData.areaPerformanceRates,
+          reservedBoardsCount: sharedMoData.reservedBoardsCount,
+        };
       })(),
       // 4. Incidents (now from Odoo!)
-      client.getMaintenanceRequests(20),
+      shopFloorCache.getOrFetchTieredSWR('shop-floor:shared-incidents:v1', 3 * 60 * 1000, 30 * 60 * 1000, () => client.getMaintenanceRequests(20)),
       // 5. Assigned items (now from Odoo!)
       client.getEmployeeAssignedEquipment(employee.id),
       // 6. Payslips
@@ -839,12 +966,11 @@ export async function buildOperatorDashboard(
       // 11. Manufacturing timeline data for charting
       getDailyManufacturingAnalytics('timeline-data-v2', () => client.getManufacturingTimelineData(employee.id, employee.name)),
       // 12. Board registration summary from physical inventory
-      // 12. Board registration summary from physical inventory
-      client.getBoardRegistrationSummary(stockScope),
+      shopFloorCache.getOrFetchTieredSWR(`shop-floor:shared-board-reg:${JSON.stringify(stockScope || {})}`, 3 * 60 * 1000, 30 * 60 * 1000, () => client.getBoardRegistrationSummary(stockScope)),
       // 13. Team Penalties
-      client.getTeamPenalties(stockScope),
+      shopFloorCache.getOrFetchTieredSWR(`shop-floor:shared-team-penalties:${JSON.stringify(stockScope || {})}`, 3 * 60 * 1000, 30 * 60 * 1000, () => client.getTeamPenalties(stockScope)),
       // 14. Equipment list for breakdown reporting (now from Odoo!)
-      client.getMaintenanceEquipment(),
+      shopFloorCache.getOrFetchTieredSWR('shop-floor:shared-machines:v1', 10 * 60 * 1000, 60 * 60 * 1000, () => client.getMaintenanceEquipment()),
     ]);
 
     // Handle Attendance Result
@@ -1078,7 +1204,8 @@ router.get('/shop-floor', async (req: Request, res: Response) => {
   }
 
   const viewedEmail = getViewedUserEmail(req);
-  const cacheKey = `shop-floor-dashboard:v3:${viewedEmail.toLowerCase()}`;
+  const normalizedEmail = viewedEmail.trim().toLowerCase();
+  const cacheKey = `shop-floor-dashboard:v3:${normalizedEmail}`;
   const featureFlagsPromise = getShopFloorFeatureFlags();
   if (req.query.refresh === 'true') {
     shopFloorCache.delete(cacheKey);
@@ -1087,15 +1214,69 @@ router.get('/shop-floor', async (req: Request, res: Response) => {
 
   try {
     const settings = await getSettings();
-    const data = await shopFloorCache.getOrFetchSWR(
-      cacheKey,
-      3 * 60 * 1000,   // 3 minutes fresh
-      30 * 60 * 1000,  // 30 minutes max stale (serves instantly while refreshing in background)
-      async () => {
-        const client = new OdooClient(settings.odoo);
-        return buildOperatorDashboard(client, viewedEmail, req, settings.stock);
-      },
-    );
+
+    // Multi-tier cache for operator dashboard:
+    // Tier 1: In-memory RAM cache
+    let data: OperatorDashboardData | null = req.query.refresh === 'true'
+      ? null
+      : shopFloorCache.get<OperatorDashboardData>(cacheKey);
+
+    // Tier 2: MySQL persistent snapshot if RAM misses (e.g. cold restart or Login As)
+    if (!data && req.query.refresh !== 'true') {
+      try {
+        const snapshot = await getShopFloorDashboardSnapshot<OperatorDashboardData>(normalizedEmail);
+        if (snapshot && snapshot.data) {
+          data = snapshot.data;
+          shopFloorCache.set(cacheKey, data, 60 * 60 * 1000, 3 * 60 * 1000);
+
+          // If snapshot is older than 5 minutes, trigger background SWR revalidation without blocking!
+          const ageMs = Math.max(0, Date.now() - new Date(snapshot.syncedAt).getTime());
+          if (ageMs > 5 * 60 * 1000 && !shopFloorCache.isInFlight(cacheKey)) {
+            void (async () => {
+              try {
+                const client = new OdooClient(settings.odoo);
+                const fresh = await buildOperatorDashboard(client, viewedEmail, req, settings.stock);
+                shopFloorCache.set(cacheKey, fresh, 60 * 60 * 1000, 3 * 60 * 1000);
+                await saveShopFloorDashboardSnapshot(normalizedEmail, fresh);
+              } catch (bgErr) {
+                console.warn('[shopFloor] Background snapshot refresh failed for', normalizedEmail, bgErr);
+              }
+            })();
+          }
+        }
+      } catch (dbErr) {
+        console.warn('[shopFloor] Failed to read snapshot from MySQL for', normalizedEmail, dbErr);
+      }
+    }
+
+    // Tier 3: Complete miss (first time this user ever accessed the app), fetch via SWR & save snapshot
+    if (!data) {
+      data = await shopFloorCache.getOrFetchSWR(
+        cacheKey,
+        3 * 60 * 1000,   // 3 minutes fresh
+        60 * 60 * 1000,  // 60 minutes max stale
+        async () => {
+          const client = new OdooClient(settings.odoo);
+          const fresh = await buildOperatorDashboard(client, viewedEmail, req, settings.stock);
+          void saveShopFloorDashboardSnapshot(normalizedEmail, fresh).catch((saveErr) => {
+            console.warn('[shopFloor] Failed to save snapshot to MySQL:', saveErr);
+          });
+          return fresh;
+        },
+      );
+    } else if (shopFloorCache.isStale(cacheKey) && !shopFloorCache.isInFlight(cacheKey)) {
+      // RAM entry exists but is older than 3 mins; refresh in background
+      void (async () => {
+        try {
+          const client = new OdooClient(settings.odoo);
+          const fresh = await buildOperatorDashboard(client, viewedEmail, req, settings.stock);
+          shopFloorCache.set(cacheKey, fresh, 60 * 60 * 1000, 3 * 60 * 1000);
+          await saveShopFloorDashboardSnapshot(normalizedEmail, fresh);
+        } catch (bgErr) {
+          console.warn('[shopFloor] Background RAM refresh failed for', normalizedEmail, bgErr);
+        }
+      })();
+    }
 
     const featureFlags = await featureFlagsPromise;
     res.render('shop-floor', {
@@ -1253,101 +1434,115 @@ router.get('/shop-floor/operators', async (req: Request, res: Response) => {
 
   try {
     const settings = await getSettings();
-    const client = new OdooClient(settings.odoo);
-
-    // Find operator departments
-    const allDepartments: Array<{ id: number; name: string }> = [];
-    for (const deptName of OPERATOR_DEPARTMENT_NAMES) {
-      const found = await client.findDepartmentByName(deptName);
-      allDepartments.push(...found);
+    const operatorCacheKey = 'shop-floor:operators-list:v1';
+    if (req.query.refresh === 'true') {
+      shopFloorCache.delete(operatorCacheKey);
     }
 
-    // Deduplicate by ID
-    const uniqueDepts = [...new Map(allDepartments.map((d) => [d.id, d])).values()];
+    const { allOperators, departments } = await shopFloorCache.getOrFetchTieredSWR(
+      operatorCacheKey,
+      5 * 60 * 1000,   // 5 minutes fresh
+      60 * 60 * 1000,  // 60 minutes max stale
+      async () => {
+        const client = new OdooClient(settings.odoo);
 
-    // Get employees from each department
-    const allOperators: OperatorSummary[] = [];
-    const seenIds = new Set<number>();
+        // Find operator departments
+        const allDepartments: Array<{ id: number; name: string }> = [];
+        for (const deptName of OPERATOR_DEPARTMENT_NAMES) {
+          const found = await client.findDepartmentByName(deptName);
+          allDepartments.push(...found);
+        }
 
-    for (const dept of uniqueDepts) {
-      const employees = await client.getEmployeesByDepartment(dept.id);
-      for (const emp of employees) {
-        if (seenIds.has(emp.id)) continue;
-        seenIds.add(emp.id);
-        allOperators.push({
-          id: emp.id,
-          name: emp.name,
-          jobTitle: emp.job_title || null,
-          department: Array.isArray(emp.department_id) ? emp.department_id[1] : dept.name,
-          workEmail: emp.work_email || null,
-          mobilePhone: emp.mobile_phone || null,
-          userId: Array.isArray(emp.user_id) ? emp.user_id[0] : null,
-          userName: Array.isArray(emp.user_id) ? emp.user_id[1] : null,
-          checkedIn: false,
-          checkedOut: false,
-          checkInTime: null,
-          assignedItems: [],
-        });
-      }
-    }
+        // Deduplicate by ID
+        const uniqueDepts = [...new Map(allDepartments.map((d) => [d.id, d])).values()];
 
-    // Get today's attendance for all operators
-    if (allOperators.length > 0) {
-      try {
-        const operatorIds = allOperators.map((op) => op.id);
-        const attendanceRecords = await client.getBulkAttendance(operatorIds);
+        // Get employees from each department
+        const operators: OperatorSummary[] = [];
+        const seenIds = new Set<number>();
 
-        for (const rec of attendanceRecords) {
-          const empId = Array.isArray(rec.employee_id) ? rec.employee_id[0] : rec.employee_id;
-          const op = allOperators.find((o) => o.id === empId);
-          if (op) {
-            op.checkedIn = Boolean(rec.check_in && !rec.check_out);
-            op.checkedOut = Boolean(rec.check_out);
-            op.checkInTime = toEAT(rec.check_in) || rec.check_in;
+        for (const dept of uniqueDepts) {
+          const employees = await client.getEmployeesByDepartment(dept.id);
+          for (const emp of employees) {
+            if (seenIds.has(emp.id)) continue;
+            seenIds.add(emp.id);
+            operators.push({
+              id: emp.id,
+              name: emp.name,
+              jobTitle: emp.job_title || null,
+              department: Array.isArray(emp.department_id) ? emp.department_id[1] : dept.name,
+              workEmail: emp.work_email || null,
+              mobilePhone: emp.mobile_phone || null,
+              userId: Array.isArray(emp.user_id) ? emp.user_id[0] : null,
+              userName: Array.isArray(emp.user_id) ? emp.user_id[1] : null,
+              checkedIn: false,
+              checkedOut: false,
+              checkInTime: null,
+              assignedItems: [],
+            });
           }
         }
-      } catch (err) {
-        console.warn('[shopFloor] Failed to fetch bulk attendance:', err);
-      }
-    }
 
-    // Get assigned items for all operators in bulk from Odoo!
-    try {
-      const allEquipments = await client.getBulkAssignedEquipment();
-      const equipByEmployeeId = new Map<number, typeof allEquipments>();
-      for (const eq of allEquipments) {
-        if (eq.employee_id) {
-          const empId = eq.employee_id[0];
-          if (!equipByEmployeeId.has(empId)) {
-            equipByEmployeeId.set(empId, []);
+        // Get today's attendance for all operators
+        if (operators.length > 0) {
+          try {
+            const operatorIds = operators.map((op) => op.id);
+            const attendanceRecords = await client.getBulkAttendance(operatorIds);
+
+            for (const rec of attendanceRecords) {
+              const empId = Array.isArray(rec.employee_id) ? rec.employee_id[0] : rec.employee_id;
+              const op = operators.find((o) => o.id === empId);
+              if (op) {
+                op.checkedIn = Boolean(rec.check_in && !rec.check_out);
+                op.checkedOut = Boolean(rec.check_out);
+                op.checkInTime = toEAT(rec.check_in) || rec.check_in;
+              }
+            }
+          } catch (err) {
+            console.warn('[shopFloor] Failed to fetch bulk attendance:', err);
           }
-          equipByEmployeeId.get(empId)!.push(eq);
         }
-      }
 
-      for (const op of allOperators) {
-        const items = equipByEmployeeId.get(op.id) || [];
-        op.assignedItems = items.map((i) => ({
-          id: String(i.id),
-          itemName: i.name || '',
-          assignedDate: i.assign_date || '',
-          quantity: 1,
-        }));
-      }
-    } catch (err) {
-      console.warn('[shopFloor] Failed to fetch bulk assigned equipment:', err);
-      for (const op of allOperators) {
-        op.assignedItems = [];
-      }
-    }
+        // Get assigned items for all operators in bulk from Odoo!
+        try {
+          const allEquipments = await client.getBulkAssignedEquipment();
+          const equipByEmployeeId = new Map<number, typeof allEquipments>();
+          for (const eq of allEquipments) {
+            if (eq.employee_id) {
+              const empId = eq.employee_id[0];
+              if (!equipByEmployeeId.has(empId)) {
+                equipByEmployeeId.set(empId, []);
+              }
+              equipByEmployeeId.get(empId)!.push(eq);
+            }
+          }
+
+          for (const op of operators) {
+            const items = equipByEmployeeId.get(op.id) || [];
+            op.assignedItems = items.map((i) => ({
+              id: String(i.id),
+              itemName: i.name || '',
+              assignedDate: i.assign_date || '',
+              quantity: 1,
+            }));
+          }
+        } catch (err) {
+          console.warn('[shopFloor] Failed to fetch bulk assigned equipment:', err);
+          for (const op of operators) {
+            op.assignedItems = [];
+          }
+        }
+
+        return { allOperators: operators, departments: uniqueDepts.map((d) => d.name) };
+      },
+    );
 
     res.render('shop-floor-operators', {
       pageTitle: 'Shop Floor Operators',
       appName: env.APP_NAME,
       operators: allOperators,
-      departments: uniqueDepts.map((d) => d.name),
+      departments,
       total: allOperators.length,
-      checkedInCount: allOperators.filter((o) => o.checkedIn).length,
+      checkedInCount: allOperators.filter((o: OperatorSummary) => o.checkedIn).length,
       authUser: req.authUser,
       message: typeof req.query.message === 'string' ? req.query.message : null,
       error: typeof req.query.error === 'string' ? req.query.error : null,
@@ -1709,8 +1904,20 @@ router.get('/shop-floor/boards', async (req: Request, res: Response) => {
     const recentIntakes = recentIntakeRows.slice(0, boardLogPageSize);
     const products = stockMirror.products;
     const viewedEmail = getViewedUserEmail(req);
-    const dashboardCacheKey = `shop-floor-dashboard:v3:${viewedEmail.toLowerCase()}`;
-    const cachedDashboard = shopFloorCache.get<OperatorDashboardData>(dashboardCacheKey);
+    const normalizedEmail = viewedEmail.trim().toLowerCase();
+    const dashboardCacheKey = `shop-floor-dashboard:v3:${normalizedEmail}`;
+    let cachedDashboard = shopFloorCache.get<OperatorDashboardData>(dashboardCacheKey);
+    if (!cachedDashboard) {
+      try {
+        const snapshot = await getShopFloorDashboardSnapshot<OperatorDashboardData>(normalizedEmail);
+        if (snapshot && snapshot.data) {
+          cachedDashboard = snapshot.data;
+          shopFloorCache.set(dashboardCacheKey, cachedDashboard, 60 * 60 * 1000, 3 * 60 * 1000);
+        }
+      } catch (_e) {
+        // ignore
+      }
+    }
     const dashboardData: OperatorDashboardData = cachedDashboard || ({ stockAlerts: [], isLimitedDashboard: false } as unknown as OperatorDashboardData);
 
     res.render('shop-floor-boards', {
@@ -2129,7 +2336,7 @@ router.get('/shop-floor/receipts', async (req: Request, res: Response) => {
     if (req.query.refresh === 'true') {
       shopFloorCache.delete(`shop-floor:receipts:${warehouseId}`);
     }
-    const receipts = await shopFloorCache.getOrFetchSWR(
+    const receipts = await shopFloorCache.getOrFetchTieredSWR(
       `shop-floor:receipts:${warehouseId}`,
       3 * 60 * 1000,   // 3 minutes fresh
       30 * 60 * 1000,  // 30 minutes max stale
@@ -2219,7 +2426,7 @@ router.get('/shop-floor/deliveries', async (req: Request, res: Response) => {
     if (req.query.refresh === 'true') {
       shopFloorCache.delete(`shop-floor:deliveries:${warehouseId}`);
     }
-    const deliveries = await shopFloorCache.getOrFetchSWR(
+    const deliveries = await shopFloorCache.getOrFetchTieredSWR(
       `shop-floor:deliveries:${warehouseId}`,
       3 * 60 * 1000,   // 3 minutes fresh
       30 * 60 * 1000,  // 30 minutes max stale

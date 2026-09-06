@@ -184,7 +184,11 @@ router.post('/settings/access/login-as', async (req: Request, res: Response) => 
     targetEmail,
   });
 
-  res.redirect('/dashboard?message=' + encodeURIComponent(`Now previewing the app as ${targetEmail}.`));
+  const destination = (apps.includes('shop-floor') && role !== 'admin')
+    ? `/shop-floor?message=${encodeURIComponent(`Now previewing Shop Floor as ${targetEmail}.`)}`
+    : `/dashboard?message=${encodeURIComponent(`Now previewing the app as ${targetEmail}.`)}`;
+
+  res.redirect(destination);
 });
 
 router.get('/auth/return-to-admin', async (_req: Request, res: Response) => {

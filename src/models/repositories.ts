@@ -4907,3 +4907,111 @@ export async function saveShopFloorFeatureFlags(flags: ShopFloorFeatureFlags): P
     }
   }
 }
+
+export async function getShopFloorDashboardSnapshot<T = any>(email: string): Promise<{ data: T; syncedAt: string } | null> {
+  const normalized = email.trim().toLowerCase();
+  const row = await queryOne<{ payload: string; synced_at: string }>(
+    'SELECT payload, synced_at FROM shop_floor_dashboard_snapshots WHERE user_email = ?',
+    [normalized],
+  );
+  if (!row || !row.payload) return null;
+  try {
+    const data = JSON.parse(row.payload) as T;
+    return { data, syncedAt: row.synced_at };
+  } catch (_e) {
+    return null;
+  }
+}
+
+export async function saveShopFloorDashboardSnapshot(email: string, data: any): Promise<void> {
+  const normalized = email.trim().toLowerCase();
+  const payload = JSON.stringify(data);
+  const now = appDateTime();
+  const dialect = await getDatabaseDialect();
+
+  if (dialect === 'mysql') {
+    await execute(
+      `
+        INSERT INTO shop_floor_dashboard_snapshots (user_email, payload, synced_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          payload = VALUES(payload),
+          synced_at = VALUES(synced_at),
+          updated_at = VALUES(updated_at)
+      `,
+      [normalized, payload, now, now],
+    );
+  } else {
+    await execute(
+      `
+        INSERT INTO shop_floor_dashboard_snapshots (user_email, payload, synced_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(user_email) DO UPDATE SET
+          payload = excluded.payload,
+          synced_at = excluded.synced_at,
+          updated_at = excluded.updated_at
+      `,
+      [normalized, payload, now, now],
+    );
+  }
+}
+
+export async function getShopFloorSharedCache<T = any>(cacheKey: string): Promise<{ data: T; syncedAt: string } | null> {
+  const row = await queryOne<{ payload: string; synced_at: string }>(
+    'SELECT payload, synced_at FROM shop_floor_shared_cache WHERE cache_key = ?',
+    [cacheKey],
+  );
+  if (!row || !row.payload) return null;
+  try {
+    const data = JSON.parse(row.payload) as T;
+    return { data, syncedAt: row.synced_at };
+  } catch (_e) {
+    return null;
+  }
+}
+
+export async function saveShopFloorSharedCache(cacheKey: string, data: any): Promise<void> {
+  const payload = JSON.stringify(data);
+  const now = appDateTime();
+  const dialect = await getDatabaseDialect();
+
+  if (dialect === 'mysql') {
+    await execute(
+      `
+        INSERT INTO shop_floor_shared_cache (cache_key, payload, synced_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          payload = VALUES(payload),
+          synced_at = VALUES(synced_at),
+          updated_at = VALUES(updated_at)
+      `,
+      [cacheKey, payload, now, now],
+    );
+  } else {
+    await execute(
+      `
+        INSERT INTO shop_floor_shared_cache (cache_key, payload, synced_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(cache_key) DO UPDATE SET
+          payload = excluded.payload,
+          synced_at = excluded.synced_at,
+          updated_at = excluded.updated_at
+      `,
+      [cacheKey, payload, now, now],
+    );
+  }
+}
+
+export async function deleteShopFloorSharedCache(cacheKey: string): Promise<void> {
+  await execute('DELETE FROM shop_floor_shared_cache WHERE cache_key = ?', [cacheKey]);
+}
+
+export async function deleteShopFloorDashboardSnapshot(email?: string): Promise<void> {
+  if (email) {
+    const normalized = email.trim().toLowerCase();
+    await execute('DELETE FROM shop_floor_dashboard_snapshots WHERE user_email = ?', [normalized]);
+  } else {
+    await execute('DELETE FROM shop_floor_dashboard_snapshots', []);
+  }
+}
+

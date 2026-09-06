@@ -858,6 +858,23 @@ async function ensureSqliteDatabase(config: RuntimeDatabaseConfig) {
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS shop_floor_dashboard_snapshots (
+      user_email TEXT PRIMARY KEY,
+      payload TEXT NOT NULL,
+      synced_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS shop_floor_shared_cache (
+      cache_key TEXT PRIMARY KEY,
+      payload TEXT NOT NULL,
+      synced_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sf_snapshots_synced ON shop_floor_dashboard_snapshots(synced_at);
+
     CREATE INDEX IF NOT EXISTS idx_board_intake_queue_status ON board_intake_queue(status, created_at);
 
     CREATE INDEX IF NOT EXISTS idx_staff_onboarding_status
@@ -1410,6 +1427,26 @@ async function ensureMysqlDatabase(config: RuntimeDatabaseConfig) {
       synced_at DATETIME NULL,
       updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       KEY idx_board_intake_queue_status (status, created_at)
+    )
+  `);
+
+  await query('create shop floor dashboard snapshots table', `
+    CREATE TABLE IF NOT EXISTS shop_floor_dashboard_snapshots (
+      user_email VARCHAR(255) PRIMARY KEY,
+      payload LONGTEXT NOT NULL,
+      synced_at DATETIME NOT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      KEY idx_sf_snapshots_synced (synced_at)
+    )
+  `);
+
+  await query('create shop floor shared cache table', `
+    CREATE TABLE IF NOT EXISTS shop_floor_shared_cache (
+      cache_key VARCHAR(128) PRIMARY KEY,
+      payload LONGTEXT NOT NULL,
+      synced_at DATETIME NOT NULL,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     )
   `);
 
