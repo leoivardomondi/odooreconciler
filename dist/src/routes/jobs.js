@@ -181,14 +181,14 @@ function validateAttachmentUploadedPayload(body) {
     };
 }
 router.post('/jobs/run-scheduler', async (_req, res) => {
-    try {
-        const result = await (0, schedulerService_1.runSchedulerCycle)('manual');
-        res.redirect(`/dashboard?message=${encodeURIComponent(result.run.summary || 'Sales Order scheduler completed.')}`);
-    }
-    catch (error) {
-        const message = error instanceof Error ? error.message : 'Sales Order scheduler failed.';
-        res.redirect(`/dashboard?error=${encodeURIComponent(message)}`);
-    }
+    // Keep the browser request short. The Sales Order scheduler performs Odoo RPC calls,
+    // PDF attachment downloads, and AI/OCR parsing, which can exceed production web proxy / Passenger timeouts (30s).
+    void (0, schedulerService_1.runSchedulerCycle)('manual').catch(async (error) => {
+        await (0, logService_1.logEvent)('error', 'Manual Sales Order scheduler background run failed', {
+            error: error instanceof Error ? error.message : 'Unknown failure in manual Sales Order scheduler.',
+        });
+    });
+    res.redirect(`/dashboard?message=${encodeURIComponent('Sales Order scheduler run initiated in background.')}`);
 });
 router.post('/jobs/run-po-bill-scheduler', async (_req, res) => {
     // Keep the browser request short. The PO cycle can perform OCR and several
