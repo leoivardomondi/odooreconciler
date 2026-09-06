@@ -750,12 +750,19 @@ function setupPwaBadgeRefresh() {
   }
 
   let inFlight = false;
+  let lastFetchedAt = 0;
   const refreshCount = async () => {
-    if (inFlight) {
+    if (inFlight || document.hidden) {
+      return;
+    }
+
+    const now = Date.now();
+    if (now - lastFetchedAt < 15000) {
       return;
     }
 
     inFlight = true;
+    lastFetchedAt = now;
     try {
       const response = await fetch('/notifications/due-tasks-count', {
         headers: { Accept: 'application/json' },
@@ -780,7 +787,7 @@ function setupPwaBadgeRefresh() {
   };
 
   refreshCount();
-  window.setInterval(refreshCount, 30000);
+  window.setInterval(refreshCount, 60000);
   window.addEventListener('focus', refreshCount);
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) {
@@ -852,12 +859,19 @@ function setupExpectedBoardAlertNotifications() {
   }
 
   let inFlight = false;
+  let lastPolledAt = 0;
   const poll = async () => {
-    if (inFlight || Notification.permission !== 'granted') {
+    if (inFlight || document.hidden || Notification.permission !== 'granted') {
+      return;
+    }
+
+    const now = Date.now();
+    if (now - lastPolledAt < 30000) {
       return;
     }
 
     inFlight = true;
+    lastPolledAt = now;
     try {
       const response = await fetch('/shop-floor/stock-alerts/notifications', {
         headers: { Accept: 'application/json' },
@@ -896,7 +910,7 @@ function setupExpectedBoardAlertNotifications() {
   };
 
   window.setTimeout(poll, 5000);
-  window.setInterval(poll, 60000);
+  window.setInterval(poll, 120000);
   window.addEventListener('focus', poll);
   document.addEventListener('visibilitychange', () => {
     if (!document.hidden) {
