@@ -146,6 +146,162 @@ function markSubmitterLoading(submitter, message) {
   }
 }
 
+// --- Shop Floor Instant SPA-like Navigation & Prefetching ---
+const shopFloorPageCache = new Map();
+
+async function fetchShopFloorPageContent(urlStr) {
+  const normUrl = new URL(urlStr, window.location.origin).pathname;
+  const cached = shopFloorPageCache.get(normUrl);
+  if (cached && Date.now() - cached.time < 300000) {
+    return cached;
+  }
+  const res = await fetch(normUrl, {
+    headers: { 'X-Requested-With': 'ShopFloorInstant' },
+  });
+  if (!res.ok) throw new Error('Failed to load page');
+  const text = await res.text();
+  const doc = new DOMParser().parseFromString(text, 'text/html');
+  const mainEl = doc.querySelector('main');
+  if (!mainEl) throw new Error('No main element found');
+
+  const pageData = {
+    mainHtml: mainEl.innerHTML,
+    mainClass: mainEl.className,
+    mainStyle: mainEl.getAttribute('style') || '',
+    title: doc.title,
+    scripts: Array.from(doc.querySelectorAll('script'))
+      .filter((s) => !s.src)
+      .map((s) => s.textContent || ''),
+    time: Date.now(),
+  };
+  shopFloorPageCache.set(normUrl, pageData);
+  return pageData;
+}
+
+function prefetchShopFloorPage(urlStr) {
+  try {
+    const normUrl = new URL(urlStr, window.location.origin).pathname;
+    if (shopFloorPageCache.has(normUrl)) return;
+    fetchShopFloorPageContent(normUrl).catch(() => {});
+  } catch (_e) {}
+}
+
+async function renderShopFloorInstantPage(urlStr, pushHistory = true) {
+  const normUrl = new URL(urlStr, window.location.origin).pathname;
+  const mainEl = document.querySelector('main');
+  if (!mainEl) {
+    window.location.assign(urlStr);
+    return;
+  }
+
+  // If already cached, swap immediately in 0 milliseconds
+  const cached = shopFloorPageCache.get(normUrl);
+  if (cached) {
+    applyShopFloorPageData(cached, urlStr, pushHistory);
+    // Quietly refresh cache in background
+    fetchShopFloorPageContent(urlStr).catch(() => {});
+    return;
+  }
+
+  // Otherwise fetch and swap
+  try {
+    showAppLoading('Loading...', 4000);
+    const pageData = await fetchShopFloorPageContent(urlStr);
+    hideAppLoading();
+    applyShopFloorPageData(pageData, urlStr, pushHistory);
+  } catch (_err) {
+    hideAppLoading();
+    window.location.assign(urlStr);
+  }
+}
+
+function applyShopFloorPageData(pageData, urlStr, pushHistory) {
+  const mainEl = document.querySelector('main');
+  if (!mainEl) return;
+
+  mainEl.className = pageData.mainClass;
+  if (pageData.mainStyle) {
+    mainEl.setAttribute('style', pageData.mainStyle);
+  } else {
+    mainEl.removeAttribute('style');
+  }
+  mainEl.innerHTML = pageData.mainHtml;
+  if (pageData.title) {
+    document.title = pageData.title;
+  }
+
+  // Update navbar active links
+  const normUrl = new URL(urlStr, window.location.origin).pathname;
+  document.querySelectorAll('.main-nav .nav-link').forEach((link) => {
+    if (link instanceof HTMLAnchorElement) {
+      const linkNorm = new URL(link.href, window.location.origin).pathname;
+      const isActive = linkNorm === normUrl || (linkNorm !== '/dashboard' && linkNorm !== '/' && normUrl.startsWith(linkNorm));
+      link.classList.toggle('active', isActive);
+    }
+  });
+
+  // Update shop floor subnav pills
+  document.querySelectorAll('.shop-floor-subnav-pill').forEach((pill) => {
+    if (pill instanceof HTMLAnchorElement) {
+      const pillNorm = new URL(pill.href, window.location.origin).pathname;
+      pill.classList.toggle('is-active', pillNorm === normUrl);
+    }
+  });
+
+  if (pushHistory) {
+    window.history.pushState({ shopFloorUrl: urlStr }, '', urlStr);
+  }
+
+  window.scrollTo({ top: 0, behavior: 'instant' });
+
+  // Execute inline scripts that belonged to the new page content
+  pageData.scripts.forEach((scriptCode) => {
+    if (scriptCode && !scriptCode.includes('main.js') && !scriptCode.includes('bootstrap')) {
+      try {
+        const fn = new Function(scriptCode);
+        fn();
+      } catch (_scriptErr) {
+        // Ignore non-critical script re-execution error
+      }
+    }
+  });
+}
+
+// Popstate listener for back/forward browser buttons
+window.addEventListener('popstate', () => {
+  if (window.location.pathname.startsWith('/shop-floor')) {
+    renderShopFloorInstantPage(window.location.href, false);
+  }
+});
+
+// Prefetch on hover and touch
+document.addEventListener('mouseover', (event) => {
+  const target = event.target;
+  if (target instanceof HTMLElement) {
+    const link = target.closest('a[href^="/shop-floor"]');
+    if (link instanceof HTMLAnchorElement && link.origin === window.location.origin) {
+      prefetchShopFloorPage(link.href);
+    }
+  }
+});
+
+document.addEventListener('touchstart', (event) => {
+  const target = event.target;
+  if (target instanceof HTMLElement) {
+    const link = target.closest('a[href^="/shop-floor"]');
+    if (link instanceof HTMLAnchorElement && link.origin === window.location.origin) {
+      prefetchShopFloorPage(link.href);
+    }
+  }
+}, { passive: true });
+
+// Idle prefetch on initial load
+if (typeof window !== 'undefined' && window.location.pathname.startsWith('/shop-floor')) {
+  window.setTimeout(() => {
+    ['/shop-floor', '/shop-floor/boards', '/shop-floor/receipts', '/shop-floor/deliveries'].forEach(prefetchShopFloorPage);
+  }, 400);
+}
+
 document.addEventListener('click', async (event) => {
   const target = event.target;
 
@@ -179,6 +335,26 @@ document.addEventListener('click', async (event) => {
     showAppLoading(refreshTrigger.getAttribute('data-loading-message') || 'Refreshing app...');
     window.location.reload();
     return;
+  }
+
+  // Intercept shop floor internal navigation for instant 0ms transitions
+  const shopFloorLink = target.closest('a[href^="/shop-floor"]');
+  if (
+    shopFloorLink instanceof HTMLAnchorElement
+    && shouldShowLinkLoading(event, shopFloorLink)
+    && shopFloorLink.origin === window.location.origin
+  ) {
+    const destination = new URL(shopFloorLink.href);
+    const current = new URL(window.location.href);
+    // If it's a hash jump on the same page, let browser anchor scroll happen naturally
+    if (destination.pathname === current.pathname && destination.hash) {
+      return;
+    }
+    if (destination.pathname !== current.pathname || destination.search !== current.search) {
+      event.preventDefault();
+      renderShopFloorInstantPage(destination.href, true);
+      return;
+    }
   }
 
   const instantNavLink = target.closest('a[data-instant-nav]');
