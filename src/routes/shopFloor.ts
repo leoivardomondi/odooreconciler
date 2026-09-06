@@ -1302,9 +1302,25 @@ router.get('/shop-floor', async (req: Request, res: Response) => {
   }
 });
 
+async function resolveShopFloorEmployeeRecord(email: string, client: OdooClient): Promise<{ id: number; name: string } | null> {
+  const norm = (email || '').trim().toLowerCase();
+  if (!norm) return null;
+  const cacheKey = `shop-floor-dashboard:v3:${norm}`;
+  const cached = shopFloorCache.get<OperatorDashboardData>(cacheKey);
+  if (cached?.employee?.id) {
+    return { id: cached.employee.id, name: cached.employee.name };
+  }
+  try {
+    const snapshot = await getShopFloorDashboardSnapshot<OperatorDashboardData>(norm);
+    if (snapshot?.data?.employee?.id) {
+      return { id: snapshot.data.employee.id, name: snapshot.data.employee.name };
+    }
+  } catch (_e) {}
+  return client.findEmployeeForShopFloorEmail(email);
+}
+
 async function resolveAttendanceEmployee(req: Request, client: OdooClient) {
-  return client.findEmployeeByUserEmail(req.authUser!.email)
-    || client.findEmployeeByWorkEmail(req.authUser!.email);
+  return resolveShopFloorEmployeeRecord(req.authUser!.email, client);
 }
 
 router.post('/shop-floor/attendance/check-in', async (req: Request, res: Response) => {
@@ -2035,13 +2051,9 @@ router.post('/shop-floor/work-order/:id/advance', async (req: Request, res: Resp
 
   try {
     const viewedEmail = getViewedUserEmail(req);
-    const cacheKey = `shop-floor-dashboard:v3:${viewedEmail.toLowerCase()}`;
-    const cachedDashboard = shopFloorCache.get<OperatorDashboardData>(cacheKey);
     const settings = await getSettings();
     const client = new OdooClient(settings.odoo);
-    const employee = cachedDashboard?.employee?.id
-      ? { id: cachedDashboard.employee.id, name: cachedDashboard.employee.name }
-      : await client.findEmployeeForShopFloorEmail(viewedEmail);
+    const employee = await resolveShopFloorEmployeeRecord(viewedEmail, client);
     if (!employee) {
       throw new Error('Your signed-in account is not linked to an Odoo employee. Ask an administrator to match your email.');
     }
@@ -2147,7 +2159,7 @@ router.post('/shop-floor/work-order/:id/pause', async (req: Request, res: Respon
     const settings = await getSettings();
     const client = new OdooClient(settings.odoo);
     const viewedEmail = getViewedUserEmail(req);
-    const employee = await client.findEmployeeForShopFloorEmail(viewedEmail);
+    const employee = await resolveShopFloorEmployeeRecord(viewedEmail, client);
     if (!employee) throw new Error('Your account is not linked to an Odoo employee.');
 
     await client.pauseManufacturingOrder(moId, { createBackorder, qtyProduced }, employee.id);

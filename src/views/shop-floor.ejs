@@ -137,14 +137,14 @@
       <div>
         <% if (data.attendance) { %>
           <% if (data.attendance.checkedIn) { %>
-            <span class="badge rounded-pill px-3 py-2" style="background:rgba(255,255,255,0.2);font-size:0.85rem" data-i18n="checked_in">Checked In</span>
+            <span id="headerAttendanceBadge" class="badge rounded-pill px-3 py-2" style="background:rgba(255,255,255,0.2);font-size:0.85rem" data-i18n="checked_in">Checked In</span>
             <% if (data.attendance.isLate) { %>
               <div class="mt-1 text-warning-emphasis" style="font-size:0.72rem;opacity:0.9" data-i18n="checked_in_late">You checked in late today</div>
             <% } %>
           <% } else if (data.attendance.checkedOut) { %>
-            <span class="badge rounded-pill px-3 py-2" style="background:rgba(255,255,255,0.15);font-size:0.85rem" data-i18n="checked_out">Checked Out</span>
+            <span id="headerAttendanceBadge" class="badge rounded-pill px-3 py-2" style="background:rgba(255,255,255,0.15);font-size:0.85rem" data-i18n="checked_out">Checked Out</span>
           <% } else { %>
-            <span class="badge rounded-pill px-3 py-2" style="background:rgba(239,68,68,0.8);font-size:0.85rem" data-i18n="not_checked_in">Not Checked In</span>
+            <span id="headerAttendanceBadge" class="badge rounded-pill px-3 py-2" style="background:rgba(239,68,68,0.8);font-size:0.85rem" data-i18n="not_checked_in">Not Checked In</span>
           <% } %>
         <% } %>
       </div>
@@ -968,7 +968,27 @@
                   if (!response.ok || !payload.ok) throw new Error(payload.error || 'Attendance action failed.');
                   if (result) result.className = 'attendance-action-result small mt-2 text-success';
                   if (result) result.textContent = payload.action === 'checked_out' ? 'Checked out in Odoo.' : 'Checked in in Odoo.';
-                  setTimeout(() => window.location.reload(), 700);
+
+                  // In-place UI update without full page reload
+                  const isCheckout = payload.action === 'checked_out';
+                  form.action = isCheckout ? '/shop-floor/attendance/check-in' : '/shop-floor/attendance/check-out';
+                  if (button) {
+                    button.disabled = false;
+                    button.className = 'btn btn-sm rounded-pill px-3 ' + (isCheckout ? 'btn-warning' : 'btn-outline-danger');
+                    button.textContent = isCheckout ? 'Check In' : 'Check Out';
+                  }
+                  const headerBadge = document.getElementById('headerAttendanceBadge');
+                  if (headerBadge) {
+                    headerBadge.textContent = isCheckout ? 'Checked Out' : 'Checked In';
+                    headerBadge.setAttribute('data-i18n', isCheckout ? 'checked_out' : 'checked_in');
+                    headerBadge.style.background = isCheckout ? 'rgba(255,255,255,0.15)' : 'rgba(255,255,255,0.2)';
+                    if (typeof setLanguage === 'function') {
+                      setLanguage(localStorage.getItem('shopFloorLang') || 'en');
+                    }
+                  }
+                  if (window.shopFloorPageCache) {
+                    window.shopFloorPageCache.clear();
+                  }
                 } catch (error) {
                   if (result) result.className = 'attendance-action-result small mt-2 text-danger';
                   if (result) result.textContent = error instanceof Error ? error.message : 'Attendance action failed.';
@@ -1574,10 +1594,130 @@
     stockBadge.className = 'badge rounded-pill ' + (currentStockStatus === 'ready' ? 'bg-success-subtle text-success' : currentStockStatus === 'incoming' ? 'bg-warning-subtle text-warning-emphasis' : 'bg-danger-subtle text-danger');
   });
 
+  function applyMoOptimisticUpdate(moId, targetState) {
+    var row = document.querySelector('[data-mo-row="' + moId + '"]');
+    if (!row) return null;
+
+    var stateBadge = row.querySelector('[data-mo-state-badge]');
+    var actionTriggers = row.querySelectorAll('[data-mo-action]');
+    var progressBar = row.querySelector('.progress-bar');
+    var progressText = row.querySelector('.fw-bold.text-dark');
+    var areaGroup = row.closest('[data-mo-area-group]');
+
+    var previousState = stateBadge ? (stateBadge.textContent || '').trim() : 'confirmed';
+    var previousBadgeStyle = stateBadge ? stateBadge.getAttribute('style') : '';
+    var actionContainer = row.querySelector('.d-flex.flex-wrap.align-items-center.gap-2');
+    var previousButtonsHtml = actionContainer ? actionContainer.innerHTML : '';
+    var previousProgressWidth = progressBar ? progressBar.style.width : '';
+    var previousProgressBarClass = progressBar ? progressBar.className : '';
+    var previousProgressText = progressText ? progressText.textContent : '';
+
+    actionTriggers.forEach(function(trig) {
+      trig.setAttribute('data-mo-state', targetState);
+    });
+
+    if (stateBadge) {
+      stateBadge.textContent = targetState;
+      if (targetState === 'progress') {
+        stateBadge.style.cssText = 'background:#dbeafe;color:#1e40af;font-weight:600;font-size:0.68rem';
+      } else if (targetState === 'done') {
+        stateBadge.style.cssText = 'background:#dcfce7;color:#166534;font-weight:600;font-size:0.68rem';
+      } else if (targetState === 'paused') {
+        stateBadge.style.cssText = 'background:#fff7ed;color:#c2410c;border:1px solid #ffedd5;font-weight:600;font-size:0.68rem';
+      } else {
+        stateBadge.style.cssText = 'background:#fef9c3;color:#854d0e;font-weight:600;font-size:0.68rem';
+      }
+    }
+
+    if (actionContainer) {
+      var titleBtn = row.querySelector('.btn-link[data-mo-action]');
+      var moName = titleBtn ? (titleBtn.getAttribute('data-mo-name') || '') : '';
+      var moProduct = titleBtn ? (titleBtn.getAttribute('data-mo-product') || '') : '';
+      var stockStatus = titleBtn ? (titleBtn.getAttribute('data-stock-status') || 'ready') : 'ready';
+
+      if (targetState === 'progress') {
+        actionContainer.innerHTML =
+          '<button type="button" class="btn btn-sm rounded-pill px-3 fw-bold btn-primary" ' +
+          'data-mo-action data-bs-toggle="modal" data-bs-target="#manufacturingOrderActionModal" ' +
+          'data-mo-id="' + moId + '" data-mo-name="' + moName + '" data-mo-product="' + moProduct + '" ' +
+          'data-mo-state="progress" data-stock-status="' + stockStatus + '">' +
+          '<i class="bi bi-stop-fill me-1" aria-hidden="true"></i>Finish</button>' +
+          '<button type="button" class="btn btn-sm rounded-pill px-3 fw-bold" ' +
+          'style="background:#fff7ed;color:#c2410c;border:1px solid #ffedd5 !important;font-size:0.78rem" ' +
+          'data-bs-toggle="modal" data-bs-target="#pauseMoModal" ' +
+          'data-pause-id="' + moId + '" data-pause-name="' + moName + '" data-pause-product="' + moProduct + '" ' +
+          'onclick="openPauseMoModal(this)">' +
+          '<i class="bi bi-pause-circle-fill me-1" aria-hidden="true"></i>Pause</button>' +
+          '<button type="button" class="btn btn-sm rounded-pill px-3" ' +
+          'style="background:#eef2ff;color:#4338ca;border:1px solid #e0e7ff;font-size:0.75rem;font-weight:600" ' +
+          'data-bs-toggle="collapse" data-bs-target="#planDate' + moId + '">' +
+          '<i class="bi bi-calendar-event me-1" aria-hidden="true"></i>Plan</button>';
+      } else if (targetState === 'done') {
+        actionContainer.innerHTML =
+          '<button type="button" class="btn btn-sm rounded-pill px-3 fw-bold btn-outline-secondary" disabled ' +
+          'data-mo-action data-mo-id="' + moId + '" data-mo-state="done">' +
+          '<i class="bi bi-check-circle-fill me-1" aria-hidden="true"></i>Completed</button>' +
+          '<button type="button" class="btn btn-sm rounded-pill px-3" ' +
+          'style="background:#eef2ff;color:#4338ca;border:1px solid #e0e7ff;font-size:0.75rem;font-weight:600" ' +
+          'data-bs-toggle="collapse" data-bs-target="#planDate' + moId + '">' +
+          '<i class="bi bi-calendar-event me-1" aria-hidden="true"></i>Plan</button>';
+
+        if (progressBar) {
+          progressBar.style.width = '100%';
+          progressBar.className = 'progress-bar bg-success';
+        }
+        if (progressText) {
+          progressText.textContent = '100%';
+        }
+      }
+    }
+
+    if (areaGroup) {
+      var allBadges = Array.from(areaGroup.querySelectorAll('[data-mo-state-badge]'));
+      var countDone = allBadges.filter(function(b) { return (b.textContent || '').trim() === 'done'; }).length;
+      var countProg = allBadges.filter(function(b) { return (b.textContent || '').trim() === 'progress'; }).length;
+      var countTextEl = areaGroup.querySelector('.px-4.py-2\\.5 > div:last-child');
+      if (countTextEl) {
+        countTextEl.innerHTML = countProg + ' <span data-i18n="in_progress">in progress</span> · ' + countDone + ' <span data-i18n="done">done</span>';
+      }
+    }
+
+    if (window.shopFloorPageCache) {
+      window.shopFloorPageCache.clear();
+    }
+
+    return function rollback() {
+      if (stateBadge) {
+        stateBadge.textContent = previousState;
+        stateBadge.style.cssText = previousBadgeStyle;
+      }
+      actionTriggers.forEach(function(trig) {
+        trig.setAttribute('data-mo-state', previousState);
+      });
+      if (actionContainer && previousButtonsHtml) {
+        actionContainer.innerHTML = previousButtonsHtml;
+      }
+      if (progressBar) {
+        progressBar.style.width = previousProgressWidth;
+        progressBar.className = previousProgressBarClass;
+      }
+      if (progressText) {
+        progressText.textContent = previousProgressText;
+      }
+      if (areaGroup) {
+        var allBadgesRev = Array.from(areaGroup.querySelectorAll('[data-mo-state-badge]'));
+        var cDone = allBadgesRev.filter(function(b) { return (b.textContent || '').trim() === 'done'; }).length;
+        var cProg = allBadgesRev.filter(function(b) { return (b.textContent || '').trim() === 'progress'; }).length;
+        var cText = areaGroup.querySelector('.px-4.py-2\\.5 > div:last-child');
+        if (cText) {
+          cText.innerHTML = cProg + ' <span data-i18n="in_progress">in progress</span> · ' + cDone + ' <span data-i18n="done">done</span>';
+        }
+      }
+    };
+  }
+
   function updateOrderUi(moId, state) {
-    window.setTimeout(function() {
-      window.location.reload();
-    }, 400);
+    applyMoOptimisticUpdate(moId, state);
   }
 
   form.addEventListener('submit', async function(event) {
@@ -1591,18 +1731,22 @@
     }
 
     requestInProgress = true;
-    addStockNotice.classList.add('d-none');
-    actionStatus.className = 'alert d-none';
-    actionButton.disabled = true;
-    var originalHtml = actionButton.innerHTML;
+    var targetMoId = currentMoId;
+    var targetState = actionValue.value === 'finish' ? 'done' : 'progress';
     var actionName = actionValue.value === 'finish' ? 'Finishing' : 'Starting';
+
+    // Apply optimistic DOM update immediately (0ms feedback)
+    var rollback = applyMoOptimisticUpdate(targetMoId, targetState);
+    showToast(actionName + ' job in Odoo...');
+
+    // Close modal immediately
+    var modalInstance = bootstrap.Modal.getInstance(actionModal);
+    if (modalInstance) {
+      modalInstance.hide();
+    }
+
     var controller = new AbortController();
-    var slowTimer = window.setTimeout(function() {
-      actionStatus.className = 'alert alert-info py-2';
-      actionStatus.textContent = 'Odoo is taking longer than usual. Keep this page open while the job status is confirmed.';
-    }, 5000);
-    var timeoutTimer = window.setTimeout(function() { controller.abort(); }, 30000);
-    actionButton.innerHTML = '<span class="spinner-border spinner-border-sm me-2" aria-hidden="true"></span><span>' + actionName + '…</span>';
+    var timeoutTimer = window.setTimeout(function() { controller.abort(); }, 35000);
 
     try {
       var response = await fetch(form.getAttribute('action'), {
@@ -1614,7 +1758,6 @@
         body: new URLSearchParams(new FormData(form)).toString(),
         signal: controller.signal
       });
-      window.clearTimeout(slowTimer);
       window.clearTimeout(timeoutTimer);
       var result = await response.json().catch(function() {
         return {
@@ -1625,60 +1768,31 @@
             : 'The server returned an unexpected response. Refresh the job status before trying again.'
         };
       });
+
       if (result.redirectTo) {
-        actionStatus.className = 'alert alert-warning py-2';
-        actionStatus.textContent = result.message || 'Purchased boards must be received before this job can start.';
+        if (rollback) rollback();
         window.location.assign(result.redirectTo);
         return;
       }
+
       if (!response.ok || !result.ok) {
-        var responseError = new Error(result.message || 'Could not update this job.');
-        responseError.code = result.code || '';
-        responseError.loginUrl = result.loginUrl || '';
-        responseError.refreshUrl = result.refreshUrl || '';
-        responseError.httpStatus = response.status;
-        throw responseError;
+        if (rollback) rollback();
+        showToast(result.message || 'Could not update this job.');
+        return;
       }
 
-      actionStatus.className = 'alert ' + (result.warning ? 'alert-warning' : 'alert-success') + ' py-2';
-      actionStatus.textContent = result.warning ? (result.message + ' ' + result.warning) : result.message;
-      actionButton.innerHTML = result.state === 'done'
-        ? '<i class="bi bi-check-circle-fill me-2"></i><span>Completed</span>'
-        : '<i class="bi bi-stop-fill me-2"></i><span>Finish</span>';
-      actionButton.disabled = result.state === 'done';
-      showToast(result.message);
-      window.setTimeout(function() {
-        var modal = bootstrap.Modal.getInstance(actionModal);
-        if (modal) modal.hide();
-        window.location.reload();
-      }, 600);
-    } catch (error) {
-      window.clearTimeout(slowTimer);
-      window.clearTimeout(timeoutTimer);
-      actionStatus.className = 'alert alert-warning py-2';
-      if (error && error.name === 'AbortError') {
-        actionStatus.innerHTML = '<strong>Confirmation timed out.</strong><div class="small mt-1">The job may already have started in Odoo. Check its latest status before trying again.</div><a class="btn btn-sm btn-outline-secondary mt-2" href="/shop-floor?refresh=true#manufacturing-orders">Refresh Job Status</a>';
-      } else if (error && (error.code === 'session_expired' || error.httpStatus === 401)) {
-        actionStatus.innerHTML = '<strong>Session expired.</strong><div class="small mt-1">Sign in again, then return to this job.</div><a class="btn btn-sm btn-primary mt-2" href="' + (error.loginUrl || '/login?next=%2Fshop-floor') + '">Sign In</a>';
-      } else if (error && (error.code === 'permission_denied' || error.httpStatus === 403)) {
-        if (error.code === 'csrf_invalid') {
-          actionStatus.innerHTML = '<strong>Security token expired.</strong><div class="small mt-1">Refresh this page before starting the job again.</div><a class="btn btn-sm btn-primary mt-2" href="' + (error.refreshUrl || '/shop-floor?refresh=true#manufacturing-orders') + '">Refresh Page</a>';
-        } else {
-        actionStatus.innerHTML = '<strong>Odoo denied this action.</strong><div class="small mt-1"></div><a class="btn btn-sm btn-outline-secondary mt-2" href="mailto:dbadmin@urbanvibeinteriordesign.co.ke">Contact Administrator</a>';
-        actionStatus.querySelector('.small').textContent = error.message || 'You do not have permission to update this job in Odoo.';
-        }
-      } else if (!navigator.onLine || error instanceof TypeError) {
-        actionStatus.innerHTML = '<strong>Connection lost.</strong><div class="small mt-1">The job may have started. Reconnect and refresh its status before trying again.</div><a class="btn btn-sm btn-outline-secondary mt-2" href="/shop-floor?refresh=true#manufacturing-orders">Refresh Job Status</a>';
-      } else {
-        actionStatus.textContent = error instanceof Error ? error.message : 'Could not update this job.';
-        var refreshLink = document.createElement('a');
-        refreshLink.className = 'btn btn-sm btn-outline-secondary mt-2 d-block';
-        refreshLink.href = '/shop-floor?refresh=true#manufacturing-orders';
-        refreshLink.textContent = 'Refresh Job Status';
-        actionStatus.appendChild(refreshLink);
+      // Success confirmation
+      showToast(result.message || (targetState === 'done' ? 'Job completed.' : 'Job started.'));
+      if (result.state && result.state !== targetState) {
+        applyMoOptimisticUpdate(targetMoId, result.state);
       }
-      actionButton.innerHTML = originalHtml;
-      actionButton.disabled = false;
+    } catch (error) {
+      window.clearTimeout(timeoutTimer);
+      if (rollback) rollback();
+      var errMsg = error && error.name === 'AbortError'
+        ? 'Confirmation timed out. Refresh to verify the job status in Odoo.'
+        : (error instanceof Error ? error.message : 'Could not update this job.');
+      showToast(errMsg);
     } finally {
       requestInProgress = false;
     }

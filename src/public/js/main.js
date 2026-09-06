@@ -128,26 +128,69 @@ function beginInstantNavigation(anchor) {
   `;
 }
 
+function restoreSubmitter(submitter) {
+  if (!submitter || !(submitter instanceof HTMLElement)) return;
+  delete submitter.dataset.submitting;
+  submitter.classList.remove('is-loading');
+  if (submitter.dataset.originalWidth) {
+    submitter.style.width = submitter.dataset.originalWidth;
+    delete submitter.dataset.originalWidth;
+  }
+  if (submitter.dataset.originalHtml) {
+    submitter.innerHTML = submitter.dataset.originalHtml;
+    delete submitter.dataset.originalHtml;
+  } else if (submitter.dataset.originalValue && submitter instanceof HTMLInputElement) {
+    submitter.value = submitter.dataset.originalValue;
+    delete submitter.dataset.originalValue;
+  }
+}
+
 function markSubmitterLoading(submitter, message) {
-  if (submitter instanceof HTMLButtonElement) {
-    if (!submitter.dataset.originalText) {
-      submitter.dataset.originalText = submitter.textContent || '';
-    }
-    submitter.classList.add('is-loading');
-    submitter.textContent = submitter.getAttribute('data-loading-label') || message || 'Working...';
+  if (!(submitter instanceof HTMLElement)) return;
+  if (submitter.dataset.submitting === 'true') return;
+  submitter.dataset.submitting = 'true';
+
+  // Lock width so button does not jump or collapse
+  const rect = submitter.getBoundingClientRect();
+  if (rect.width > 0 && !submitter.dataset.originalWidth) {
+    submitter.dataset.originalWidth = submitter.style.width || '';
+    submitter.style.width = `${Math.ceil(rect.width)}px`;
   }
 
-  if (submitter instanceof HTMLInputElement && submitter.type === 'submit') {
+  const label = submitter.getAttribute('data-loading-label') || message || 'Working...';
+
+  if (submitter instanceof HTMLButtonElement) {
+    if (!submitter.dataset.originalHtml) {
+      submitter.dataset.originalHtml = submitter.innerHTML;
+    }
+    submitter.classList.add('is-loading');
+    submitter.innerHTML = `<span class="spinner-border spinner-border-sm me-1.5 align-middle" role="status" aria-hidden="true" style="width:0.85rem;height:0.85rem;border-width:1.5px"></span><span class="align-middle">${label}</span>`;
+  } else if (submitter instanceof HTMLInputElement && submitter.type === 'submit') {
     if (!submitter.dataset.originalValue) {
       submitter.dataset.originalValue = submitter.value || '';
     }
     submitter.classList.add('is-loading');
-    submitter.value = submitter.getAttribute('data-loading-label') || message || 'Working...';
+    submitter.value = label;
   }
+
+  // Safety auto-restore after 20s if page didn't unload
+  window.setTimeout(() => {
+    if (submitter.dataset.submitting === 'true') {
+      restoreSubmitter(submitter);
+    }
+  }, 20000);
 }
+
+// Restore buttons on back-forward cache or page reveal
+window.addEventListener('pageshow', () => {
+  document.querySelectorAll('[data-submitting="true"]').forEach((el) => {
+    restoreSubmitter(el);
+  });
+});
 
 // --- Shop Floor Instant SPA-like Navigation & Prefetching ---
 const shopFloorPageCache = new Map();
+window.shopFloorPageCache = shopFloorPageCache;
 
 async function fetchShopFloorPageContent(urlStr) {
   const normUrl = new URL(urlStr, window.location.origin).pathname;
@@ -388,6 +431,11 @@ document.addEventListener('submit', (event) => {
   }
 
   const submitter = event.submitter instanceof HTMLElement ? event.submitter : null;
+
+  if (submitter && submitter.dataset.submitting === 'true') {
+    event.preventDefault();
+    return;
+  }
 
   const message = submitter?.getAttribute('data-confirm') || form.getAttribute('data-confirm');
   if (message && !window.confirm(message)) {
