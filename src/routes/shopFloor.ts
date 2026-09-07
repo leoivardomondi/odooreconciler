@@ -2170,10 +2170,17 @@ router.get('/shop-floor/boards/requirements', async (req: Request, res: Response
     res.status(400).json({ error: 'Missing partner_id' });
     return;
   }
+  if (partnerId === 350) {
+    res.json([]);
+    return;
+  }
 
   try {
-    // 1. Query local-first from MySQL
-    const localPending = await getPendingShopFloorProcesses({ partnerId, status: 'pending' });
+    // 1. Query local-first from MySQL (strictly excluding URBAN VIBE 2 and VA prefix)
+    const rawLocalPending = await getPendingShopFloorProcesses({ partnerId, status: 'pending' });
+    const localPending = rawLocalPending.filter(
+      (p) => !String(p.mo_name || '').toUpperCase().startsWith('VA/') && String(p.partner_name || '').toUpperCase() !== 'URBAN VIBE 2'
+    );
     if (localPending.length > 0) {
       const reqMap = new Map<string, {
         moId: number;
@@ -2207,7 +2214,7 @@ router.get('/shop-floor/boards/requirements', async (req: Request, res: Response
         }
       }
 
-      const requirements = Array.from(reqMap.values()).filter((r) => r.qtyMissing > 0);
+      const requirements = Array.from(reqMap.values()).filter((r) => r.qtyMissing > 0 && !String(r.moName || '').toUpperCase().startsWith('VA/'));
       res.json(applyOptimisticBoardIntakes(partnerId, requirements));
       return;
     }
@@ -2215,7 +2222,9 @@ router.get('/shop-floor/boards/requirements', async (req: Request, res: Response
     // 2. If no local records found for this partner yet (cold cache), fallback to Odoo and trigger background sync
     const settings = await getSettings();
     const client = new OdooClient(settings.odoo);
-    const requirements = await client.getCustomerBoardRequirements(partnerId);
+    const requirements = (await client.getCustomerBoardRequirements(partnerId)).filter(
+      (r) => !String(r.moName || '').toUpperCase().startsWith('VA/')
+    );
     void syncPendingProcessesFromOdoo(false).catch(() => null);
     res.json(applyOptimisticBoardIntakes(partnerId, requirements));
   } catch (err) {

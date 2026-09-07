@@ -46,18 +46,27 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
     const settings = await getSettings();
     const client = new OdooClient(settings.odoo);
 
-    // 1. Fetch active MOs
-    const activeMOs = await client.searchReadRecords<{
+    const targetCompanyId = await client.getTargetCompanyIdValue();
+
+    // 1. Fetch active MOs strictly belonging to target company (excluding URBAN VIBE 2)
+    const rawActiveMOs = await client.searchReadRecords<{
       id: number;
       name: string;
       state: string;
       origin: string | null;
     }>('mrp.production', {
-      domain: [['state', 'in', ['confirmed', 'progress']]],
+      domain: [
+        ['company_id', '=', targetCompanyId],
+        ['state', 'in', ['confirmed', 'progress']],
+      ],
       fields: ['id', 'name', 'state', 'origin'],
       limit: 250,
       order: 'create_date desc, id desc',
     });
+
+    const activeMOs = rawActiveMOs.filter(
+      (mo) => !String(mo.name || '').toUpperCase().startsWith('VA/')
+    );
 
     if (!activeMOs.length) {
       await deleteStaleCompletedProcesses(7);
@@ -65,7 +74,7 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
       return { ok: true, syncedCount: 0, message: 'No active MOs found in Odoo', durationMs: Date.now() - startTime };
     }
 
-    // 2. Fetch origin SO partners in bulk
+    // 2. Fetch origin SO partners in bulk for target company
     const originNames = [...new Set(activeMOs.map(mo => mo.origin).filter(Boolean) as string[])];
     const soPartnerMap = new Map<string, { partnerId: number; partnerName: string }>();
 
@@ -74,17 +83,24 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
         name: string;
         partner_id: [number, string] | false;
       }>('sale.order', {
-        domain: [['name', 'in', originNames]],
+        domain: [
+          ['company_id', '=', targetCompanyId],
+          ['name', 'in', originNames],
+        ],
         fields: ['name', 'partner_id'],
         limit: 500,
       });
 
       for (const so of soRecords) {
         if (so.partner_id && Array.isArray(so.partner_id)) {
-          soPartnerMap.set(so.name, {
-            partnerId: so.partner_id[0],
-            partnerName: so.partner_id[1],
-          });
+          const pId = so.partner_id[0];
+          const pName = so.partner_id[1];
+          if (pId !== 350 && pName.toUpperCase() !== 'URBAN VIBE 2') {
+            soPartnerMap.set(so.name, {
+              partnerId: pId,
+              partnerName: pName,
+            });
+          }
         }
       }
     }
@@ -105,13 +121,16 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
       return { ok: true, syncedCount: 0, message: 'No board components needed', durationMs: Date.now() - startTime };
     }
 
-    // 5. Exclude components that already have purchase orders for this SO origin
+    // 5. Exclude components that already have purchase orders for this SO origin in target company
     const purchaseOrders = originNames.length > 0
       ? await client.searchReadRecords<{
           id: number;
           origin: string | false;
         }>('purchase.order', {
-          domain: [['origin', 'in', originNames]],
+          domain: [
+            ['company_id', '=', targetCompanyId],
+            ['origin', 'in', originNames],
+          ],
           fields: ['id', 'origin'],
           limit: 500,
         })
@@ -168,7 +187,7 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
         ? move.raw_material_production_id[0]
         : move.raw_material_production_id;
       const mo = moMap.get(moId);
-      if (!mo) continue;
+      if (!mo || String(mo.name || '').toUpperCase().startsWith('VA/')) continue;
 
       const productId = Array.isArray(move.product_id) ? move.product_id[0] : 0;
       const productName = Array.isArray(move.product_id) ? move.product_id[1] : '';
@@ -181,6 +200,9 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
       const partnerInfo = mo.origin ? soPartnerMap.get(mo.origin) : null;
       const partnerId = partnerInfo?.partnerId || 0;
       const partnerName = partnerInfo?.partnerName || 'Unknown Customer';
+      if (partnerId === 350 || partnerName.toUpperCase() === 'URBAN VIBE 2') {
+        continue;
+      }
 
       const qtyNeeded = Number(move.product_uom_qty || 0);
       const qtyReserved = Number(move.quantity || 0);

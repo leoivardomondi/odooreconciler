@@ -3303,7 +3303,7 @@ async function markStockProductMirrorSyncFailed(message) {
 }
 async function getCustomerPartnerMirror(limit = 1000) {
     const rows = await (0, db_1.queryAll)(`SELECT partner_id, name, email, phone, ref, active, synced_at
-    FROM customer_partner_mirror WHERE active = 1 ORDER BY name ASC LIMIT ?`, [limit]);
+    FROM customer_partner_mirror WHERE active = 1 AND name != 'URBAN VIBE 2' AND partner_id != 350 ORDER BY name ASC LIMIT ?`, [limit]);
     return rows.map((row) => ({
         partnerId: Number(row.partner_id),
         name: String(row.name || ''),
@@ -3322,7 +3322,7 @@ async function searchCustomerPartnerMirror(searchTerm, limit = 50) {
     const pattern = `%${trimmed}%`;
     const rows = await (0, db_1.queryAll)(`SELECT partner_id, name, email, phone, ref, active, synced_at
     FROM customer_partner_mirror
-    WHERE active = 1 AND (name LIKE ? OR phone LIKE ? OR ref LIKE ? OR email LIKE ?)
+    WHERE active = 1 AND name != 'URBAN VIBE 2' AND partner_id != 350 AND (name LIKE ? OR phone LIKE ? OR ref LIKE ? OR email LIKE ?)
     ORDER BY
       CASE
         WHEN name LIKE ? THEN 1
@@ -3342,9 +3342,10 @@ async function searchCustomerPartnerMirror(searchTerm, limit = 50) {
     }));
 }
 async function upsertCustomerPartnerMirror(entries) {
-    if (!entries.length)
+    const filtered = entries.filter((e) => e && e.partnerId !== 350 && String(e.name || '').trim().toUpperCase() !== 'URBAN VIBE 2');
+    if (!filtered.length)
         return;
-    for (const entry of entries) {
+    for (const entry of filtered) {
         const activeVal = entry.active === false ? 0 : 1;
         const params = [entry.partnerId, entry.name, entry.email || null, entry.phone || null, entry.ref || null, activeVal, entry.syncedAt || null];
         if ((0, db_1.getDatabaseDialect)() === 'mysql') {
@@ -3702,7 +3703,11 @@ async function deleteShopFloorDashboardSnapshot(email) {
     }
 }
 async function getPendingShopFloorProcesses(filters) {
-    const conditions = [];
+    const conditions = [
+        "mo_name NOT LIKE 'VA/%'",
+        "partner_name != 'URBAN VIBE 2'",
+        "partner_id != 350",
+    ];
     const params = [];
     if (filters?.partnerId) {
         conditions.push('partner_id = ?');
@@ -3729,7 +3734,8 @@ async function getPendingShopFloorProcesses(filters) {
     }));
 }
 async function getPendingShopFloorProcessesCount(status = 'pending') {
-    const row = await (0, db_1.queryOne)('SELECT COUNT(*) as count FROM shop_floor_pending_processes WHERE status = ?', [status]);
+    const row = await (0, db_1.queryOne)(`SELECT COUNT(*) as count FROM shop_floor_pending_processes 
+     WHERE status = ? AND mo_name NOT LIKE 'VA/%' AND partner_name != 'URBAN VIBE 2' AND partner_id != 350`, [status]);
     return Number(row?.count || 0);
 }
 async function upsertPendingShopFloorProcesses(records) {
@@ -3837,6 +3843,7 @@ async function deleteStaleCompletedProcesses(olderThanDays = 7) {
      WHERE status IN ('loaded', 'synced') AND updated_at < ?`, [cutoff]);
 }
 async function pruneStalePendingProcessesForActiveMos(activeMoIds, validKeys) {
+    await (0, db_1.execute)(`DELETE FROM shop_floor_pending_processes WHERE mo_name LIKE 'VA/%' OR partner_name = 'URBAN VIBE 2' OR partner_id = 350`, []);
     if (!activeMoIds.length)
         return;
     const existingPending = await (0, db_1.queryAll)(`SELECT id, mo_id FROM shop_floor_pending_processes WHERE status = 'pending'`);

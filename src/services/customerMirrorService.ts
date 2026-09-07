@@ -53,7 +53,8 @@ export async function refreshCustomerMirror(): Promise<CustomerPartnerMirrorEntr
       }
 
       const client = new OdooClient(settings.odoo);
-      // Fetch all active partners from Odoo (broad domain covering clients/customers)
+      const targetCompanyId = await client.getTargetCompanyIdValue();
+      // Fetch all active partners from Odoo (broad domain covering clients/customers, strictly excluding URBAN VIBE 2)
       const rawPartners = await client.searchReadRecords<{
         id: number;
         name: string;
@@ -61,16 +62,30 @@ export async function refreshCustomerMirror(): Promise<CustomerPartnerMirrorEntr
         phone?: string | false | null;
         ref?: string | false | null;
         active?: boolean | null;
+        company_id?: [number, string] | false | null;
       }>('res.partner', {
-        domain: [['active', '=', true]],
-        fields: ['id', 'name', 'email', 'phone', 'ref', 'active'],
+        domain: [
+          ['active', '=', true],
+          ['name', '!=', 'URBAN VIBE 2'],
+          '|',
+          ['company_id', '=', false],
+          ['company_id', '=', targetCompanyId],
+        ],
+        fields: ['id', 'name', 'email', 'phone', 'ref', 'active', 'company_id'],
         limit: 10000,
         order: 'name asc',
       });
 
       const syncedAt = appDateTime();
       const entries = rawPartners
-        .filter((p) => p && p.id && String(p.name || '').trim())
+        .filter((p) => {
+          if (!p || !p.id || !String(p.name || '').trim()) return false;
+          if (p.id === 350) return false;
+          const cleanName = String(p.name || '').trim().toUpperCase();
+          if (cleanName === 'URBAN VIBE 2') return false;
+          if (Array.isArray(p.company_id) && p.company_id[0] === 3) return false;
+          return true;
+        })
         .map((p) => ({
           partnerId: p.id,
           name: String(p.name || '').trim(),

@@ -1718,7 +1718,8 @@ export class OdooClient {
    * Get manufacturing orders assigned to an employee (by user_id).
    */
   async getOperatorWorkOrders(userId: number, limit = 50) {
-    return this.request<Array<{
+    const targetCompanyId = await this.getTargetCompanyId();
+    const records = await this.request<Array<{
       id: number;
       name: string;
       product_id: [number, string];
@@ -1735,7 +1736,10 @@ export class OdooClient {
       'mrp.production',
       'search_read',
       {
-        domain: [['user_id', '=', userId]],
+        domain: [
+          ['company_id', '=', targetCompanyId],
+          ['user_id', '=', userId],
+        ],
         fields: [
           'id', 'name', 'product_id', 'product_qty', 'qty_produced',
           'state', 'date_start', 'date_finished',
@@ -1745,14 +1749,17 @@ export class OdooClient {
         limit,
       },
     );
+    return records.filter((mo) => !String(mo.name || '').toUpperCase().startsWith('VA/'));
   }
 
   /**
    * Get ALL active manufacturing orders (not filtered by user).
    * For shop floor visibility — operators see all orders, categorized by area.
+   * Strictly filters to target company (URBAN VIBE INTERIOR DESIGN COMPANY LTD) and excludes URBAN VIBE 2.
    */
   async getAllActiveWorkOrders(limit = 100) {
-    return this.request<Array<{
+    const targetCompanyId = await this.getTargetCompanyId();
+    const records = await this.request<Array<{
       id: number;
       name: string;
       product_id: [number, string];
@@ -1772,7 +1779,10 @@ export class OdooClient {
         // `to_close` means all shop-floor operations are complete and the MO is
         // awaiting production closure in Odoo. It must not be offered to an
         // operator as a new Start action.
-        domain: [['state', 'not in', ['done', 'cancel', 'draft', 'to_close']]],
+        domain: [
+          ['company_id', '=', targetCompanyId],
+          ['state', 'not in', ['done', 'cancel', 'draft', 'to_close']],
+        ],
         fields: [
           'id', 'name', 'product_id', 'product_qty', 'qty_produced',
           'state', 'date_start', 'date_finished', 'date_deadline',
@@ -1782,11 +1792,13 @@ export class OdooClient {
         limit,
       },
     );
+    return records.filter((mo) => !String(mo.name || '').toUpperCase().startsWith('VA/'));
   }
 
   async getManufacturingPerformanceOrders(fromDate = MANUFACTURING_PERFORMANCE_START_DATE) {
+    const targetCompanyId = await this.getTargetCompanyId();
     const toDate = new Date().toISOString().slice(0, 10);
-    return this.request<Array<{
+    const records = await this.request<Array<{
       id: number;
       name: string;
       product_id: [number, string];
@@ -1798,6 +1810,7 @@ export class OdooClient {
       create_date: string | null;
     }>>('mrp.production', 'search_read', {
       domain: [
+        ['company_id', '=', targetCompanyId],
         ['state', '=', 'done'],
         ['date_finished', '>=', `${fromDate} 00:00:00`],
         ['date_finished', '<=', `${toDate} 23:59:59`],
@@ -1806,6 +1819,7 @@ export class OdooClient {
       order: 'date_finished desc, id desc',
       limit: 5000,
     });
+    return records.filter((mo) => !String(mo.name || '').toUpperCase().startsWith('VA/'));
   }
 
   async getBulkWorkOrderStates(moIds: number[]) {
@@ -3209,9 +3223,17 @@ export class OdooClient {
    * Get the client name for a Sale Order by its name/number.
    */
   async getSaleOrderClient(soName: string): Promise<string | null> {
+    const targetCompanyId = await this.getTargetCompanyId();
     const sos = await this.request<Array<{ partner_id: [number, string] }>>(
       'sale.order', 'search_read',
-      { domain: [['name', '=', soName]], fields: ['partner_id'], limit: 1 },
+      {
+        domain: [
+          ['name', '=', soName],
+          ['company_id', '=', targetCompanyId],
+        ],
+        fields: ['partner_id'],
+        limit: 1,
+      },
     );
     return sos[0] && Array.isArray(sos[0].partner_id) ? sos[0].partner_id[1] : null;
   }
@@ -5070,9 +5092,11 @@ export class OdooClient {
     state: string;
   }>> {
     try {
-      // 1. Find active MOs for this partner (via the MO's origin → sale.order → partner)
-      //    First, try direct partner_id on mrp.production (some Odoo setups have this)
-      const activeMOs = await this.searchReadRecords<{
+      if (input.partnerId === 350) return [];
+      const targetCompanyId = await this.getTargetCompanyId();
+
+      // 1. Find active MOs for target company (strictly excluding URBAN VIBE 2)
+      const rawActiveMOs = await this.searchReadRecords<{
         id: number;
         name: string;
         state: string;
@@ -5080,12 +5104,17 @@ export class OdooClient {
         create_date: string | null;
       }>('mrp.production', {
         domain: [
+          ['company_id', '=', targetCompanyId],
           ['state', 'in', ['confirmed', 'progress']],
         ],
         fields: ['id', 'name', 'state', 'origin', 'create_date'],
         limit: 200,
         order: 'create_date desc, id desc',
       });
+
+      const activeMOs = rawActiveMOs.filter(
+        (mo) => !String(mo.name || '').toUpperCase().startsWith('VA/')
+      );
 
       if (!activeMOs.length) return [];
 
@@ -5123,12 +5152,15 @@ export class OdooClient {
       let clientFilteredMOs = candidateMOs;
 
       if (originNames.length > 0) {
-        // Get partner_id for each SO
+        // Get partner_id for each SO within the target company
         const soPartners = await this.searchReadRecords<{
           name: string;
           partner_id: [number, string] | false;
         }>('sale.order', {
-          domain: [['name', 'in', originNames]],
+          domain: [
+            ['company_id', '=', targetCompanyId],
+            ['name', 'in', originNames],
+          ],
           fields: ['name', 'partner_id'],
           limit: 500,
         });
@@ -5140,11 +5172,11 @@ export class OdooClient {
           }
         }
 
-        // Filter: only MOs where the SO's partner matches the intake partner
+        // Filter: only MOs where the SO's partner matches the intake partner (and not URBAN VIBE 2)
         clientFilteredMOs = candidateMOs.filter(mo => {
           if (!mo.origin) return false;
           const soPartnerId = soPartnerMap.get(mo.origin);
-          return soPartnerId === input.partnerId;
+          return soPartnerId === input.partnerId && soPartnerId !== 350;
         });
       } else {
         // No origins — can't match by client, return empty
@@ -5163,7 +5195,10 @@ export class OdooClient {
             id: number;
             origin: string | false;
           }>('purchase.order', {
-            domain: [['origin', 'in', filteredOrigins]],
+            domain: [
+              ['company_id', '=', targetCompanyId],
+              ['origin', 'in', filteredOrigins],
+            ],
             fields: ['id', 'origin'],
             limit: 500,
           })
@@ -5266,18 +5301,28 @@ export class OdooClient {
     qtyMissing: number;
   }>> {
     try {
-      // 1. Get all active MOs
-      const activeMOs = await this.searchReadRecords<{
+      if (partnerId === 350) return [];
+      const targetCompanyId = await this.getTargetCompanyId();
+
+      // 1. Get all active MOs for target company (strictly excluding URBAN VIBE 2)
+      const rawActiveMOs = await this.searchReadRecords<{
         id: number;
         name: string;
         state: string;
         origin: string | null;
       }>('mrp.production', {
-        domain: [['state', 'in', ['confirmed', 'progress']]],
+        domain: [
+          ['company_id', '=', targetCompanyId],
+          ['state', 'in', ['confirmed', 'progress']],
+        ],
         fields: ['id', 'name', 'state', 'origin'],
         limit: 200,
         order: 'create_date desc, id desc',
       });
+
+      const activeMOs = rawActiveMOs.filter(
+        (mo) => !String(mo.name || '').toUpperCase().startsWith('VA/')
+      );
 
       if (!activeMOs.length) return [];
 
@@ -5289,7 +5334,10 @@ export class OdooClient {
         name: string;
         partner_id: [number, string] | false;
       }>('sale.order', {
-        domain: [['name', 'in', originNames]],
+        domain: [
+          ['company_id', '=', targetCompanyId],
+          ['name', 'in', originNames],
+        ],
         fields: ['name', 'partner_id'],
         limit: 500,
       });
@@ -5303,7 +5351,8 @@ export class OdooClient {
 
       const clientMOs = activeMOs.filter(mo => {
         if (!mo.origin) return false;
-        return soPartnerMap.get(mo.origin) === partnerId;
+        const pId = soPartnerMap.get(mo.origin);
+        return pId === partnerId && pId !== 350;
       });
 
       if (!clientMOs.length) return [];
@@ -5328,7 +5377,10 @@ export class OdooClient {
             id: number;
             origin: string | false;
           }>('purchase.order', {
-            domain: [['origin', 'in', clientOrigins]],
+            domain: [
+              ['company_id', '=', targetCompanyId],
+              ['origin', 'in', clientOrigins],
+            ],
             fields: ['id', 'origin'],
             limit: 500,
           })

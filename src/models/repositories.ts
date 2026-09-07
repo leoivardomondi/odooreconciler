@@ -4550,7 +4550,7 @@ export interface CustomerPartnerMirrorEntry {
 
 export async function getCustomerPartnerMirror(limit = 1000): Promise<CustomerPartnerMirrorEntry[]> {
   const rows = await queryAll<any>(`SELECT partner_id, name, email, phone, ref, active, synced_at
-    FROM customer_partner_mirror WHERE active = 1 ORDER BY name ASC LIMIT ?`, [limit]);
+    FROM customer_partner_mirror WHERE active = 1 AND name != 'URBAN VIBE 2' AND partner_id != 350 ORDER BY name ASC LIMIT ?`, [limit]);
   return rows.map((row) => ({
     partnerId: Number(row.partner_id),
     name: String(row.name || ''),
@@ -4570,7 +4570,7 @@ export async function searchCustomerPartnerMirror(searchTerm: string, limit = 50
   const pattern = `%${trimmed}%`;
   const rows = await queryAll<any>(`SELECT partner_id, name, email, phone, ref, active, synced_at
     FROM customer_partner_mirror
-    WHERE active = 1 AND (name LIKE ? OR phone LIKE ? OR ref LIKE ? OR email LIKE ?)
+    WHERE active = 1 AND name != 'URBAN VIBE 2' AND partner_id != 350 AND (name LIKE ? OR phone LIKE ? OR ref LIKE ? OR email LIKE ?)
     ORDER BY
       CASE
         WHEN name LIKE ? THEN 1
@@ -4599,8 +4599,9 @@ export async function upsertCustomerPartnerMirror(entries: Array<{
   active?: boolean | null;
   syncedAt?: string | null;
 }>) {
-  if (!entries.length) return;
-  for (const entry of entries) {
+  const filtered = entries.filter((e) => e && e.partnerId !== 350 && String(e.name || '').trim().toUpperCase() !== 'URBAN VIBE 2');
+  if (!filtered.length) return;
+  for (const entry of filtered) {
     const activeVal = entry.active === false ? 0 : 1;
     const params = [entry.partnerId, entry.name, entry.email || null, entry.phone || null, entry.ref || null, activeVal, entry.syncedAt || null];
     if (getDatabaseDialect() === 'mysql') {
@@ -5112,7 +5113,11 @@ export async function getPendingShopFloorProcesses(filters?: {
   processType?: string;
   status?: PendingShopFloorProcessStatus;
 }): Promise<PendingShopFloorProcess[]> {
-  const conditions: string[] = [];
+  const conditions: string[] = [
+    "mo_name NOT LIKE 'VA/%'",
+    "partner_name != 'URBAN VIBE 2'",
+    "partner_id != 350",
+  ];
   const params: any[] = [];
 
   if (filters?.partnerId) {
@@ -5145,7 +5150,8 @@ export async function getPendingShopFloorProcesses(filters?: {
 
 export async function getPendingShopFloorProcessesCount(status: PendingShopFloorProcessStatus = 'pending'): Promise<number> {
   const row = await queryOne<{ count: number }>(
-    'SELECT COUNT(*) as count FROM shop_floor_pending_processes WHERE status = ?',
+    `SELECT COUNT(*) as count FROM shop_floor_pending_processes 
+     WHERE status = ? AND mo_name NOT LIKE 'VA/%' AND partner_name != 'URBAN VIBE 2' AND partner_id != 350`,
     [status],
   );
   return Number(row?.count || 0);
@@ -5288,6 +5294,10 @@ export async function deleteStaleCompletedProcesses(olderThanDays = 7): Promise<
 }
 
 export async function pruneStalePendingProcessesForActiveMos(activeMoIds: number[], validKeys: string[]): Promise<void> {
+  await execute(
+    `DELETE FROM shop_floor_pending_processes WHERE mo_name LIKE 'VA/%' OR partner_name = 'URBAN VIBE 2' OR partner_id = 350`,
+    [],
+  );
   if (!activeMoIds.length) return;
   const existingPending = await queryAll<{ id: string; mo_id: number }>(
     `SELECT id, mo_id FROM shop_floor_pending_processes WHERE status = 'pending'`,

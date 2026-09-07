@@ -30,33 +30,45 @@ async function syncPendingProcessesFromOdoo(force = false) {
     try {
         const settings = await (0, repositories_1.getSettings)();
         const client = new odooClient_1.OdooClient(settings.odoo);
-        // 1. Fetch active MOs
-        const activeMOs = await client.searchReadRecords('mrp.production', {
-            domain: [['state', 'in', ['confirmed', 'progress']]],
+        const targetCompanyId = await client.getTargetCompanyIdValue();
+        // 1. Fetch active MOs strictly belonging to target company (excluding URBAN VIBE 2)
+        const rawActiveMOs = await client.searchReadRecords('mrp.production', {
+            domain: [
+                ['company_id', '=', targetCompanyId],
+                ['state', 'in', ['confirmed', 'progress']],
+            ],
             fields: ['id', 'name', 'state', 'origin'],
             limit: 250,
             order: 'create_date desc, id desc',
         });
+        const activeMOs = rawActiveMOs.filter((mo) => !String(mo.name || '').toUpperCase().startsWith('VA/'));
         if (!activeMOs.length) {
             await (0, repositories_1.deleteStaleCompletedProcesses)(7);
             lastSyncTimestamp = Date.now();
             return { ok: true, syncedCount: 0, message: 'No active MOs found in Odoo', durationMs: Date.now() - startTime };
         }
-        // 2. Fetch origin SO partners in bulk
+        // 2. Fetch origin SO partners in bulk for target company
         const originNames = [...new Set(activeMOs.map(mo => mo.origin).filter(Boolean))];
         const soPartnerMap = new Map();
         if (originNames.length > 0) {
             const soRecords = await client.searchReadRecords('sale.order', {
-                domain: [['name', 'in', originNames]],
+                domain: [
+                    ['company_id', '=', targetCompanyId],
+                    ['name', 'in', originNames],
+                ],
                 fields: ['name', 'partner_id'],
                 limit: 500,
             });
             for (const so of soRecords) {
                 if (so.partner_id && Array.isArray(so.partner_id)) {
-                    soPartnerMap.set(so.name, {
-                        partnerId: so.partner_id[0],
-                        partnerName: so.partner_id[1],
-                    });
+                    const pId = so.partner_id[0];
+                    const pName = so.partner_id[1];
+                    if (pId !== 350 && pName.toUpperCase() !== 'URBAN VIBE 2') {
+                        soPartnerMap.set(so.name, {
+                            partnerId: pId,
+                            partnerName: pName,
+                        });
+                    }
                 }
             }
         }
@@ -73,10 +85,13 @@ async function syncPendingProcessesFromOdoo(force = false) {
             lastSyncTimestamp = Date.now();
             return { ok: true, syncedCount: 0, message: 'No board components needed', durationMs: Date.now() - startTime };
         }
-        // 5. Exclude components that already have purchase orders for this SO origin
+        // 5. Exclude components that already have purchase orders for this SO origin in target company
         const purchaseOrders = originNames.length > 0
             ? await client.searchReadRecords('purchase.order', {
-                domain: [['origin', 'in', originNames]],
+                domain: [
+                    ['company_id', '=', targetCompanyId],
+                    ['origin', 'in', originNames],
+                ],
                 fields: ['id', 'origin'],
                 limit: 500,
             })
@@ -115,7 +130,7 @@ async function syncPendingProcessesFromOdoo(force = false) {
                 ? move.raw_material_production_id[0]
                 : move.raw_material_production_id;
             const mo = moMap.get(moId);
-            if (!mo)
+            if (!mo || String(mo.name || '').toUpperCase().startsWith('VA/'))
                 continue;
             const productId = Array.isArray(move.product_id) ? move.product_id[0] : 0;
             const productName = Array.isArray(move.product_id) ? move.product_id[1] : '';
@@ -126,6 +141,9 @@ async function syncPendingProcessesFromOdoo(force = false) {
             const partnerInfo = mo.origin ? soPartnerMap.get(mo.origin) : null;
             const partnerId = partnerInfo?.partnerId || 0;
             const partnerName = partnerInfo?.partnerName || 'Unknown Customer';
+            if (partnerId === 350 || partnerName.toUpperCase() === 'URBAN VIBE 2') {
+                continue;
+            }
             const qtyNeeded = Number(move.product_uom_qty || 0);
             const qtyReserved = Number(move.quantity || 0);
             const key = `${moId}_${productId}`;
