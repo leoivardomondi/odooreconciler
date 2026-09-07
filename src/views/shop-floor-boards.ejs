@@ -160,6 +160,7 @@
         <% } %>
 
         <div class="card-body p-4">
+          <div id="intakeAlertContainer" class="d-none mb-3"></div>
           <form method="post" action="/shop-floor/board-intake" id="intakeForm" class="needs-validation" novalidate>
             <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
 
@@ -355,15 +356,14 @@
     </div>
   </div>
 
-  <% if (recentIntakes && recentIntakes.length) { %>
-    <section class="card border-0 rounded-4 mt-4" style="border:1px solid #e2e8f0!important">
+    <section id="recentBoardLogsSection" class="card border-0 rounded-4 mt-4 <%= (!recentIntakes || !recentIntakes.length) ? 'd-none' : '' %>" style="border:1px solid #e2e8f0!important">
       <div class="card-body p-4">
         <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
           <h2 class="h6 fw-bold mb-0">Board logs</h2>
           <span class="small text-muted">Page <%= boardLogPage || 1 %></span>
         </div>
-        <div class="vstack gap-2">
-          <% recentIntakes.forEach((item) => { %>
+        <div class="vstack gap-2" id="recentBoardLogsList">
+          <% (recentIntakes || []).forEach((item) => { %>
             <%
               const isAdminUser = authUser && (authUser.role === 'admin' || authUser.apps?.includes('shop-floor-admin'));
               const userEmail = (authUser?.email || '').trim().toLowerCase();
@@ -373,7 +373,7 @@
               const isOwner = Boolean((userEmail && itemEmail && userEmail === itemEmail) || (userName && itemName && userName === itemName));
               const canRevert = isAdminUser || isOwner;
             %>
-            <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 border rounded-3 px-3 py-2">
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 border rounded-3 px-3 py-2" data-board-log-row="<%= item.id %>">
               <div>
                 <strong><%= item.quantity %> × <%= item.product_name %></strong>
                 <div class="small text-muted">
@@ -397,9 +397,9 @@
               </div>
               <div class="d-flex align-items-center gap-2">
                 <div class="text-end">
-                  <span class="badge rounded-pill <%= item.reverted_at || item.status === 'reverted' ? 'bg-secondary-subtle text-secondary' : item.status === 'synced' ? 'bg-success-subtle text-success' : item.status === 'failed' ? 'bg-danger-subtle text-danger' : 'bg-warning-subtle text-warning-emphasis' %>" title="<%= item.error_message || '' %>"><%= item.reverted_at || item.status === 'reverted' ? 'Reverted in Odoo' : item.status === 'synced' ? 'Synced to Odoo' : item.status === 'failed' ? 'Sync failed' : item.status === 'reverting' ? 'Reverting' : 'Syncing' %></span>
+                  <span class="badge rounded-pill <%= item.reverted_at || item.status === 'reverted' ? 'bg-secondary-subtle text-secondary' : item.status === 'synced' ? 'bg-success-subtle text-success' : item.status === 'failed' ? 'bg-danger-subtle text-danger' : 'bg-warning-subtle text-warning-emphasis' %>" data-board-log-status="<%= item.id %>" title="<%= item.error_message || '' %>"><%= item.reverted_at || item.status === 'reverted' ? 'Reverted in Odoo' : item.status === 'synced' ? 'Synced to Odoo' : item.status === 'failed' ? 'Sync failed' : item.status === 'reverting' ? 'Reverting' : 'Syncing' %></span>
                   <% if (item.status === 'failed' && item.next_retry_at) { %>
-                    <div class="small text-muted mt-1">Automatic retry scheduled · attempt <%= item.retry_count || 1 %></div>
+                    <div class="small text-muted mt-1" data-board-log-retry="<%= item.id %>">Automatic retry scheduled · attempt <%= item.retry_count || 1 %></div>
                   <% } %>
                 </div>
                 <% if (item.status === 'failed') { %>
@@ -429,7 +429,6 @@
         <% } %>
       </div>
     </section>
-  <% } %>
 </main>
 
 <script>
@@ -1008,10 +1007,78 @@
     }
 
     // Form submission spinner state & validation overrides
+    function escapeHtml(str) {
+      if (str === null || str === undefined) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+
+    // Background poller for board logs syncing with Odoo
+    var pendingLogIds = new Set();
+    var pollInterval = null;
+
+    function trackPendingBoardLog(id) {
+      if (!id) return;
+      pendingLogIds.add(String(id));
+      if (!pollInterval) {
+        pollInterval = window.setInterval(pollPendingBoardLogs, 3500);
+      }
+    }
+
+    async function pollPendingBoardLogs() {
+      if (pendingLogIds.size === 0) {
+        if (pollInterval) {
+          window.clearInterval(pollInterval);
+          pollInterval = null;
+        }
+        return;
+      }
+      var ids = Array.from(pendingLogIds).join(',');
+      try {
+        var res = await fetch('/shop-floor/board-intake/status?ids=' + encodeURIComponent(ids));
+        if (!res.ok) return;
+        var data = await res.json();
+        if (!data.ok || !Array.isArray(data.entries)) return;
+        data.entries.forEach(function(entry) {
+          if (!entry || !entry.id) return;
+          var badge = document.querySelector('[data-board-log-status="' + entry.id + '"]');
+          if (badge) {
+            if (entry.status === 'synced') {
+              badge.className = 'badge rounded-pill bg-success-subtle text-success';
+              badge.textContent = 'Synced to Odoo';
+              pendingLogIds.delete(String(entry.id));
+            } else if (entry.status === 'failed') {
+              badge.className = 'badge rounded-pill bg-danger-subtle text-danger';
+              badge.textContent = 'Sync failed';
+              badge.title = entry.error_message || '';
+              pendingLogIds.delete(String(entry.id));
+            }
+          }
+        });
+      } catch (_e) {}
+    }
+
+    // Check on page load for any pending logs
+    document.querySelectorAll('[data-board-log-status]').forEach(function(el) {
+      var txt = (el.textContent || '').trim();
+      if (txt === 'Syncing' || txt === 'Syncing to Odoo') {
+        var id = el.getAttribute('data-board-log-status');
+        if (id) trackPendingBoardLog(id);
+      }
+    });
+
+    // Form submission spinner state & asynchronous rapid logging
     var form = document.getElementById('intakeForm');
     var submitBtn = document.getElementById('submitBtn');
+    var alertContainer = document.getElementById('intakeAlertContainer');
+
     if (form && submitBtn) {
-      form.addEventListener('submit', function(e) {
+      form.addEventListener('submit', async function(e) {
+        e.preventDefault();
         var partnerVal = document.getElementById('partnerSelect').value;
         var productVal = document.getElementById('productSelect').value;
         var isValid = true;
@@ -1031,7 +1098,6 @@
         }
 
         if (!form.checkValidity() || !isValid) {
-          e.preventDefault();
           e.stopPropagation();
           form.classList.add('was-validated');
           return;
@@ -1040,10 +1106,126 @@
         var text = submitBtn.querySelector('.submit-text');
         var spinner = submitBtn.querySelector('.submit-spinner');
         if (text && spinner) {
-          text.textContent = 'Adding to stock & reserving...';
+          text.textContent = 'Saving boards...';
           spinner.classList.remove('d-none');
           submitBtn.setAttribute('disabled', 'disabled');
-          submitBtn.style.opacity = '0.7';
+          submitBtn.style.opacity = '0.75';
+        }
+
+        try {
+          var response = await fetch(form.action, {
+            method: 'POST',
+            headers: {
+              'Accept': 'application/json',
+              'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'
+            },
+            body: new URLSearchParams(new FormData(form)).toString()
+          });
+
+          var result = await response.json().catch(function() {
+            return { ok: false, error: 'Unexpected server response.' };
+          });
+
+          if (!response.ok || !result.ok) {
+            throw new Error(result.error || result.message || 'Failed to save boards.');
+          }
+
+          // Show immediate success notification banner
+          if (alertContainer) {
+            alertContainer.className = 'alert alert-success alert-dismissible fade show rounded-3 py-2.5 px-3 mb-3 d-flex align-items-center justify-content-between gap-3 shadow-sm';
+            alertContainer.innerHTML =
+              '<div class="small">' +
+                '<strong>✓ Saved:</strong> ' + escapeHtml(result.item.quantity) + ' × ' + escapeHtml(result.item.product_name) +
+                ' for <strong>' + escapeHtml(result.item.customer_name) + '</strong>. Odoo background sync in progress.' +
+              '</div>' +
+              '<span class="badge bg-success text-white rounded-pill px-2 py-1 flex-shrink-0" style="font-size:0.75rem">Ready for next</span>';
+          }
+
+          // Invalidate shop-floor cache so navigation remains fresh
+          if (window.shopFloorPageCache) {
+            window.shopFloorPageCache.clear();
+          }
+
+          // Dynamically prepend new log item to recentBoardLogsList
+          var section = document.getElementById('recentBoardLogsSection');
+          var list = document.getElementById('recentBoardLogsList');
+          if (section) section.classList.remove('d-none');
+          if (list) {
+            var row = document.createElement('div');
+            row.className = 'd-flex flex-wrap justify-content-between align-items-center gap-2 border rounded-3 px-3 py-2';
+            row.setAttribute('data-board-log-row', result.item.id);
+            row.style.background = '#f0fdf4';
+            row.style.transition = 'background 1.5s ease';
+            row.innerHTML =
+              '<div>' +
+                '<strong>' + escapeHtml(result.item.quantity) + ' × ' + escapeHtml(result.item.product_name) + '</strong>' +
+                '<div class="small text-muted">' +
+                  escapeHtml(result.item.customer_name) + ' · Just now' +
+                  (result.item.gate ? ' · <strong>' + escapeHtml(result.item.gate) + '</strong>' : '') +
+                  (result.item.arrival_time ? ' · Arrived: <strong>' + escapeHtml(result.item.arrival_time) + '</strong>' : '') +
+                  (result.item.vehicle_registration ? ' · Vehicle: <strong>' + escapeHtml(result.item.vehicle_registration) + '</strong>' : '') +
+                  (result.item.actor_name ? ' · Logged by <strong>' + escapeHtml(result.item.actor_name) + '</strong>' : '') +
+                '</div>' +
+              '</div>' +
+              '<div class="d-flex align-items-center gap-2">' +
+                '<div class="text-end">' +
+                  '<span class="badge rounded-pill bg-warning-subtle text-warning-emphasis" data-board-log-status="' + escapeHtml(result.item.id) + '">Syncing to Odoo</span>' +
+                '</div>' +
+              '</div>';
+            list.prepend(row);
+            window.setTimeout(function() { row.style.background = ''; }, 2000);
+          }
+
+          // Start tracking Odoo sync in background
+          trackPendingBoardLog(result.item.id);
+
+          // SMART RAPID RE-ENTRY:
+          // Keep Client, Vehicle, Arrival Time, and Gate!
+          // Clear ONLY Board Type and Quantity
+          var productSelect = document.getElementById('productSelect');
+          var productName = document.getElementById('productName');
+          var productSearch = document.getElementById('productSearch');
+          var qtyInput = document.getElementById('intakeQty');
+          var stockHelp = document.getElementById('qtyCurrentStock');
+
+          if (productSelect) productSelect.value = '';
+          if (productName) productName.value = '';
+          if (productSearch) {
+            productSearch.value = '';
+            productSearch.classList.remove('is-invalid');
+          }
+          if (qtyInput) {
+            qtyInput.value = '';
+            qtyInput.classList.remove('is-invalid');
+          }
+          if (stockHelp) {
+            stockHelp.style.display = 'none';
+          }
+          var productList = document.getElementById('productList');
+          if (productList) {
+            productList.querySelectorAll('.combobox-item').forEach(function(i) {
+              i.classList.remove('selected');
+            });
+          }
+
+          // Immediately refocus on Board Type so the user can enter the next board right away!
+          if (productSearch) {
+            productSearch.focus();
+          }
+        } catch (err) {
+          if (alertContainer) {
+            alertContainer.className = 'alert alert-danger alert-dismissible fade show rounded-3 py-2.5 px-3 mb-3';
+            alertContainer.innerHTML =
+              '<div class="small"><strong>Error:</strong> ' + escapeHtml(err instanceof Error ? err.message : 'Could not log boards.') + '</div>' +
+              '<button type="button" class="btn-close btn-close-sm" data-bs-dismiss="alert" aria-label="Close"></button>';
+          }
+        } finally {
+          if (text) text.textContent = 'Log Boards & Reserve on MOs';
+          if (spinner) spinner.classList.add('d-none');
+          if (submitBtn) {
+            submitBtn.removeAttribute('disabled');
+            submitBtn.style.opacity = '1';
+          }
         }
       });
     }

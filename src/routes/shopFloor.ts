@@ -2222,14 +2222,24 @@ router.post('/shop-floor/features', async (req: Request, res: Response) => {
 });
 
 router.post('/shop-floor/board-intake', async (req: Request, res: Response) => {
+  const wantsJson = Boolean(req.xhr || req.headers.accept?.includes('application/json') || req.is('json'));
   if (!req.authUser) {
+    if (wantsJson) {
+      res.status(401).json({ ok: false, error: 'Please sign in first.' });
+      return;
+    }
     res.redirect('/login');
     return;
   }
 
   const { product_id, quantity, partner_id } = req.body;
   if (!product_id || !quantity || !partner_id) {
-    res.redirect('/shop-floor/boards?error=' + encodeURIComponent('Missing required fields: board type, quantity, and client are all required.'));
+    const errorMsg = 'Missing required fields: board type, quantity, and client are all required.';
+    if (wantsJson) {
+      res.status(400).json({ ok: false, error: errorMsg });
+      return;
+    }
+    res.redirect('/shop-floor/boards?error=' + encodeURIComponent(errorMsg));
     return;
   }
 
@@ -2238,7 +2248,12 @@ router.post('/shop-floor/board-intake', async (req: Request, res: Response) => {
   const partnerId = Number(partner_id);
 
   if (qty <= 0 || !Number.isFinite(qty)) {
-    res.redirect('/shop-floor/boards?error=' + encodeURIComponent('Quantity must be a positive number.'));
+    const errorMsg = 'Quantity must be a positive number.';
+    if (wantsJson) {
+      res.status(400).json({ ok: false, error: errorMsg });
+      return;
+    }
+    res.redirect('/shop-floor/boards?error=' + encodeURIComponent(errorMsg));
     return;
   }
 
@@ -2258,7 +2273,32 @@ router.post('/shop-floor/board-intake', async (req: Request, res: Response) => {
     await recordOptimisticStockAddition(productId, productName, qty);
     optimisticBoardIntakes.push({ id: optimisticId, partnerId, productId, productName, customerName, quantity: qty, expiresAt: Date.now() + 10 * 60 * 1000 });
     shopFloorCache.clearPrefix('shop-floor-dashboard:');
-    res.redirect('/shop-floor/boards?message=' + encodeURIComponent(`Boards saved immediately: ${qty} x ${productName} for ${customerName}${vehicleRegistration ? ` (${vehicleRegistration})` : ''}. Odoo synchronization and MO reservation are continuing automatically.`));
+
+    const successMessage = `Boards saved immediately: ${qty} x ${productName} for ${customerName}${vehicleRegistration ? ` (${vehicleRegistration})` : ''}. Odoo synchronization and MO reservation are continuing in the background.`;
+
+    if (wantsJson) {
+      res.json({
+        ok: true,
+        message: successMessage,
+        item: {
+          id: optimisticId,
+          product_id: productId,
+          product_name: productName,
+          partner_id: partnerId,
+          customer_name: customerName,
+          quantity: qty,
+          vehicle_registration: vehicleRegistration,
+          arrival_time: arrivalTime,
+          gate,
+          actor_name: actorName,
+          actor_email: req.authUser.email,
+          status: 'pending',
+          created_at: new Date().toISOString(),
+        },
+      });
+    } else {
+      res.redirect('/shop-floor/boards?message=' + encodeURIComponent(successMessage));
+    }
 
     void (async () => {
       try {
@@ -2407,6 +2447,29 @@ router.post('/shop-floor/board-intake/:id/revert', async (req: Request, res: Res
     res.redirect('/shop-floor/boards?message=' + encodeURIComponent(message) + '&boardLogPage=' + encodeURIComponent(String(req.body.boardLogPage || '1')));
   } catch (error) {
     res.redirect('/shop-floor/boards?error=' + encodeURIComponent(error instanceof Error ? error.message : 'Could not revert board log.') + '&boardLogPage=' + encodeURIComponent(String(req.body.boardLogPage || '1')));
+  }
+});
+
+router.get('/shop-floor/board-intake/status', async (req: Request, res: Response) => {
+  if (!req.authUser) {
+    res.status(401).json({ ok: false, error: 'Please sign in first.' });
+    return;
+  }
+  try {
+    const rawIds = typeof req.query.ids === 'string'
+      ? req.query.ids.split(',').map((s) => s.trim()).filter(Boolean)
+      : [];
+    if (rawIds.length > 0) {
+      const entries = await Promise.all(
+        rawIds.slice(0, 25).map((id) => getBoardIntakeQueueEntry(id))
+      );
+      res.json({ ok: true, entries: entries.filter(Boolean) });
+      return;
+    }
+    const entries = await getRecentBoardIntakeQueueEntries(12, 0);
+    res.json({ ok: true, entries });
+  } catch (error) {
+    res.status(500).json({ ok: false, error: error instanceof Error ? error.message : 'Could not query board intake status.' });
   }
 });
 
