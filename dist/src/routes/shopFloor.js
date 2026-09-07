@@ -2171,6 +2171,7 @@ router.post('/shop-floor/board-intake', async (req, res) => {
         const productName = String(req.body.product_name || '').trim() || `Product #${productId}`;
         const customerName = String(req.body.partner_name || '').trim() || `Client #${partnerId}`;
         const vehicleRegistration = String(req.body.vehicle_registration || '').trim().toUpperCase();
+        const arrivalDate = String(req.body.arrival_date || '').trim();
         const arrivalTime = String(req.body.arrival_time || '').trim();
         const gate = String(req.body.gate || '').trim();
         const actorName = req.authUser.displayName || req.authUser.email;
@@ -2178,7 +2179,7 @@ router.post('/shop-floor/board-intake', async (req, res) => {
         await (0, repositories_1.createBoardIntakeQueueEntry)({
             id: optimisticId, productId, productName, partnerId, customerName,
             quantity: qty, actorName, actorEmail: req.authUser.email,
-            vehicleRegistration, arrivalTime, gate,
+            vehicleRegistration, arrivalDate, arrivalTime, gate,
         });
         await (0, stockMirrorService_1.recordOptimisticStockAddition)(productId, productName, qty);
         // Mark matching pending board requirements loaded in MySQL immediately
@@ -2203,6 +2204,7 @@ router.post('/shop-floor/board-intake', async (req, res) => {
                     customer_name: customerName,
                     quantity: qty,
                     vehicle_registration: vehicleRegistration,
+                    arrival_date: arrivalDate,
                     arrival_time: arrivalTime,
                     gate,
                     actor_name: actorName,

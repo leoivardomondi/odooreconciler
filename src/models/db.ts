@@ -859,6 +859,10 @@ async function ensureSqliteDatabase(config: RuntimeDatabaseConfig) {
       quantity REAL NOT NULL,
       actor_name TEXT NOT NULL,
       actor_email TEXT,
+      vehicle_registration TEXT,
+      arrival_date TEXT,
+      arrival_time TEXT,
+      gate TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       odoo_stock_quantity REAL,
       reverted_at TEXT,
@@ -978,6 +982,10 @@ async function ensureSqliteDatabase(config: RuntimeDatabaseConfig) {
   await ensureColumnSqlite(db, 'po_bill_processed_documents', 'invoice_vendor', 'TEXT');
   await ensureColumnSqlite(db, 'po_bill_processed_documents', 'invoice_total', 'REAL');
   await ensureColumnSqlite(db, 'mpesa_transactions', 'ai_notes', 'TEXT');
+  await ensureColumnSqlite(db, 'board_intake_queue', 'vehicle_registration', 'TEXT');
+  await ensureColumnSqlite(db, 'board_intake_queue', 'arrival_date', 'TEXT');
+  await ensureColumnSqlite(db, 'board_intake_queue', 'arrival_time', 'TEXT');
+  await ensureColumnSqlite(db, 'board_intake_queue', 'gate', 'TEXT');
   await ensureColumnSqlite(db, 'board_intake_queue', 'retry_count', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumnSqlite(db, 'board_intake_queue', 'last_attempt_at', 'TEXT');
   await ensureColumnSqlite(db, 'board_intake_queue', 'next_retry_at', 'TEXT');
@@ -1469,6 +1477,7 @@ async function ensureMysqlDatabase(config: RuntimeDatabaseConfig) {
       actor_name VARCHAR(255) NOT NULL,
       actor_email VARCHAR(255) NULL,
       vehicle_registration VARCHAR(100) NULL,
+      arrival_date VARCHAR(50) NULL,
       arrival_time VARCHAR(50) NULL,
       gate VARCHAR(50) NULL,
       status VARCHAR(32) NOT NULL DEFAULT 'pending',
@@ -1487,6 +1496,7 @@ async function ensureMysqlDatabase(config: RuntimeDatabaseConfig) {
   `);
 
   await ensureColumnMysql(pool, 'board_intake_queue', 'vehicle_registration', 'VARCHAR(100) NULL', config.mysqlDatabase);
+  await ensureColumnMysql(pool, 'board_intake_queue', 'arrival_date', 'VARCHAR(50) NULL', config.mysqlDatabase);
   await ensureColumnMysql(pool, 'board_intake_queue', 'arrival_time', 'VARCHAR(50) NULL', config.mysqlDatabase);
   await ensureColumnMysql(pool, 'board_intake_queue', 'gate', 'VARCHAR(50) NULL', config.mysqlDatabase);
 

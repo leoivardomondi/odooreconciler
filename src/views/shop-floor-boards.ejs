@@ -287,7 +287,7 @@
                 aria-controls="optionalDetailsContainer">
                 <span class="d-inline-flex align-items-center gap-2">
                   <svg id="toggleDetailsIcon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-                  <span id="toggleDetailsText">More Details (Vehicle, Time, Gate)</span>
+                  <span id="toggleDetailsText">More Details (Vehicle, Date, Time, Gate)</span>
                   <span class="badge rounded-pill text-muted border fw-normal" style="font-size: 0.7rem; background: #ffffff;">Optional</span>
                 </span>
                 <svg id="toggleDetailsChevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" style="transition: transform 0.2s ease;"><polyline points="6 9 12 15 18 9"/></svg>
@@ -302,6 +302,14 @@
                   Vehicle Registration <span class="text-muted font-normal">(optional, e.g. KTW 123A)</span>
                 </label>
                 <input type="text" name="vehicle_registration" id="vehicleRegistration" class="form-control" placeholder="KTW 123A" style="font-size: 0.95rem; padding: 0.6rem 0.75rem; text-transform: uppercase;">
+              </div>
+
+              <!-- Arrival Date -->
+              <div class="mb-3">
+                <label for="arrivalDate" class="form-label fw-semibold" style="font-size: 0.90rem; color: #334155;">
+                  What Date Did Boards Arrive? <span class="text-muted font-normal">(optional)</span>
+                </label>
+                <input type="date" name="arrival_date" id="arrivalDate" class="form-control" style="font-size: 0.95rem; padding: 0.6rem 0.75rem;">
               </div>
 
               <!-- Arrival Time -->
@@ -435,6 +443,9 @@
                   <%= item.customer_name %> · <%= formatDateTime(item.created_at) %>
                   <% if (item.gate) { %>
                     · <strong><%= item.gate %></strong>
+                  <% } %>
+                  <% if (item.arrival_date) { %>
+                    · Date: <strong><%= item.arrival_date %></strong>
                   <% } %>
                   <% if (item.arrival_time) { %>
                     · Arrived: <strong><%= item.arrival_time %></strong>
@@ -1391,6 +1402,7 @@
                 '<div class="small text-muted">' +
                   escapeHtml(result.item.customer_name) + ' · Just now' +
                   (result.item.gate ? ' · <strong>' + escapeHtml(result.item.gate) + '</strong>' : '') +
+                  (result.item.arrival_date ? ' · Date: <strong>' + escapeHtml(result.item.arrival_date) + '</strong>' : '') +
                   (result.item.arrival_time ? ' · Arrived: <strong>' + escapeHtml(result.item.arrival_time) + '</strong>' : '') +
                   (result.item.vehicle_registration ? ' · Vehicle: <strong>' + escapeHtml(result.item.vehicle_registration) + '</strong>' : '') +
                   (result.item.actor_name ? ' · Logged by <strong>' + escapeHtml(result.item.actor_name) + '</strong>' : '') +
@@ -1455,6 +1467,11 @@
           var vehicleReg = document.getElementById('vehicleRegistration');
           if (vehicleReg) {
             vehicleReg.value = '';
+          }
+
+          var arrivalDateInput = document.getElementById('arrivalDate');
+          if (arrivalDateInput) {
+            arrivalDateInput.value = '';
           }
 
           var arrivalTimeInput = document.getElementById('arrivalTime');
