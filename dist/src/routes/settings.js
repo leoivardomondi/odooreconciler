@@ -574,6 +574,28 @@ async function loadSaleOrderFieldState(source, existing) {
             errorMessage: cached.fields.length > 0 ? null : 'Connect to Odoo to load live sale.order fields.',
         };
     }
+    // If cached fields exist, serve immediately without blocking page render!
+    if (cached.fields.length > 0) {
+        const ageMs = cached.fetchedAt ? Date.now() - new Date(cached.fetchedAt).getTime() : Infinity;
+        if (ageMs > 60 * 60 * 1000) {
+            void (async () => {
+                try {
+                    const client = new odooClient_1.OdooClient({ baseUrl, database, username, apiKey });
+                    const fields = await client.getSaleOrderFields();
+                    await (0, repositories_1.saveCachedModelFields)('sale.order', fields);
+                }
+                catch (_err) {
+                    // ignore background update error
+                }
+            })();
+        }
+        return {
+            fields: cached.fields,
+            fetchedAt: cached.fetchedAt,
+            source: 'cache',
+            errorMessage: null,
+        };
+    }
     try {
         const client = new odooClient_1.OdooClient({
             baseUrl,

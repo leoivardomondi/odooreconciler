@@ -1833,6 +1833,31 @@ textarea:focus {
   background: var(--app-table-highlight);
 }
 
+/* Non-blocking top progress bar for instant navigation */
+#topNavProgressBar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 0%;
+  height: 3px;
+  background: linear-gradient(90deg, #3b82f6, #06b6d4, #10b981);
+  box-shadow: 0 0 10px rgba(59, 130, 246, 0.6), 0 0 5px rgba(6, 182, 212, 0.4);
+  z-index: 99999;
+  pointer-events: none;
+  opacity: 0;
+  transition: width 0.25s ease-out, opacity 0.2s ease-in;
+}
+
+#topNavProgressBar.is-active {
+  opacity: 1;
+}
+
+#topNavProgressBar.is-done {
+  width: 100% !important;
+  opacity: 0;
+  transition: width 0.15s ease-out, opacity 0.3s ease-out 0.1s;
+}
+
 .app-loading-overlay {
   position: fixed;
   inset: 0;

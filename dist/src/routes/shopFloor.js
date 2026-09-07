@@ -174,12 +174,17 @@ class MemoryCache {
     }
     delete(key) {
         this.cache.delete(key);
+        void (0, repositories_1.deleteShopFloorSharedCache)(key).catch(() => { });
     }
     clearPrefix(prefix) {
         for (const key of this.cache.keys()) {
             if (key.startsWith(prefix)) {
                 this.cache.delete(key);
             }
+        }
+        if (prefix === 'shop-floor-dashboard:') {
+            this.cache.delete('shop-floor:shared-work-orders:v1');
+            void (0, repositories_1.deleteShopFloorSharedCache)('shop-floor:shared-work-orders:v1').catch(() => { });
         }
     }
     clear() {
@@ -227,6 +232,100 @@ class MemoryCache {
         this.inFlight.set(key, promise);
         return promise;
     }
+    isStale(key) {
+        const entry = this.cache.get(key);
+        return !entry || Date.now() > entry.freshUntil;
+    }
+    isInFlight(key) {
+        return this.inFlight.has(key);
+    }
+    /**
+     * Multi-tier Stale-While-Revalidate:
+     * 1. Check in-memory RAM cache (instant < 1ms)
+     * 2. Check MySQL persistent shared cache (instant < 10ms)
+     * 3. SWR background revalidation updates both RAM and MySQL
+     * 4. Cold miss fetches fresh and persists to both RAM and MySQL
+     */
+    async getOrFetchTieredSWR(key, freshTtlMs, maxTtlMs, fetcher) {
+        const now = Date.now();
+        const entry = this.cache.get(key);
+        if (entry && now <= entry.expiresAt) {
+            if (now > entry.freshUntil && !this.inFlight.has(key)) {
+                const bgPromise = fetcher()
+                    .then(async (fresh) => {
+                    this.set(key, fresh, maxTtlMs, freshTtlMs);
+                    try {
+                        await (0, repositories_1.saveShopFloorSharedCache)(key, fresh);
+                    }
+                    catch (err) {
+                        console.warn(`[shopFloorCache] MySQL save failed for ${key}:`, err);
+                    }
+                    return fresh;
+                })
+                    .catch((err) => {
+                    console.warn(`[shopFloorCache] Background refresh failed for ${key}:`, err?.message || err);
+                    return entry.value;
+                })
+                    .finally(() => {
+                    this.inFlight.delete(key);
+                });
+                this.inFlight.set(key, bgPromise);
+            }
+            return entry.value;
+        }
+        // Check MySQL persistent shared cache if not in RAM
+        try {
+            const dbEntry = await (0, repositories_1.getShopFloorSharedCache)(key);
+            if (dbEntry && dbEntry.data) {
+                this.set(key, dbEntry.data, maxTtlMs, freshTtlMs);
+                const ageMs = Math.max(0, now - new Date(dbEntry.syncedAt).getTime());
+                if (ageMs > freshTtlMs && !this.inFlight.has(key)) {
+                    const bgPromise = fetcher()
+                        .then(async (fresh) => {
+                        this.set(key, fresh, maxTtlMs, freshTtlMs);
+                        try {
+                            await (0, repositories_1.saveShopFloorSharedCache)(key, fresh);
+                        }
+                        catch (err) {
+                            console.warn(`[shopFloorCache] MySQL save failed for ${key}:`, err);
+                        }
+                        return fresh;
+                    })
+                        .catch((err) => {
+                        console.warn(`[shopFloorCache] Background refresh failed for ${key}:`, err?.message || err);
+                        return dbEntry.data;
+                    })
+                        .finally(() => {
+                        this.inFlight.delete(key);
+                    });
+                    this.inFlight.set(key, bgPromise);
+                }
+                return dbEntry.data;
+            }
+        }
+        catch (err) {
+            console.warn(`[shopFloorCache] MySQL read failed for ${key}:`, err);
+        }
+        if (this.inFlight.has(key)) {
+            return this.inFlight.get(key);
+        }
+        const promise = fetcher()
+            .then(async (fresh) => {
+            this.set(key, fresh, maxTtlMs, freshTtlMs);
+            try {
+                await (0, repositories_1.saveShopFloorSharedCache)(key, fresh);
+            }
+            catch (err) {
+                console.warn(`[shopFloorCache] MySQL save failed for ${key}:`, err);
+            }
+            return fresh;
+        })
+            .finally(() => {
+            this.inFlight.delete(key);
+        });
+        this.inFlight.set(key, promise);
+        return promise;
+    }
 }
 const shopFloorCache = new MemoryCache();
 const optimisticBoardIntakes = [];
@@ -263,6 +362,45 @@ function applyOptimisticStockAlerts(alerts) {
         }
         return { ...alert, qtyNeeded };
     }).filter((alert) => alert.qtyNeeded > 0);
+}
+async function withMaxPageWait(promise, maxWaitMs, fallback) {
+    let timer;
+    const timeoutPromise = new Promise((resolve) => {
+        timer = setTimeout(() => resolve(fallback), maxWaitMs);
+    });
+    return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timer));
+}
+function emptyOperatorDashboardShell(userEmail) {
+    return {
+        employee: {
+            id: 0,
+            name: userEmail.split('@')[0] || 'Operator',
+            jobTitle: 'Operator',
+            department: null,
+            workEmail: userEmail,
+            mobilePhone: null,
+            manager: null,
+        },
+        attendance: null,
+        workOrders: [],
+        payslips: [],
+        salaryAdvances: [],
+        stockAlerts: [],
+        lateCount: 0,
+        incidents: [],
+        assignedItems: [],
+        failedCheckouts: [],
+        performanceRate: null,
+        areaPerformanceRates: [],
+        manufacturingTimingSummary: null,
+        manufacturingTimelineData: null,
+        boardRegistrationSummary: null,
+        teamPenalties: null,
+        isLimitedDashboard: false,
+        machines: [],
+        error: null,
+        reservedBoardsCount: 0,
+    };
 }
 const dailyManufacturingAnalytics = new Map();
 function manufacturingReportDay() {
@@ -388,221 +526,236 @@ async function buildOperatorDashboard(client, userEmail, req, stockScope) {
             client.getTodayAttendance(employee.id),
             // 2. Late count this month
             client.getLateCountThisMonth(employee.id),
-            // 3. Work orders and stock alerts
+            // 3. Work orders and stock alerts (Shared factory data: cached in RAM + MySQL!)
             (async () => {
-                const [allOrdersRaw, performanceOrders] = await Promise.all([
-                    client.getAllActiveWorkOrders(100),
-                    client.getManufacturingPerformanceOrders(),
-                ]);
-                const allOrders = allOrdersRaw.filter(o => o.name.startsWith('WH/MO/'));
-                const originsToFetch = [...new Set([...allOrders, ...performanceOrders].map(o => o.origin).filter(Boolean))];
-                const moIds = allOrders.map(o => o.id);
-                const [clientMap, saleOrderDateMap, allComponents, poStateMap, workOrderStateMap] = await Promise.all([
-                    client.getBulkSaleOrderClients(originsToFetch).catch(() => new Map()),
-                    client.getBulkSaleOrderConfirmationDates(originsToFetch).catch(() => new Map()),
-                    client.getBulkManufacturingOrderComponents(moIds).catch(() => []),
-                    client.getBulkRelatedPurchaseOrderStates(originsToFetch).catch(() => new Map()),
-                    client.getBulkWorkOrderStates(moIds).catch(() => new Map()),
-                ]);
-                const componentsByMoId = new Map();
-                for (const comp of allComponents) {
-                    if (comp.raw_material_production_id) {
-                        const moId = comp.raw_material_production_id[0];
-                        if (!componentsByMoId.has(moId)) {
-                            componentsByMoId.set(moId, []);
-                        }
-                        componentsByMoId.get(moId).push(comp);
-                    }
-                }
-                const moIdsWithStockIssues = new Set();
-                const localStockAlerts = [];
-                const moStockStatus = new Map();
-                let reservedBoardsCount = 0;
-                for (const o of allOrders) {
-                    const manufacturedProductName = Array.isArray(o.product_id) ? o.product_id[1] : String(o.product_id || '');
-                    if (isStockExemptEdgeBandingService(manufacturedProductName)) {
-                        moStockStatus.set(o.id, 'ready');
-                        continue;
-                    }
-                    const components = componentsByMoId.get(o.id) || [];
-                    for (const comp of components) {
-                        const componentName = Array.isArray(comp.product_id) ? comp.product_id[1] : '';
-                        if (isBoardComponentName(componentName)) {
-                            reservedBoardsCount += (comp.quantity || 0);
+                const sharedMoData = await shopFloorCache.getOrFetchTieredSWR('shop-floor:shared-work-orders:v1', 3 * 60 * 1000, // 3 minutes fresh
+                30 * 60 * 1000, // 30 minutes max stale
+                async () => {
+                    const [allOrdersRaw, performanceOrders] = await Promise.all([
+                        client.getAllActiveWorkOrders(100),
+                        client.getManufacturingPerformanceOrders(),
+                    ]);
+                    const allOrders = allOrdersRaw.filter(o => o.name.startsWith('WH/MO/'));
+                    const originsToFetch = [...new Set([...allOrders, ...performanceOrders].map(o => o.origin).filter(Boolean))];
+                    const moIds = allOrders.map(o => o.id);
+                    const [clientMap, saleOrderDateMap, allComponents, poStateMap, workOrderStateMap] = await Promise.all([
+                        client.getBulkSaleOrderClients(originsToFetch).catch(() => new Map()),
+                        client.getBulkSaleOrderConfirmationDates(originsToFetch).catch(() => new Map()),
+                        client.getBulkManufacturingOrderComponents(moIds).catch(() => []),
+                        client.getBulkRelatedPurchaseOrderStates(originsToFetch).catch(() => new Map()),
+                        client.getBulkWorkOrderStates(moIds).catch(() => new Map()),
+                    ]);
+                    const componentsByMoId = new Map();
+                    for (const comp of allComponents) {
+                        if (comp.raw_material_production_id) {
+                            const moId = comp.raw_material_production_id[0];
+                            if (!componentsByMoId.has(moId)) {
+                                componentsByMoId.set(moId, []);
+                            }
+                            componentsByMoId.get(moId).push(comp);
                         }
                     }
-                    if (o.state === 'done' || o.state === 'cancel') {
-                        moStockStatus.set(o.id, 'ready');
-                        continue;
-                    }
-                    const unavailable = components.filter((c) => {
-                        if (c.state === 'done' || c.state === 'cancel' || c.state === 'draft' || c.state === 'assigned') {
-                            return false;
+                    const moIdsWithStockIssues = new Set();
+                    const localStockAlerts = [];
+                    const moStockStatus = new Map();
+                    let reservedBoardsCount = 0;
+                    for (const o of allOrders) {
+                        const manufacturedProductName = Array.isArray(o.product_id) ? o.product_id[1] : String(o.product_id || '');
+                        if (isStockExemptEdgeBandingService(manufacturedProductName)) {
+                            moStockStatus.set(o.id, 'ready');
+                            continue;
                         }
-                        if (['confirmed', 'waiting', 'partially_available'].includes(c.state)) {
-                            return true;
+                        const components = componentsByMoId.get(o.id) || [];
+                        for (const comp of components) {
+                            const componentName = Array.isArray(comp.product_id) ? comp.product_id[1] : '';
+                            if (isBoardComponentName(componentName)) {
+                                reservedBoardsCount += (comp.quantity || 0);
+                            }
                         }
-                        return !c.forecast_availability || c.forecast_availability === 'unavailable';
-                    });
-                    if (unavailable.length > 0) {
-                        const poState = o.origin ? poStateMap.get(o.origin) || null : null;
-                        const needsAlert = !poState || ['draft', 'sent'].includes(poState);
-                        if (needsAlert) {
-                            moStockStatus.set(o.id, 'no_stock');
-                            moIdsWithStockIssues.add(o.id);
-                            const confirmedAt = o.origin ? saleOrderDateMap.get(o.origin) || null : null;
-                            const overdueDays = getOverdueDaysFromDateOrder(confirmedAt);
-                            for (const comp of unavailable) {
-                                const componentName = Array.isArray(comp.product_id) ? comp.product_id[1] : '';
-                                if (!isBoardComponentName(componentName)) {
-                                    continue;
+                        if (o.state === 'done' || o.state === 'cancel') {
+                            moStockStatus.set(o.id, 'ready');
+                            continue;
+                        }
+                        const unavailable = components.filter((c) => {
+                            if (c.state === 'done' || c.state === 'cancel' || c.state === 'draft' || c.state === 'assigned') {
+                                return false;
+                            }
+                            if (['confirmed', 'waiting', 'partially_available'].includes(c.state)) {
+                                return true;
+                            }
+                            return !c.forecast_availability || c.forecast_availability === 'unavailable';
+                        });
+                        if (unavailable.length > 0) {
+                            const poState = o.origin ? poStateMap.get(o.origin) || null : null;
+                            const needsAlert = !poState || ['draft', 'sent'].includes(poState);
+                            if (needsAlert) {
+                                moStockStatus.set(o.id, 'no_stock');
+                                moIdsWithStockIssues.add(o.id);
+                                const confirmedAt = o.origin ? saleOrderDateMap.get(o.origin) || null : null;
+                                const overdueDays = getOverdueDaysFromDateOrder(confirmedAt);
+                                for (const comp of unavailable) {
+                                    const componentName = Array.isArray(comp.product_id) ? comp.product_id[1] : '';
+                                    if (!isBoardComponentName(componentName)) {
+                                        continue;
+                                    }
+                                    localStockAlerts.push({
+                                        moName: o.name,
+                                        product: Array.isArray(o.product_id) ? o.product_id[1] : '',
+                                        component: componentName,
+                                        qtyNeeded: comp.product_uom_qty - (comp.quantity || 0),
+                                        client: clientMap.get(o.origin || '') || null,
+                                        moId: o.id,
+                                        confirmedAt,
+                                        overdueDays,
+                                    });
                                 }
-                                localStockAlerts.push({
-                                    moName: o.name,
-                                    product: Array.isArray(o.product_id) ? o.product_id[1] : '',
-                                    component: componentName,
-                                    qtyNeeded: comp.product_uom_qty - (comp.quantity || 0),
-                                    client: clientMap.get(o.origin || '') || null,
-                                    moId: o.id,
-                                    confirmedAt,
-                                    overdueDays,
-                                });
+                            }
+                            else {
+                                moStockStatus.set(o.id, 'incoming');
                             }
                         }
                         else {
-                            moStockStatus.set(o.id, 'incoming');
+                            moStockStatus.set(o.id, 'ready');
                         }
                     }
-                    else {
-                        moStockStatus.set(o.id, 'ready');
+                    const confirmedQueueSchedule = (0, moOverdueService_1.getConfirmedMoQueueSchedule)(allOrders);
+                    const mappedWorkOrders = allOrders.map((o) => {
+                        const baseTiming = (0, moOverdueService_1.getMoOverdueState)({ createDate: o.create_date, plannedStart: o.date_start, clientDeadline: o.date_deadline, quantity: o.product_qty, productName: Array.isArray(o.product_id) ? o.product_id[1] : String(o.product_id || '') });
+                        const queueTiming = confirmedQueueSchedule.get(o.id);
+                        const rawWoState = workOrderStateMap.get(o.id);
+                        const isManuallyPaused = manuallyPausedMoIds.has(o.id);
+                        const effectiveState = isManuallyPaused || rawWoState === 'pending'
+                            ? 'paused'
+                            : rawWoState === 'progress' || o.state === 'progress'
+                                ? 'progress'
+                                : o.state || 'draft';
+                        return {
+                            ...baseTiming,
+                            ...queueTiming,
+                            isOverdue: !baseTiming.createdToday && (baseTiming.overdueReason !== null || Boolean(queueTiming && new Date() > new Date(queueTiming.estimatedFinishAt))),
+                            id: o.id,
+                            name: o.name,
+                            product: Array.isArray(o.product_id) ? o.product_id[1] : String(o.product_id),
+                            qty: o.product_qty || 0,
+                            produced: o.qty_produced || 0,
+                            state: effectiveState,
+                            plannedStart: o.date_start || null,
+                            dateStarted: o.date_start || null,
+                            dateFinished: o.date_finished || null,
+                            dateDeadline: o.date_deadline || null,
+                            createdAt: o.create_date || null,
+                            progress: o.product_qty > 0 ? Math.round(((o.qty_produced || 0) / o.product_qty) * 100) : 0,
+                            origin: o.origin || null,
+                            client: o.origin ? clientMap.get(o.origin) || null : null,
+                            assignedTo: Array.isArray(o.user_id) ? o.user_id[1] : null,
+                            area: detectArea(Array.isArray(o.product_id) ? o.product_id[1] : ''),
+                            hasStockIssue: moIdsWithStockIssues.has(o.id),
+                            stockStatus: moStockStatus.get(o.id) || 'ready',
+                        };
+                    }).sort((a, b) => {
+                        if (a.state === 'progress' && b.state !== 'progress')
+                            return -1;
+                        if (a.state !== 'progress' && b.state === 'progress')
+                            return 1;
+                        if (a.state === 'paused' && b.state !== 'paused')
+                            return -1;
+                        if (a.state !== 'paused' && b.state === 'paused')
+                            return 1;
+                        if (a.stockStatus === 'ready' && b.stockStatus !== 'ready')
+                            return -1;
+                        if (a.stockStatus !== 'ready' && b.stockStatus === 'ready')
+                            return 1;
+                        return 0;
+                    });
+                    const completedAreaStats = new Map();
+                    for (const o of performanceOrders) {
+                        const area = detectArea(Array.isArray(o.product_id) ? o.product_id[1] : '');
+                        if (!completedAreaStats.has(area)) {
+                            completedAreaStats.set(area, { totalOrders: 0, completedOrders: 0, onTimeOrders: 0, overdueQuickClose: 0, days: [] });
+                        }
+                        const stats = completedAreaStats.get(area);
+                        stats.totalOrders += 1;
+                        if (o.state !== 'done' || !o.origin || !o.date_finished) {
+                            continue;
+                        }
+                        const confirmedAt = saleOrderDateMap.get(o.origin) || null;
+                        if (!confirmedAt) {
+                            continue;
+                        }
+                        const soConfirmed = new Date(confirmedAt.includes('T') ? confirmedAt : confirmedAt.replace(' ', 'T') + 'Z');
+                        const startedAt = o.date_start ? new Date(o.date_start.includes('T') ? o.date_start : o.date_start.replace(' ', 'T') + 'Z') : null;
+                        const finishedAt = new Date(o.date_finished.includes('T') ? o.date_finished : o.date_finished.replace(' ', 'T') + 'Z');
+                        const minPerfDate = new Date('2026-08-05T00:00:00Z');
+                        if (soConfirmed.getTime() < minPerfDate.getTime()) {
+                            continue;
+                        }
+                        stats.completedOrders += 1;
+                        const daysToComplete = (finishedAt.getTime() - soConfirmed.getTime()) / (1000 * 60 * 60 * 24);
+                        const hoursToStart = startedAt ? (startedAt.getTime() - soConfirmed.getTime()) / (1000 * 60 * 60) : null;
+                        const minutesFromStartToFinish = startedAt ? (finishedAt.getTime() - startedAt.getTime()) / (1000 * 60) : null;
+                        const overdueQuickClose = hoursToStart !== null
+                            && minutesFromStartToFinish !== null
+                            && hoursToStart > 24
+                            && minutesFromStartToFinish >= 0
+                            && minutesFromStartToFinish <= 30;
+                        if (daysToComplete >= 0) {
+                            stats.days.push(daysToComplete);
+                        }
+                        if (daysToComplete >= 0 && daysToComplete <= 3 && !overdueQuickClose) {
+                            stats.onTimeOrders += 1;
+                        }
+                        if (overdueQuickClose) {
+                            stats.overdueQuickClose += 1;
+                        }
                     }
-                }
-                const confirmedQueueSchedule = (0, moOverdueService_1.getConfirmedMoQueueSchedule)(allOrders);
-                const mappedWorkOrders = allOrders.map((o) => {
-                    const baseTiming = (0, moOverdueService_1.getMoOverdueState)({ createDate: o.create_date, plannedStart: o.date_start, clientDeadline: o.date_deadline, quantity: o.product_qty, productName: Array.isArray(o.product_id) ? o.product_id[1] : String(o.product_id || '') });
-                    const queueTiming = confirmedQueueSchedule.get(o.id);
-                    const rawWoState = workOrderStateMap.get(o.id);
-                    const isManuallyPaused = manuallyPausedMoIds.has(o.id);
-                    const effectiveState = isManuallyPaused || rawWoState === 'pending'
-                        ? 'paused'
-                        : rawWoState === 'progress' || o.state === 'progress'
-                            ? 'progress'
-                            : o.state || 'draft';
+                    const areaPerformanceRates = Array.from(completedAreaStats.entries())
+                        .map(([area, stats]) => {
+                        const percentage = stats.completedOrders > 0
+                            ? Math.round((stats.onTimeOrders / stats.completedOrders) * 100)
+                            : 0;
+                        const avgDaysToComplete = stats.days.length > 0
+                            ? Math.round((stats.days.reduce((sum, value) => sum + value, 0) / stats.days.length) * 10) / 10
+                            : 0;
+                        const color = percentage >= 75 ? 'green' : percentage >= 50 ? 'orange' : 'red';
+                        return {
+                            area,
+                            percentage,
+                            color,
+                            totalOrders: stats.totalOrders,
+                            completedOrders: stats.completedOrders,
+                            onTimeOrders: stats.onTimeOrders,
+                            overdueQuickClose: stats.overdueQuickClose,
+                            avgDaysToComplete,
+                        };
+                    })
+                        .sort((a, b) => {
+                        const order = MANUFACTURING_AREAS;
+                        const aIndex = order.indexOf(a.area);
+                        const bIndex = order.indexOf(b.area);
+                        if (aIndex === -1 && bIndex === -1)
+                            return a.area.localeCompare(b.area);
+                        if (aIndex === -1)
+                            return 1;
+                        if (bIndex === -1)
+                            return -1;
+                        return aIndex - bIndex;
+                    });
                     return {
-                        ...baseTiming,
-                        ...queueTiming,
-                        isOverdue: !baseTiming.createdToday && (baseTiming.overdueReason !== null || Boolean(queueTiming && new Date() > new Date(queueTiming.estimatedFinishAt))),
-                        id: o.id,
-                        name: o.name,
-                        product: Array.isArray(o.product_id) ? o.product_id[1] : String(o.product_id),
-                        qty: o.product_qty || 0,
-                        produced: o.qty_produced || 0,
-                        state: effectiveState,
-                        plannedStart: o.date_start || null,
-                        dateStarted: o.date_start || null,
-                        dateFinished: o.date_finished || null,
-                        dateDeadline: o.date_deadline || null,
-                        createdAt: o.create_date || null,
-                        progress: o.product_qty > 0 ? Math.round(((o.qty_produced || 0) / o.product_qty) * 100) : 0,
-                        origin: o.origin || null,
-                        client: o.origin ? clientMap.get(o.origin) || null : null,
-                        assignedTo: Array.isArray(o.user_id) ? o.user_id[1] : null,
-                        area: detectArea(Array.isArray(o.product_id) ? o.product_id[1] : ''),
-                        hasStockIssue: moIdsWithStockIssues.has(o.id),
-                        stockStatus: moStockStatus.get(o.id) || 'ready',
+                        workOrders: mappedWorkOrders,
+                        rawStockAlerts: localStockAlerts,
+                        areaPerformanceRates,
+                        reservedBoardsCount,
                     };
-                }).sort((a, b) => {
-                    if (a.state === 'progress' && b.state !== 'progress')
-                        return -1;
-                    if (a.state !== 'progress' && b.state === 'progress')
-                        return 1;
-                    if (a.state === 'paused' && b.state !== 'paused')
-                        return -1;
-                    if (a.state !== 'paused' && b.state === 'paused')
-                        return 1;
-                    if (a.stockStatus === 'ready' && b.stockStatus !== 'ready')
-                        return -1;
-                    if (a.stockStatus !== 'ready' && b.stockStatus === 'ready')
-                        return 1;
-                    return 0;
                 });
-                const completedAreaStats = new Map();
-                for (const o of performanceOrders) {
-                    const area = detectArea(Array.isArray(o.product_id) ? o.product_id[1] : '');
-                    if (!completedAreaStats.has(area)) {
-                        completedAreaStats.set(area, { totalOrders: 0, completedOrders: 0, onTimeOrders: 0, overdueQuickClose: 0, days: [] });
-                    }
-                    const stats = completedAreaStats.get(area);
-                    stats.totalOrders += 1;
-                    if (o.state !== 'done' || !o.origin || !o.date_finished) {
-                        continue;
-                    }
-                    const confirmedAt = saleOrderDateMap.get(o.origin) || null;
-                    if (!confirmedAt) {
-                        continue;
-                    }
-                    const soConfirmed = new Date(confirmedAt.includes('T') ? confirmedAt : confirmedAt.replace(' ', 'T') + 'Z');
-                    const startedAt = o.date_start ? new Date(o.date_start.includes('T') ? o.date_start : o.date_start.replace(' ', 'T') + 'Z') : null;
-                    const finishedAt = new Date(o.date_finished.includes('T') ? o.date_finished : o.date_finished.replace(' ', 'T') + 'Z');
-                    const minPerfDate = new Date('2026-08-05T00:00:00Z');
-                    if (soConfirmed.getTime() < minPerfDate.getTime()) {
-                        continue;
-                    }
-                    stats.completedOrders += 1;
-                    const daysToComplete = (finishedAt.getTime() - soConfirmed.getTime()) / (1000 * 60 * 60 * 24);
-                    const hoursToStart = startedAt ? (startedAt.getTime() - soConfirmed.getTime()) / (1000 * 60 * 60) : null;
-                    const minutesFromStartToFinish = startedAt ? (finishedAt.getTime() - startedAt.getTime()) / (1000 * 60) : null;
-                    const overdueQuickClose = hoursToStart !== null
-                        && minutesFromStartToFinish !== null
-                        && hoursToStart > 24
-                        && minutesFromStartToFinish >= 0
-                        && minutesFromStartToFinish <= 30;
-                    if (daysToComplete >= 0) {
-                        stats.days.push(daysToComplete);
-                    }
-                    if (daysToComplete >= 0 && daysToComplete <= 3 && !overdueQuickClose) {
-                        stats.onTimeOrders += 1;
-                    }
-                    if (overdueQuickClose) {
-                        stats.overdueQuickClose += 1;
-                    }
-                }
-                const areaPerformanceRates = Array.from(completedAreaStats.entries())
-                    .map(([area, stats]) => {
-                    const percentage = stats.completedOrders > 0
-                        ? Math.round((stats.onTimeOrders / stats.completedOrders) * 100)
-                        : 0;
-                    const avgDaysToComplete = stats.days.length > 0
-                        ? Math.round((stats.days.reduce((sum, value) => sum + value, 0) / stats.days.length) * 10) / 10
-                        : 0;
-                    const color = percentage >= 75 ? 'green' : percentage >= 50 ? 'orange' : 'red';
-                    return {
-                        area,
-                        percentage,
-                        color,
-                        totalOrders: stats.totalOrders,
-                        completedOrders: stats.completedOrders,
-                        onTimeOrders: stats.onTimeOrders,
-                        overdueQuickClose: stats.overdueQuickClose,
-                        avgDaysToComplete,
-                    };
-                })
-                    .sort((a, b) => {
-                    const order = MANUFACTURING_AREAS;
-                    const aIndex = order.indexOf(a.area);
-                    const bIndex = order.indexOf(b.area);
-                    if (aIndex === -1 && bIndex === -1)
-                        return a.area.localeCompare(b.area);
-                    if (aIndex === -1)
-                        return 1;
-                    if (bIndex === -1)
-                        return -1;
-                    return aIndex - bIndex;
-                });
-                return { workOrders: mappedWorkOrders, stockAlerts: applyOptimisticStockAlerts(localStockAlerts), areaPerformanceRates, reservedBoardsCount };
+                return {
+                    workOrders: sharedMoData.workOrders,
+                    stockAlerts: applyOptimisticStockAlerts(sharedMoData.rawStockAlerts),
+                    areaPerformanceRates: sharedMoData.areaPerformanceRates,
+                    reservedBoardsCount: sharedMoData.reservedBoardsCount,
+                };
             })(),
             // 4. Incidents (now from Odoo!)
-            client.getMaintenanceRequests(20),
+            shopFloorCache.getOrFetchTieredSWR('shop-floor:shared-incidents:v1', 3 * 60 * 1000, 30 * 60 * 1000, () => client.getMaintenanceRequests(20)),
             // 5. Assigned items (now from Odoo!)
             client.getEmployeeAssignedEquipment(employee.id),
             // 6. Payslips
@@ -620,12 +773,11 @@ async function buildOperatorDashboard(client, userEmail, req, stockScope) {
             // 11. Manufacturing timeline data for charting
             getDailyManufacturingAnalytics('timeline-data-v2', () => client.getManufacturingTimelineData(employee.id, employee.name)),
             // 12. Board registration summary from physical inventory
-            // 12. Board registration summary from physical inventory
-            client.getBoardRegistrationSummary(stockScope),
+            shopFloorCache.getOrFetchTieredSWR(`shop-floor:shared-board-reg:${JSON.stringify(stockScope || {})}`, 3 * 60 * 1000, 30 * 60 * 1000, () => client.getBoardRegistrationSummary(stockScope)),
             // 13. Team Penalties
-            client.getTeamPenalties(stockScope),
+            shopFloorCache.getOrFetchTieredSWR(`shop-floor:shared-team-penalties:${JSON.stringify(stockScope || {})}`, 3 * 60 * 1000, 30 * 60 * 1000, () => client.getTeamPenalties(stockScope)),
             // 14. Equipment list for breakdown reporting (now from Odoo!)
-            client.getMaintenanceEquipment(),
+            shopFloorCache.getOrFetchTieredSWR('shop-floor:shared-machines:v1', 10 * 60 * 1000, 60 * 60 * 1000, () => client.getMaintenanceEquipment()),
         ]);
         // Handle Attendance Result
         if (attendanceRes.status === 'fulfilled' && attendanceRes.value) {
@@ -830,20 +982,62 @@ router.get('/shop-floor', async (req, res) => {
         return;
     }
     const viewedEmail = getViewedUserEmail(req);
-    const cacheKey = `shop-floor-dashboard:v3:${viewedEmail.toLowerCase()}`;
+    const normalizedEmail = viewedEmail.trim().toLowerCase();
+    const cacheKey = `shop-floor-dashboard:v3:${normalizedEmail}`;
     const featureFlagsPromise = (0, repositories_1.getShopFloorFeatureFlags)();
-    if (req.query.refresh === 'true') {
-        shopFloorCache.delete(cacheKey);
+    const isExplicitRefresh = req.query.refresh === 'true';
+    if (isExplicitRefresh) {
         dailyManufacturingAnalytics.clear();
     }
     try {
         const settings = await (0, repositories_1.getSettings)();
-        const data = await shopFloorCache.getOrFetchSWR(cacheKey, 3 * 60 * 1000, // 3 minutes fresh
-        30 * 60 * 1000, // 30 minutes max stale (serves instantly while refreshing in background)
-        async () => {
-            const client = new odooClient_1.OdooClient(settings.odoo);
-            return buildOperatorDashboard(client, viewedEmail, req, settings.stock);
-        });
+        // Multi-tier cache for operator dashboard:
+        // Tier 1: In-memory RAM cache
+        let data = shopFloorCache.get(cacheKey);
+        // Tier 2: MySQL persistent snapshot if RAM misses (e.g. cold restart or Login As)
+        if (!data) {
+            try {
+                const snapshot = await (0, repositories_1.getShopFloorDashboardSnapshot)(normalizedEmail);
+                if (snapshot && snapshot.data) {
+                    data = snapshot.data;
+                    shopFloorCache.set(cacheKey, data, 60 * 60 * 1000, 3 * 60 * 1000);
+                }
+            }
+            catch (dbErr) {
+                console.warn('[shopFloor] Failed to read snapshot from MySQL for', normalizedEmail, dbErr);
+            }
+        }
+        // If data exists, serve immediately (<5ms)! Revalidate in background if explicit refresh or stale
+        if (data) {
+            if ((isExplicitRefresh || shopFloorCache.isStale(cacheKey)) && !shopFloorCache.isInFlight(cacheKey)) {
+                void (async () => {
+                    try {
+                        const client = new odooClient_1.OdooClient(settings.odoo);
+                        const fresh = await buildOperatorDashboard(client, viewedEmail, req, settings.stock);
+                        shopFloorCache.set(cacheKey, fresh, 60 * 60 * 1000, 3 * 60 * 1000);
+                        await (0, repositories_1.saveShopFloorDashboardSnapshot)(normalizedEmail, fresh);
+                    }
+                    catch (bgErr) {
+                        console.warn('[shopFloor] Background dashboard refresh failed for', normalizedEmail, bgErr);
+                    }
+                })();
+            }
+        }
+        else {
+            // Tier 3: Complete miss (first time this user ever accessed the app)
+            // Never block page render for more than 1200ms; return instant shell if Odoo takes longer
+            const fetchPromise = shopFloorCache.getOrFetchSWR(cacheKey, 3 * 60 * 1000, // 3 minutes fresh
+            60 * 60 * 1000, // 60 minutes max stale
+            async () => {
+                const client = new odooClient_1.OdooClient(settings.odoo);
+                const fresh = await buildOperatorDashboard(client, viewedEmail, req, settings.stock);
+                void (0, repositories_1.saveShopFloorDashboardSnapshot)(normalizedEmail, fresh).catch((saveErr) => {
+                    console.warn('[shopFloor] Failed to save snapshot to MySQL:', saveErr);
+                });
+                return fresh;
+            });
+            data = await withMaxPageWait(fetchPromise, 1200, emptyOperatorDashboardShell(viewedEmail));
+        }
         const featureFlags = await featureFlagsPromise;
         res.render('shop-floor', {
             pageTitle: 'Shop Floor',
@@ -868,9 +1062,26 @@ router.get('/shop-floor', async (req, res) => {
         });
     }
 });
+async function resolveShopFloorEmployeeRecord(email, client) {
+    const norm = (email || '').trim().toLowerCase();
+    if (!norm)
+        return null;
+    const cacheKey = `shop-floor-dashboard:v3:${norm}`;
+    const cached = shopFloorCache.get(cacheKey);
+    if (cached?.employee?.id) {
+        return { id: cached.employee.id, name: cached.employee.name };
+    }
+    try {
+        const snapshot = await (0, repositories_1.getShopFloorDashboardSnapshot)(norm);
+        if (snapshot?.data?.employee?.id) {
+            return { id: snapshot.data.employee.id, name: snapshot.data.employee.name };
+        }
+    }
+    catch (_e) { }
+    return client.findEmployeeForShopFloorEmail(email);
+}
 async function resolveAttendanceEmployee(req, client) {
-    return client.findEmployeeByUserEmail(req.authUser.email)
-        || client.findEmployeeByWorkEmail(req.authUser.email);
+    return resolveShopFloorEmployeeRecord(req.authUser.email, client);
 }
 router.post('/shop-floor/attendance/check-in', async (req, res) => {
     if (!req.authUser) {
@@ -1004,93 +1215,103 @@ router.get('/shop-floor/operators', async (req, res) => {
     }
     try {
         const settings = await (0, repositories_1.getSettings)();
-        const client = new odooClient_1.OdooClient(settings.odoo);
-        // Find operator departments
-        const allDepartments = [];
-        for (const deptName of OPERATOR_DEPARTMENT_NAMES) {
-            const found = await client.findDepartmentByName(deptName);
-            allDepartments.push(...found);
-        }
-        // Deduplicate by ID
-        const uniqueDepts = [...new Map(allDepartments.map((d) => [d.id, d])).values()];
-        // Get employees from each department
-        const allOperators = [];
-        const seenIds = new Set();
-        for (const dept of uniqueDepts) {
-            const employees = await client.getEmployeesByDepartment(dept.id);
-            for (const emp of employees) {
-                if (seenIds.has(emp.id))
-                    continue;
-                seenIds.add(emp.id);
-                allOperators.push({
-                    id: emp.id,
-                    name: emp.name,
-                    jobTitle: emp.job_title || null,
-                    department: Array.isArray(emp.department_id) ? emp.department_id[1] : dept.name,
-                    workEmail: emp.work_email || null,
-                    mobilePhone: emp.mobile_phone || null,
-                    userId: Array.isArray(emp.user_id) ? emp.user_id[0] : null,
-                    userName: Array.isArray(emp.user_id) ? emp.user_id[1] : null,
-                    checkedIn: false,
-                    checkedOut: false,
-                    checkInTime: null,
-                    assignedItems: [],
-                });
+        const operatorCacheKey = 'shop-floor:operators-list:v1';
+        const operatorsPromise = shopFloorCache.getOrFetchTieredSWR(operatorCacheKey, req.query.refresh === 'true' ? 0 : 5 * 60 * 1000, // Non-blocking serve with background revalidation on refresh
+        60 * 60 * 1000, // 60 minutes max stale
+        async () => {
+            const client = new odooClient_1.OdooClient(settings.odoo);
+            // Find operator departments
+            const allDepartments = [];
+            for (const deptName of OPERATOR_DEPARTMENT_NAMES) {
+                const found = await client.findDepartmentByName(deptName);
+                allDepartments.push(...found);
             }
-        }
-        // Get today's attendance for all operators
-        if (allOperators.length > 0) {
-            try {
-                const operatorIds = allOperators.map((op) => op.id);
-                const attendanceRecords = await client.getBulkAttendance(operatorIds);
-                for (const rec of attendanceRecords) {
-                    const empId = Array.isArray(rec.employee_id) ? rec.employee_id[0] : rec.employee_id;
-                    const op = allOperators.find((o) => o.id === empId);
-                    if (op) {
-                        op.checkedIn = Boolean(rec.check_in && !rec.check_out);
-                        op.checkedOut = Boolean(rec.check_out);
-                        op.checkInTime = toEAT(rec.check_in) || rec.check_in;
+            // Deduplicate by ID
+            const uniqueDepts = [...new Map(allDepartments.map((d) => [d.id, d])).values()];
+            // Get employees from each department
+            const operators = [];
+            const seenIds = new Set();
+            for (const dept of uniqueDepts) {
+                const employees = await client.getEmployeesByDepartment(dept.id);
+                for (const emp of employees) {
+                    if (seenIds.has(emp.id))
+                        continue;
+                    seenIds.add(emp.id);
+                    operators.push({
+                        id: emp.id,
+                        name: emp.name,
+                        jobTitle: emp.job_title || null,
+                        department: Array.isArray(emp.department_id) ? emp.department_id[1] : dept.name,
+                        workEmail: emp.work_email || null,
+                        mobilePhone: emp.mobile_phone || null,
+                        userId: Array.isArray(emp.user_id) ? emp.user_id[0] : null,
+                        userName: Array.isArray(emp.user_id) ? emp.user_id[1] : null,
+                        checkedIn: false,
+                        checkedOut: false,
+                        checkInTime: null,
+                        assignedItems: [],
+                    });
+                }
+            }
+            // Get today's attendance for all operators
+            if (operators.length > 0) {
+                try {
+                    const operatorIds = operators.map((op) => op.id);
+                    const attendanceRecords = await client.getBulkAttendance(operatorIds);
+                    for (const rec of attendanceRecords) {
+                        const empId = Array.isArray(rec.employee_id) ? rec.employee_id[0] : rec.employee_id;
+                        const op = operators.find((o) => o.id === empId);
+                        if (op) {
+                            op.checkedIn = Boolean(rec.check_in && !rec.check_out);
+                            op.checkedOut = Boolean(rec.check_out);
+                            op.checkInTime = toEAT(rec.check_in) || rec.check_in;
+                        }
                     }
+                }
+                catch (err) {
+                    console.warn('[shopFloor] Failed to fetch bulk attendance:', err);
+                }
+            }
+            // Get assigned items for all operators in bulk from Odoo!
+            try {
+                const allEquipments = await client.getBulkAssignedEquipment();
+                const equipByEmployeeId = new Map();
+                for (const eq of allEquipments) {
+                    if (eq.employee_id) {
+                        const empId = eq.employee_id[0];
+                        if (!equipByEmployeeId.has(empId)) {
+                            equipByEmployeeId.set(empId, []);
+                        }
+                        equipByEmployeeId.get(empId).push(eq);
+                    }
+                }
+                for (const op of operators) {
+                    const items = equipByEmployeeId.get(op.id) || [];
+                    op.assignedItems = items.map((i) => ({
+                        id: String(i.id),
+                        itemName: i.name || '',
+                        assignedDate: i.assign_date || '',
+                        quantity: 1,
+                    }));
                 }
             }
             catch (err) {
-                console.warn('[shopFloor] Failed to fetch bulk attendance:', err);
-            }
-        }
-        // Get assigned items for all operators in bulk from Odoo!
-        try {
-            const allEquipments = await client.getBulkAssignedEquipment();
-            const equipByEmployeeId = new Map();
-            for (const eq of allEquipments) {
-                if (eq.employee_id) {
-                    const empId = eq.employee_id[0];
-                    if (!equipByEmployeeId.has(empId)) {
-                        equipByEmployeeId.set(empId, []);
-                    }
-                    equipByEmployeeId.get(empId).push(eq);
+                console.warn('[shopFloor] Failed to fetch bulk assigned equipment:', err);
+                for (const op of operators) {
+                    op.assignedItems = [];
                 }
             }
-            for (const op of allOperators) {
-                const items = equipByEmployeeId.get(op.id) || [];
-                op.assignedItems = items.map((i) => ({
-                    id: String(i.id),
-                    itemName: i.name || '',
-                    assignedDate: i.assign_date || '',
-                    quantity: 1,
-                }));
-            }
-        }
-        catch (err) {
-            console.warn('[shopFloor] Failed to fetch bulk assigned equipment:', err);
-            for (const op of allOperators) {
-                op.assignedItems = [];
-            }
-        }
+            return { allOperators: operators, departments: uniqueDepts.map((d) => d.name) };
+        });
+        const { allOperators, departments } = await withMaxPageWait(operatorsPromise, 1200, {
+            allOperators: [],
+            departments: [],
+        });
         res.render('shop-floor-operators', {
             pageTitle: 'Shop Floor Operators',
             appName: env_1.env.APP_NAME,
             operators: allOperators,
-            departments: uniqueDepts.map((d) => d.name),
+            departments,
             total: allOperators.length,
             checkedInCount: allOperators.filter((o) => o.checkedIn).length,
             authUser: req.authUser,
@@ -1440,8 +1661,21 @@ router.get('/shop-floor/boards', async (req, res) => {
         const recentIntakes = recentIntakeRows.slice(0, boardLogPageSize);
         const products = stockMirror.products;
         const viewedEmail = getViewedUserEmail(req);
-        const dashboardCacheKey = `shop-floor-dashboard:v3:${viewedEmail.toLowerCase()}`;
-        const cachedDashboard = shopFloorCache.get(dashboardCacheKey);
+        const normalizedEmail = viewedEmail.trim().toLowerCase();
+        const dashboardCacheKey = `shop-floor-dashboard:v3:${normalizedEmail}`;
+        let cachedDashboard = shopFloorCache.get(dashboardCacheKey);
+        if (!cachedDashboard) {
+            try {
+                const snapshot = await (0, repositories_1.getShopFloorDashboardSnapshot)(normalizedEmail);
+                if (snapshot && snapshot.data) {
+                    cachedDashboard = snapshot.data;
+                    shopFloorCache.set(dashboardCacheKey, cachedDashboard, 60 * 60 * 1000, 3 * 60 * 1000);
+                }
+            }
+            catch (_e) {
+                // ignore
+            }
+        }
         const dashboardData = cachedDashboard || { stockAlerts: [], isLimitedDashboard: false };
         res.render('shop-floor-boards', {
             pageTitle: 'Board Intake & Auto-Reserve',
@@ -1561,13 +1795,9 @@ router.post('/shop-floor/work-order/:id/advance', async (req, res) => {
     }
     try {
         const viewedEmail = getViewedUserEmail(req);
-        const cacheKey = `shop-floor-dashboard:v3:${viewedEmail.toLowerCase()}`;
-        const cachedDashboard = shopFloorCache.get(cacheKey);
         const settings = await (0, repositories_1.getSettings)();
         const client = new odooClient_1.OdooClient(settings.odoo);
-        const employee = cachedDashboard?.employee?.id
-            ? { id: cachedDashboard.employee.id, name: cachedDashboard.employee.name }
-            : await client.findEmployeeForShopFloorEmail(viewedEmail);
+        const employee = await resolveShopFloorEmployeeRecord(viewedEmail, client);
         if (!employee) {
             throw new Error('Your signed-in account is not linked to an Odoo employee. Ask an administrator to match your email.');
         }
@@ -1669,7 +1899,7 @@ router.post('/shop-floor/work-order/:id/pause', async (req, res) => {
         const settings = await (0, repositories_1.getSettings)();
         const client = new odooClient_1.OdooClient(settings.odoo);
         const viewedEmail = getViewedUserEmail(req);
-        const employee = await client.findEmployeeForShopFloorEmail(viewedEmail);
+        const employee = await resolveShopFloorEmployeeRecord(viewedEmail, client);
         if (!employee)
             throw new Error('Your account is not linked to an Odoo employee.');
         await client.pauseManufacturingOrder(moId, { createBackorder, qtyProduced }, employee.id);
@@ -1737,20 +1967,35 @@ router.post('/shop-floor/features', async (req, res) => {
     res.redirect('/shop-floor?message=' + encodeURIComponent('Shop Floor apps updated.'));
 });
 router.post('/shop-floor/board-intake', async (req, res) => {
+    const wantsJson = Boolean(req.xhr || req.headers.accept?.includes('application/json') || req.is('json'));
     if (!req.authUser) {
+        if (wantsJson) {
+            res.status(401).json({ ok: false, error: 'Please sign in first.' });
+            return;
+        }
         res.redirect('/login');
         return;
     }
     const { product_id, quantity, partner_id } = req.body;
     if (!product_id || !quantity || !partner_id) {
-        res.redirect('/shop-floor/boards?error=' + encodeURIComponent('Missing required fields: board type, quantity, and client are all required.'));
+        const errorMsg = 'Missing required fields: board type, quantity, and client are all required.';
+        if (wantsJson) {
+            res.status(400).json({ ok: false, error: errorMsg });
+            return;
+        }
+        res.redirect('/shop-floor/boards?error=' + encodeURIComponent(errorMsg));
         return;
     }
     const productId = Number(product_id);
     const qty = Number(quantity);
     const partnerId = Number(partner_id);
     if (qty <= 0 || !Number.isFinite(qty)) {
-        res.redirect('/shop-floor/boards?error=' + encodeURIComponent('Quantity must be a positive number.'));
+        const errorMsg = 'Quantity must be a positive number.';
+        if (wantsJson) {
+            res.status(400).json({ ok: false, error: errorMsg });
+            return;
+        }
+        res.redirect('/shop-floor/boards?error=' + encodeURIComponent(errorMsg));
         return;
     }
     try {
@@ -1769,7 +2014,31 @@ router.post('/shop-floor/board-intake', async (req, res) => {
         await (0, stockMirrorService_1.recordOptimisticStockAddition)(productId, productName, qty);
         optimisticBoardIntakes.push({ id: optimisticId, partnerId, productId, productName, customerName, quantity: qty, expiresAt: Date.now() + 10 * 60 * 1000 });
         shopFloorCache.clearPrefix('shop-floor-dashboard:');
-        res.redirect('/shop-floor/boards?message=' + encodeURIComponent(`Boards saved immediately: ${qty} x ${productName} for ${customerName}${vehicleRegistration ? ` (${vehicleRegistration})` : ''}. Odoo synchronization and MO reservation are continuing automatically.`));
+        const successMessage = `Boards saved immediately: ${qty} x ${productName} for ${customerName}${vehicleRegistration ? ` (${vehicleRegistration})` : ''}. Odoo synchronization and MO reservation are continuing in the background.`;
+        if (wantsJson) {
+            res.json({
+                ok: true,
+                message: successMessage,
+                item: {
+                    id: optimisticId,
+                    product_id: productId,
+                    product_name: productName,
+                    partner_id: partnerId,
+                    customer_name: customerName,
+                    quantity: qty,
+                    vehicle_registration: vehicleRegistration,
+                    arrival_time: arrivalTime,
+                    gate,
+                    actor_name: actorName,
+                    actor_email: req.authUser.email,
+                    status: 'pending',
+                    created_at: new Date().toISOString(),
+                },
+            });
+        }
+        else {
+            res.redirect('/shop-floor/boards?message=' + encodeURIComponent(successMessage));
+        }
         void (async () => {
             try {
                 const syncResult = await (0, boardIntakeSyncService_1.syncBoardIntakeEntry)(optimisticId);
@@ -1860,12 +2129,10 @@ router.get('/shop-floor/receipts', async (req, res) => {
         const warehouseId = Number(settings.stock.warehouseId || 0);
         if (!warehouseId)
             throw new Error('The Urban Vibe warehouse ID is not configured.');
-        if (req.query.refresh === 'true') {
-            shopFloorCache.delete(`shop-floor:receipts:${warehouseId}`);
-        }
-        const receipts = await shopFloorCache.getOrFetchSWR(`shop-floor:receipts:${warehouseId}`, 3 * 60 * 1000, // 3 minutes fresh
+        const receiptsPromise = shopFloorCache.getOrFetchTieredSWR(`shop-floor:receipts:${warehouseId}`, req.query.refresh === 'true' ? 0 : 3 * 60 * 1000, // Non-blocking serve with background revalidation on refresh
         30 * 60 * 1000, // 30 minutes max stale
         async () => new odooClient_1.OdooClient(settings.odoo).getOpenBoardReceipts(warehouseId));
+        const receipts = await withMaxPageWait(receiptsPromise, 1200, []);
         res.render('shop-floor-receipts', { pageTitle: 'Board Receipts', appName: env_1.env.APP_NAME, receipts, authUser: req.authUser, csrfToken: req.csrfToken || null, message: req.query.message || null, error: req.query.error || null });
     }
     catch (error) {
@@ -1919,6 +2186,27 @@ router.post('/shop-floor/board-intake/:id/revert', async (req, res) => {
         res.redirect('/shop-floor/boards?error=' + encodeURIComponent(error instanceof Error ? error.message : 'Could not revert board log.') + '&boardLogPage=' + encodeURIComponent(String(req.body.boardLogPage || '1')));
     }
 });
+router.get('/shop-floor/board-intake/status', async (req, res) => {
+    if (!req.authUser) {
+        res.status(401).json({ ok: false, error: 'Please sign in first.' });
+        return;
+    }
+    try {
+        const rawIds = typeof req.query.ids === 'string'
+            ? req.query.ids.split(',').map((s) => s.trim()).filter(Boolean)
+            : [];
+        if (rawIds.length > 0) {
+            const entries = await Promise.all(rawIds.slice(0, 25).map((id) => (0, repositories_1.getBoardIntakeQueueEntry)(id)));
+            res.json({ ok: true, entries: entries.filter(Boolean) });
+            return;
+        }
+        const entries = await (0, repositories_1.getRecentBoardIntakeQueueEntries)(12, 0);
+        res.json({ ok: true, entries });
+    }
+    catch (error) {
+        res.status(500).json({ ok: false, error: error instanceof Error ? error.message : 'Could not query board intake status.' });
+    }
+});
 router.post('/shop-floor/receipts/:id/validate', async (req, res) => {
     if (!req.authUser) {
         res.redirect('/login');
@@ -1952,12 +2240,10 @@ router.get('/shop-floor/deliveries', async (req, res) => {
         const warehouseId = Number(settings.stock.warehouseId || 0);
         if (!warehouseId)
             throw new Error('The Urban Vibe warehouse ID is not configured.');
-        if (req.query.refresh === 'true') {
-            shopFloorCache.delete(`shop-floor:deliveries:${warehouseId}`);
-        }
-        const deliveries = await shopFloorCache.getOrFetchSWR(`shop-floor:deliveries:${warehouseId}`, 3 * 60 * 1000, // 3 minutes fresh
+        const deliveriesPromise = shopFloorCache.getOrFetchTieredSWR(`shop-floor:deliveries:${warehouseId}`, req.query.refresh === 'true' ? 0 : 3 * 60 * 1000, // Non-blocking serve with background revalidation on refresh
         30 * 60 * 1000, // 30 minutes max stale
         async () => new odooClient_1.OdooClient(settings.odoo).getOpenDeliveries(warehouseId));
+        const deliveries = await withMaxPageWait(deliveriesPromise, 1200, []);
         res.render('shop-floor-deliveries', { pageTitle: 'Deliveries', appName: env_1.env.APP_NAME, deliveries, authUser: req.authUser, csrfToken: req.csrfToken || null, message: req.query.message || null, error: req.query.error || null });
     }
     catch (error) {

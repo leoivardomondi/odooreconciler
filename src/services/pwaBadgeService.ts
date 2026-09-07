@@ -1,9 +1,6 @@
-import { getMpesaStatementBatchesWithOpenReviewCounts, getSettings } from '../models/repositories';
+import { getMpesaStatementBatchesWithOpenReviewCounts, getShopFloorDashboardSnapshot } from '../models/repositories';
 import { AuthSessionUser } from '../models/types';
-import { OdooClient } from './odooClient';
 import { canAccessPath } from './authService';
-import { hasOdooConfiguration } from '../utils/helpers';
-import { isBoardProductName } from './boardProductClassifier';
 
 type CacheEntry = {
   value: PwaBadgeBreakdown;
@@ -27,92 +24,19 @@ function specialReminderRecipient(email: string): 'charles' | 'raphael' | null {
   return null;
 }
 
-function isBoardComponentName(productName: string | null | undefined): boolean {
-  return isBoardProductName(productName);
-}
-
-async function countShopFloorDueTasks(settings: Awaited<ReturnType<typeof getSettings>>, userEmail: string): Promise<number> {
-  if (!hasOdooConfiguration(settings) || !userEmail) {
+async function countShopFloorDueTasks(userEmail: string): Promise<number> {
+  if (!userEmail) {
     return 0;
   }
-
-  const client = new OdooClient(settings.odoo);
-
-  const employee =
-    (await client.findEmployeeByUserEmail(userEmail)) ||
-    (await client.findEmployeeByWorkEmail(userEmail));
-
-  if (!employee) {
-    return 0;
+  try {
+    const snapshot = await getShopFloorDashboardSnapshot<{ stockAlerts?: unknown[] }>(userEmail);
+    if (snapshot?.data?.stockAlerts && Array.isArray(snapshot.data.stockAlerts)) {
+      return snapshot.data.stockAlerts.length;
+    }
+  } catch (_e) {
+    // ignore
   }
-
-  const allOrdersRaw = await client.getAllActiveWorkOrders(100);
-  const allOrders = allOrdersRaw.filter((order) => order.name.startsWith('WH/MO/'));
-  if (!allOrders.length) {
-    return 0;
-  }
-
-  const originsToFetch = [...new Set(allOrders.map((order) => order.origin).filter(Boolean))] as string[];
-  const moIds = allOrders.map((order) => order.id);
-
-  const [allComponents, poStateMap] = await Promise.all([
-    client.getBulkManufacturingOrderComponents(moIds).catch(() => []),
-    client.getBulkRelatedPurchaseOrderStates(originsToFetch).catch(() => new Map<string, string>()),
-  ]);
-
-  const componentsByMoId = new Map<number, Array<Record<string, unknown>>>();
-  for (const comp of allComponents as Array<Record<string, unknown>>) {
-    const linkedMo = comp.raw_material_production_id;
-    if (Array.isArray(linkedMo)) {
-      const moId = Number(linkedMo[0] || 0);
-      if (moId > 0) {
-        if (!componentsByMoId.has(moId)) {
-          componentsByMoId.set(moId, []);
-        }
-        componentsByMoId.get(moId)!.push(comp);
-      }
-    }
-  }
-
-  let dueCount = 0;
-
-  for (const order of allOrders as Array<Record<string, unknown>>) {
-    if (order.state === 'done' || order.state === 'cancel') {
-      continue;
-    }
-
-    const components = componentsByMoId.get(Number(order.id || 0)) || [];
-    const unavailable = components.filter((component) => {
-      const state = String(component.state || '');
-      if (state === 'done' || state === 'cancel' || state === 'draft' || state === 'assigned') {
-        return false;
-      }
-      if (['confirmed', 'waiting', 'partially_available'].includes(state)) {
-        return true;
-      }
-      return !component.forecast_availability || component.forecast_availability === 'unavailable';
-    });
-
-    if (!unavailable.length) {
-      continue;
-    }
-
-    const origin = String(order.origin || '');
-    const poState = origin ? String(poStateMap.get(origin) || '') : '';
-    const needsAlert = !poState || ['draft', 'sent'].includes(poState);
-    if (!needsAlert) {
-      continue;
-    }
-
-    for (const component of unavailable) {
-      const componentName = Array.isArray(component.product_id) ? String(component.product_id[1] || '') : '';
-      if (isBoardComponentName(componentName)) {
-        dueCount += 1;
-      }
-    }
-  }
-
-  return dueCount;
+  return 0;
 }
 
 export async function getPwaBadgeBreakdown(authUser: AuthSessionUser | null | undefined): Promise<PwaBadgeBreakdown> {
@@ -130,13 +54,12 @@ export async function getPwaBadgeBreakdown(authUser: AuthSessionUser | null | un
     return value;
   }
 
-  const settings = await getSettings();
   const mpesaCount = authUser && canAccessPath(authUser, 'GET', '/mpesa-reconciliation')
     ? (await getMpesaStatementBatchesWithOpenReviewCounts()).length
     : 0;
 
   const shopFloorCount = authUser && canAccessPath(authUser, 'GET', '/shop-floor')
-    ? await countShopFloorDueTasks(settings, authUser.email)
+    ? await countShopFloorDueTasks(authUser.email)
     : 0;
 
   const value: PwaBadgeBreakdown = {

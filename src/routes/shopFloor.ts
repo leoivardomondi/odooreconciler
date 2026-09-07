@@ -549,6 +549,47 @@ function applyOptimisticStockAlerts(alerts: StockAlert[]) {
     return { ...alert, qtyNeeded };
   }).filter((alert) => alert.qtyNeeded > 0);
 }
+async function withMaxPageWait<T>(promise: Promise<T>, maxWaitMs: number, fallback: T): Promise<T> {
+  let timer: NodeJS.Timeout;
+  const timeoutPromise = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(fallback), maxWaitMs);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timer));
+}
+
+function emptyOperatorDashboardShell(userEmail: string): OperatorDashboardData {
+  return {
+    employee: {
+      id: 0,
+      name: userEmail.split('@')[0] || 'Operator',
+      jobTitle: 'Operator',
+      department: null,
+      workEmail: userEmail,
+      mobilePhone: null,
+      manager: null,
+    },
+    attendance: null,
+    workOrders: [],
+    payslips: [],
+    salaryAdvances: [],
+    stockAlerts: [],
+    lateCount: 0,
+    incidents: [],
+    assignedItems: [],
+    failedCheckouts: [],
+    performanceRate: null,
+    areaPerformanceRates: [],
+    manufacturingTimingSummary: null,
+    manufacturingTimelineData: null,
+    boardRegistrationSummary: null,
+    teamPenalties: null,
+    isLimitedDashboard: false,
+    machines: [],
+    error: null,
+    reservedBoardsCount: 0,
+  };
+}
+
 const dailyManufacturingAnalytics = new Map<string, { reportDay: string; value: Promise<unknown> }>();
 
 function manufacturingReportDay() {
@@ -1207,51 +1248,49 @@ router.get('/shop-floor', async (req: Request, res: Response) => {
   const normalizedEmail = viewedEmail.trim().toLowerCase();
   const cacheKey = `shop-floor-dashboard:v3:${normalizedEmail}`;
   const featureFlagsPromise = getShopFloorFeatureFlags();
-  if (req.query.refresh === 'true') {
-    shopFloorCache.delete(cacheKey);
-    dailyManufacturingAnalytics.clear();
-  }
+    const isExplicitRefresh = req.query.refresh === 'true';
+    if (isExplicitRefresh) {
+      dailyManufacturingAnalytics.clear();
+    }
 
   try {
     const settings = await getSettings();
 
     // Multi-tier cache for operator dashboard:
     // Tier 1: In-memory RAM cache
-    let data: OperatorDashboardData | null = req.query.refresh === 'true'
-      ? null
-      : shopFloorCache.get<OperatorDashboardData>(cacheKey);
+    let data: OperatorDashboardData | null = shopFloorCache.get<OperatorDashboardData>(cacheKey);
 
     // Tier 2: MySQL persistent snapshot if RAM misses (e.g. cold restart or Login As)
-    if (!data && req.query.refresh !== 'true') {
+    if (!data) {
       try {
         const snapshot = await getShopFloorDashboardSnapshot<OperatorDashboardData>(normalizedEmail);
         if (snapshot && snapshot.data) {
           data = snapshot.data;
           shopFloorCache.set(cacheKey, data, 60 * 60 * 1000, 3 * 60 * 1000);
-
-          // If snapshot is older than 5 minutes, trigger background SWR revalidation without blocking!
-          const ageMs = Math.max(0, Date.now() - new Date(snapshot.syncedAt).getTime());
-          if (ageMs > 5 * 60 * 1000 && !shopFloorCache.isInFlight(cacheKey)) {
-            void (async () => {
-              try {
-                const client = new OdooClient(settings.odoo);
-                const fresh = await buildOperatorDashboard(client, viewedEmail, req, settings.stock);
-                shopFloorCache.set(cacheKey, fresh, 60 * 60 * 1000, 3 * 60 * 1000);
-                await saveShopFloorDashboardSnapshot(normalizedEmail, fresh);
-              } catch (bgErr) {
-                console.warn('[shopFloor] Background snapshot refresh failed for', normalizedEmail, bgErr);
-              }
-            })();
-          }
         }
       } catch (dbErr) {
         console.warn('[shopFloor] Failed to read snapshot from MySQL for', normalizedEmail, dbErr);
       }
     }
 
-    // Tier 3: Complete miss (first time this user ever accessed the app), fetch via SWR & save snapshot
-    if (!data) {
-      data = await shopFloorCache.getOrFetchSWR(
+    // If data exists, serve immediately (<5ms)! Revalidate in background if explicit refresh or stale
+    if (data) {
+      if ((isExplicitRefresh || shopFloorCache.isStale(cacheKey)) && !shopFloorCache.isInFlight(cacheKey)) {
+        void (async () => {
+          try {
+            const client = new OdooClient(settings.odoo);
+            const fresh = await buildOperatorDashboard(client, viewedEmail, req, settings.stock);
+            shopFloorCache.set(cacheKey, fresh, 60 * 60 * 1000, 3 * 60 * 1000);
+            await saveShopFloorDashboardSnapshot(normalizedEmail, fresh);
+          } catch (bgErr) {
+            console.warn('[shopFloor] Background dashboard refresh failed for', normalizedEmail, bgErr);
+          }
+        })();
+      }
+    } else {
+      // Tier 3: Complete miss (first time this user ever accessed the app)
+      // Never block page render for more than 1200ms; return instant shell if Odoo takes longer
+      const fetchPromise = shopFloorCache.getOrFetchSWR(
         cacheKey,
         3 * 60 * 1000,   // 3 minutes fresh
         60 * 60 * 1000,  // 60 minutes max stale
@@ -1264,18 +1303,7 @@ router.get('/shop-floor', async (req: Request, res: Response) => {
           return fresh;
         },
       );
-    } else if (shopFloorCache.isStale(cacheKey) && !shopFloorCache.isInFlight(cacheKey)) {
-      // RAM entry exists but is older than 3 mins; refresh in background
-      void (async () => {
-        try {
-          const client = new OdooClient(settings.odoo);
-          const fresh = await buildOperatorDashboard(client, viewedEmail, req, settings.stock);
-          shopFloorCache.set(cacheKey, fresh, 60 * 60 * 1000, 3 * 60 * 1000);
-          await saveShopFloorDashboardSnapshot(normalizedEmail, fresh);
-        } catch (bgErr) {
-          console.warn('[shopFloor] Background RAM refresh failed for', normalizedEmail, bgErr);
-        }
-      })();
+      data = await withMaxPageWait(fetchPromise, 1200, emptyOperatorDashboardShell(viewedEmail));
     }
 
     const featureFlags = await featureFlagsPromise;
@@ -1451,13 +1479,9 @@ router.get('/shop-floor/operators', async (req: Request, res: Response) => {
   try {
     const settings = await getSettings();
     const operatorCacheKey = 'shop-floor:operators-list:v1';
-    if (req.query.refresh === 'true') {
-      shopFloorCache.delete(operatorCacheKey);
-    }
-
-    const { allOperators, departments } = await shopFloorCache.getOrFetchTieredSWR(
+    const operatorsPromise = shopFloorCache.getOrFetchTieredSWR(
       operatorCacheKey,
-      5 * 60 * 1000,   // 5 minutes fresh
+      req.query.refresh === 'true' ? 0 : 5 * 60 * 1000,   // Non-blocking serve with background revalidation on refresh
       60 * 60 * 1000,  // 60 minutes max stale
       async () => {
         const client = new OdooClient(settings.odoo);
@@ -1551,6 +1575,11 @@ router.get('/shop-floor/operators', async (req: Request, res: Response) => {
         return { allOperators: operators, departments: uniqueDepts.map((d) => d.name) };
       },
     );
+
+    const { allOperators, departments } = await withMaxPageWait(operatorsPromise, 1200, {
+      allOperators: [] as OperatorSummary[],
+      departments: [] as string[],
+    });
 
     res.render('shop-floor-operators', {
       pageTitle: 'Shop Floor Operators',
@@ -2385,15 +2414,13 @@ router.get('/shop-floor/receipts', async (req: Request, res: Response) => {
     const settings = await getSettings();
     const warehouseId = Number(settings.stock.warehouseId || 0);
     if (!warehouseId) throw new Error('The Urban Vibe warehouse ID is not configured.');
-    if (req.query.refresh === 'true') {
-      shopFloorCache.delete(`shop-floor:receipts:${warehouseId}`);
-    }
-    const receipts = await shopFloorCache.getOrFetchTieredSWR(
+    const receiptsPromise = shopFloorCache.getOrFetchTieredSWR(
       `shop-floor:receipts:${warehouseId}`,
-      3 * 60 * 1000,   // 3 minutes fresh
+      req.query.refresh === 'true' ? 0 : 3 * 60 * 1000,   // Non-blocking serve with background revalidation on refresh
       30 * 60 * 1000,  // 30 minutes max stale
       async () => new OdooClient(settings.odoo).getOpenBoardReceipts(warehouseId),
     );
+    const receipts = await withMaxPageWait(receiptsPromise, 1200, []);
     res.render('shop-floor-receipts', { pageTitle: 'Board Receipts', appName: env.APP_NAME, receipts, authUser: req.authUser, csrfToken: req.csrfToken || null, message: req.query.message || null, error: req.query.error || null });
   } catch (error) {
     res.status(500).render('error', { pageTitle: 'Board Receipts', errorMessage: error instanceof Error ? error.message : 'Could not load receipts.', details: [], csrfToken: req.csrfToken || null });
@@ -2498,15 +2525,13 @@ router.get('/shop-floor/deliveries', async (req: Request, res: Response) => {
     const settings = await getSettings();
     const warehouseId = Number(settings.stock.warehouseId || 0);
     if (!warehouseId) throw new Error('The Urban Vibe warehouse ID is not configured.');
-    if (req.query.refresh === 'true') {
-      shopFloorCache.delete(`shop-floor:deliveries:${warehouseId}`);
-    }
-    const deliveries = await shopFloorCache.getOrFetchTieredSWR(
+    const deliveriesPromise = shopFloorCache.getOrFetchTieredSWR(
       `shop-floor:deliveries:${warehouseId}`,
-      3 * 60 * 1000,   // 3 minutes fresh
+      req.query.refresh === 'true' ? 0 : 3 * 60 * 1000,   // Non-blocking serve with background revalidation on refresh
       30 * 60 * 1000,  // 30 minutes max stale
       async () => new OdooClient(settings.odoo).getOpenDeliveries(warehouseId),
     );
+    const deliveries = await withMaxPageWait(deliveriesPromise, 1200, []);
     res.render('shop-floor-deliveries', { pageTitle: 'Deliveries', appName: env.APP_NAME, deliveries, authUser: req.authUser, csrfToken: req.csrfToken || null, message: req.query.message || null, error: req.query.error || null });
   } catch (error) {
     res.status(500).render('error', { pageTitle: 'Deliveries', errorMessage: error instanceof Error ? error.message : 'Could not load deliveries.', details: [], csrfToken: req.csrfToken || null });

@@ -57,10 +57,56 @@ function showAppLoading(message, timeoutMs) {
   }, duration);
 }
 
+let topProgressEl = null;
+let topProgressTimer = null;
+
+function ensureTopProgressBar() {
+  if (!topProgressEl || !document.body.contains(topProgressEl)) {
+    topProgressEl = document.getElementById('topNavProgressBar');
+    if (!topProgressEl) {
+      topProgressEl = document.createElement('div');
+      topProgressEl.id = 'topNavProgressBar';
+      document.body.appendChild(topProgressEl);
+    }
+  }
+  return topProgressEl;
+}
+
+function startTopProgress() {
+  const bar = ensureTopProgressBar();
+  window.clearTimeout(topProgressTimer);
+  bar.classList.remove('is-done');
+  bar.classList.add('is-active');
+  bar.style.width = '20%';
+
+  topProgressTimer = window.setTimeout(() => {
+    bar.style.width = '55%';
+    topProgressTimer = window.setTimeout(() => {
+      bar.style.width = '80%';
+      topProgressTimer = window.setTimeout(() => {
+        bar.style.width = '92%';
+      }, 500);
+    }, 300);
+  }, 100);
+}
+
+function finishTopProgress() {
+  const bar = ensureTopProgressBar();
+  window.clearTimeout(topProgressTimer);
+  bar.style.width = '100%';
+  bar.classList.add('is-done');
+  bar.classList.remove('is-active');
+  window.setTimeout(() => {
+    bar.style.width = '0%';
+    bar.classList.remove('is-done');
+  }, 450);
+}
+
 function hideAppLoading() {
   window.clearTimeout(window.__appLoadingSafetyTimer);
   const overlay = document.querySelector('[data-app-loading-overlay]');
   if (overlay instanceof HTMLElement) overlay.classList.remove('is-visible');
+  finishTopProgress();
 }
 
 function setupPopupErrors() {
@@ -71,8 +117,14 @@ function setupPopupErrors() {
   });
 }
 
-window.addEventListener('pageshow', hideAppLoading);
-window.addEventListener('pagehide', () => window.clearTimeout(window.__appLoadingSafetyTimer));
+window.addEventListener('pageshow', () => {
+  hideAppLoading();
+  finishTopProgress();
+});
+window.addEventListener('pagehide', () => {
+  window.clearTimeout(window.__appLoadingSafetyTimer);
+  window.clearTimeout(topProgressTimer);
+});
 
 function shouldShowLinkLoading(event, anchor) {
   if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
@@ -92,7 +144,6 @@ function shouldShowLinkLoading(event, anchor) {
 }
 
 function beginInstantNavigation(anchor) {
-  const label = (anchor.textContent || 'Page').replace(/\s+/g, ' ').trim();
   const nav = anchor.closest('.main-nav');
   if (nav) {
     nav.querySelectorAll('.nav-link.active').forEach((link) => link.classList.remove('active'));
@@ -101,31 +152,8 @@ function beginInstantNavigation(anchor) {
       : anchor.closest('.dropdown')?.querySelector('.nav-link');
     if (topLevelLink instanceof HTMLElement) topLevelLink.classList.add('active');
   }
-
-  const main = document.querySelector('main');
-  if (!(main instanceof HTMLElement)) return;
-  main.setAttribute('aria-busy', 'true');
-  main.classList.add('instant-page-shell');
-  main.innerHTML = `
-    <section class="instant-page-loading" role="status" aria-live="polite">
-      <div class="instant-page-loading__heading">
-        <span class="instant-page-loading__spinner" aria-hidden="true"></span>
-        <div>
-          <p class="instant-page-loading__eyebrow">Opening</p>
-          <h1>${label.replace(/[&<>"']/g, (character) => ({
-            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;',
-          })[character])}</h1>
-          <p>Your menu is ready. The latest data is loading now.</p>
-        </div>
-      </div>
-      <div class="instant-page-loading__grid" aria-hidden="true">
-        <span class="instant-page-loading__card instant-page-loading__card--wide"></span>
-        <span class="instant-page-loading__card"></span>
-        <span class="instant-page-loading__card"></span>
-        <span class="instant-page-loading__card instant-page-loading__card--wide"></span>
-      </div>
-    </section>
-  `;
+  // Start non-blocking top progress bar; never wipe main content with blocking skeleton
+  startTopProgress();
 }
 
 function restoreSubmitter(submitter) {
@@ -246,14 +274,14 @@ async function renderShopFloorInstantPage(urlStr, pushHistory = true) {
     return;
   }
 
-  // Otherwise fetch and swap
+  // Otherwise fetch and swap with non-blocking top progress bar (screen stays responsive)
   try {
-    showAppLoading('Loading...', 4000);
+    startTopProgress();
     const pageData = await fetchShopFloorPageContent(urlStr);
-    hideAppLoading();
+    finishTopProgress();
     applyShopFloorPageData(pageData, urlStr, pushHistory);
   } catch (_err) {
-    hideAppLoading();
+    finishTopProgress();
     window.location.assign(urlStr);
   }
 }
@@ -375,7 +403,7 @@ document.addEventListener('click', async (event) => {
   const refreshTrigger = target.closest('[data-app-refresh]');
   if (refreshTrigger instanceof HTMLElement) {
     event.preventDefault();
-    showAppLoading(refreshTrigger.getAttribute('data-loading-message') || 'Refreshing app...');
+    startTopProgress();
     window.location.reload();
     return;
   }
@@ -420,7 +448,8 @@ document.addEventListener('click', async (event) => {
 
   const loadingLink = target.closest('a[data-loading-message]');
   if (loadingLink instanceof HTMLAnchorElement && shouldShowLinkLoading(event, loadingLink)) {
-    showAppLoading(loadingLink.getAttribute('data-loading-message') || 'Loading...');
+    // Non-blocking top progress bar for instant navigation feedback
+    startTopProgress();
   }
 });
 

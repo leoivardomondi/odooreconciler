@@ -75,19 +75,11 @@ async function refreshStockMirror() {
 async function getStockMirrorForPage(forceRefresh = false) {
     let entries = await (0, repositories_1.getStockProductMirror)();
     const ageMs = stockMirrorAgeMs(entries);
-    if (!entries.length) {
-        entries = await refreshStockMirror();
-    }
-    else if (forceRefresh) {
-        entries = await Promise.race([
-            refreshStockMirror(),
-            new Promise((resolve) => {
-                setTimeout(() => resolve(entries), PAGE_REFRESH_WAIT_MS);
-            }),
-        ]);
-    }
-    else if (ageMs > FRESH_MS) {
-        void refreshStockMirror();
+    if (!entries.length || forceRefresh || ageMs > FRESH_MS) {
+        // Always refresh in the background without blocking the UI/page load
+        void refreshStockMirror().catch((err) => {
+            console.warn('[stockMirror] Background refresh failed:', err);
+        });
     }
     const finalAgeMs = stockMirrorAgeMs(entries);
     return {

@@ -731,6 +731,28 @@ async function loadSaleOrderFieldState(
     };
   }
 
+  // If cached fields exist, serve immediately without blocking page render!
+  if (cached.fields.length > 0) {
+    const ageMs = cached.fetchedAt ? Date.now() - new Date(cached.fetchedAt).getTime() : Infinity;
+    if (ageMs > 60 * 60 * 1000) {
+      void (async () => {
+        try {
+          const client = new OdooClient({ baseUrl, database, username, apiKey });
+          const fields = await client.getSaleOrderFields();
+          await saveCachedModelFields('sale.order', fields);
+        } catch (_err) {
+          // ignore background update error
+        }
+      })();
+    }
+    return {
+      fields: cached.fields,
+      fetchedAt: cached.fetchedAt,
+      source: 'cache',
+      errorMessage: null,
+    };
+  }
+
   try {
     const client = new OdooClient({
       baseUrl,

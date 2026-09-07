@@ -145,6 +145,12 @@ exports.getShopFloorAssignedItems = getShopFloorAssignedItems;
 exports.assignShopFloorItem = assignShopFloorItem;
 exports.getShopFloorFeatureFlags = getShopFloorFeatureFlags;
 exports.saveShopFloorFeatureFlags = saveShopFloorFeatureFlags;
+exports.getShopFloorDashboardSnapshot = getShopFloorDashboardSnapshot;
+exports.saveShopFloorDashboardSnapshot = saveShopFloorDashboardSnapshot;
+exports.getShopFloorSharedCache = getShopFloorSharedCache;
+exports.saveShopFloorSharedCache = saveShopFloorSharedCache;
+exports.deleteShopFloorSharedCache = deleteShopFloorSharedCache;
+exports.deleteShopFloorDashboardSnapshot = deleteShopFloorDashboardSnapshot;
 const uuid_1 = require("uuid");
 const db_1 = require("./db");
 const crypto_1 = require("../utils/crypto");
@@ -3526,5 +3532,93 @@ async function saveShopFloorFeatureFlags(flags) {
         else {
             await (0, db_1.execute)('INSERT INTO shop_floor_feature_flags (feature_key, enabled, updated_at) VALUES (?, ?, ?)', [featureKey, enabled ? 1 : 0, (0, dateTime_1.appDateTime)()]);
         }
+    }
+}
+async function getShopFloorDashboardSnapshot(email) {
+    const normalized = email.trim().toLowerCase();
+    const row = await (0, db_1.queryOne)('SELECT payload, synced_at FROM shop_floor_dashboard_snapshots WHERE user_email = ?', [normalized]);
+    if (!row || !row.payload)
+        return null;
+    try {
+        const data = JSON.parse(row.payload);
+        return { data, syncedAt: row.synced_at };
+    }
+    catch (_e) {
+        return null;
+    }
+}
+async function saveShopFloorDashboardSnapshot(email, data) {
+    const normalized = email.trim().toLowerCase();
+    const payload = JSON.stringify(data);
+    const now = (0, dateTime_1.appDateTime)();
+    const dialect = await (0, db_1.getDatabaseDialect)();
+    if (dialect === 'mysql') {
+        await (0, db_1.execute)(`
+        INSERT INTO shop_floor_dashboard_snapshots (user_email, payload, synced_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          payload = VALUES(payload),
+          synced_at = VALUES(synced_at),
+          updated_at = VALUES(updated_at)
+      `, [normalized, payload, now, now]);
+    }
+    else {
+        await (0, db_1.execute)(`
+        INSERT INTO shop_floor_dashboard_snapshots (user_email, payload, synced_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(user_email) DO UPDATE SET
+          payload = excluded.payload,
+          synced_at = excluded.synced_at,
+          updated_at = excluded.updated_at
+      `, [normalized, payload, now, now]);
+    }
+}
+async function getShopFloorSharedCache(cacheKey) {
+    const row = await (0, db_1.queryOne)('SELECT payload, synced_at FROM shop_floor_shared_cache WHERE cache_key = ?', [cacheKey]);
+    if (!row || !row.payload)
+        return null;
+    try {
+        const data = JSON.parse(row.payload);
+        return { data, syncedAt: row.synced_at };
+    }
+    catch (_e) {
+        return null;
+    }
+}
+async function saveShopFloorSharedCache(cacheKey, data) {
+    const payload = JSON.stringify(data);
+    const now = (0, dateTime_1.appDateTime)();
+    const dialect = await (0, db_1.getDatabaseDialect)();
+    if (dialect === 'mysql') {
+        await (0, db_1.execute)(`
+        INSERT INTO shop_floor_shared_cache (cache_key, payload, synced_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          payload = VALUES(payload),
+          synced_at = VALUES(synced_at),
+          updated_at = VALUES(updated_at)
+      `, [cacheKey, payload, now, now]);
+    }
+    else {
+        await (0, db_1.execute)(`
+        INSERT INTO shop_floor_shared_cache (cache_key, payload, synced_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(cache_key) DO UPDATE SET
+          payload = excluded.payload,
+          synced_at = excluded.synced_at,
+          updated_at = excluded.updated_at
+      `, [cacheKey, payload, now, now]);
+    }
+}
+async function deleteShopFloorSharedCache(cacheKey) {
+    await (0, db_1.execute)('DELETE FROM shop_floor_shared_cache WHERE cache_key = ?', [cacheKey]);
+}
+async function deleteShopFloorDashboardSnapshot(email) {
+    if (email) {
+        const normalized = email.trim().toLowerCase();
+        await (0, db_1.execute)('DELETE FROM shop_floor_dashboard_snapshots WHERE user_email = ?', [normalized]);
+    }
+    else {
+        await (0, db_1.execute)('DELETE FROM shop_floor_dashboard_snapshots', []);
     }
 }
