@@ -820,6 +820,20 @@ async function ensureSqliteDatabase(config: RuntimeDatabaseConfig) {
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS customer_partner_mirror (
+      partner_id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      email TEXT,
+      phone TEXT,
+      ref TEXT,
+      active INTEGER NOT NULL DEFAULT 1,
+      synced_at TEXT,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_customer_partner_name ON customer_partner_mirror (name);
+    CREATE INDEX IF NOT EXISTS idx_customer_partner_phone ON customer_partner_mirror (phone);
+    CREATE INDEX IF NOT EXISTS idx_customer_partner_ref ON customer_partner_mirror (ref);
+
     CREATE TABLE IF NOT EXISTS staff_onboarding_applications (
       id TEXT PRIMARY KEY,
       full_name TEXT NOT NULL,
@@ -1408,6 +1422,22 @@ async function ensureMysqlDatabase(config: RuntimeDatabaseConfig) {
     )
   `);
 
+  await query('create customer partner mirror table', `
+    CREATE TABLE IF NOT EXISTS customer_partner_mirror (
+      partner_id INT PRIMARY KEY,
+      name VARCHAR(255) NOT NULL,
+      email VARCHAR(255) NULL,
+      phone VARCHAR(64) NULL,
+      ref VARCHAR(64) NULL,
+      active TINYINT(1) NOT NULL DEFAULT 1,
+      synced_at DATETIME NULL,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      KEY idx_customer_partner_name (name),
+      KEY idx_customer_partner_ref (ref),
+      KEY idx_customer_partner_phone (phone)
+    )
+  `);
+
   await query('create staff onboarding applications table', `
     CREATE TABLE IF NOT EXISTS staff_onboarding_applications (
       id VARCHAR(64) PRIMARY KEY,
@@ -1438,6 +1468,9 @@ async function ensureMysqlDatabase(config: RuntimeDatabaseConfig) {
       quantity DECIMAL(16,4) NOT NULL,
       actor_name VARCHAR(255) NOT NULL,
       actor_email VARCHAR(255) NULL,
+      vehicle_registration VARCHAR(100) NULL,
+      arrival_time VARCHAR(50) NULL,
+      gate VARCHAR(50) NULL,
       status VARCHAR(32) NOT NULL DEFAULT 'pending',
       odoo_stock_quantity DECIMAL(16,4) NULL,
       reverted_at DATETIME NULL,
@@ -1452,6 +1485,10 @@ async function ensureMysqlDatabase(config: RuntimeDatabaseConfig) {
       KEY idx_board_intake_queue_status (status, created_at)
     )
   `);
+
+  await ensureColumnMysql(pool, 'board_intake_queue', 'vehicle_registration', 'VARCHAR(100) NULL', config.mysqlDatabase);
+  await ensureColumnMysql(pool, 'board_intake_queue', 'arrival_time', 'VARCHAR(50) NULL', config.mysqlDatabase);
+  await ensureColumnMysql(pool, 'board_intake_queue', 'gate', 'VARCHAR(50) NULL', config.mysqlDatabase);
 
   await query('create shop floor dashboard snapshots table', `
     CREATE TABLE IF NOT EXISTS shop_floor_dashboard_snapshots (

@@ -270,3 +270,26 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
     syncInProgress = false;
   }
 }
+
+let syncIntervalTimer: NodeJS.Timeout | null = null;
+const SYNC_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes
+
+export function startShopFloorPendingSyncInterval() {
+  if (syncIntervalTimer) return;
+  // Trigger initial sync shortly after boot
+  setTimeout(() => {
+    void syncPendingProcessesFromOdoo(true).catch(() => undefined);
+  }, 3000);
+
+  syncIntervalTimer = setInterval(() => {
+    void syncPendingProcessesFromOdoo(false).catch(() => undefined);
+  }, SYNC_INTERVAL_MS);
+  syncIntervalTimer.unref?.();
+}
+
+export function stopShopFloorPendingSyncInterval() {
+  if (syncIntervalTimer) {
+    clearInterval(syncIntervalTimer);
+    syncIntervalTimer = null;
+  }
+}

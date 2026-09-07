@@ -14,9 +14,11 @@ const logService_1 = require("./src/services/logService");
 const schedulerService_1 = require("./src/services/schedulerService");
 const emailAutomationService_1 = require("./src/services/emailAutomationService");
 const stockMirrorService_1 = require("./src/services/stockMirrorService");
+const customerMirrorService_1 = require("./src/services/customerMirrorService");
 const userProfileSyncService_1 = require("./src/services/userProfileSyncService");
 const shopFloorOperatorAccessSyncService_1 = require("./src/services/shopFloorOperatorAccessSyncService");
 const boardIntakeSyncService_1 = require("./src/services/boardIntakeSyncService");
+const shopFloorPendingSyncService_1 = require("./src/services/shopFloorPendingSyncService");
 const mpesaExtractionJobService_1 = require("./src/services/mpesaExtractionJobService");
 const invoiceExtractionJobService_1 = require("./src/services/invoiceExtractionJobService");
 const poBillManualJobService_1 = require("./src/services/poBillManualJobService");
@@ -144,6 +146,7 @@ async function startServer() {
         (0, mpesaExtractionJobService_1.stopMpesaExtractionJobWorker)();
         (0, invoiceExtractionJobService_1.stopInvoiceExtractionJobWorker)();
         (0, poBillManualJobService_1.stopPoBillManualJobWorker)();
+        (0, shopFloorPendingSyncService_1.stopShopFloorPendingSyncInterval)();
         await new Promise((resolve) => {
             server.close(() => resolve());
         }).catch(() => undefined);
@@ -193,9 +196,11 @@ async function startServer() {
             await withStartupTimeout('Scheduler initialization', () => (0, schedulerService_1.startSchedulerInterval)());
             (0, emailAutomationService_1.startEmailAutomationInterval)();
             (0, stockMirrorService_1.startStockMirrorInterval)();
+            (0, customerMirrorService_1.startCustomerMirrorInterval)();
             (0, userProfileSyncService_1.startUserProfileSyncInterval)();
             (0, shopFloorOperatorAccessSyncService_1.startShopFloorOperatorAccessSyncInterval)();
             (0, boardIntakeSyncService_1.startBoardIntakeSyncInterval)();
+            (0, shopFloorPendingSyncService_1.startShopFloorPendingSyncInterval)();
             (0, startupState_1.markStartupReady)();
             console.log('[startup] Application initialization completed successfully.');
             writeStartupLog('Application initialization completed successfully.');

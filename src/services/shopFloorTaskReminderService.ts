@@ -1,4 +1,11 @@
-import { getApprovedAuthUsers, getBoardIntakeLoggingReport, getSettings, hasMpesaStatementUploadedSince } from '../models/repositories';
+import {
+  getApprovedAuthUsers,
+  getBoardIntakeLoggingReport,
+  getSettings,
+  hasMpesaStatementUploadedSince,
+  getShopFloorDashboardSnapshot,
+  getShopFloorSharedCache,
+} from '../models/repositories';
 import { AuthApprovedUser, AuthSessionUser } from '../models/types';
 import { env } from '../utils/env';
 import { hasOdooConfiguration } from '../utils/helpers';
@@ -107,11 +114,63 @@ export async function getShopFloorDueTasksForUser(user: AuthSessionUser, channel
     }];
   }
   if (!(user.apps || []).some((app) => app === 'shop-floor' || app === 'shop-floor-admin')) return [];
+  const tasks: ShopFloorDueTask[] = [];
+  const hour = nairobiHour();
+
+  // Fast MySQL path for the app (<5ms) - never wait on Odoo XML-RPC during page browsing
+  if (channel === 'app') {
+    const normalizedEmail = (user.email || '').trim().toLowerCase();
+    const [snapshot, badge, receiptsCache, deliveriesCache] = await Promise.all([
+      getShopFloorDashboardSnapshot<any>(normalizedEmail).catch(() => null),
+      getPwaBadgeBreakdown(user).catch(() => null),
+      (user.role === 'admin' || (user.apps || []).includes('shop-floor-admin'))
+        ? getShopFloorSharedCache<any>('shop-floor:receipts:1').catch(() => null)
+        : Promise.resolve(null),
+      (user.role === 'admin' || (user.apps || []).includes('shop-floor-admin'))
+        ? getShopFloorSharedCache<any>('shop-floor:deliveries:1').catch(() => null)
+        : Promise.resolve(null),
+    ]);
+
+    // 1. Attendance check from local MySQL snapshot
+    if (snapshot?.data?.attendance && hour >= 8 && hour <= 19) {
+      const att = snapshot.data.attendance;
+      if (!att.todayRecord && hour >= 9) {
+        tasks.push({ id: 'attendance-check-in', title: 'Check in is missing', detail: 'You have not checked in today.', url: '/shop-floor?refresh=true' });
+      } else if (att.checkedIn && hour >= 17) {
+        tasks.push({ id: 'attendance-check-out', title: 'Check out is pending', detail: 'You checked in but have not checked out.', url: '/shop-floor?refresh=true' });
+      }
+    }
+
+    // 2. Incoming boards from local MySQL pending processes
+    if ((badge?.shopFloorCount || 0) > 0) {
+      tasks.push({
+        id: 'incoming-boards',
+        title: 'Incoming boards need recording',
+        detail: `${badge!.shopFloorCount} expected board item(s) still need to be counted and recorded.`,
+        url: '/shop-floor/boards',
+      });
+    }
+
+    // 3. Admin penalties from local MySQL shared cache
+    if (receiptsCache?.data && Array.isArray(receiptsCache.data.pickings)) {
+      const openReceipts = receiptsCache.data.pickings.filter((p: any) => p.state !== 'done' && p.state !== 'cancel').length;
+      if (openReceipts > 0) {
+        tasks.push({ id: 'validate-receipts', title: 'Receipts need validation', detail: `${openReceipts} incoming receipt(s) are still open.`, url: '/purchase-orders' });
+      }
+    }
+    if (deliveriesCache?.data && Array.isArray(deliveriesCache.data.pickings)) {
+      const openDeliveries = deliveriesCache.data.pickings.filter((p: any) => p.state !== 'done' && p.state !== 'cancel').length;
+      if (openDeliveries > 0) {
+        tasks.push({ id: 'unmarked-deliveries', title: 'Outgoing deliveries need validation', detail: `${openDeliveries} delivery order(s) going out to clients are still open.`, url: '/shop-floor/deliveries' });
+      }
+    }
+
+    return tasks;
+  }
+
   const settings = await getSettings();
   if (!hasOdooConfiguration(settings)) return [];
   const client = new OdooClient(settings.odoo);
-  const tasks: ShopFloorDueTask[] = [];
-  const hour = nairobiHour();
   const employee = await client.findEmployeeByUserEmail(user.email)
     || await client.findEmployeeByWorkEmail(user.email);
 

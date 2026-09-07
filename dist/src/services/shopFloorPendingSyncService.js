@@ -1,6 +1,8 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.syncPendingProcessesFromOdoo = syncPendingProcessesFromOdoo;
+exports.startShopFloorPendingSyncInterval = startShopFloorPendingSyncInterval;
+exports.stopShopFloorPendingSyncInterval = stopShopFloorPendingSyncInterval;
 const repositories_1 = require("../models/repositories");
 const odooClient_1 = require("./odooClient");
 const boardProductClassifier_1 = require("./boardProductClassifier");
@@ -202,5 +204,25 @@ async function syncPendingProcessesFromOdoo(force = false) {
     }
     finally {
         syncInProgress = false;
+    }
+}
+let syncIntervalTimer = null;
+const SYNC_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes
+function startShopFloorPendingSyncInterval() {
+    if (syncIntervalTimer)
+        return;
+    // Trigger initial sync shortly after boot
+    setTimeout(() => {
+        void syncPendingProcessesFromOdoo(true).catch(() => undefined);
+    }, 3000);
+    syncIntervalTimer = setInterval(() => {
+        void syncPendingProcessesFromOdoo(false).catch(() => undefined);
+    }, SYNC_INTERVAL_MS);
+    syncIntervalTimer.unref?.();
+}
+function stopShopFloorPendingSyncInterval() {
+    if (syncIntervalTimer) {
+        clearInterval(syncIntervalTimer);
+        syncIntervalTimer = null;
     }
 }

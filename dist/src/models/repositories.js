@@ -120,6 +120,11 @@ exports.upsertStockProductMirror = upsertStockProductMirror;
 exports.removeStockProductsNotIn = removeStockProductsNotIn;
 exports.updateStockProductMirrorQuantity = updateStockProductMirrorQuantity;
 exports.markStockProductMirrorSyncFailed = markStockProductMirrorSyncFailed;
+exports.getCustomerPartnerMirror = getCustomerPartnerMirror;
+exports.searchCustomerPartnerMirror = searchCustomerPartnerMirror;
+exports.upsertCustomerPartnerMirror = upsertCustomerPartnerMirror;
+exports.getCustomerPartnerMirrorCount = getCustomerPartnerMirrorCount;
+exports.getCustomerPartnerMirrorLastSyncedAt = getCustomerPartnerMirrorLastSyncedAt;
 exports.createStaffOnboardingApplication = createStaffOnboardingApplication;
 exports.updateStaffOnboardingSync = updateStaffOnboardingSync;
 exports.importStaffOnboardingApplication = importStaffOnboardingApplication;
@@ -152,6 +157,7 @@ exports.saveShopFloorSharedCache = saveShopFloorSharedCache;
 exports.deleteShopFloorSharedCache = deleteShopFloorSharedCache;
 exports.deleteShopFloorDashboardSnapshot = deleteShopFloorDashboardSnapshot;
 exports.getPendingShopFloorProcesses = getPendingShopFloorProcesses;
+exports.getPendingShopFloorProcessesCount = getPendingShopFloorProcessesCount;
 exports.upsertPendingShopFloorProcesses = upsertPendingShopFloorProcesses;
 exports.markPendingShopFloorProcessesLoaded = markPendingShopFloorProcessesLoaded;
 exports.deleteStaleCompletedProcesses = deleteStaleCompletedProcesses;
@@ -3295,6 +3301,72 @@ async function updateStockProductMirrorQuantity(productId, availableQty, product
 async function markStockProductMirrorSyncFailed(message) {
     await (0, db_1.execute)(`UPDATE stock_product_mirror SET sync_status = 'failed', sync_error = ?, updated_at = CURRENT_TIMESTAMP`, [message.slice(0, 1000)]);
 }
+async function getCustomerPartnerMirror(limit = 1000) {
+    const rows = await (0, db_1.queryAll)(`SELECT partner_id, name, email, phone, ref, active, synced_at
+    FROM customer_partner_mirror WHERE active = 1 ORDER BY name ASC LIMIT ?`, [limit]);
+    return rows.map((row) => ({
+        partnerId: Number(row.partner_id),
+        name: String(row.name || ''),
+        email: row.email ? String(row.email) : null,
+        phone: row.phone ? String(row.phone) : null,
+        ref: row.ref ? String(row.ref) : null,
+        active: Boolean(row.active),
+        syncedAt: formatDbDateString(row.synced_at),
+    }));
+}
+async function searchCustomerPartnerMirror(searchTerm, limit = 50) {
+    const trimmed = String(searchTerm || '').trim();
+    if (!trimmed) {
+        return getCustomerPartnerMirror(limit);
+    }
+    const pattern = `%${trimmed}%`;
+    const rows = await (0, db_1.queryAll)(`SELECT partner_id, name, email, phone, ref, active, synced_at
+    FROM customer_partner_mirror
+    WHERE active = 1 AND (name LIKE ? OR phone LIKE ? OR ref LIKE ? OR email LIKE ?)
+    ORDER BY
+      CASE
+        WHEN name LIKE ? THEN 1
+        WHEN name LIKE ? THEN 2
+        ELSE 3
+      END,
+      name ASC
+    LIMIT ?`, [pattern, pattern, pattern, pattern, `${trimmed}%`, pattern, limit]);
+    return rows.map((row) => ({
+        partnerId: Number(row.partner_id),
+        name: String(row.name || ''),
+        email: row.email ? String(row.email) : null,
+        phone: row.phone ? String(row.phone) : null,
+        ref: row.ref ? String(row.ref) : null,
+        active: Boolean(row.active),
+        syncedAt: formatDbDateString(row.synced_at),
+    }));
+}
+async function upsertCustomerPartnerMirror(entries) {
+    if (!entries.length)
+        return;
+    for (const entry of entries) {
+        const activeVal = entry.active === false ? 0 : 1;
+        const params = [entry.partnerId, entry.name, entry.email || null, entry.phone || null, entry.ref || null, activeVal, entry.syncedAt || null];
+        if ((0, db_1.getDatabaseDialect)() === 'mysql') {
+            await (0, db_1.execute)(`INSERT INTO customer_partner_mirror (partner_id, name, email, phone, ref, active, synced_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE name=VALUES(name), email=VALUES(email), phone=VALUES(phone), ref=VALUES(ref), active=VALUES(active), synced_at=VALUES(synced_at)`, params);
+        }
+        else {
+            await (0, db_1.execute)(`INSERT INTO customer_partner_mirror (partner_id, name, email, phone, ref, active, synced_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(partner_id) DO UPDATE SET name=excluded.name, email=excluded.email, phone=excluded.phone, ref=excluded.ref, active=excluded.active, synced_at=excluded.synced_at, updated_at=CURRENT_TIMESTAMP`, params);
+        }
+    }
+}
+async function getCustomerPartnerMirrorCount() {
+    const row = await (0, db_1.queryOne)(`SELECT COUNT(*) as count FROM customer_partner_mirror WHERE active = 1`);
+    return Number(row?.count || 0);
+}
+async function getCustomerPartnerMirrorLastSyncedAt() {
+    const row = await (0, db_1.queryOne)(`SELECT MAX(synced_at) as synced_at FROM customer_partner_mirror`);
+    return formatDbDateString(row?.synced_at);
+}
 function mapStaffOnboardingApplication(row) {
     return {
         id: String(row.id), fullName: String(row.full_name), personalEmail: String(row.personal_email),
@@ -3653,6 +3725,10 @@ async function getPendingShopFloorProcesses(filters) {
         qty_reserved: Number(r.qty_reserved || 0),
         qty_missing: Number(r.qty_missing || 0),
     }));
+}
+async function getPendingShopFloorProcessesCount(status = 'pending') {
+    const row = await (0, db_1.queryOne)('SELECT COUNT(*) as count FROM shop_floor_pending_processes WHERE status = ?', [status]);
+    return Number(row?.count || 0);
 }
 async function upsertPendingShopFloorProcesses(records) {
     if (!records.length)

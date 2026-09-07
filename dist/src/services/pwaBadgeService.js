@@ -18,6 +18,10 @@ async function countShopFloorDueTasks(userEmail) {
         return 0;
     }
     try {
+        const localPendingCount = await (0, repositories_1.getPendingShopFloorProcessesCount)('pending');
+        if (localPendingCount > 0) {
+            return localPendingCount;
+        }
         const snapshot = await (0, repositories_1.getShopFloorDashboardSnapshot)(userEmail);
         if (snapshot?.data?.stockAlerts && Array.isArray(snapshot.data.stockAlerts)) {
             return snapshot.data.stockAlerts.length;

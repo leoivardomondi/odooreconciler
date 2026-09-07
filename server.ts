@@ -8,9 +8,11 @@ import { logEvent } from './src/services/logService';
 import { startSchedulerInterval, stopSchedulerInterval } from './src/services/schedulerService';
 import { startEmailAutomationInterval } from './src/services/emailAutomationService';
 import { startStockMirrorInterval } from './src/services/stockMirrorService';
+import { startCustomerMirrorInterval } from './src/services/customerMirrorService';
 import { startUserProfileSyncInterval } from './src/services/userProfileSyncService';
 import { startShopFloorOperatorAccessSyncInterval } from './src/services/shopFloorOperatorAccessSyncService';
 import { startBoardIntakeSyncInterval } from './src/services/boardIntakeSyncService';
+import { startShopFloorPendingSyncInterval, stopShopFloorPendingSyncInterval } from './src/services/shopFloorPendingSyncService';
 import { startMpesaExtractionJobWorker, stopMpesaExtractionJobWorker } from './src/services/mpesaExtractionJobService';
 import { startInvoiceExtractionJobWorker, stopInvoiceExtractionJobWorker } from './src/services/invoiceExtractionJobService';
 import { startPoBillManualJobWorker, stopPoBillManualJobWorker } from './src/services/poBillManualJobService';
@@ -173,6 +175,7 @@ export async function startServer() {
     stopMpesaExtractionJobWorker();
     stopInvoiceExtractionJobWorker();
     stopPoBillManualJobWorker();
+    stopShopFloorPendingSyncInterval();
 
     await new Promise<void>((resolve) => {
       server.close(() => resolve());
@@ -231,9 +234,11 @@ export async function startServer() {
       await withStartupTimeout('Scheduler initialization', () => startSchedulerInterval());
       startEmailAutomationInterval();
       startStockMirrorInterval();
+      startCustomerMirrorInterval();
       startUserProfileSyncInterval();
       startShopFloorOperatorAccessSyncInterval();
       startBoardIntakeSyncInterval();
+      startShopFloorPendingSyncInterval();
       markStartupReady();
       console.log('[startup] Application initialization completed successfully.');
       writeStartupLog('Application initialization completed successfully.');

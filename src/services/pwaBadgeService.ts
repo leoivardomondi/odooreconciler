@@ -1,4 +1,4 @@
-import { getMpesaStatementBatchesWithOpenReviewCounts, getShopFloorDashboardSnapshot } from '../models/repositories';
+import { getMpesaStatementBatchesWithOpenReviewCounts, getPendingShopFloorProcessesCount, getShopFloorDashboardSnapshot } from '../models/repositories';
 import { AuthSessionUser } from '../models/types';
 import { canAccessPath } from './authService';
 
@@ -29,6 +29,10 @@ async function countShopFloorDueTasks(userEmail: string): Promise<number> {
     return 0;
   }
   try {
+    const localPendingCount = await getPendingShopFloorProcessesCount('pending');
+    if (localPendingCount > 0) {
+      return localPendingCount;
+    }
     const snapshot = await getShopFloorDashboardSnapshot<{ stockAlerts?: unknown[] }>(userEmail);
     if (snapshot?.data?.stockAlerts && Array.isArray(snapshot.data.stockAlerts)) {
       return snapshot.data.stockAlerts.length;

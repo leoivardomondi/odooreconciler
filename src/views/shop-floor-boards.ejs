@@ -147,10 +147,45 @@
             </div>
             <% Object.entries(alertsByClient).forEach(([client, items]) => { %>
               <div class="px-4 py-3 border-bottom" style="border-color:#fed7aa !important">
-                <div class="fw-bold mb-2" style="font-size:.85rem;color:#431407">Client: <%= client %></div>
+                <div class="d-flex justify-content-between align-items-center mb-2 gap-2 flex-wrap">
+                  <div class="fw-bold" style="font-size:.85rem;color:#431407">Client: <%= client %></div>
+                  <% if (items.length === 1) { 
+                    const item = items[0];
+                  %>
+                    <button type="button" class="btn btn-sm text-white fw-bold px-3 py-1 rounded-pill auto-fill-stock-btn d-inline-flex align-items-center gap-1 shadow-sm"
+                      style="background:#16a34a;border:1px solid #15803d;font-size:0.78rem;box-shadow:0 2px 6px rgba(22,163,74,0.3);cursor:pointer;"
+                      data-client="<%= client %>"
+                      data-partner-id="<%= item.partnerId || '' %>"
+                      data-component="<%= item.component %>"
+                      data-product-id="<%= item.productId || '' %>"
+                      data-qty="<%= item.qtyNeeded %>"
+                      title="Fill form with <%= client %> and <%= item.component %>">
+                      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                      <span>Fill Form</span>
+                    </button>
+                  <% } %>
+                </div>
                 <% items.forEach((item, index) => { %>
                   <div class="mb-2 pb-2" style="<%= index < items.length - 1 ? 'border-bottom:1px dashed rgba(194,65,12,.15);' : '' %>font-size:.82rem">
-                    <div class="d-flex justify-content-between align-items-baseline gap-2"><span class="fw-bold" style="color:#c2410c"><%= item.component %></span><span class="badge bg-danger-subtle text-danger border border-danger-subtle rounded-pill">Need: <%= item.qtyNeeded %></span></div>
+                    <div class="d-flex justify-content-between align-items-center gap-2">
+                      <span class="fw-bold" style="color:#c2410c"><%= item.component %></span>
+                      <div class="d-flex align-items-center gap-2">
+                        <span class="badge bg-danger-subtle text-danger border border-danger-subtle rounded-pill">Need: <%= item.qtyNeeded %></span>
+                        <% if (items.length > 1) { %>
+                          <button type="button" class="btn btn-sm text-white fw-bold px-2.5 py-0.5 rounded-pill auto-fill-stock-btn d-inline-flex align-items-center gap-1 shadow-sm"
+                            style="background:#16a34a;border:1px solid #15803d;font-size:0.72rem;box-shadow:0 2px 6px rgba(22,163,74,0.3);cursor:pointer;"
+                            data-client="<%= client %>"
+                            data-partner-id="<%= item.partnerId || '' %>"
+                            data-component="<%= item.component %>"
+                            data-product-id="<%= item.productId || '' %>"
+                            data-qty="<%= item.qtyNeeded %>"
+                            title="Fill form with <%= item.component %>">
+                            <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                            <span>Fill Form</span>
+                          </button>
+                        <% } %>
+                      </div>
+                    </div>
                     <div class="text-muted mt-1" style="font-size:.72rem"><%= item.moName %> · <%= item.product %> · <% if ((item.overdueDays || 0) > 0) { %><span class="text-danger fw-semibold">Overdue: <%= item.overdueDays %> day<%= item.overdueDays === 1 ? '' : 's' %></span><% } else { %><span class="text-warning fw-semibold">Due today</span><% } %></div>
                   </div>
                 <% }) %>
@@ -161,7 +196,7 @@
 
         <div class="card-body p-4">
           <div id="intakeAlertContainer" class="d-none mb-3"></div>
-          <form method="post" action="/shop-floor/board-intake" id="intakeForm" class="needs-validation" novalidate>
+          <form method="post" action="/shop-floor/board-intake" id="intakeForm" class="needs-validation" novalidate data-no-loading="true">
             <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
 
             <!-- Select Client -->
@@ -181,7 +216,7 @@
               <div class="combobox-dropdown d-none shadow border position-absolute" style="top: 100%; left: 0; max-height: 280px; overflow-y: auto;">
                 <div class="list-group list-group-flush" id="partnerList">
                   <% customers.forEach(c => { %>
-                    <button type="button" class="list-group-item list-group-item-action text-start py-2.5 px-3 combobox-item" data-id="<%= c.id %>" style="border: none;">
+                    <button type="button" class="list-group-item list-group-item-action text-start py-2.5 px-3 combobox-item" data-id="<%= c.id %>" data-name="<%= c.name %>" style="border: none;">
                       <%= c.name %>
                     </button>
                   <% }) %>
@@ -648,7 +683,7 @@
 
       loadingRow.className = 'text-muted text-center py-3 d-none partner-loading';
       loadingRow.style.fontSize = '0.85rem';
-      loadingRow.textContent = 'Searching Odoo clients...';
+      loadingRow.textContent = 'Searching clients from MySQL...';
       list.parentElement.insertBefore(loadingRow, list.nextSibling);
 
       function refreshItems() {
@@ -813,7 +848,7 @@
         filterCurrentItems(input.value.trim());
         pendingTimer = window.setTimeout(function() {
           loadResults(input.value.trim());
-        }, 180);
+        }, 50);
       });
 
       input.addEventListener('keydown', function(e) {
@@ -1006,6 +1041,133 @@
         });
     }
 
+    // Auto-fill form from Stock Needed records
+    document.querySelectorAll('.auto-fill-stock-btn').forEach(function(btn) {
+      btn.addEventListener('click', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+
+        var client = btn.getAttribute('data-client') || '';
+        var partnerId = btn.getAttribute('data-partner-id') || '';
+        var component = btn.getAttribute('data-component') || '';
+        var productId = btn.getAttribute('data-product-id') || '';
+        var qty = btn.getAttribute('data-qty') || '';
+
+        // 1. Populate Client
+        var partnerSearch = document.getElementById('partnerSearch');
+        var partnerSelect = document.getElementById('partnerSelect');
+        var partnerName = document.getElementById('partnerName');
+
+        if (partnerSearch && partnerSelect) {
+          partnerSearch.value = client;
+          if (partnerName) partnerName.value = client;
+          partnerSelect.value = partnerId;
+          partnerSearch.classList.remove('is-invalid');
+          var partnerFeedback = document.getElementById('partnerFeedback');
+          if (partnerFeedback) partnerFeedback.style.display = 'none';
+
+          // If partnerId was missing in alert data, look it up from client list
+          if (!partnerId) {
+            var partnerMatch = Array.from(document.querySelectorAll('#partnerList .combobox-item')).find(function(item) {
+              var name = item.getAttribute('data-name') || item.textContent.trim();
+              return name.toLowerCase() === client.toLowerCase();
+            });
+            if (partnerMatch) {
+              partnerId = partnerMatch.getAttribute('data-id') || '';
+              partnerSelect.value = partnerId;
+            }
+          }
+
+          if (partnerId) {
+            fetchRequirements(partnerId);
+          }
+        }
+
+        // 2. Populate Board Type
+        var productSearch = document.getElementById('productSearch');
+        var productSelect = document.getElementById('productSelect');
+        var productName = document.getElementById('productName');
+        var productList = document.getElementById('productList');
+
+        if (productSearch && productSelect) {
+          productSearch.value = component;
+          if (productName) productName.value = component;
+          productSelect.value = productId;
+          productSearch.classList.remove('is-invalid');
+          var productFeedback = document.getElementById('productFeedback');
+          if (productFeedback) productFeedback.style.display = 'none';
+
+          var productItem = null;
+          if (productList) {
+            var items = Array.from(productList.querySelectorAll('.combobox-item'));
+            if (productId) {
+              productItem = items.find(function(i) {
+                return i.getAttribute('data-id') === String(productId);
+              });
+            }
+            if (!productItem && component) {
+              productItem = items.find(function(i) {
+                var nameSpan = i.querySelector('.product-name');
+                var text = nameSpan ? nameSpan.textContent.trim() : i.textContent.trim();
+                return text.toLowerCase() === component.toLowerCase();
+              });
+            }
+
+            if (productItem) {
+              items.forEach(function(i) { i.classList.remove('selected'); });
+              productItem.classList.add('selected');
+              productSelect.value = productItem.getAttribute('data-id');
+
+              var available = parseFloat(productItem.getAttribute('data-qty') || '0');
+              var stockHelp = document.getElementById('qtyCurrentStock');
+              if (stockHelp) {
+                stockHelp.innerHTML = '<strong>Current stock in Odoo:</strong> ' + available + ' units. Your intake will add to this.';
+                stockHelp.style.color = '#475569';
+                stockHelp.style.display = 'block';
+              }
+            }
+          }
+        }
+
+        // 3. Populate Quantity
+        var intakeQty = document.getElementById('intakeQty');
+        if (intakeQty) {
+          intakeQty.value = qty;
+          intakeQty.classList.remove('is-invalid');
+          var qtyFeedback = document.getElementById('qtyFeedback');
+          if (qtyFeedback) qtyFeedback.style.display = 'none';
+        }
+
+        // 4. Visual feedback: Pulse highlight on inputs
+        [partnerSearch, productSearch, intakeQty].forEach(function(el) {
+          if (el) {
+            el.style.transition = 'background-color 0.3s, box-shadow 0.3s';
+            el.style.backgroundColor = '#ecfdf5';
+            el.style.boxShadow = '0 0 0 3px rgba(16, 185, 129, 0.25)';
+            setTimeout(function() {
+              el.style.backgroundColor = '';
+              el.style.boxShadow = '';
+            }, 1500);
+          }
+        });
+
+        // 5. Button feedback
+        var originalContent = btn.innerHTML;
+        btn.innerHTML = '<span>✓ Populated!</span>';
+        btn.style.background = '#15803d';
+        setTimeout(function() {
+          btn.innerHTML = originalContent;
+          btn.style.background = '#16a34a';
+        }, 1200);
+
+        // 6. Smooth scroll to the intake form
+        var intakeForm = document.getElementById('intakeForm');
+        if (intakeForm) {
+          intakeForm.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+      });
+    });
+
     // Form submission spinner state & validation overrides
     function escapeHtml(str) {
       if (str === null || str === undefined) return '';
@@ -1079,6 +1241,11 @@
     if (form && submitBtn) {
       form.addEventListener('submit', async function(e) {
         e.preventDefault();
+        e.stopImmediatePropagation();
+        if (typeof hideAppLoading === 'function') {
+          hideAppLoading();
+        }
+
         var partnerVal = document.getElementById('partnerSelect').value;
         var productVal = document.getElementById('productSelect').value;
         var isValid = true;
@@ -1106,10 +1273,10 @@
         var text = submitBtn.querySelector('.submit-text');
         var spinner = submitBtn.querySelector('.submit-spinner');
         if (text && spinner) {
-          text.textContent = 'Saving boards...';
+          text.textContent = 'Saving...';
           spinner.classList.remove('d-none');
           submitBtn.setAttribute('disabled', 'disabled');
-          submitBtn.style.opacity = '0.75';
+          submitBtn.style.opacity = '0.85';
         }
 
         try {
@@ -1135,10 +1302,10 @@
             alertContainer.className = 'alert alert-success alert-dismissible fade show rounded-3 py-2.5 px-3 mb-3 d-flex align-items-center justify-content-between gap-3 shadow-sm';
             alertContainer.innerHTML =
               '<div class="small">' +
-                '<strong>✓ Saved:</strong> ' + escapeHtml(result.item.quantity) + ' × ' + escapeHtml(result.item.product_name) +
-                ' for <strong>' + escapeHtml(result.item.customer_name) + '</strong>. Odoo background sync in progress.' +
+                '<strong>✓ Saved immediately:</strong> ' + escapeHtml(result.item.quantity) + ' × ' + escapeHtml(result.item.product_name) +
+                ' for <strong>' + escapeHtml(result.item.customer_name) + '</strong>.' +
               '</div>' +
-              '<span class="badge bg-success text-white rounded-pill px-2 py-1 flex-shrink-0" style="font-size:0.75rem">Ready for next</span>';
+              '<span class="badge bg-success text-white rounded-pill px-2 py-1 flex-shrink-0" style="font-size:0.75rem">Saved</span>';
           }
 
           // Invalidate shop-floor cache so navigation remains fresh
@@ -1179,27 +1346,32 @@
           // Start tracking Odoo sync in background
           trackPendingBoardLog(result.item.id);
 
-          // SMART RAPID RE-ENTRY:
-          // Keep Client, Vehicle, Arrival Time, and Gate!
-          // Clear ONLY Board Type and Quantity
+          // Clear ALL fields for the next entry - no prefilling, completely empty fields
+          var partnerSelect = document.getElementById('partnerSelect');
+          var partnerName = document.getElementById('partnerName');
+          var partnerSearch = document.getElementById('partnerSearch');
+          if (partnerSelect) partnerSelect.value = '';
+          if (partnerName) partnerName.value = '';
+          if (partnerSearch) {
+            partnerSearch.value = '';
+            partnerSearch.classList.remove('is-invalid');
+          }
+          var partnerList = document.getElementById('partnerList');
+          if (partnerList) {
+            partnerList.querySelectorAll('.combobox-item').forEach(function(i) {
+              i.classList.remove('selected');
+            });
+          }
+          clearRequirements();
+
           var productSelect = document.getElementById('productSelect');
           var productName = document.getElementById('productName');
           var productSearch = document.getElementById('productSearch');
-          var qtyInput = document.getElementById('intakeQty');
-          var stockHelp = document.getElementById('qtyCurrentStock');
-
           if (productSelect) productSelect.value = '';
           if (productName) productName.value = '';
           if (productSearch) {
             productSearch.value = '';
             productSearch.classList.remove('is-invalid');
-          }
-          if (qtyInput) {
-            qtyInput.value = '';
-            qtyInput.classList.remove('is-invalid');
-          }
-          if (stockHelp) {
-            stockHelp.style.display = 'none';
           }
           var productList = document.getElementById('productList');
           if (productList) {
@@ -1208,9 +1380,36 @@
             });
           }
 
-          // Immediately refocus on Board Type so the user can enter the next board right away!
-          if (productSearch) {
-            productSearch.focus();
+          var qtyInput = document.getElementById('intakeQty');
+          if (qtyInput) {
+            qtyInput.value = '';
+            qtyInput.classList.remove('is-invalid');
+          }
+          var stockHelp = document.getElementById('qtyCurrentStock');
+          if (stockHelp) {
+            stockHelp.style.display = 'none';
+          }
+
+          var vehicleReg = document.getElementById('vehicleRegistration');
+          if (vehicleReg) {
+            vehicleReg.value = '';
+          }
+
+          var arrivalTimeInput = document.getElementById('arrivalTime');
+          if (arrivalTimeInput) {
+            arrivalTimeInput.value = '';
+          }
+
+          var gateFront = document.getElementById('gateFront');
+          if (gateFront) {
+            gateFront.checked = true;
+          }
+
+          form.classList.remove('was-validated');
+
+          // Reset focus to the Client field for the next entry
+          if (partnerSearch) {
+            partnerSearch.focus();
           }
         } catch (err) {
           if (alertContainer) {
@@ -1225,6 +1424,11 @@
           if (submitBtn) {
             submitBtn.removeAttribute('disabled');
             submitBtn.style.opacity = '1';
+            delete submitBtn.dataset.submitting;
+            submitBtn.classList.remove('is-loading');
+          }
+          if (typeof hideAppLoading === 'function') {
+            hideAppLoading();
           }
         }
       });

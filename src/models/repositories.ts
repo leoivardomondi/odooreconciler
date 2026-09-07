@@ -4538,6 +4538,93 @@ export async function markStockProductMirrorSyncFailed(message: string) {
   await execute(`UPDATE stock_product_mirror SET sync_status = 'failed', sync_error = ?, updated_at = CURRENT_TIMESTAMP`, [message.slice(0, 1000)]);
 }
 
+export interface CustomerPartnerMirrorEntry {
+  partnerId: number;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  ref: string | null;
+  active: boolean;
+  syncedAt: string | null;
+}
+
+export async function getCustomerPartnerMirror(limit = 1000): Promise<CustomerPartnerMirrorEntry[]> {
+  const rows = await queryAll<any>(`SELECT partner_id, name, email, phone, ref, active, synced_at
+    FROM customer_partner_mirror WHERE active = 1 ORDER BY name ASC LIMIT ?`, [limit]);
+  return rows.map((row) => ({
+    partnerId: Number(row.partner_id),
+    name: String(row.name || ''),
+    email: row.email ? String(row.email) : null,
+    phone: row.phone ? String(row.phone) : null,
+    ref: row.ref ? String(row.ref) : null,
+    active: Boolean(row.active),
+    syncedAt: formatDbDateString(row.synced_at),
+  }));
+}
+
+export async function searchCustomerPartnerMirror(searchTerm: string, limit = 50): Promise<CustomerPartnerMirrorEntry[]> {
+  const trimmed = String(searchTerm || '').trim();
+  if (!trimmed) {
+    return getCustomerPartnerMirror(limit);
+  }
+  const pattern = `%${trimmed}%`;
+  const rows = await queryAll<any>(`SELECT partner_id, name, email, phone, ref, active, synced_at
+    FROM customer_partner_mirror
+    WHERE active = 1 AND (name LIKE ? OR phone LIKE ? OR ref LIKE ? OR email LIKE ?)
+    ORDER BY
+      CASE
+        WHEN name LIKE ? THEN 1
+        WHEN name LIKE ? THEN 2
+        ELSE 3
+      END,
+      name ASC
+    LIMIT ?`, [pattern, pattern, pattern, pattern, `${trimmed}%`, pattern, limit]);
+  return rows.map((row) => ({
+    partnerId: Number(row.partner_id),
+    name: String(row.name || ''),
+    email: row.email ? String(row.email) : null,
+    phone: row.phone ? String(row.phone) : null,
+    ref: row.ref ? String(row.ref) : null,
+    active: Boolean(row.active),
+    syncedAt: formatDbDateString(row.synced_at),
+  }));
+}
+
+export async function upsertCustomerPartnerMirror(entries: Array<{
+  partnerId: number;
+  name: string;
+  email?: string | null;
+  phone?: string | null;
+  ref?: string | null;
+  active?: boolean | null;
+  syncedAt?: string | null;
+}>) {
+  if (!entries.length) return;
+  for (const entry of entries) {
+    const activeVal = entry.active === false ? 0 : 1;
+    const params = [entry.partnerId, entry.name, entry.email || null, entry.phone || null, entry.ref || null, activeVal, entry.syncedAt || null];
+    if (getDatabaseDialect() === 'mysql') {
+      await execute(`INSERT INTO customer_partner_mirror (partner_id, name, email, phone, ref, active, synced_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE name=VALUES(name), email=VALUES(email), phone=VALUES(phone), ref=VALUES(ref), active=VALUES(active), synced_at=VALUES(synced_at)`, params);
+    } else {
+      await execute(`INSERT INTO customer_partner_mirror (partner_id, name, email, phone, ref, active, synced_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(partner_id) DO UPDATE SET name=excluded.name, email=excluded.email, phone=excluded.phone, ref=excluded.ref, active=excluded.active, synced_at=excluded.synced_at, updated_at=CURRENT_TIMESTAMP`, params);
+    }
+  }
+}
+
+export async function getCustomerPartnerMirrorCount(): Promise<number> {
+  const row = await queryOne<{ count: number }>(`SELECT COUNT(*) as count FROM customer_partner_mirror WHERE active = 1`);
+  return Number(row?.count || 0);
+}
+
+export async function getCustomerPartnerMirrorLastSyncedAt(): Promise<string | null> {
+  const row = await queryOne<{ synced_at: string | null }>(`SELECT MAX(synced_at) as synced_at FROM customer_partner_mirror`);
+  return formatDbDateString(row?.synced_at);
+}
+
 export interface StaffOnboardingApplicationEntry {
   id: string;
   fullName: string;
@@ -5051,6 +5138,14 @@ export async function getPendingShopFloorProcesses(filters?: {
     qty_reserved: Number(r.qty_reserved || 0),
     qty_missing: Number(r.qty_missing || 0),
   }));
+}
+
+export async function getPendingShopFloorProcessesCount(status: PendingShopFloorProcessStatus = 'pending'): Promise<number> {
+  const row = await queryOne<{ count: number }>(
+    'SELECT COUNT(*) as count FROM shop_floor_pending_processes WHERE status = ?',
+    [status],
+  );
+  return Number(row?.count || 0);
 }
 
 export async function upsertPendingShopFloorProcesses(
