@@ -1,6 +1,28 @@
 import { Request, Response, Router } from 'express';
 import { randomUUID } from 'crypto';
-import { createBoardIntakeQueueEntry, getApprovedAuthUsers, getBoardIntakeQueueEntry, getRecentBoardIntakeQueueEntries, getSettings, getShopFloorFeatureFlags, saveShopFloorFeatureFlags, upsertApprovedAuthUser, getShopFloorDashboardSnapshot, saveShopFloorDashboardSnapshot, getShopFloorSharedCache, saveShopFloorSharedCache, deleteShopFloorSharedCache, deleteShopFloorDashboardSnapshot } from '../models/repositories';
+import {
+  createBoardIntakeQueueEntry,
+  getApprovedAuthUsers,
+  getBoardIntakeQueueEntry,
+  getRecentBoardIntakeQueueEntries,
+  getSettings,
+  getShopFloorFeatureFlags,
+  saveShopFloorFeatureFlags,
+  upsertApprovedAuthUser,
+  getShopFloorDashboardSnapshot,
+  saveShopFloorDashboardSnapshot,
+  getShopFloorSharedCache,
+  saveShopFloorSharedCache,
+  deleteShopFloorSharedCache,
+  deleteShopFloorDashboardSnapshot,
+  getPendingShopFloorProcesses,
+  markPendingShopFloorProcessesLoaded,
+  getShopFloorIncidents,
+  createShopFloorIncident,
+  resolveShopFloorIncident,
+  getShopFloorAssignedItems,
+  assignShopFloorItem,
+} from '../models/repositories';
 import { ShopFloorFeatureFlags, ShopFloorFeatureKey } from '../models/types';
 import { OdooClient } from '../services/odooClient';
 import { buildPayrollAdvanceRecords } from '../services/payrollBridgeService';
@@ -15,14 +37,8 @@ import { isBoardProductName } from '../services/boardProductClassifier';
 import { getStockMirrorForPage, recordOptimisticStockAddition, refreshStockMirror } from '../services/stockMirrorService';
 import { revertBoardIntakeEntry, syncBoardIntakeEntry } from '../services/boardIntakeSyncService';
 import { syncShopFloorOperatorAccess } from '../services/shopFloorOperatorAccessSyncService';
+import { syncPendingProcessesFromOdoo } from '../services/shopFloorPendingSyncService';
 import { isAllowedAttendanceIp } from '../utils/siteAttendanceAccess';
-import {
-  getShopFloorIncidents,
-  createShopFloorIncident,
-  resolveShopFloorIncident,
-  getShopFloorAssignedItems,
-  assignShopFloorItem,
-} from '../models/repositories';
 
 const router = Router();
 
@@ -1940,11 +1956,20 @@ router.get('/shop-floor/boards', async (req: Request, res: Response) => {
   try {
     const boardLogPage = Math.max(1, Number.parseInt(String(req.query.boardLogPage || '1'), 10) || 1);
     const boardLogPageSize = 12;
-    const [settings, stockMirror, recentIntakeRows] = await Promise.all([
+    const isRefresh = req.query.refresh === 'true';
+
+    if (isRefresh) {
+      // Trigger fresh sync from Odoo in background without blocking initial render
+      void syncPendingProcessesFromOdoo(true).catch(() => null);
+    }
+
+    const [settings, stockMirror, recentIntakeRows, pendingProcesses] = await Promise.all([
       getSettings(),
-      getStockMirrorForPage(req.query.refresh === 'true'),
+      getStockMirrorForPage(isRefresh),
       getRecentBoardIntakeQueueEntries(boardLogPageSize + 1, (boardLogPage - 1) * boardLogPageSize),
+      getPendingShopFloorProcesses({ status: 'pending' }),
     ]);
+
     const hasNextBoardLogPage = recentIntakeRows.length > boardLogPageSize;
     const recentIntakes = recentIntakeRows.slice(0, boardLogPageSize);
     const products = stockMirror.products;
@@ -1965,6 +1990,23 @@ router.get('/shop-floor/boards', async (req: Request, res: Response) => {
     }
     const dashboardData: OperatorDashboardData = cachedDashboard || ({ stockAlerts: [], isLimitedDashboard: false } as unknown as OperatorDashboardData);
 
+    // Format local stock alerts from pending processes in MySQL
+    const localStockAlerts: StockAlert[] = pendingProcesses.map((p) => ({
+      moName: p.mo_name,
+      product: p.product_name,
+      component: p.product_name,
+      qtyNeeded: p.qty_missing,
+      client: p.partner_name,
+      moId: p.mo_id,
+      confirmedAt: null,
+      overdueDays: 0,
+    }));
+
+    // If local table is empty on first boot, kick off initial sync in background
+    if (!pendingProcesses.length && !isRefresh) {
+      void syncPendingProcessesFromOdoo(false).catch(() => null);
+    }
+
     res.render('shop-floor-boards', {
       pageTitle: 'Board Intake & Auto-Reserve',
       appName: env.APP_NAME,
@@ -1973,7 +2015,7 @@ router.get('/shop-floor/boards', async (req: Request, res: Response) => {
       recentIntakes,
       boardLogPage,
       hasNextBoardLogPage,
-      stockAlerts: dashboardData.isLimitedDashboard ? [] : dashboardData.stockAlerts,
+      stockAlerts: localStockAlerts.length > 0 ? localStockAlerts : (dashboardData.isLimitedDashboard ? [] : dashboardData.stockAlerts),
       customers: [],
       authUser: req.authUser,
       csrfToken: req.csrfToken || null,
@@ -1995,6 +2037,7 @@ router.get('/shop-floor/boards', async (req: Request, res: Response) => {
 
 /**
  * GET /shop-floor/boards/requirements — Fetch pending board component requirements for a customer's MOs.
+ * Reads directly from local MySQL (<2ms) and falls back to Odoo if cold.
  */
 router.get('/shop-floor/boards/requirements', async (req: Request, res: Response) => {
   if (!req.authUser) {
@@ -2009,9 +2052,30 @@ router.get('/shop-floor/boards/requirements', async (req: Request, res: Response
   }
 
   try {
+    // 1. Query local-first from MySQL
+    const localPending = await getPendingShopFloorProcesses({ partnerId, status: 'pending' });
+    if (localPending.length > 0) {
+      const requirements = localPending
+        .filter((p) => p.qty_missing > 0)
+        .map((p) => ({
+          moId: p.mo_id,
+          moName: p.mo_name,
+          origin: p.origin,
+          productId: p.product_id,
+          productName: p.product_name,
+          qtyNeeded: p.qty_needed,
+          qtyReserved: p.qty_reserved,
+          qtyMissing: p.qty_missing,
+        }));
+      res.json(applyOptimisticBoardIntakes(partnerId, requirements));
+      return;
+    }
+
+    // 2. If no local records found for this partner yet (cold cache), fallback to Odoo and trigger background sync
     const settings = await getSettings();
     const client = new OdooClient(settings.odoo);
     const requirements = await client.getCustomerBoardRequirements(partnerId);
+    void syncPendingProcessesFromOdoo(false).catch(() => null);
     res.json(applyOptimisticBoardIntakes(partnerId, requirements));
   } catch (err) {
     console.error('[shopFloorRouter] Failed to fetch board requirements:', err);
@@ -2020,8 +2084,26 @@ router.get('/shop-floor/boards/requirements', async (req: Request, res: Response
 });
 
 /**
- * POST /shop-floor/board-intake — Log board intake and auto-reserve on matching MOs.
- * 
+ * GET /shop-floor/sync-mos — On-demand background sync trigger for new MO board requirements.
+ */
+router.get('/shop-floor/sync-mos', async (req: Request, res: Response) => {
+  if (!req.authUser) {
+    res.status(401).json({ ok: false, error: 'Unauthorized' });
+    return;
+  }
+  const result = await syncPendingProcessesFromOdoo(true);
+  res.json(result);
+});
+
+/**
+ * POST /api/webhooks/odoo/mo — Instant webhook for MO updates from Odoo.
+ */
+router.post('/api/webhooks/odoo/mo', async (_req: Request, res: Response) => {
+  void syncPendingProcessesFromOdoo(true).catch(() => null);
+  res.json({ ok: true, message: 'MO sync initiated' });
+});
+
+/**
  * Workflow:
  * 1. Add boards to stock (inventory adjustment)
  * 2. Find MOs needing this board for this client (no PO covering it)
@@ -2300,6 +2382,13 @@ router.post('/shop-floor/board-intake', async (req: Request, res: Response) => {
       vehicleRegistration, arrivalTime, gate,
     });
     await recordOptimisticStockAddition(productId, productName, qty);
+    // Mark matching pending board requirements loaded in MySQL immediately
+    const updatedRequirements = await markPendingShopFloorProcessesLoaded({
+      partnerId,
+      productId,
+      loadedBy: actorName,
+      quantity: qty,
+    });
     optimisticBoardIntakes.push({ id: optimisticId, partnerId, productId, productName, customerName, quantity: qty, expiresAt: Date.now() + 10 * 60 * 1000 });
     shopFloorCache.clearPrefix('shop-floor-dashboard:');
 

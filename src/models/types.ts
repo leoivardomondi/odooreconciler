@@ -858,3 +858,27 @@ export interface StockProcessingRunResult {
   writeBackApplied: boolean;
   statusMessage: string;
 }
+
+export type PendingShopFloorProcessStatus = 'pending' | 'loaded' | 'synced';
+
+export interface PendingShopFloorProcess {
+  [key: string]: any;
+  id: string;
+  process_type: 'board_intake' | 'mo_operation';
+  mo_id: number;
+  mo_name: string;
+  origin: string | null;
+  partner_id: number;
+  partner_name: string;
+  product_id: number;
+  product_name: string;
+  qty_needed: number;
+  qty_reserved: number;
+  qty_missing: number;
+  status: PendingShopFloorProcessStatus;
+  loaded_at: string | null;
+  loaded_by: string | null;
+  last_synced_at: string | null;
+  created_at?: string;
+  updated_at?: string;
+}

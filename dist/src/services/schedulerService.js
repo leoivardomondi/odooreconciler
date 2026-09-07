@@ -15,10 +15,13 @@ const odooClient_1 = require("./odooClient");
 const poBillAutomationService_1 = require("./poBillAutomationService");
 const stockProcessingService_1 = require("./stockProcessingService");
 const tempCleanup_1 = require("../utils/tempCleanup");
+const shopFloorPendingSyncService_1 = require("./shopFloorPendingSyncService");
 const campaignReportService_1 = require("./campaignReportService");
 let schedulerRunning = false;
 let schedulerIntervalHandle = null;
 let poBillSchedulerIntervalHandle = null;
+let shopFloorPendingIntervalHandle = null;
+const SHOP_FLOOR_PENDING_SYNC_INTERVAL_MS = 2 * 60 * 1000;
 const SCHEDULER_LOOKBACK_HOURS = 24;
 const SO_SCHEDULER_CONCURRENCY = 1;
 const SO_SCHEDULER_ORDER_DELAY_MS = Math.max(0, Number(env_1.env.SO_SCHEDULER_ORDER_DELAY_MS || 1000) || 1000);
@@ -1348,6 +1351,19 @@ async function startSchedulerInterval() {
             });
         }, intervalMs);
     }
+    if (!shopFloorPendingIntervalHandle && env_1.env.SCHEDULER_USE_INTERVAL === 'true') {
+        // Initial sync after short 5-second warmup
+        setTimeout(() => {
+            void (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(false).catch(() => null);
+        }, 5000);
+        shopFloorPendingIntervalHandle = setInterval(() => {
+            void (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(false).catch((error) => {
+                void (0, logService_1.logEvent)('warn', 'Background shop floor pending sync failed', {
+                    error: error instanceof Error ? error.message : String(error),
+                });
+            });
+        }, SHOP_FLOOR_PENDING_SYNC_INTERVAL_MS);
+    }
 }
 function stopSchedulerInterval() {
     if (schedulerIntervalHandle) {
@@ -1357,5 +1373,9 @@ function stopSchedulerInterval() {
     if (poBillSchedulerIntervalHandle) {
         clearInterval(poBillSchedulerIntervalHandle);
         poBillSchedulerIntervalHandle = null;
+    }
+    if (shopFloorPendingIntervalHandle) {
+        clearInterval(shopFloorPendingIntervalHandle);
+        shopFloorPendingIntervalHandle = null;
     }
 }

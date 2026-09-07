@@ -34,6 +34,8 @@ import {
   SignatureComparisonResult,
   ShopFloorFeatureFlags,
   ShopFloorFeatureKey,
+  PendingShopFloorProcess,
+  PendingShopFloorProcessStatus,
 } from './types';
 import { execute, getDatabaseDialect, queryAll, queryOne } from './db';
 import { decryptSecret, encryptSecret } from '../utils/crypto';
@@ -5013,5 +5015,177 @@ export async function deleteShopFloorDashboardSnapshot(email?: string): Promise<
   } else {
     await execute('DELETE FROM shop_floor_dashboard_snapshots', []);
   }
+}
+
+export async function getPendingShopFloorProcesses(filters?: {
+  partnerId?: number;
+  processType?: string;
+  status?: PendingShopFloorProcessStatus;
+}): Promise<PendingShopFloorProcess[]> {
+  const conditions: string[] = [];
+  const params: any[] = [];
+
+  if (filters?.partnerId) {
+    conditions.push('partner_id = ?');
+    params.push(filters.partnerId);
+  }
+  if (filters?.processType) {
+    conditions.push('process_type = ?');
+    params.push(filters.processType);
+  }
+  if (filters?.status) {
+    conditions.push('status = ?');
+    params.push(filters.status);
+  } else {
+    conditions.push("status = 'pending'");
+  }
+
+  const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const rows = await queryAll<PendingShopFloorProcess>(
+    `SELECT * FROM shop_floor_pending_processes ${whereClause} ORDER BY created_at DESC`,
+    params,
+  );
+  return rows.map((r) => ({
+    ...r,
+    qty_needed: Number(r.qty_needed || 0),
+    qty_reserved: Number(r.qty_reserved || 0),
+    qty_missing: Number(r.qty_missing || 0),
+  }));
+}
+
+export async function upsertPendingShopFloorProcesses(
+  records: PendingShopFloorProcess[],
+): Promise<void> {
+  if (!records.length) return;
+  const now = appDateTime();
+
+  for (const rec of records) {
+    const existing = await queryOne<{ id: string; status: string; qty_missing: number }>(
+      'SELECT id, status, qty_missing FROM shop_floor_pending_processes WHERE mo_id = ? AND product_id = ?',
+      [rec.mo_id, rec.product_id],
+    );
+
+    if (existing) {
+      // If already loaded or synced locally, do NOT revert back to pending from background sync!
+      if (existing.status === 'loaded' || existing.status === 'synced') {
+        continue;
+      }
+      await execute(
+        `UPDATE shop_floor_pending_processes
+         SET mo_name = ?, origin = ?, partner_id = ?, partner_name = ?,
+             product_name = ?, qty_needed = ?, qty_reserved = ?, qty_missing = ?,
+             last_synced_at = ?, updated_at = ?
+         WHERE id = ?`,
+        [
+          rec.mo_name,
+          rec.origin || null,
+          rec.partner_id,
+          rec.partner_name,
+          rec.product_name,
+          rec.qty_needed,
+          rec.qty_reserved,
+          rec.qty_missing,
+          now,
+          now,
+          existing.id,
+        ],
+      );
+    } else {
+      const id = rec.id || uuidv4();
+      await execute(
+        `INSERT INTO shop_floor_pending_processes (
+           id, process_type, mo_id, mo_name, origin, partner_id, partner_name,
+           product_id, product_name, qty_needed, qty_reserved, qty_missing,
+           status, loaded_at, loaded_by, last_synced_at, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          rec.process_type || 'board_intake',
+          rec.mo_id,
+          rec.mo_name,
+          rec.origin || null,
+          rec.partner_id,
+          rec.partner_name,
+          rec.product_id,
+          rec.product_name,
+          rec.qty_needed,
+          rec.qty_reserved,
+          rec.qty_missing,
+          rec.status || 'pending',
+          rec.loaded_at || null,
+          rec.loaded_by || null,
+          now,
+          now,
+          now,
+        ],
+      );
+    }
+  }
+}
+
+export async function markPendingShopFloorProcessesLoaded(filters: {
+  partnerId: number;
+  productId: number;
+  loadedBy: string;
+  quantity: number;
+}): Promise<PendingShopFloorProcess[]> {
+  const pendingRows = await queryAll<PendingShopFloorProcess>(
+    `SELECT * FROM shop_floor_pending_processes
+     WHERE partner_id = ? AND product_id = ? AND status = 'pending' AND qty_missing > 0
+     ORDER BY created_at ASC`,
+    [filters.partnerId, filters.productId],
+  );
+
+  let remaining = filters.quantity;
+  const updated: PendingShopFloorProcess[] = [];
+  const now = appDateTime();
+
+  for (const row of pendingRows) {
+    if (remaining <= 0) break;
+    const missing = Number(row.qty_missing || 0);
+    const applied = Math.min(remaining, missing);
+    remaining -= applied;
+    const newMissing = missing - applied;
+    const newReserved = Number(row.qty_reserved || 0) + applied;
+    const isFullyLoaded = newMissing <= 0;
+    const newStatus = isFullyLoaded ? 'loaded' : 'pending';
+
+    await execute(
+      `UPDATE shop_floor_pending_processes
+       SET qty_reserved = ?, qty_missing = ?, status = ?,
+           loaded_at = ?, loaded_by = ?, updated_at = ?
+       WHERE id = ?`,
+      [
+        newReserved,
+        newMissing,
+        newStatus,
+        isFullyLoaded ? now : row.loaded_at,
+        isFullyLoaded ? filters.loadedBy : row.loaded_by,
+        now,
+        row.id,
+      ],
+    );
+
+    updated.push({
+      ...row,
+      qty_reserved: newReserved,
+      qty_missing: newMissing,
+      status: newStatus as PendingShopFloorProcessStatus,
+      loaded_at: isFullyLoaded ? now : row.loaded_at,
+      loaded_by: isFullyLoaded ? filters.loadedBy : row.loaded_by,
+      updated_at: now,
+    });
+  }
+
+  return updated;
+}
+
+export async function deleteStaleCompletedProcesses(olderThanDays = 7): Promise<void> {
+  const cutoff = appDateTimeFromNow(-olderThanDays * 24 * 60 * 60 * 1000);
+  await execute(
+    `DELETE FROM shop_floor_pending_processes
+     WHERE status IN ('loaded', 'synced') AND updated_at < ?`,
+    [cutoff],
+  );
 }
 

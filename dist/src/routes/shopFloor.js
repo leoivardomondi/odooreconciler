@@ -17,8 +17,8 @@ const boardProductClassifier_1 = require("../services/boardProductClassifier");
 const stockMirrorService_1 = require("../services/stockMirrorService");
 const boardIntakeSyncService_1 = require("../services/boardIntakeSyncService");
 const shopFloorOperatorAccessSyncService_1 = require("../services/shopFloorOperatorAccessSyncService");
+const shopFloorPendingSyncService_1 = require("../services/shopFloorPendingSyncService");
 const siteAttendanceAccess_1 = require("../utils/siteAttendanceAccess");
-const repositories_3 = require("../models/repositories");
 const router = (0, express_1.Router)();
 // Department names to search for operators (case-insensitive match)
 const OPERATOR_DEPARTMENT_NAMES = ['Operations', 'Production', 'Shop Floor', 'Manufacturing', 'Factory'];
@@ -1562,7 +1562,7 @@ router.post('/shop-floor/incident/:id/resolve', async (req, res) => {
             await client.resolveMaintenanceRequest(incidentId);
         }
         else {
-            await (0, repositories_3.resolveShopFloorIncident)(req.params.id);
+            await (0, repositories_1.resolveShopFloorIncident)(req.params.id);
         }
         // Invalidate cached operator dashboards as an incident was resolved
         shopFloorCache.clearPrefix('shop-floor-dashboard:');
@@ -1652,10 +1652,16 @@ router.get('/shop-floor/boards', async (req, res) => {
     try {
         const boardLogPage = Math.max(1, Number.parseInt(String(req.query.boardLogPage || '1'), 10) || 1);
         const boardLogPageSize = 12;
-        const [settings, stockMirror, recentIntakeRows] = await Promise.all([
+        const isRefresh = req.query.refresh === 'true';
+        if (isRefresh) {
+            // Trigger fresh sync from Odoo in background without blocking initial render
+            void (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(true).catch(() => null);
+        }
+        const [settings, stockMirror, recentIntakeRows, pendingProcesses] = await Promise.all([
             (0, repositories_1.getSettings)(),
-            (0, stockMirrorService_1.getStockMirrorForPage)(req.query.refresh === 'true'),
+            (0, stockMirrorService_1.getStockMirrorForPage)(isRefresh),
             (0, repositories_1.getRecentBoardIntakeQueueEntries)(boardLogPageSize + 1, (boardLogPage - 1) * boardLogPageSize),
+            (0, repositories_1.getPendingShopFloorProcesses)({ status: 'pending' }),
         ]);
         const hasNextBoardLogPage = recentIntakeRows.length > boardLogPageSize;
         const recentIntakes = recentIntakeRows.slice(0, boardLogPageSize);
@@ -1677,6 +1683,21 @@ router.get('/shop-floor/boards', async (req, res) => {
             }
         }
         const dashboardData = cachedDashboard || { stockAlerts: [], isLimitedDashboard: false };
+        // Format local stock alerts from pending processes in MySQL
+        const localStockAlerts = pendingProcesses.map((p) => ({
+            moName: p.mo_name,
+            product: p.product_name,
+            component: p.product_name,
+            qtyNeeded: p.qty_missing,
+            client: p.partner_name,
+            moId: p.mo_id,
+            confirmedAt: null,
+            overdueDays: 0,
+        }));
+        // If local table is empty on first boot, kick off initial sync in background
+        if (!pendingProcesses.length && !isRefresh) {
+            void (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(false).catch(() => null);
+        }
         res.render('shop-floor-boards', {
             pageTitle: 'Board Intake & Auto-Reserve',
             appName: env_1.env.APP_NAME,
@@ -1685,7 +1706,7 @@ router.get('/shop-floor/boards', async (req, res) => {
             recentIntakes,
             boardLogPage,
             hasNextBoardLogPage,
-            stockAlerts: dashboardData.isLimitedDashboard ? [] : dashboardData.stockAlerts,
+            stockAlerts: localStockAlerts.length > 0 ? localStockAlerts : (dashboardData.isLimitedDashboard ? [] : dashboardData.stockAlerts),
             customers: [],
             authUser: req.authUser,
             csrfToken: req.csrfToken || null,
@@ -1712,6 +1733,7 @@ router.get('/shop-floor/boards', async (req, res) => {
 });
 /**
  * GET /shop-floor/boards/requirements — Fetch pending board component requirements for a customer's MOs.
+ * Reads directly from local MySQL (<2ms) and falls back to Odoo if cold.
  */
 router.get('/shop-floor/boards/requirements', async (req, res) => {
     if (!req.authUser) {
@@ -1724,9 +1746,29 @@ router.get('/shop-floor/boards/requirements', async (req, res) => {
         return;
     }
     try {
+        // 1. Query local-first from MySQL
+        const localPending = await (0, repositories_1.getPendingShopFloorProcesses)({ partnerId, status: 'pending' });
+        if (localPending.length > 0) {
+            const requirements = localPending
+                .filter((p) => p.qty_missing > 0)
+                .map((p) => ({
+                moId: p.mo_id,
+                moName: p.mo_name,
+                origin: p.origin,
+                productId: p.product_id,
+                productName: p.product_name,
+                qtyNeeded: p.qty_needed,
+                qtyReserved: p.qty_reserved,
+                qtyMissing: p.qty_missing,
+            }));
+            res.json(applyOptimisticBoardIntakes(partnerId, requirements));
+            return;
+        }
+        // 2. If no local records found for this partner yet (cold cache), fallback to Odoo and trigger background sync
         const settings = await (0, repositories_1.getSettings)();
         const client = new odooClient_1.OdooClient(settings.odoo);
         const requirements = await client.getCustomerBoardRequirements(partnerId);
+        void (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(false).catch(() => null);
         res.json(applyOptimisticBoardIntakes(partnerId, requirements));
     }
     catch (err) {
@@ -1735,8 +1777,24 @@ router.get('/shop-floor/boards/requirements', async (req, res) => {
     }
 });
 /**
- * POST /shop-floor/board-intake — Log board intake and auto-reserve on matching MOs.
- *
+ * GET /shop-floor/sync-mos — On-demand background sync trigger for new MO board requirements.
+ */
+router.get('/shop-floor/sync-mos', async (req, res) => {
+    if (!req.authUser) {
+        res.status(401).json({ ok: false, error: 'Unauthorized' });
+        return;
+    }
+    const result = await (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(true);
+    res.json(result);
+});
+/**
+ * POST /api/webhooks/odoo/mo — Instant webhook for MO updates from Odoo.
+ */
+router.post('/api/webhooks/odoo/mo', async (_req, res) => {
+    void (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(true).catch(() => null);
+    res.json({ ok: true, message: 'MO sync initiated' });
+});
+/**
  * Workflow:
  * 1. Add boards to stock (inventory adjustment)
  * 2. Find MOs needing this board for this client (no PO covering it)
@@ -2012,6 +2070,13 @@ router.post('/shop-floor/board-intake', async (req, res) => {
             vehicleRegistration, arrivalTime, gate,
         });
         await (0, stockMirrorService_1.recordOptimisticStockAddition)(productId, productName, qty);
+        // Mark matching pending board requirements loaded in MySQL immediately
+        const updatedRequirements = await (0, repositories_1.markPendingShopFloorProcessesLoaded)({
+            partnerId,
+            productId,
+            loadedBy: actorName,
+            quantity: qty,
+        });
         optimisticBoardIntakes.push({ id: optimisticId, partnerId, productId, productName, customerName, quantity: qty, expiresAt: Date.now() + 10 * 60 * 1000 });
         shopFloorCache.clearPrefix('shop-floor-dashboard:');
         const successMessage = `Boards saved immediately: ${qty} x ${productName} for ${customerName}${vehicleRegistration ? ` (${vehicleRegistration})` : ''}. Odoo synchronization and MO reservation are continuing in the background.`;

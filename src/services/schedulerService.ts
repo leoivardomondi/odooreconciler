@@ -29,6 +29,7 @@ import {
 } from './poBillAutomationService';
 import { processSaleOrderStock } from './stockProcessingService';
 import { cleanupStaleTempFiles } from '../utils/tempCleanup';
+import { syncPendingProcessesFromOdoo } from './shopFloorPendingSyncService';
 import {
   CAMPAIGN_BATCH_SIZE,
   CAMPAIGN_START_DATE,
@@ -39,6 +40,8 @@ import {
 let schedulerRunning = false;
 let schedulerIntervalHandle: NodeJS.Timeout | null = null;
 let poBillSchedulerIntervalHandle: NodeJS.Timeout | null = null;
+let shopFloorPendingIntervalHandle: NodeJS.Timeout | null = null;
+const SHOP_FLOOR_PENDING_SYNC_INTERVAL_MS = 2 * 60 * 1000;
 const SCHEDULER_LOOKBACK_HOURS = 24;
 const SO_SCHEDULER_CONCURRENCY = 1;
 const SO_SCHEDULER_ORDER_DELAY_MS = Math.max(
@@ -1581,6 +1584,21 @@ export async function startSchedulerInterval() {
       });
     }, intervalMs);
   }
+
+  if (!shopFloorPendingIntervalHandle && env.SCHEDULER_USE_INTERVAL === 'true') {
+    // Initial sync after short 5-second warmup
+    setTimeout(() => {
+      void syncPendingProcessesFromOdoo(false).catch(() => null);
+    }, 5000);
+
+    shopFloorPendingIntervalHandle = setInterval(() => {
+      void syncPendingProcessesFromOdoo(false).catch((error) => {
+        void logEvent('warn', 'Background shop floor pending sync failed', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }, SHOP_FLOOR_PENDING_SYNC_INTERVAL_MS);
+  }
 }
 
 export function stopSchedulerInterval() {
@@ -1591,5 +1609,9 @@ export function stopSchedulerInterval() {
   if (poBillSchedulerIntervalHandle) {
     clearInterval(poBillSchedulerIntervalHandle);
     poBillSchedulerIntervalHandle = null;
+  }
+  if (shopFloorPendingIntervalHandle) {
+    clearInterval(shopFloorPendingIntervalHandle);
+    shopFloorPendingIntervalHandle = null;
   }
 }

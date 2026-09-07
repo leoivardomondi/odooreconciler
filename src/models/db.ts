@@ -873,7 +873,30 @@ async function ensureSqliteDatabase(config: RuntimeDatabaseConfig) {
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS shop_floor_pending_processes (
+      id TEXT PRIMARY KEY,
+      process_type TEXT NOT NULL DEFAULT 'board_intake',
+      mo_id INTEGER NOT NULL,
+      mo_name TEXT NOT NULL,
+      origin TEXT,
+      partner_id INTEGER NOT NULL,
+      partner_name TEXT NOT NULL,
+      product_id INTEGER NOT NULL,
+      product_name TEXT NOT NULL,
+      qty_needed REAL NOT NULL DEFAULT 0,
+      qty_reserved REAL NOT NULL DEFAULT 0,
+      qty_missing REAL NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'pending',
+      loaded_at TEXT,
+      loaded_by TEXT,
+      last_synced_at TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
     CREATE INDEX IF NOT EXISTS idx_sf_snapshots_synced ON shop_floor_dashboard_snapshots(synced_at);
+    CREATE INDEX IF NOT EXISTS idx_sf_pending_status_partner ON shop_floor_pending_processes(status, partner_id);
+    CREATE INDEX IF NOT EXISTS idx_sf_pending_mo_product ON shop_floor_pending_processes(mo_id, product_id);
 
     CREATE INDEX IF NOT EXISTS idx_board_intake_queue_status ON board_intake_queue(status, created_at);
 
@@ -1447,6 +1470,31 @@ async function ensureMysqlDatabase(config: RuntimeDatabaseConfig) {
       payload LONGTEXT NOT NULL,
       synced_at DATETIME NOT NULL,
       updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    )
+  `);
+
+  await query('create shop floor pending processes table', `
+    CREATE TABLE IF NOT EXISTS shop_floor_pending_processes (
+      id VARCHAR(64) PRIMARY KEY,
+      process_type VARCHAR(32) NOT NULL DEFAULT 'board_intake',
+      mo_id INT NOT NULL,
+      mo_name VARCHAR(64) NOT NULL,
+      origin VARCHAR(64) NULL,
+      partner_id INT NOT NULL,
+      partner_name VARCHAR(255) NOT NULL,
+      product_id INT NOT NULL,
+      product_name VARCHAR(255) NOT NULL,
+      qty_needed DECIMAL(16,4) NOT NULL DEFAULT 0,
+      qty_reserved DECIMAL(16,4) NOT NULL DEFAULT 0,
+      qty_missing DECIMAL(16,4) NOT NULL DEFAULT 0,
+      status VARCHAR(32) NOT NULL DEFAULT 'pending',
+      loaded_at DATETIME NULL,
+      loaded_by VARCHAR(255) NULL,
+      last_synced_at DATETIME NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      KEY idx_sf_pending_status_partner (status, partner_id),
+      KEY idx_sf_pending_mo_product (mo_id, product_id)
     )
   `);
 
