@@ -3858,8 +3858,8 @@ class OdooClient {
                     }
                 }
             }
-            // Build requirement list
-            const requirements = [];
+            // Build requirement list, aggregating multiple moves for the same MO and product
+            const requirementsMap = new Map();
             for (const move of boardMoves) {
                 const moId = Array.isArray(move.raw_material_production_id)
                     ? move.raw_material_production_id[0]
@@ -3875,9 +3875,15 @@ class OdooClient {
                 }
                 const qtyNeeded = Number(move.product_uom_qty || 0);
                 const qtyReserved = Number(move.quantity || 0);
-                const qtyMissing = Math.max(0, qtyNeeded - qtyReserved);
-                if (qtyMissing > 0) {
-                    requirements.push({
+                const key = `${moId}_${productId}`;
+                const existing = requirementsMap.get(key);
+                if (existing) {
+                    existing.qtyNeeded += qtyNeeded;
+                    existing.qtyReserved += qtyReserved;
+                    existing.qtyMissing = Math.max(0, existing.qtyNeeded - existing.qtyReserved);
+                }
+                else {
+                    requirementsMap.set(key, {
                         moId: mo.id,
                         moName: mo.name,
                         origin: mo.origin,
@@ -3885,11 +3891,11 @@ class OdooClient {
                         productName,
                         qtyNeeded,
                         qtyReserved,
-                        qtyMissing,
+                        qtyMissing: Math.max(0, qtyNeeded - qtyReserved),
                     });
                 }
             }
-            return requirements;
+            return Array.from(requirementsMap.values()).filter(r => r.qtyMissing > 0);
         }
         catch (err) {
             console.error('[OdooClient] Failed to get customer board requirements:', err);

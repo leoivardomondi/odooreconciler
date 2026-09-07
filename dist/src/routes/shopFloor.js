@@ -1749,18 +1749,29 @@ router.get('/shop-floor/boards/requirements', async (req, res) => {
         // 1. Query local-first from MySQL
         const localPending = await (0, repositories_1.getPendingShopFloorProcesses)({ partnerId, status: 'pending' });
         if (localPending.length > 0) {
-            const requirements = localPending
-                .filter((p) => p.qty_missing > 0)
-                .map((p) => ({
-                moId: p.mo_id,
-                moName: p.mo_name,
-                origin: p.origin,
-                productId: p.product_id,
-                productName: p.product_name,
-                qtyNeeded: p.qty_needed,
-                qtyReserved: p.qty_reserved,
-                qtyMissing: p.qty_missing,
-            }));
+            const reqMap = new Map();
+            for (const p of localPending) {
+                const key = `${p.mo_id}_${p.product_id}`;
+                const existing = reqMap.get(key);
+                if (existing) {
+                    existing.qtyNeeded += Number(p.qty_needed || 0);
+                    existing.qtyReserved += Number(p.qty_reserved || 0);
+                    existing.qtyMissing += Number(p.qty_missing || 0);
+                }
+                else {
+                    reqMap.set(key, {
+                        moId: p.mo_id,
+                        moName: p.mo_name,
+                        origin: p.origin,
+                        productId: p.product_id,
+                        productName: p.product_name,
+                        qtyNeeded: Number(p.qty_needed || 0),
+                        qtyReserved: Number(p.qty_reserved || 0),
+                        qtyMissing: Number(p.qty_missing || 0),
+                    });
+                }
+            }
+            const requirements = Array.from(reqMap.values()).filter((r) => r.qtyMissing > 0);
             res.json(applyOptimisticBoardIntakes(partnerId, requirements));
             return;
         }

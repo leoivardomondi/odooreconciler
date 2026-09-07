@@ -107,6 +107,7 @@ async function syncPendingProcessesFromOdoo(force = false) {
         for (const mo of activeMOs) {
             moMap.set(mo.id, mo);
         }
+        const aggregatedMoves = new Map();
         for (const move of boardMoves) {
             const moId = Array.isArray(move.raw_material_production_id)
                 ? move.raw_material_production_id[0]
@@ -125,20 +126,41 @@ async function syncPendingProcessesFromOdoo(force = false) {
             const partnerName = partnerInfo?.partnerName || 'Unknown Customer';
             const qtyNeeded = Number(move.product_uom_qty || 0);
             const qtyReserved = Number(move.quantity || 0);
-            const qtyMissing = Math.max(0, qtyNeeded - qtyReserved);
+            const key = `${moId}_${productId}`;
+            const existing = aggregatedMoves.get(key);
+            if (existing) {
+                existing.qtyNeeded += qtyNeeded;
+                existing.qtyReserved += qtyReserved;
+            }
+            else {
+                aggregatedMoves.set(key, {
+                    moId: mo.id,
+                    moName: mo.name,
+                    origin: mo.origin,
+                    partnerId,
+                    partnerName,
+                    productId,
+                    productName,
+                    qtyNeeded,
+                    qtyReserved,
+                });
+            }
+        }
+        for (const [key, agg] of aggregatedMoves.entries()) {
+            const qtyMissing = Math.max(0, agg.qtyNeeded - agg.qtyReserved);
             if (qtyMissing > 0) {
                 recordsToUpsert.push({
-                    id: `${mo.id}_${productId}`,
+                    id: key,
                     process_type: 'board_intake',
-                    mo_id: mo.id,
-                    mo_name: mo.name,
-                    origin: mo.origin,
-                    partner_id: partnerId,
-                    partner_name: partnerName,
-                    product_id: productId,
-                    product_name: productName,
-                    qty_needed: qtyNeeded,
-                    qty_reserved: qtyReserved,
+                    mo_id: agg.moId,
+                    mo_name: agg.moName,
+                    origin: agg.origin,
+                    partner_id: agg.partnerId,
+                    partner_name: agg.partnerName,
+                    product_id: agg.productId,
+                    product_name: agg.productName,
+                    qty_needed: agg.qtyNeeded,
+                    qty_reserved: agg.qtyReserved,
                     qty_missing: qtyMissing,
                     status: 'pending',
                     loaded_at: null,
@@ -149,7 +171,9 @@ async function syncPendingProcessesFromOdoo(force = false) {
         }
         // 7. Upsert into MySQL table (preserves locally loaded items)
         await (0, repositories_1.upsertPendingShopFloorProcesses)(recordsToUpsert);
-        // 8. Clean up stale completed items older than 7 days
+        // 8. Prune stale pending rows for active MOs if components were removed or corrected in Odoo
+        await (0, repositories_1.pruneStalePendingProcessesForActiveMos)(activeMOs.map((mo) => mo.id), recordsToUpsert.map((r) => r.id));
+        // 9. Clean up stale completed items older than 7 days
         await (0, repositories_1.deleteStaleCompletedProcesses)(7);
         lastSyncTimestamp = Date.now();
         const durationMs = Date.now() - startTime;

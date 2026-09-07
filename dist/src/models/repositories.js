@@ -155,6 +155,7 @@ exports.getPendingShopFloorProcesses = getPendingShopFloorProcesses;
 exports.upsertPendingShopFloorProcesses = upsertPendingShopFloorProcesses;
 exports.markPendingShopFloorProcessesLoaded = markPendingShopFloorProcessesLoaded;
 exports.deleteStaleCompletedProcesses = deleteStaleCompletedProcesses;
+exports.pruneStalePendingProcessesForActiveMos = pruneStalePendingProcessesForActiveMos;
 const uuid_1 = require("uuid");
 const db_1 = require("./db");
 const crypto_1 = require("../utils/crypto");
@@ -3756,4 +3757,19 @@ async function deleteStaleCompletedProcesses(olderThanDays = 7) {
     const cutoff = (0, dateTime_1.appDateTimeFromNow)(-olderThanDays * 24 * 60 * 60 * 1000);
     await (0, db_1.execute)(`DELETE FROM shop_floor_pending_processes
      WHERE status IN ('loaded', 'synced') AND updated_at < ?`, [cutoff]);
+}
+async function pruneStalePendingProcessesForActiveMos(activeMoIds, validKeys) {
+    if (!activeMoIds.length)
+        return;
+    const existingPending = await (0, db_1.queryAll)(`SELECT id, mo_id FROM shop_floor_pending_processes WHERE status = 'pending'`);
+    const activeSet = new Set(activeMoIds);
+    const validKeySet = new Set(validKeys);
+    const idsToDelete = existingPending
+        .filter((row) => activeSet.has(row.mo_id) && !validKeySet.has(row.id))
+        .map((row) => row.id);
+    if (idsToDelete.length > 0) {
+        for (const id of idsToDelete) {
+            await (0, db_1.execute)('DELETE FROM shop_floor_pending_processes WHERE id = ?', [id]);
+        }
+    }
 }

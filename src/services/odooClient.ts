@@ -5361,8 +5361,8 @@ export class OdooClient {
         }
       }
 
-      // Build requirement list
-      const requirements: Array<{
+      // Build requirement list, aggregating multiple moves for the same MO and product
+      const requirementsMap = new Map<string, {
         moId: number;
         moName: string;
         origin: string | null;
@@ -5371,7 +5371,7 @@ export class OdooClient {
         qtyNeeded: number;
         qtyReserved: number;
         qtyMissing: number;
-      }> = [];
+      }>();
 
       for (const move of boardMoves) {
         const moId = Array.isArray(move.raw_material_production_id)
@@ -5391,10 +5391,15 @@ export class OdooClient {
 
         const qtyNeeded = Number(move.product_uom_qty || 0);
         const qtyReserved = Number(move.quantity || 0);
-        const qtyMissing = Math.max(0, qtyNeeded - qtyReserved);
+        const key = `${moId}_${productId}`;
+        const existing = requirementsMap.get(key);
 
-        if (qtyMissing > 0) {
-          requirements.push({
+        if (existing) {
+          existing.qtyNeeded += qtyNeeded;
+          existing.qtyReserved += qtyReserved;
+          existing.qtyMissing = Math.max(0, existing.qtyNeeded - existing.qtyReserved);
+        } else {
+          requirementsMap.set(key, {
             moId: mo.id,
             moName: mo.name,
             origin: mo.origin,
@@ -5402,12 +5407,12 @@ export class OdooClient {
             productName,
             qtyNeeded,
             qtyReserved,
-            qtyMissing,
+            qtyMissing: Math.max(0, qtyNeeded - qtyReserved),
           });
         }
       }
 
-      return requirements;
+      return Array.from(requirementsMap.values()).filter(r => r.qtyMissing > 0);
     } catch (err) {
       console.error('[OdooClient] Failed to get customer board requirements:', err);
       return [];

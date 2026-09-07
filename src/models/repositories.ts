@@ -5189,3 +5189,22 @@ export async function deleteStaleCompletedProcesses(olderThanDays = 7): Promise<
   );
 }
 
+export async function pruneStalePendingProcessesForActiveMos(activeMoIds: number[], validKeys: string[]): Promise<void> {
+  if (!activeMoIds.length) return;
+  const existingPending = await queryAll<{ id: string; mo_id: number }>(
+    `SELECT id, mo_id FROM shop_floor_pending_processes WHERE status = 'pending'`,
+  );
+
+  const activeSet = new Set(activeMoIds);
+  const validKeySet = new Set(validKeys);
+  const idsToDelete = existingPending
+    .filter((row) => activeSet.has(row.mo_id) && !validKeySet.has(row.id))
+    .map((row) => row.id);
+
+  if (idsToDelete.length > 0) {
+    for (const id of idsToDelete) {
+      await execute('DELETE FROM shop_floor_pending_processes WHERE id = ?', [id]);
+    }
+  }
+}
+
