@@ -277,39 +277,59 @@
               <div class="text-muted mt-1" id="qtyCurrentStock" style="font-size: 0.75rem; display: none;"></div>
             </div>
 
-            <!-- Vehicle Registration -->
+            <!-- Optional Details Toggle Button (Default is Collapsed) -->
             <div class="mb-3">
-              <label for="vehicleRegistration" class="form-label fw-semibold" style="font-size: 0.92rem; color: #334155;">
-                Vehicle Registration <span class="text-muted font-normal">(optional, e.g. KTW 123A)</span>
-              </label>
-              <input type="text" name="vehicle_registration" id="vehicleRegistration" class="form-control" placeholder="KTW 123A" style="font-size: 1rem; padding: 0.65rem 0.75rem; text-transform: uppercase;">
+              <button type="button" 
+                id="toggleDetailsBtn" 
+                class="btn btn-sm w-100 py-2.5 px-3 rounded-3 d-flex align-items-center justify-content-between border"
+                style="background: #f8fafc; border-color: #cbd5e1 !important; color: #475569; font-weight: 600; font-size: 0.88rem; transition: all 0.2s ease; cursor: pointer;"
+                aria-expanded="false" 
+                aria-controls="optionalDetailsContainer">
+                <span class="d-inline-flex align-items-center gap-2">
+                  <svg id="toggleDetailsIcon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                  <span id="toggleDetailsText">More Details (Vehicle, Time, Gate)</span>
+                  <span class="badge rounded-pill text-muted border fw-normal" style="font-size: 0.7rem; background: #ffffff;">Optional</span>
+                </span>
+                <svg id="toggleDetailsChevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5" style="transition: transform 0.2s ease;"><polyline points="6 9 12 15 18 9"/></svg>
+              </button>
             </div>
 
-            <!-- Arrival Time -->
-            <div class="mb-3">
-              <label for="arrivalTime" class="form-label fw-semibold" style="font-size: 0.92rem; color: #334155;">
-                What Time Did Boards Arrive? <span class="text-muted font-normal">(optional)</span>
-              </label>
-              <input type="time" name="arrival_time" id="arrivalTime" class="form-control" style="font-size: 1rem; padding: 0.65rem 0.75rem;">
-            </div>
+            <!-- Collapsible Optional Details (Collapsed by default) -->
+            <div id="optionalDetailsContainer" class="d-none mb-3 p-3 rounded-3 border" style="background: #f8fafc; border-color: #e2e8f0 !important;">
+              <!-- Vehicle Registration -->
+              <div class="mb-3">
+                <label for="vehicleRegistration" class="form-label fw-semibold" style="font-size: 0.90rem; color: #334155;">
+                  Vehicle Registration <span class="text-muted font-normal">(optional, e.g. KTW 123A)</span>
+                </label>
+                <input type="text" name="vehicle_registration" id="vehicleRegistration" class="form-control" placeholder="KTW 123A" style="font-size: 0.95rem; padding: 0.6rem 0.75rem; text-transform: uppercase;">
+              </div>
 
-            <!-- Receiving Gate -->
-            <div class="mb-4">
-              <label class="form-label fw-semibold" style="font-size: 0.92rem; color: #334155;">
-                Receiving Gate <span class="text-danger">*</span>
-              </label>
-              <div class="d-flex gap-3">
-                <div class="form-check flex-fill p-3 border rounded-3 text-center" style="background:#f8fafc; cursor:pointer;">
-                  <input class="form-check-input ms-0 me-2" type="radio" name="gate" id="gateFront" value="Front Gate" checked>
-                  <label class="form-check-label fw-semibold" for="gateFront" style="cursor:pointer; color:#1e293b;">
-                    🚪 Front Gate
-                  </label>
-                </div>
-                <div class="form-check flex-fill p-3 border rounded-3 text-center" style="background:#f8fafc; cursor:pointer;">
-                  <input class="form-check-input ms-0 me-2" type="radio" name="gate" id="gateBack" value="Back Gate">
-                  <label class="form-check-label fw-semibold" for="gateBack" style="cursor:pointer; color:#1e293b;">
-                    🚚 Back Gate
-                  </label>
+              <!-- Arrival Time -->
+              <div class="mb-3">
+                <label for="arrivalTime" class="form-label fw-semibold" style="font-size: 0.90rem; color: #334155;">
+                  What Time Did Boards Arrive? <span class="text-muted font-normal">(optional)</span>
+                </label>
+                <input type="time" name="arrival_time" id="arrivalTime" class="form-control" style="font-size: 0.95rem; padding: 0.6rem 0.75rem;">
+              </div>
+
+              <!-- Receiving Gate (Optional) -->
+              <div class="mb-1">
+                <label class="form-label fw-semibold" style="font-size: 0.90rem; color: #334155;">
+                  Receiving Gate <span class="text-muted font-normal">(optional)</span>
+                </label>
+                <div class="d-flex gap-3">
+                  <div class="form-check flex-fill p-2.5 border rounded-3 text-center" style="background:#ffffff; cursor:pointer;">
+                    <input class="form-check-input ms-0 me-2" type="radio" name="gate" id="gateFront" value="Front Gate">
+                    <label class="form-check-label fw-semibold" for="gateFront" style="cursor:pointer; color:#1e293b; font-size: 0.88rem;">
+                      🚪 Front Gate
+                    </label>
+                  </div>
+                  <div class="form-check flex-fill p-2.5 border rounded-3 text-center" style="background:#ffffff; cursor:pointer;">
+                    <input class="form-check-input ms-0 me-2" type="radio" name="gate" id="gateBack" value="Back Gate">
+                    <label class="form-check-label fw-semibold" for="gateBack" style="cursor:pointer; color:#1e293b; font-size: 0.88rem;">
+                      🚚 Back Gate
+                    </label>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1233,6 +1253,48 @@
       }
     });
 
+    // Toggle collapsible optional details (Vehicle, Time, Gate)
+    var toggleBtn = document.getElementById('toggleDetailsBtn');
+    var detailsContainer = document.getElementById('optionalDetailsContainer');
+    var detailsChevron = document.getElementById('toggleDetailsChevron');
+    var detailsIcon = document.getElementById('toggleDetailsIcon');
+
+    if (toggleBtn && detailsContainer) {
+      toggleBtn.addEventListener('click', function(e) {
+        e.preventDefault();
+        var isCollapsed = detailsContainer.classList.contains('d-none');
+        if (isCollapsed) {
+          detailsContainer.classList.remove('d-none');
+          toggleBtn.setAttribute('aria-expanded', 'true');
+          if (detailsChevron) detailsChevron.style.transform = 'rotate(180deg)';
+          if (detailsIcon) detailsIcon.innerHTML = '<line x1="5" y1="12" x2="19" y2="12"/>';
+          toggleBtn.style.background = '#f1f5f9';
+        } else {
+          detailsContainer.classList.add('d-none');
+          toggleBtn.setAttribute('aria-expanded', 'false');
+          if (detailsChevron) detailsChevron.style.transform = '';
+          if (detailsIcon) detailsIcon.innerHTML = '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>';
+          toggleBtn.style.background = '#f8fafc';
+        }
+      });
+    }
+
+    // Allow clicking a selected radio to uncheck it (fully optional)
+    ['gateFront', 'gateBack'].forEach(function(id) {
+      var radio = document.getElementById(id);
+      if (radio) {
+        radio.addEventListener('click', function() {
+          if (this.dataset.wasChecked === 'true') {
+            this.checked = false;
+            this.dataset.wasChecked = 'false';
+          } else {
+            document.querySelectorAll('input[name="gate"]').forEach(function(r) { r.dataset.wasChecked = 'false'; });
+            this.dataset.wasChecked = 'true';
+          }
+        });
+      }
+    });
+
     // Form submission spinner state & asynchronous rapid logging
     var form = document.getElementById('intakeForm');
     var submitBtn = document.getElementById('submitBtn');
@@ -1402,7 +1464,23 @@
 
           var gateFront = document.getElementById('gateFront');
           if (gateFront) {
-            gateFront.checked = true;
+            gateFront.checked = false;
+            gateFront.dataset.wasChecked = 'false';
+          }
+          var gateBack = document.getElementById('gateBack');
+          if (gateBack) {
+            gateBack.checked = false;
+            gateBack.dataset.wasChecked = 'false';
+          }
+
+          if (detailsContainer && !detailsContainer.classList.contains('d-none')) {
+            detailsContainer.classList.add('d-none');
+            if (toggleBtn) {
+              toggleBtn.setAttribute('aria-expanded', 'false');
+              toggleBtn.style.background = '#f8fafc';
+            }
+            if (detailsChevron) detailsChevron.style.transform = '';
+            if (detailsIcon) detailsIcon.innerHTML = '<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>';
           }
 
           form.classList.remove('was-validated');
