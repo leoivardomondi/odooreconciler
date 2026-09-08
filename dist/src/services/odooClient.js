@@ -107,7 +107,7 @@ class OdooClientError extends Error {
 exports.OdooClientError = OdooClientError;
 class OdooClient {
     credentials;
-    timeoutMs = Number(env_1.env.REQUEST_TIMEOUT_MS || 20000);
+    timeoutMs = Number(env_1.env.REQUEST_TIMEOUT_MS || 30000);
     maxRateLimitRetries = Math.max(0, Number(env_1.env.ODOO_RATE_LIMIT_RETRIES || 3) || 3);
     rateLimitRetryBaseMs = Math.max(250, Number(env_1.env.ODOO_RATE_LIMIT_RETRY_BASE_MS || 1500) || 1500);
     saleOrderReadTimeoutMs = Number(env_1.env.SALE_ORDER_READ_TIMEOUT_MS || env_1.env.REQUEST_TIMEOUT_MS || 60000);
@@ -888,7 +888,7 @@ class OdooClient {
             offset: options.offset,
             order: options.order,
             context: options.context,
-        });
+        }, options.timeoutMs ? { timeoutMs: options.timeoutMs } : undefined);
     }
     async searchCountRecords(model, domain = []) {
         return this.request(model, 'search_count', {

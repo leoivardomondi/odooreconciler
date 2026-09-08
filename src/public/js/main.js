@@ -220,9 +220,19 @@ window.addEventListener('pageshow', () => {
 const shopFloorPageCache = new Map();
 window.shopFloorPageCache = shopFloorPageCache;
 
+function isBypassedShopFloorCacheUrl(urlStr) {
+  try {
+    const p = new URL(urlStr, window.location.origin).pathname;
+    return p === '/shop-floor/boards' || p.startsWith('/shop-floor/boards/');
+  } catch (_e) {
+    return false;
+  }
+}
+
 async function fetchShopFloorPageContent(urlStr) {
   const normUrl = new URL(urlStr, window.location.origin).pathname;
-  const cached = shopFloorPageCache.get(normUrl);
+  const isBypassed = isBypassedShopFloorCacheUrl(normUrl);
+  const cached = isBypassed ? null : shopFloorPageCache.get(normUrl);
   if (cached && Date.now() - cached.time < 300000) {
     return cached;
   }
@@ -245,13 +255,18 @@ async function fetchShopFloorPageContent(urlStr) {
       .map((s) => s.textContent || ''),
     time: Date.now(),
   };
-  shopFloorPageCache.set(normUrl, pageData);
+  if (!isBypassed) {
+    shopFloorPageCache.set(normUrl, pageData);
+  } else {
+    shopFloorPageCache.delete(normUrl);
+  }
   return pageData;
 }
 
 function prefetchShopFloorPage(urlStr) {
   try {
     const normUrl = new URL(urlStr, window.location.origin).pathname;
+    if (isBypassedShopFloorCacheUrl(normUrl)) return;
     if (shopFloorPageCache.has(normUrl)) return;
     fetchShopFloorPageContent(normUrl).catch(() => {});
   } catch (_e) {}
@@ -265,8 +280,9 @@ async function renderShopFloorInstantPage(urlStr, pushHistory = true) {
     return;
   }
 
-  // If already cached, swap immediately in 0 milliseconds
-  const cached = shopFloorPageCache.get(normUrl);
+  // If already cached and not a dynamic intake/log page, swap immediately in 0 milliseconds
+  const isBypassed = isBypassedShopFloorCacheUrl(normUrl);
+  const cached = isBypassed ? null : shopFloorPageCache.get(normUrl);
   if (cached) {
     applyShopFloorPageData(cached, urlStr, pushHistory);
     // Quietly refresh cache in background

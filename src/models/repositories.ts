@@ -4717,16 +4717,20 @@ export async function updateBoardIntakeQueueEntry(id: string, input: { status: '
 }
 
 export async function getRecentBoardIntakeQueueEntries(limit = 12, offset = 0) {
+  const query = `SELECT id, product_name, customer_name, quantity, vehicle_registration, arrival_date, arrival_time, gate, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at, reverted_at, reverted_by, actor_name, actor_email
+    FROM board_intake_queue 
+    ORDER BY 
+      CASE WHEN status IN ('pending', 'processing') THEN 0 ELSE 1 END ASC,
+      created_at DESC 
+    LIMIT ? OFFSET ?`;
   try {
-    return await queryAll<any>(`SELECT id, product_name, customer_name, quantity, vehicle_registration, arrival_date, arrival_time, gate, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at, reverted_at, reverted_by, actor_name, actor_email
-      FROM board_intake_queue ORDER BY created_at DESC LIMIT ? OFFSET ?`, [Math.max(1, Math.min(50, limit)), Math.max(0, offset)]);
+    return await queryAll<any>(query, [Math.max(1, Math.min(50, limit)), Math.max(0, offset)]);
   } catch (_error) {
     await execute(`ALTER TABLE board_intake_queue ADD COLUMN vehicle_registration VARCHAR(100) NULL`).catch(() => {});
     await execute(`ALTER TABLE board_intake_queue ADD COLUMN arrival_date VARCHAR(50) NULL`).catch(() => {});
     await execute(`ALTER TABLE board_intake_queue ADD COLUMN arrival_time VARCHAR(50) NULL`).catch(() => {});
     await execute(`ALTER TABLE board_intake_queue ADD COLUMN gate VARCHAR(50) NULL`).catch(() => {});
-    return queryAll<any>(`SELECT id, product_name, customer_name, quantity, vehicle_registration, arrival_date, arrival_time, gate, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at, reverted_at, reverted_by, actor_name, actor_email
-      FROM board_intake_queue ORDER BY created_at DESC LIMIT ? OFFSET ?`, [Math.max(1, Math.min(50, limit)), Math.max(0, offset)]);
+    return queryAll<any>(query, [Math.max(1, Math.min(50, limit)), Math.max(0, offset)]);
   }
 }
 
@@ -5306,7 +5310,13 @@ export async function pruneStalePendingProcessesForActiveMos(activeMoIds: number
   const activeSet = new Set(activeMoIds);
   const validKeySet = new Set(validKeys);
   const idsToDelete = existingPending
-    .filter((row) => activeSet.has(row.mo_id) && !validKeySet.has(row.id))
+    .filter((row) => {
+      // If MO is no longer in active MO list (e.g. done or cancelled), remove its pending process
+      if (!activeSet.has(row.mo_id)) return true;
+      // If validKeys is provided, prune items whose component requirements were removed or fulfilled
+      if (validKeys.length > 0 && !validKeySet.has(row.id)) return true;
+      return false;
+    })
     .map((row) => row.id);
 
   if (idsToDelete.length > 0) {

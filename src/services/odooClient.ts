@@ -180,7 +180,7 @@ export class OdooClientError extends Error {
 }
 
 export class OdooClient {
-  private readonly timeoutMs = Number(env.REQUEST_TIMEOUT_MS || 20000);
+  private readonly timeoutMs = Number(env.REQUEST_TIMEOUT_MS || 30000);
   private readonly maxRateLimitRetries = Math.max(
     0,
     Number(env.ODOO_RATE_LIMIT_RETRIES || 3) || 3,
@@ -1329,16 +1329,22 @@ export class OdooClient {
       offset?: number;
       order?: string;
       context?: Record<string, unknown>;
+      timeoutMs?: number;
     },
   ): Promise<T[]> {
-    return this.request<T[]>(model, 'search_read', {
-      domain: options.domain || [],
-      fields: options.fields || [],
-      limit: options.limit,
-      offset: options.offset,
-      order: options.order,
-      context: options.context,
-    });
+    return this.request<T[]>(
+      model,
+      'search_read',
+      {
+        domain: options.domain || [],
+        fields: options.fields || [],
+        limit: options.limit,
+        offset: options.offset,
+        order: options.order,
+        context: options.context,
+      },
+      options.timeoutMs ? { timeoutMs: options.timeoutMs } : undefined,
+    );
   }
 
   async searchCountRecords(model: string, domain: unknown[] = []): Promise<number> {

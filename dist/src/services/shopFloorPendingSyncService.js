@@ -85,45 +85,61 @@ async function syncPendingProcessesFromOdoo(force = false) {
             lastSyncTimestamp = Date.now();
             return { ok: true, syncedCount: 0, message: 'No board components needed', durationMs: Date.now() - startTime };
         }
-        // 5. Exclude components that already have purchase orders for this SO origin in target company
-        const purchaseOrders = originNames.length > 0
-            ? await client.searchReadRecords('purchase.order', {
-                domain: [
-                    ['company_id', '=', targetCompanyId],
-                    ['origin', 'in', originNames],
-                ],
-                fields: ['id', 'origin'],
-                limit: 500,
-            })
-            : [];
-        const originProductPOKeys = new Set();
-        if (purchaseOrders.length > 0) {
-            const poIds = purchaseOrders.map(po => po.id);
-            const poLines = await client.searchReadRecords('purchase.order.line', {
-                domain: [['order_id', 'in', poIds]],
-                fields: ['order_id', 'product_id'],
-                limit: 2000,
-            });
-            const poOriginMap = new Map();
-            for (const po of purchaseOrders) {
-                if (po.origin)
-                    poOriginMap.set(po.id, po.origin);
-            }
-            for (const line of poLines) {
-                const poId = Array.isArray(line.order_id) ? line.order_id[0] : 0;
-                const productId = Array.isArray(line.product_id) ? line.product_id[0] : 0;
-                const origin = poOriginMap.get(poId);
-                if (origin && productId) {
-                    originProductPOKeys.add(`${origin}_${productId}`);
-                }
-            }
-        }
-        // 6. Build requirement records
-        const recordsToUpsert = [];
         const moMap = new Map();
         for (const mo of activeMOs) {
             moMap.set(mo.id, mo);
         }
+        // 5. Exclude components that already have confirmed purchase orders for this SO origin in target company
+        // Only check origins that actually have board component moves to keep query light and prevent timeouts
+        const relevantOriginNames = [...new Set(boardMoves.map(m => {
+                const rmId = Array.isArray(m.raw_material_production_id) ? m.raw_material_production_id[0] : m.raw_material_production_id;
+                const mo = moMap.get(rmId);
+                return mo?.origin || null;
+            }).filter(Boolean))];
+        const originProductPOKeys = new Set();
+        if (relevantOriginNames.length > 0) {
+            try {
+                const purchaseOrders = await client.searchReadRecords('purchase.order', {
+                    domain: [
+                        ['company_id', '=', targetCompanyId],
+                        ['state', 'in', ['purchase', 'done']],
+                        ['origin', 'in', relevantOriginNames],
+                    ],
+                    fields: ['id', 'origin'],
+                    limit: 200,
+                    timeoutMs: 35000,
+                });
+                if (purchaseOrders.length > 0) {
+                    const poIds = purchaseOrders.map(po => po.id);
+                    const poLines = await client.searchReadRecords('purchase.order.line', {
+                        domain: [['order_id', 'in', poIds]],
+                        fields: ['order_id', 'product_id'],
+                        limit: 1000,
+                        timeoutMs: 35000,
+                    });
+                    const poOriginMap = new Map();
+                    for (const po of purchaseOrders) {
+                        if (po.origin)
+                            poOriginMap.set(po.id, po.origin);
+                    }
+                    for (const line of poLines) {
+                        const poId = Array.isArray(line.order_id) ? line.order_id[0] : 0;
+                        const productId = Array.isArray(line.product_id) ? line.product_id[0] : 0;
+                        const origin = poOriginMap.get(poId);
+                        if (origin && productId) {
+                            originProductPOKeys.add(`${origin}_${productId}`);
+                        }
+                    }
+                }
+            }
+            catch (poError) {
+                void (0, logService_1.logEvent)('warn', 'Could not query purchase orders during pending MO sync (continuing without PO exclusion)', {
+                    error: poError instanceof Error ? poError.message : String(poError),
+                }).catch(() => null);
+            }
+        }
+        // 6. Build requirement records
+        const recordsToUpsert = [];
         const aggregatedMoves = new Map();
         for (const move of boardMoves) {
             const moId = Array.isArray(move.raw_material_production_id)

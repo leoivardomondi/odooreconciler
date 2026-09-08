@@ -121,54 +121,73 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
       return { ok: true, syncedCount: 0, message: 'No board components needed', durationMs: Date.now() - startTime };
     }
 
-    // 5. Exclude components that already have purchase orders for this SO origin in target company
-    const purchaseOrders = originNames.length > 0
-      ? await client.searchReadRecords<{
+    const moMap = new Map<number, typeof activeMOs[0]>();
+    for (const mo of activeMOs) {
+      moMap.set(mo.id, mo);
+    }
+
+    // 5. Exclude components that already have confirmed purchase orders for this SO origin in target company
+    // Only check origins that actually have board component moves to keep query light and prevent timeouts
+    const relevantOriginNames = [...new Set(
+      boardMoves.map(m => {
+        const rmId = Array.isArray(m.raw_material_production_id) ? m.raw_material_production_id[0] : m.raw_material_production_id;
+        const mo = moMap.get(rmId);
+        return mo?.origin || null;
+      }).filter(Boolean) as string[]
+    )];
+
+    const originProductPOKeys = new Set<string>();
+    if (relevantOriginNames.length > 0) {
+      try {
+        const purchaseOrders = await client.searchReadRecords<{
           id: number;
           origin: string | false;
         }>('purchase.order', {
           domain: [
             ['company_id', '=', targetCompanyId],
-            ['origin', 'in', originNames],
+            ['state', 'in', ['purchase', 'done']],
+            ['origin', 'in', relevantOriginNames],
           ],
           fields: ['id', 'origin'],
-          limit: 500,
-        })
-      : [];
+          limit: 200,
+          timeoutMs: 35000,
+        });
 
-    const originProductPOKeys = new Set<string>();
-    if (purchaseOrders.length > 0) {
-      const poIds = purchaseOrders.map(po => po.id);
-      const poLines = await client.searchReadRecords<{
-        order_id: [number, string];
-        product_id: [number, string] | false;
-      }>('purchase.order.line', {
-        domain: [['order_id', 'in', poIds]],
-        fields: ['order_id', 'product_id'],
-        limit: 2000,
-      });
+        if (purchaseOrders.length > 0) {
+          const poIds = purchaseOrders.map(po => po.id);
+          const poLines = await client.searchReadRecords<{
+            order_id: [number, string];
+            product_id: [number, string] | false;
+          }>('purchase.order.line', {
+            domain: [['order_id', 'in', poIds]],
+            fields: ['order_id', 'product_id'],
+            limit: 1000,
+            timeoutMs: 35000,
+          });
 
-      const poOriginMap = new Map<number, string>();
-      for (const po of purchaseOrders) {
-        if (po.origin) poOriginMap.set(po.id, po.origin);
-      }
+          const poOriginMap = new Map<number, string>();
+          for (const po of purchaseOrders) {
+            if (po.origin) poOriginMap.set(po.id, po.origin);
+          }
 
-      for (const line of poLines) {
-        const poId = Array.isArray(line.order_id) ? line.order_id[0] : 0;
-        const productId = Array.isArray(line.product_id) ? line.product_id[0] : 0;
-        const origin = poOriginMap.get(poId);
-        if (origin && productId) {
-          originProductPOKeys.add(`${origin}_${productId}`);
+          for (const line of poLines) {
+            const poId = Array.isArray(line.order_id) ? line.order_id[0] : 0;
+            const productId = Array.isArray(line.product_id) ? line.product_id[0] : 0;
+            const origin = poOriginMap.get(poId);
+            if (origin && productId) {
+              originProductPOKeys.add(`${origin}_${productId}`);
+            }
+          }
         }
+      } catch (poError) {
+        void logEvent('warn', 'Could not query purchase orders during pending MO sync (continuing without PO exclusion)', {
+          error: poError instanceof Error ? poError.message : String(poError),
+        }).catch(() => null);
       }
     }
 
     // 6. Build requirement records
     const recordsToUpsert: PendingShopFloorProcess[] = [];
-    const moMap = new Map<number, typeof activeMOs[0]>();
-    for (const mo of activeMOs) {
-      moMap.set(mo.id, mo);
-    }
 
     const aggregatedMoves = new Map<string, {
       moId: number;

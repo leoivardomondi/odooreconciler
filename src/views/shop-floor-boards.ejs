@@ -192,6 +192,11 @@
               </div>
             <% }) %>
           </section>
+        <% } else { %>
+          <div class="px-4 py-3 border-bottom d-flex align-items-center gap-2" style="background:#f8fafc;border-color:#e2e8f0 !important">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="#059669" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+            <span class="small text-muted" style="font-size:.82rem;">No pending MO board shortages for Urban Vibe. All current manufacturing orders have required boards allocated or covered.</span>
+          </div>
         <% } %>
 
         <div class="card-body p-4">
@@ -419,13 +424,20 @@
     </div>
   </div>
 
-    <section id="recentBoardLogsSection" class="card border-0 rounded-4 mt-4 <%= (!recentIntakes || !recentIntakes.length) ? 'd-none' : '' %>" style="border:1px solid #e2e8f0!important">
+    <section id="recentBoardLogsSection" class="card border-0 rounded-4 mt-4" style="border:1px solid #e2e8f0!important">
       <div class="card-body p-4">
         <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
           <h2 class="h6 fw-bold mb-0">Board logs</h2>
           <span class="small text-muted">Page <%= boardLogPage || 1 %></span>
         </div>
         <div class="vstack gap-2" id="recentBoardLogsList">
+          <% if (!recentIntakes || !recentIntakes.length) { %>
+            <div id="emptyBoardLogsNotice" class="text-center py-4 px-3 text-muted">
+              <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="#94a3b8" stroke-width="2" class="mb-2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+              <div class="fw-semibold small" style="color: #475569;">No board intake logs recorded yet</div>
+              <div class="small text-muted mt-0.5">When you record board intakes using the form above, every pending and completed intake will appear here in real time.</div>
+            </div>
+          <% } %>
           <% (recentIntakes || []).forEach((item) => { %>
             <%
               const isAdminUser = authUser && (authUser.role === 'admin' || authUser.apps?.includes('shop-floor-admin'));
@@ -1255,14 +1267,48 @@
       } catch (_e) {}
     }
 
-    // Check on page load for any pending logs
+    // Check on page load for any pending logs and dynamically hydrate recent list from MySQL
     document.querySelectorAll('[data-board-log-status]').forEach(function(el) {
       var txt = (el.textContent || '').trim();
-      if (txt === 'Syncing' || txt === 'Syncing to Odoo') {
+      if (txt === 'Syncing' || txt === 'Syncing to Odoo' || txt === 'Reverting') {
         var id = el.getAttribute('data-board-log-status');
         if (id) trackPendingBoardLog(id);
       }
     });
+
+    async function hydrateRecentBoardLogsOnLoad() {
+      try {
+        var res = await fetch('/shop-floor/board-intake/status');
+        if (!res.ok) return;
+        var data = await res.json();
+        if (!data.ok || !Array.isArray(data.entries) || data.entries.length === 0) return;
+        
+        var list = document.getElementById('recentBoardLogsList');
+        if (!list) return;
+
+        var emptyNotice = document.getElementById('emptyBoardLogsNotice');
+        if (emptyNotice) emptyNotice.remove();
+
+        data.entries.forEach(function(entry) {
+          if (!entry || !entry.id) return;
+          if (entry.status === 'pending' || entry.status === 'processing' || entry.status === 'reverting') {
+            trackPendingBoardLog(entry.id);
+          }
+          var badge = document.querySelector('[data-board-log-status="' + entry.id + '"]');
+          if (badge) {
+            if (entry.status === 'synced') {
+              badge.className = 'badge rounded-pill bg-success-subtle text-success';
+              badge.textContent = 'Synced to Odoo';
+            } else if (entry.status === 'failed') {
+              badge.className = 'badge rounded-pill bg-danger-subtle text-danger';
+              badge.textContent = 'Sync failed';
+              badge.title = entry.error_message || '';
+            }
+          }
+        });
+      } catch (_e) {}
+    }
+    hydrateRecentBoardLogsOnLoad();
 
     // Toggle collapsible optional details (Vehicle, Time, Gate)
     var toggleBtn = document.getElementById('toggleDetailsBtn');
@@ -1391,6 +1437,8 @@
           var list = document.getElementById('recentBoardLogsList');
           if (section) section.classList.remove('d-none');
           if (list) {
+            var emptyNotice = document.getElementById('emptyBoardLogsNotice');
+            if (emptyNotice) emptyNotice.remove();
             var row = document.createElement('div');
             row.className = 'd-flex flex-wrap justify-content-between align-items-center gap-2 border rounded-3 px-3 py-2';
             row.setAttribute('data-board-log-row', result.item.id);
