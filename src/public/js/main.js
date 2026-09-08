@@ -109,6 +109,11 @@ function hideAppLoading() {
   finishTopProgress();
 }
 
+window.startTopProgress = startTopProgress;
+window.finishTopProgress = finishTopProgress;
+window.hideAppLoading = hideAppLoading;
+window.showAppLoading = showAppLoading;
+
 function setupPopupErrors() {
   document.querySelectorAll('[data-popup-error="true"]').forEach((element) => {
     if (!(element instanceof HTMLElement) || element.dataset.popupShown === 'true') return;
@@ -488,12 +493,19 @@ document.addEventListener('submit', (event) => {
     return;
   }
 
-  const loadingDisabled = form.getAttribute('data-no-loading') === 'true';
+  const isDownload = Boolean(
+    (typeof form.action === 'string' && form.action.includes('.pdf')) ||
+    form.hasAttribute('download') ||
+    form.getAttribute('data-download') === 'true'
+  );
+  const loadingDisabled = form.getAttribute('data-no-loading') === 'true' || isDownload;
   const loadingMessage = submitter?.getAttribute('data-loading-message') || form.getAttribute('data-loading-message') || 'Submitting, please wait...';
   const rawTimeout = submitter?.getAttribute('data-loading-timeout') || form.getAttribute('data-loading-timeout');
   const loadingTimeout = rawTimeout ? parseInt(rawTimeout, 10) : undefined;
   if (!loadingDisabled) {
     showAppLoading(loadingMessage, loadingTimeout);
+  } else if (!isDownload) {
+    startTopProgress();
   }
   // Keep long-running forms visible when they opt out of the full-screen overlay.
   if (submitter) {

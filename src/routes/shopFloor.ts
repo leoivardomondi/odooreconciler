@@ -31,7 +31,11 @@ import { sendMailWithConfig } from '../services/mailTransport';
 import { logEvent } from '../services/logService';
 import { isValidMachineComponent, MACHINE_BREAKDOWN_CATALOG } from '../services/machineBreakdownCatalog';
 import { env } from '../utils/env';
-import { renderWeeklyShopFloorReportPdf, sendWeeklyShopFloorReport } from '../services/weeklyShopFloorReportService';
+import {
+  sendWeeklyShopFloorReport,
+  getOrBuildWeeklyShopFloorReportPdf,
+  generateAndCacheWeeklyReportPdf,
+} from '../services/weeklyShopFloorReportService';
 import { getConfirmedMoQueueSchedule, getMoOverdueState } from '../services/moOverdueService';
 import { isBoardProductName } from '../services/boardProductClassifier';
 import { getStockMirrorForPage, recordOptimisticStockAddition, refreshStockMirror } from '../services/stockMirrorService';
@@ -1889,6 +1893,9 @@ router.get('/shop-floor/operators', async (req: Request, res: Response) => {
       }
     }
 
+    // Non-blocking background warmup of weekly PDF snapshot so download is instant (<50ms)
+    void getOrBuildWeeklyShopFloorReportPdf().catch(() => {});
+
     res.render('shop-floor-operators', {
       pageTitle: 'Shop Floor Operators',
       appName: env.APP_NAME,
@@ -2616,10 +2623,16 @@ router.get('/shop-floor/operators/weekly-report.pdf', async (req: Request, res: 
   try {
     const fromDate = typeof req.query.fromDate === 'string' ? req.query.fromDate : undefined;
     const toDate = typeof req.query.toDate === 'string' ? req.query.toDate : undefined;
-    const pdf = await renderWeeklyShopFloorReportPdf(undefined, { fromDate, toDate });
-    const filename = `shop-floor-weekly-${fromDate || 'report'}-to-${toDate || new Date().toISOString().slice(0, 10)}.pdf`;
+    const forceRefresh = req.query.refresh === 'true';
+
+    const { pdf, filename, fromCache } = await getOrBuildWeeklyShopFloorReportPdf(
+      { fromDate, toDate },
+      { forceRefresh },
+    );
+
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.setHeader('X-Report-Cached', fromCache ? 'HIT' : 'MISS');
     res.send(pdf);
   } catch (error) {
     res.status(500).send(error instanceof Error ? error.message : 'Could not generate report.');

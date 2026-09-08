@@ -7,6 +7,9 @@ exports.buildWeeklyShopFloorReport = buildWeeklyShopFloorReport;
 exports.renderWeeklyShopFloorReportPdf = renderWeeklyShopFloorReportPdf;
 exports.sendWeeklyShopFloorReport = sendWeeklyShopFloorReport;
 exports.startWeeklyShopFloorReportInterval = startWeeklyShopFloorReportInterval;
+exports.getWeeklyReportCacheKey = getWeeklyReportCacheKey;
+exports.getOrBuildWeeklyShopFloorReportPdf = getOrBuildWeeklyShopFloorReportPdf;
+exports.generateAndCacheWeeklyReportPdf = generateAndCacheWeeklyReportPdf;
 const pdfkit_1 = __importDefault(require("pdfkit"));
 const repositories_1 = require("../models/repositories");
 const odooClient_1 = require("./odooClient");
@@ -37,15 +40,37 @@ function nairobiDateTime(value) {
     const date = parseOdooDateTime(value);
     return date ? new Intl.DateTimeFormat('en-KE', { timeZone: 'Africa/Nairobi', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', hour12: true }).format(date) : '-';
 }
-function isOvertimeCheckIn(value) {
+function isSundayCheckIn(value) {
     if (!value)
         return false;
     const date = parseOdooDateTime(value);
     if (!date)
         return false;
-    const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Nairobi', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(date);
+    const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Nairobi', weekday: 'short' }).formatToParts(date);
+    return parts.find((part) => part.type === 'weekday')?.value === 'Sun';
+}
+function isOffHoursCheckIn(value) {
+    if (!value)
+        return false;
+    const date = parseOdooDateTime(value);
+    if (!date)
+        return false;
+    const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Nairobi', weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(date);
+    const weekday = parts.find((part) => part.type === 'weekday')?.value || '';
     const hour = Number(parts.find((part) => part.type === 'hour')?.value || 0);
+    if (weekday === 'Sun')
+        return true;
+    if (weekday === 'Sat' && hour >= 13)
+        return true;
     return hour >= 17;
+}
+function isOvernightRecord(entry) {
+    if (!entry.check_in || !entry.check_out)
+        return false;
+    return nairobiDateKey(entry.check_in) !== nairobiDateKey(entry.check_out);
+}
+function isOvertimeOrOffHoursRecord(entry) {
+    return isSundayCheckIn(entry.check_in) || isOffHoursCheckIn(entry.check_in) || isOvernightRecord(entry);
 }
 function isLateCheckIn(value) {
     if (!value)
@@ -92,10 +117,43 @@ function defaultReportWindow() {
     return { start: addDays(today, -daysSinceWednesday), end };
 }
 async function getOperators(client, companyId) {
-    const departments = (await Promise.all(DEPARTMENTS.map((name) => client.findDepartmentByName(name)))).flat();
-    const unique = [...new Map(departments.map((department) => [department.id, department])).values()];
-    const employees = (await Promise.all(unique.map((department) => client.getEmployeesByDepartment(department.id, companyId)))).flat();
-    return [...new Map(employees.map((employee) => [employee.id, employee])).values()];
+    // 1. Check persistent operator cache from MySQL (0 Odoo RPC calls, instant <5ms)
+    try {
+        const cached = await (0, repositories_1.getShopFloorSharedCache)('shop-floor:operators-list:v1');
+        if (cached?.data?.allOperators && cached.data.allOperators.length > 0) {
+            return cached.data.allOperators.map((op) => ({ id: op.id, name: op.name }));
+        }
+    }
+    catch (err) {
+        console.warn('[weekly-report] Failed to read cached operator list:', err);
+    }
+    // 2. Batch query fallback: 1 query for departments, 1 query for employees (2 calls instead of 10)
+    try {
+        const departments = await client.searchReadRecords('hr.department', {
+            domain: [
+                ['company_id', '=', companyId],
+                ['name', 'in', DEPARTMENTS],
+            ],
+            fields: ['id', 'name'],
+        });
+        const deptIds = departments.map((d) => d.id);
+        if (!deptIds.length)
+            return [];
+        const employees = await client.searchReadRecords('hr.employee', {
+            domain: [
+                ['company_id', '=', companyId],
+                ['department_id', 'in', deptIds],
+                ['active', '=', true],
+            ],
+            fields: ['id', 'name'],
+            limit: 200,
+        });
+        return [...new Map(employees.map((e) => [e.id, e])).values()];
+    }
+    catch (err) {
+        console.warn('[weekly-report] Batch department/employee search failed:', err);
+        return [];
+    }
 }
 async function buildWeeklyShopFloorReport(scope) {
     const settings = await (0, repositories_1.getSettings)();
@@ -145,29 +203,50 @@ async function buildWeeklyShopFloorReport(scope) {
     }).filter((date) => new Intl.DateTimeFormat('en-US', { timeZone: 'Africa/Nairobi', weekday: 'short' }).format(new Date(`${date}T12:00:00Z`)) !== 'Sun');
     // Include the previous day so a completed overnight overtime row can cover
     // the following workday when its checkout is recorded on that date.
-    const attendanceQueryDates = [...new Set([previousDate(reportStart), ...dates])];
-    const attendanceByDate = operators.length
-        ? await Promise.all(attendanceQueryDates.map((date) => client.getBulkAttendance(operators.map((operator) => operator.id), date).catch(() => [])))
-        : attendanceQueryDates.map(() => []);
-    const allAttendanceRecords = attendanceByDate.flat();
-    const attendance = operators.map((operator) => ({
-        name: operator.name,
-        days: dates.map((date, index) => {
-            const employeeRecords = allAttendanceRecords.filter((entry) => (Array.isArray(entry.employee_id) ? entry.employee_id[0] : entry.employee_id) === operator.id).filter((entry) => {
-                const startsOnWorkday = nairobiDateKey(entry.check_in) === date;
-                const coversWorkday = isOvertimeCheckIn(entry.check_in)
-                    && (0, attendanceReconciliation_1.completedAttendanceCoversWorkday)(entry, date, nairobiDateKey);
-                return startsOnWorkday || coversWorkday;
-            });
-            const regularRecords = employeeRecords.filter((entry) => nairobiDateKey(entry.check_in) === date && !isOvertimeCheckIn(entry.check_in));
+    const earliestDate = previousDate(reportStart);
+    const latestDate = reportEnd;
+    const allAttendanceRecords = operators.length
+        ? (await client.getBulkAttendanceRange(operators.map((operator) => operator.id), earliestDate, latestDate).catch(() => []))
+        : [];
+    const attendance = operators.map((operator) => {
+        const employeeAllRecords = allAttendanceRecords.filter((entry) => (Array.isArray(entry.employee_id) ? entry.employee_id[0] : entry.employee_id) === operator.id);
+        const overtimeRecords = employeeAllRecords
+            .filter((entry) => {
+            const inDate = nairobiDateKey(entry.check_in);
+            const outDate = entry.check_out ? nairobiDateKey(entry.check_out) : inDate;
+            const inWindow = (inDate >= reportStart && inDate <= reportEnd) || (outDate >= reportStart && outDate <= reportEnd);
+            return inWindow && isOvertimeOrOffHoursRecord(entry);
+        })
+            .sort((a, b) => String(a.check_in).localeCompare(String(b.check_in)))
+            .map((entry) => {
+            const inDate = nairobiDateKey(entry.check_in);
+            const outDate = entry.check_out ? nairobiDateKey(entry.check_out) : inDate;
+            const isSun = isSundayCheckIn(entry.check_in);
+            const isOvernight = isOvernightRecord(entry);
+            const shiftType = (isSun && isOvernight)
+                ? 'Sunday / Overnight'
+                : isSun
+                    ? 'Sunday Shift'
+                    : isOvernight
+                        ? 'Overnight Shift'
+                        : 'Night / Off-Hours';
+            const workedHours = Number(entry.worked_hours || (entry.check_in && entry.check_out
+                ? ((parseOdooDateTime(entry.check_out)?.getTime() || 0) - (parseOdooDateTime(entry.check_in)?.getTime() || 0)) / 3600000
+                : 0));
+            return {
+                dateRange: inDate === outDate ? inDate : `${inDate} -> ${outDate}`,
+                checkIn: entry.check_in,
+                checkOut: entry.check_out || null,
+                workedHours,
+                shiftType,
+            };
+        });
+        const totalOvertimeHours = overtimeRecords.reduce((sum, r) => sum + r.workedHours, 0);
+        const days = dates.map((date) => {
+            const regularRecords = employeeAllRecords.filter((entry) => nairobiDateKey(entry.check_in) === date && !isOffHoursCheckIn(entry.check_in));
             const classification = (0, attendanceReconciliation_1.classifyAttendanceRecords)(regularRecords);
-            const overnightCoverage = employeeRecords.find((entry) => nairobiDateKey(entry.check_in) !== date
-                && isOvertimeCheckIn(entry.check_in)
-                && (0, attendanceReconciliation_1.completedAttendanceCoversWorkday)(entry, date, nairobiDateKey));
+            const overnightCoverage = employeeAllRecords.find((entry) => (0, attendanceReconciliation_1.completedAttendanceCoversWorkday)(entry, date, nairobiDateKey));
             const record = classification.record || overnightCoverage || null;
-            const overtimeRecords = employeeRecords
-                .filter((entry) => nairobiDateKey(entry.check_in) === date && entry !== record && isOvertimeCheckIn(entry.check_in))
-                .sort((left, right) => String(left.check_in).localeCompare(String(right.check_in)));
             return {
                 date,
                 status: classification.status === 'Absent' && overnightCoverage ? 'Overtime covered' : classification.status,
@@ -175,18 +254,17 @@ async function buildWeeklyShopFloorReport(scope) {
                 checkIn: record?.check_in || null,
                 checkOut: record?.check_out || null,
                 workedHours: Number(record?.worked_hours || (record?.check_in && record?.check_out ? ((parseOdooDateTime(record.check_out)?.getTime() || 0) - (parseOdooDateTime(record.check_in)?.getTime() || 0)) / 3600000 : 0)),
-                missingCheckoutRecords: employeeRecords.filter((entry) => nairobiDateKey(entry.check_in) === date && !entry.check_out),
-                overnight: Boolean(record?.check_in && record?.check_out && nairobiDateKey(record.check_in) === date && nairobiDateKey(record.check_in) !== nairobiDateKey(record.check_out)),
-                overtimeSessions: overtimeRecords.map((overtimeRecord) => ({
-                    checkIn: overtimeRecord.check_in,
-                    checkOut: overtimeRecord.check_out,
-                    workedHours: Number(overtimeRecord.worked_hours || (overtimeRecord.check_in && overtimeRecord.check_out
-                        ? ((parseOdooDateTime(overtimeRecord.check_out)?.getTime() || 0) - (parseOdooDateTime(overtimeRecord.check_in)?.getTime() || 0)) / 3600000
-                        : 0)),
-                })),
+                missingCheckoutRecords: employeeAllRecords.filter((entry) => nairobiDateKey(entry.check_in) === date && !entry.check_out),
+                overnight: Boolean(record && isOvernightRecord(record)),
             };
-        }),
-    }));
+        });
+        return {
+            name: operator.name,
+            overtimeRecords,
+            totalOvertimeHours,
+            days,
+        };
+    });
     return { generatedAt: new Date(), start: reportStart, end: reportEnd, reportingBaseline, companyName: 'URBAN VIBE INTERIOR DESIGN COMPANY LTD', warehouseId, boardSummary, boardLoggingByOperator, penalties, moCompletion, overdueNotStarted, attendance };
 }
 async function renderWeeklyShopFloorReportPdf(reportInput, scope) {
@@ -262,6 +340,13 @@ async function renderWeeklyShopFloorReportPdf(reportInput, scope) {
     const missingCheckoutSummary = attendanceTotals.noCheckout
         ? `Did not check out: ${attendanceTotals.noCheckout} employee record(s)${missingCheckoutNames.length ? ` - ${missingCheckoutNames.join(', ')}` : ''}.`
         : 'Missing checkouts: 0';
+    const totalOvertimeShifts = report.attendance.reduce((sum, p) => sum + p.overtimeRecords.length, 0);
+    const totalOvertimeHours = report.attendance.reduce((sum, p) => sum + p.totalOvertimeHours, 0);
+    const overtimeStaff = [...new Set(report.attendance.filter((p) => p.overtimeRecords.length).map((p) => p.name))];
+    const exceededSessions = report.attendance.flatMap((p) => p.overtimeRecords.filter((r) => r.workedHours > 8));
+    const overtimePoint = totalOvertimeShifts
+        ? `${totalOvertimeShifts} off-hours overtime / overnight shift(s) logged (${totalOvertimeHours.toFixed(1)}h total) by ${overtimeStaff.join(', ')}.${exceededSessions.length ? ` Reminder: ${exceededSessions.length} session(s) exceeded 8h—operators are reminded to check out from overtime before the morning shift starts.` : ''}`
+        : 'No off-hours overtime or overnight shifts logged.';
     const criticalPoints = [
         `${report.boardSummary?.missingBoards || 0} cutting MO(s) from ${report.start} to ${report.end} have no same-day board inventory log; current coverage is ${coverage}%.`,
         `${report.penalties?.undoneReceipts || 0} purchased-board receipt(s) need validation.`,
@@ -269,6 +354,7 @@ async function renderWeeklyShopFloorReportPdf(reportInput, scope) {
         `${report.overdueNotStarted.length} manufacturing order(s) are overdue and have not started.`,
         `${attendanceTotals.absent} absence record(s) were recorded across ${report.attendance[0]?.days.length || 0} working day(s). ${missingCheckoutSummary}`,
         `${attendanceTotals.late} late check-in(s) were recorded after 8:20 AM Nairobi time.`,
+        overtimePoint,
     ];
     criticalPoints.forEach((point, index) => {
         document.circle(48, document.y + 5, 3).fill(index === 0 || index === 2 ? '#dc2626' : copper);
@@ -306,7 +392,7 @@ async function renderWeeklyShopFloorReportPdf(reportInput, scope) {
     const usageActions = usageEvidence.filter((item) => item.score < 90).map((item) => item.label);
     document.font('Helvetica-Bold').fontSize(7.5).fillColor(usageActions.length ? '#dc2626' : '#16a34a').text(usageActions.length ? `DIRECTOR ACTION: Require completion of ${usageActions.join(', ')} and review exceptions with the responsible operators.` : `DIRECTOR NOTE: Checkout data integrity is complete. ${attendanceTotals.absent} regular-shift absence(s) and separate overnight/overtime records are reported independently.`, 42, document.y, { width: contentWidth, lineGap: 2 });
     document.moveDown(.5);
-    const checkoutRows = report.attendance.flatMap((person) => person.days.flatMap((day) => day.missingCheckoutRecords.map((record) => ({ person, day, record }))));
+    const checkoutRows = report.attendance.flatMap((person) => person.days.flatMap((day) => day.missingCheckoutRecords.length ? [{ person, day, record: day.missingCheckoutRecords[0] }] : []));
     if (checkoutRows.length) {
         section('Missing checkout details', 'Missing checkout means the Odoo attendance row has check_in but its check_out value is blank. A different check-in and checkout date is not a failure.');
         const checkoutCols = [
@@ -331,35 +417,45 @@ async function renderWeeklyShopFloorReportPdf(reportInput, scope) {
             document.y = y + 30;
         });
     }
-    const overtimeCheckIns = report.attendance.flatMap((person) => person.days
-        .flatMap((day) => [
-        ...(day.overnight && day.checkIn && day.checkOut && nairobiDateKey(day.checkIn) === day.date ? [{ name: person.name, day, session: { checkIn: day.checkIn, checkOut: day.checkOut, workedHours: day.workedHours } }] : []),
-        ...day.overtimeSessions.map((session) => ({ name: person.name, day, session })),
-    ]));
-    if (overtimeCheckIns.length) {
-        section('Overnight and overtime records', 'Overnight attendance is complete when the same Odoo row has a checkout, even when checkout is on the following date. Advise operators to use separate logins for overtime and check out before 8:00 AM before starting the new day.');
+    const allOvertimeEntries = report.attendance.flatMap((person) => person.overtimeRecords.map((session) => ({ name: person.name, session })));
+    section('Overnight and overtime records', 'Off-hours overtime is recorded when an operator logs in after daytime operators have checked out for the day, on a Sunday, or on an overnight shift.');
+    if (allOvertimeEntries.length) {
         const overtimeCols = [
-            { label: 'EMPLOYEE', x: 48, width: 190 },
-            { label: 'DATE', x: 244, width: 70 },
-            { label: 'CHECK-IN', x: 318, width: 72 },
-            { label: 'CHECK-OUT', x: 394, width: 72 },
-            { label: 'HOURS / STATUS', x: 470, width: 76 },
+            { label: 'EMPLOYEE', x: 48, width: 140 },
+            { label: 'DATES', x: 192, width: 100 },
+            { label: 'CHECK-IN', x: 296, width: 76 },
+            { label: 'CHECK-OUT', x: 376, width: 76 },
+            { label: 'HOURS / SHIFT TYPE', x: 456, width: 92 },
         ];
         tableHeader(overtimeCols);
-        overtimeCheckIns.forEach(({ name, day, session }, index) => {
-            ensureSpace(30);
+        allOvertimeEntries.forEach(({ name, session }, index) => {
+            const isExceeded = session.workedHours > 8;
+            const rowHeight = isExceeded ? 32 : 28;
+            ensureSpace(rowHeight + 2);
             if (document.y < 55)
                 tableHeader(overtimeCols);
             const y = document.y;
-            document.rect(42, y, contentWidth, 28).fill(index % 2 ? '#f8fafc' : '#ffffff');
-            document.font('Helvetica-Bold').fontSize(7.5).fillColor(ink).text(name, 48, y + 9, { width: 190, lineBreak: false });
-            document.font('Helvetica').fontSize(7.5).text(day.date, 244, y + 9, { width: 70, lineBreak: false });
-            document.font('Helvetica').fontSize(6.8).text(nairobiDateTime(session.checkIn), 318, y + 9, { width: 72, lineBreak: false });
-            document.text(session.checkOut ? nairobiDateTime(session.checkOut) : 'Open', 394, y + 9, { width: 72, lineBreak: false });
-            document.font('Helvetica-Bold').fontSize(6.8).fillColor(session.checkOut ? '#16a34a' : '#b45309').text(`${Number(session.workedHours || 0).toFixed(1)}h ${session.checkOut ? 'Complete' : 'Open'}`, 470, y + 9, { width: 76, lineBreak: false });
-            document.y = y + 28;
+            document.rect(42, y, contentWidth, rowHeight).fill(index % 2 ? '#f8fafc' : '#ffffff');
+            document.font('Helvetica-Bold').fontSize(7.5).fillColor(ink).text(name, 48, y + (isExceeded ? 7 : 9), { width: 140, lineBreak: false });
+            document.font('Helvetica').fontSize(7.2).text(session.dateRange, 192, y + (isExceeded ? 7 : 9), { width: 100, lineBreak: false });
+            document.font('Helvetica').fontSize(6.8).text(nairobiDateTime(session.checkIn), 296, y + (isExceeded ? 7 : 9), { width: 76, lineBreak: false });
+            document.text(session.checkOut ? nairobiDateTime(session.checkOut) : 'Open', 376, y + (isExceeded ? 7 : 9), { width: 76, lineBreak: false });
+            document.font('Helvetica-Bold').fontSize(6.8).fillColor(session.checkOut ? '#16a34a' : '#b45309').text(`${Number(session.workedHours || 0).toFixed(1)}h ${session.shiftType}`, 456, y + (isExceeded ? 5 : 9), { width: 92, lineBreak: false });
+            if (isExceeded) {
+                document.font('Helvetica').fontSize(5.6).fillColor('#b45309').text('* Exceeds 8h (split required)', 456, y + 17, { width: 92, lineBreak: false });
+            }
+            document.y = y + rowHeight;
         });
     }
+    else {
+        document.font('Helvetica').fontSize(8.5).fillColor(muted).text('No off-hours overtime, night shifts, or Sunday records were logged during this reporting period.', 48, document.y + 8);
+        document.y += 24;
+    }
+    ensureSpace(32);
+    const recY = document.y + 4;
+    document.roundedRect(42, recY, contentWidth, 24, 4).fillAndStroke('#fffbeb', '#fde68a');
+    document.font('Helvetica-Bold').fontSize(7.4).fillColor('#92400e').text('REMINDER: When working night or weekend overtime, check out before the morning shift arrives, then check in to start the new workday.', 50, recY + 7, { width: contentWidth - 16, lineGap: 2 });
+    document.y = recY + 30;
     const boardLogTotals = report.boardLoggingByOperator.reduce((totals, operator) => {
         totals.records += operator.records;
         totals.boards += operator.boards;
@@ -447,11 +543,12 @@ async function renderWeeklyShopFloorReportPdf(reportInput, scope) {
     document.moveDown(.55);
     section('Attendance system usage', 'Attendance rate measures scheduled-shift coverage. A completed overnight overtime row covers the following workday and is shown separately; it does not create an absence or no-check-in exception. Checkout data integrity measures whether recorded Odoo rows have a checkout.');
     const usageCols = [
-        { label: 'EMPLOYEE', x: 48, width: 170 },
-        { label: 'CHECK-IN', x: 224, width: 68 },
-        { label: 'CHECK-OUT', x: 296, width: 76 },
-        { label: 'COMPLETE', x: 376, width: 74 },
-        { label: 'SYSTEM USAGE', x: 454, width: 92 },
+        { label: 'EMPLOYEE', x: 48, width: 146 },
+        { label: 'CHECK-IN', x: 198, width: 60 },
+        { label: 'CHECK-OUT', x: 262, width: 66 },
+        { label: 'COMPLETE', x: 332, width: 66 },
+        { label: 'OVERTIME', x: 402, width: 74 },
+        { label: 'SYSTEM USAGE', x: 480, width: 66 },
     ];
     tableHeader(usageCols);
     report.attendance.forEach((person, index) => {
@@ -467,11 +564,12 @@ async function renderWeeklyShopFloorReportPdf(reportInput, scope) {
         const systemRate = expectedDays ? Math.round((completeShifts / expectedDays) * 100) : 0;
         const y = document.y;
         document.rect(42, y, contentWidth, 29).fill(index % 2 ? '#f8fafc' : '#ffffff');
-        document.font('Helvetica-Bold').fontSize(7.5).fillColor(ink).text(person.name, 48, y + 9, { width: 170, lineBreak: false });
-        document.font('Helvetica').fontSize(7.5).fillColor(checkInRate >= 90 ? '#16a34a' : checkInRate >= 75 ? '#d97706' : '#dc2626').text(`${checkInRate}%`, 224, y + 9, { width: 68, align: 'center' });
-        document.fillColor(checkOutRate >= 90 ? '#16a34a' : checkOutRate >= 75 ? '#d97706' : '#dc2626').text(`${checkOutRate}%`, 296, y + 9, { width: 76, align: 'center' });
-        document.fillColor(ink).text(`${completeShifts}/${expectedDays}`, 376, y + 9, { width: 74, align: 'center' });
-        document.font('Helvetica-Bold').fillColor(systemRate >= 90 ? '#16a34a' : systemRate >= 75 ? '#d97706' : '#dc2626').text(`${systemRate}%`, 454, y + 9, { width: 92, align: 'center' });
+        document.font('Helvetica-Bold').fontSize(7.5).fillColor(ink).text(person.name, 48, y + 9, { width: 146, lineBreak: false });
+        document.font('Helvetica').fontSize(7.5).fillColor(checkInRate >= 90 ? '#16a34a' : checkInRate >= 75 ? '#d97706' : '#dc2626').text(`${checkInRate}%`, 198, y + 9, { width: 60, align: 'center' });
+        document.fillColor(checkOutRate >= 90 ? '#16a34a' : checkOutRate >= 75 ? '#d97706' : '#dc2626').text(`${checkOutRate}%`, 262, y + 9, { width: 66, align: 'center' });
+        document.fillColor(ink).text(`${completeShifts}/${expectedDays}`, 332, y + 9, { width: 66, align: 'center' });
+        document.font('Helvetica-Bold').fontSize(7.2).fillColor(person.overtimeRecords.length ? '#b45309' : muted).text(person.overtimeRecords.length ? `${person.totalOvertimeHours.toFixed(1)}h` : '-', 402, y + 9, { width: 74, align: 'center' });
+        document.font('Helvetica-Bold').fontSize(7.5).fillColor(systemRate >= 90 ? '#16a34a' : systemRate >= 75 ? '#d97706' : '#dc2626').text(`${systemRate}%`, 480, y + 9, { width: 66, align: 'center' });
         document.y = y + 29;
     });
     document.moveDown(.3);
@@ -492,7 +590,13 @@ async function renderWeeklyShopFloorReportPdf(reportInput, scope) {
     return done;
 }
 async function sendWeeklyShopFloorReport(additionalRecipients = [], includeDefaultRecipients = true) {
-    const [settings, users, pdf] = await Promise.all([(0, repositories_1.getSettings)(), (0, repositories_1.getApprovedAuthUsers)(), renderWeeklyShopFloorReportPdf()]);
+    const [settings, users, reportResult] = await Promise.all([
+        (0, repositories_1.getSettings)(),
+        (0, repositories_1.getApprovedAuthUsers)(),
+        getOrBuildWeeklyShopFloorReportPdf(),
+    ]);
+    const pdf = reportResult.pdf;
+    const filename = reportResult.filename;
     const defaultRecipients = includeDefaultRecipients ? [
         env_1.env.AUTH_LOCAL_ADMIN_EMAIL.trim().toLowerCase(),
         ...users.filter((user) => user.active && RECIPIENT_NAMES.some((name) => user.email.toLowerCase().includes(name))).map((user) => user.email.toLowerCase()),
@@ -503,7 +607,13 @@ async function sendWeeklyShopFloorReport(additionalRecipients = [], includeDefau
         ].filter(Boolean))];
     if (!recipients.length)
         throw new Error('No active approved users matched dbadmin, Charles, or Raphael.');
-    const mailResult = await (0, mailTransport_1.sendMailWithConfig)(settings.mail, { to: recipients.join(', '), subject: 'Wednesday Shop Floor Accountability Report', text: 'Attached is the Urban Vibe weekly Shop Floor accountability report covering board logging, receipts, overdue manufacturing orders, attendance, and system usage.', html: '<p>Attached is the Urban Vibe weekly Shop Floor accountability report covering board logging, receipts, overdue manufacturing orders, attendance, and system usage.</p>', attachments: [{ filename: `shop-floor-wednesday-${dateOnly(new Date())}.pdf`, content: pdf, contentType: 'application/pdf' }] });
+    const mailResult = await (0, mailTransport_1.sendMailWithConfig)(settings.mail, {
+        to: recipients.join(', '),
+        subject: 'Wednesday Shop Floor Accountability Report',
+        text: 'Attached is the Urban Vibe weekly Shop Floor accountability report covering board logging, receipts, overdue manufacturing orders, attendance, overtime, and system usage.',
+        html: '<p>Attached is the Urban Vibe weekly Shop Floor accountability report covering board logging, receipts, overdue manufacturing orders, attendance, overtime, and system usage.</p>',
+        attachments: [{ filename, content: pdf, contentType: 'application/pdf' }],
+    });
     const smtpInfo = mailResult.info;
     await (0, logService_1.logEvent)('info', 'Wednesday Shop Floor report sent', {
         recipients,
@@ -537,4 +647,67 @@ function startWeeklyShopFloorReportInterval() {
     };
     void check();
     interval = setInterval(() => void check(), 60 * 60 * 1000);
+    // Background pre-warm the default report PDF snapshot so downloads are instant (<50ms)
+    setTimeout(() => {
+        void generateAndCacheWeeklyReportPdf().catch((err) => {
+            console.warn('[weekly-report] Initial warmup failed:', err?.message || err);
+        });
+    }, 5 * 60 * 1000);
+}
+function getWeeklyReportCacheKey(start, end) {
+    return `shop-floor:weekly-report-pdf:${start}:${end}`;
+}
+async function getOrBuildWeeklyShopFloorReportPdf(scope, options) {
+    const settings = await (0, repositories_1.getSettings)();
+    const reportingBaseline = settings.mail.shopFloorReportingStartDate;
+    let reportStart;
+    let reportEnd;
+    if (scope?.fromDate && scope?.toDate && /^\d{4}-\d{2}-\d{2}$/.test(String(scope.fromDate)) && /^\d{4}-\d{2}-\d{2}$/.test(String(scope.toDate))) {
+        reportStart = (0, shopFloorReporting_1.clampShopFloorReportingDate)(String(scope.fromDate), reportingBaseline);
+        reportEnd = (0, shopFloorReporting_1.clampShopFloorReportingDate)(String(scope.toDate), reportingBaseline);
+    }
+    else {
+        const window = defaultReportWindow();
+        reportStart = (0, shopFloorReporting_1.clampShopFloorReportingDate)(window.start, reportingBaseline);
+        reportEnd = (0, shopFloorReporting_1.clampShopFloorReportingDate)(window.end, reportingBaseline);
+    }
+    const cacheKey = getWeeklyReportCacheKey(reportStart, reportEnd);
+    const defaultFilename = `shop-floor-weekly-${reportStart}-to-${reportEnd}.pdf`;
+    if (!options?.forceRefresh) {
+        try {
+            const cached = await (0, repositories_1.getShopFloorSharedCache)(cacheKey);
+            if (cached?.data?.pdfBase64) {
+                const buffer = Buffer.from(cached.data.pdfBase64, 'base64');
+                const cacheAgeMs = Date.now() - new Date(cached.syncedAt).getTime();
+                // If older than 60 minutes, trigger non-blocking background revalidation
+                if (cacheAgeMs > 60 * 60 * 1000) {
+                    void generateAndCacheWeeklyReportPdf({ fromDate: reportStart, toDate: reportEnd }).catch((e) => {
+                        console.warn('[weekly-report] Background revalidation failed:', e);
+                    });
+                }
+                return { pdf: buffer, filename: cached.data.filename || defaultFilename, fromCache: true };
+            }
+        }
+        catch (err) {
+            console.warn('[weekly-report] Error reading cached PDF:', err);
+        }
+    }
+    // Generate fresh PDF
+    const pdf = await renderWeeklyShopFloorReportPdf(undefined, { fromDate: reportStart, toDate: reportEnd });
+    try {
+        await (0, repositories_1.saveShopFloorSharedCache)(cacheKey, {
+            pdfBase64: pdf.toString('base64'),
+            filename: defaultFilename,
+            generatedAt: new Date().toISOString(),
+            reportStart,
+            reportEnd,
+        });
+    }
+    catch (err) {
+        console.warn('[weekly-report] Failed to save generated PDF to cache:', err);
+    }
+    return { pdf, filename: defaultFilename, fromCache: false };
+}
+async function generateAndCacheWeeklyReportPdf(scope) {
+    await getOrBuildWeeklyShopFloorReportPdf(scope, { forceRefresh: true });
 }

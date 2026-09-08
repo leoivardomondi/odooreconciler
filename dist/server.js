@@ -22,6 +22,7 @@ const shopFloorPendingSyncService_1 = require("./src/services/shopFloorPendingSy
 const mpesaExtractionJobService_1 = require("./src/services/mpesaExtractionJobService");
 const invoiceExtractionJobService_1 = require("./src/services/invoiceExtractionJobService");
 const poBillManualJobService_1 = require("./src/services/poBillManualJobService");
+const weeklyShopFloorReportService_1 = require("./src/services/weeklyShopFloorReportService");
 const startupState_1 = require("./src/services/startupState");
 const paths_1 = require("./src/utils/paths");
 const configuredStartupStepTimeoutMs = Number(env_1.env.STARTUP_STEP_TIMEOUT_MS || 30000);
@@ -201,6 +202,7 @@ async function startServer() {
             (0, shopFloorOperatorAccessSyncService_1.startShopFloorOperatorAccessSyncInterval)();
             (0, boardIntakeSyncService_1.startBoardIntakeSyncInterval)();
             (0, shopFloorPendingSyncService_1.startShopFloorPendingSyncInterval)();
+            (0, weeklyShopFloorReportService_1.startWeeklyShopFloorReportInterval)();
             (0, startupState_1.markStartupReady)();
             console.log('[startup] Application initialization completed successfully.');
             writeStartupLog('Application initialization completed successfully.');

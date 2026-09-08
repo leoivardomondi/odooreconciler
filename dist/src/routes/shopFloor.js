@@ -1565,6 +1565,8 @@ router.get('/shop-floor/operators', async (req, res) => {
                 }
             }
         }
+        // Non-blocking background warmup of weekly PDF snapshot so download is instant (<50ms)
+        void (0, weeklyShopFloorReportService_1.getOrBuildWeeklyShopFloorReportPdf)().catch(() => { });
         res.render('shop-floor-operators', {
             pageTitle: 'Shop Floor Operators',
             appName: env_1.env.APP_NAME,
@@ -2257,10 +2259,11 @@ router.get('/shop-floor/operators/weekly-report.pdf', async (req, res) => {
     try {
         const fromDate = typeof req.query.fromDate === 'string' ? req.query.fromDate : undefined;
         const toDate = typeof req.query.toDate === 'string' ? req.query.toDate : undefined;
-        const pdf = await (0, weeklyShopFloorReportService_1.renderWeeklyShopFloorReportPdf)(undefined, { fromDate, toDate });
-        const filename = `shop-floor-weekly-${fromDate || 'report'}-to-${toDate || new Date().toISOString().slice(0, 10)}.pdf`;
+        const forceRefresh = req.query.refresh === 'true';
+        const { pdf, filename, fromCache } = await (0, weeklyShopFloorReportService_1.getOrBuildWeeklyShopFloorReportPdf)({ fromDate, toDate }, { forceRefresh });
         res.setHeader('Content-Type', 'application/pdf');
         res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.setHeader('X-Report-Cached', fromCache ? 'HIT' : 'MISS');
         res.send(pdf);
     }
     catch (error) {

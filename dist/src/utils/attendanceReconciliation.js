@@ -9,7 +9,7 @@ function hasAttendanceCheckout(record) {
 function completedAttendanceCoversWorkday(record, workday, dateKey) {
     if (!record.check_in || !record.check_out)
         return false;
-    return dateKey(record.check_in) < workday && dateKey(record.check_out) === workday;
+    return dateKey(record.check_in) < workday && dateKey(record.check_out) >= workday;
 }
 /**
  * Odoo hr.attendance is one record containing both timestamps. A checkout on

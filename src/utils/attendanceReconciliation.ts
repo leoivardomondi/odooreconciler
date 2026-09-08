@@ -18,7 +18,7 @@ export function completedAttendanceCoversWorkday(
   dateKey: (value: string) => string,
 ) {
   if (!record.check_in || !record.check_out) return false;
-  return dateKey(record.check_in) < workday && dateKey(record.check_out) === workday;
+  return dateKey(record.check_in) < workday && dateKey(record.check_out) >= workday;
 }
 
 /**

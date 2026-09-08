@@ -34,3 +34,8 @@ const attendanceReconciliation_1 = require("./attendanceReconciliation");
     const dateKey = (value) => value.slice(0, 10);
     strict_1.default.equal((0, attendanceReconciliation_1.completedAttendanceCoversWorkday)(record, '2026-08-25', dateKey), true);
 });
+(0, node_test_1.default)('Sunday overnight shift covers Monday workday', () => {
+    const record = { check_in: '2026-09-06T07:39:00+03:00', check_out: '2026-09-07T17:06:00+03:00' };
+    const dateKey = (value) => value.slice(0, 10);
+    strict_1.default.equal((0, attendanceReconciliation_1.completedAttendanceCoversWorkday)(record, '2026-09-07', dateKey), true);
+});

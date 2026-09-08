@@ -35,3 +35,10 @@ test('completed overnight overtime covers the following workday without becoming
   const dateKey = (value: string) => value.slice(0, 10);
   assert.equal(completedAttendanceCoversWorkday(record, '2026-08-25', dateKey), true);
 });
+
+test('Sunday overnight shift covers Monday workday', () => {
+  const record = { check_in: '2026-09-06T07:39:00+03:00', check_out: '2026-09-07T17:06:00+03:00' };
+  const dateKey = (value: string) => value.slice(0, 10);
+  assert.equal(completedAttendanceCoversWorkday(record, '2026-09-07', dateKey), true);
+});
+

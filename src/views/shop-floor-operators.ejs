@@ -54,7 +54,7 @@
           <span>Reports & Export</span>
         </div>
         <div class="operators-page__action-card-body">
-          <form method="get" action="/shop-floor/operators/weekly-report.pdf" class="operators-page__download-form mb-2">
+          <form method="get" action="/shop-floor/operators/weekly-report.pdf" class="operators-page__download-form mb-2" data-no-loading="true" data-download="true">
             <div class="row g-2 align-items-center">
               <div class="col-sm-4">
                 <input type="date" name="fromDate" class="form-control form-control-sm rounded-pill" title="Report Start Date" aria-label="Report start date" placeholder="Start Date" />
@@ -63,7 +63,7 @@
                 <input type="date" name="toDate" class="form-control form-control-sm rounded-pill" title="Report End Date" aria-label="Report end date" placeholder="End Date" />
               </div>
               <div class="col-sm-4">
-                <button type="submit" class="btn btn-sm btn-outline-secondary w-100 rounded-pill fw-semibold">
+                <button type="submit" class="btn btn-sm btn-outline-secondary w-100 rounded-pill fw-semibold download-pdf-btn">
                   <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 2h9l5 5v15H6z"/><path d="M14 2v6h6M9 14h6m-6 4h6"/></svg>
                   Download PDF
                 </button>
@@ -71,13 +71,13 @@
             </div>
           </form>
 
-          <form method="post" action="/shop-floor/operators/send-weekly-report" data-confirm="Send the Wednesday accountability PDF now?" class="operators-page__report-form">
+          <form method="post" action="/shop-floor/operators/send-weekly-report" data-confirm="Send the Wednesday accountability PDF now?" class="operators-page__report-form" data-no-loading="true" data-loading-message="Sending report...">
             <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
             <input type="hidden" name="sendMode" value="all" class="report-send-mode" />
             <div class="input-group input-group-sm">
               <input type="email" name="recipientEmail" class="form-control" placeholder="Recipient email address..." aria-label="Report recipient email" />
-              <button type="submit" class="btn btn-outline-secondary px-3" onclick="this.form.querySelector('.report-send-mode').value='entered'">Send to Email</button>
-              <button type="submit" class="btn btn-primary px-3" onclick="this.form.querySelector('.report-send-mode').value='all'">Send Report to All</button>
+              <button type="submit" class="btn btn-outline-secondary px-3 btn-send-email" data-loading-label="Sending..." onclick="this.form.querySelector('.report-send-mode').value='entered'">Send to Email</button>
+              <button type="submit" class="btn btn-primary px-3 btn-send-all" data-loading-label="Sending to all..." onclick="this.form.querySelector('.report-send-mode').value='all'">Send Report to All</button>
             </div>
           </form>
         </div>
@@ -234,6 +234,52 @@ function prepareInviteIds() {
   var ids = Array.from(checks).map(function(cb) { return cb.value; });
   document.getElementById('selectedOperatorIds').value = ids.join(',');
 }
+
+document.querySelector('.operators-page__download-form')?.addEventListener('submit', async function(e) {
+  e.preventDefault();
+  var form = this;
+  var btn = form.querySelector('button[type="submit"]');
+  if (!btn || btn.dataset.busy === 'true') return;
+  btn.dataset.busy = 'true';
+  var origHtml = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1.5 align-middle" role="status" aria-hidden="true" style="width:0.85rem;height:0.85rem;border-width:1.5px"></span> <span class="align-middle">Preparing PDF...</span>';
+  if (typeof window.startTopProgress === 'function') window.startTopProgress();
+
+  try {
+    var formData = new FormData(form);
+    var params = new URLSearchParams();
+    formData.forEach(function(val, key) {
+      if (val) params.append(key, val);
+    });
+    var url = form.action + (params.toString() ? '?' + params.toString() : '');
+    var res = await fetch(url);
+    if (!res.ok) throw new Error('Download failed');
+    var blob = await res.blob();
+    var blobUrl = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = blobUrl;
+    var disposition = res.headers.get('content-disposition') || '';
+    var filenameMatch = disposition.match(/filename="?([^";]+)"?/);
+    a.download = filenameMatch ? filenameMatch[1] : 'shop-floor-weekly-report.pdf';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function() { URL.revokeObjectURL(blobUrl); }, 2000);
+
+    btn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" class="me-1 text-success align-middle"><polyline points="20 6 9 17 4 12"/></svg> <span class="align-middle">Downloaded!</span>';
+    setTimeout(function() {
+      btn.innerHTML = origHtml;
+      btn.dataset.busy = 'false';
+    }, 1500);
+  } catch (err) {
+    btn.innerHTML = origHtml;
+    btn.dataset.busy = 'false';
+    var fallbackParams = new URLSearchParams(new FormData(form)).toString();
+    window.location.href = form.action + (fallbackParams ? '?' + fallbackParams : '');
+  } finally {
+    if (typeof window.finishTopProgress === 'function') window.finishTopProgress();
+  }
+});
 </script>
 
 <%- include('partials/footer') %>

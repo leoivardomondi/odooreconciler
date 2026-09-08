@@ -201,6 +201,7 @@ export class OdooClient {
   private webSessionCookie: string | null = null;
   private webSessionContext: Record<string, unknown> = {};
   private webRpcSequence = 0;
+  private static verifiedWarehouseCache = new Map<string, { id: number; name: string; code: string; companyId: number; cachedAt: number }>();
 
   constructor(private readonly credentials: OdooCredentials) {
     this.baseUrl = sanitizeBaseUrl(credentials.baseUrl);
@@ -1581,6 +1582,37 @@ export class OdooClient {
         ],
         fields: ['id', 'employee_id', 'check_in', 'check_out', 'worked_hours'],
         limit: employeeIds.length * 5,
+      },
+    );
+
+    return records;
+  }
+
+  /**
+   * Get attendance records for multiple employees across a full date range in a single Odoo request.
+   */
+  async getBulkAttendanceRange(employeeIds: number[], startDate: string, endDate: string) {
+    if (!employeeIds.length) return [];
+    const start = `${startDate} 00:00:00`;
+    const end = `${endDate} 23:59:59`;
+
+    const records = await this.request<Array<{
+      id: number;
+      employee_id: [number, string];
+      check_in: string;
+      check_out: string | null;
+      worked_hours: number;
+    }>>(
+      'hr.attendance',
+      'search_read',
+      {
+        domain: [
+          ['employee_id', 'in', employeeIds],
+          ['check_in', '>=', start],
+          ['check_in', '<=', end],
+        ],
+        fields: ['id', 'employee_id', 'check_in', 'check_out', 'worked_hours'],
+        limit: Math.max(1000, employeeIds.length * 40),
       },
     );
 
@@ -4383,6 +4415,12 @@ export class OdooClient {
 
   private async getVerifiedTargetWarehouse(warehouseId: number) {
     const targetCompanyId = await this.getTargetCompanyId();
+    const cacheKey = `${targetCompanyId}:${warehouseId}`;
+    const cached = OdooClient.verifiedWarehouseCache.get(cacheKey);
+    if (cached && Date.now() - cached.cachedAt < 15 * 60 * 1000) {
+      return cached;
+    }
+
     const warehouses = await this.searchReadRecords<{ id: number; name: string; code: string }>('stock.warehouse', {
       domain: [['id', '=', warehouseId], ['company_id', '=', targetCompanyId]],
       fields: ['id', 'name', 'code'],
@@ -4391,7 +4429,9 @@ export class OdooClient {
     if (!warehouses.length) throw new OdooClientError(`Configured warehouse ${warehouseId} does not belong to ${env.ODOO_TARGET_COMPANY_NAME}.`);
     const code = String(warehouses[0].code || '').trim().toUpperCase();
     if (!code) throw new OdooClientError(`Configured warehouse ${warehouseId} has no Odoo warehouse code.`);
-    return { ...warehouses[0], code, companyId: targetCompanyId };
+    const verified = { ...warehouses[0], code, companyId: targetCompanyId, cachedAt: Date.now() };
+    OdooClient.verifiedWarehouseCache.set(cacheKey, verified);
+    return verified;
   }
 
   async getOpenBoardReceipts(warehouseId: number) {

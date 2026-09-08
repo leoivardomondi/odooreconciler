@@ -118,6 +118,7 @@ class OdooClient {
     webSessionCookie = null;
     webSessionContext = {};
     webRpcSequence = 0;
+    static verifiedWarehouseCache = new Map();
     constructor(credentials) {
         this.credentials = credentials;
         this.baseUrl = (0, helpers_1.sanitizeBaseUrl)(credentials.baseUrl);
@@ -1029,6 +1030,25 @@ class OdooClient {
             ],
             fields: ['id', 'employee_id', 'check_in', 'check_out', 'worked_hours'],
             limit: employeeIds.length * 5,
+        });
+        return records;
+    }
+    /**
+     * Get attendance records for multiple employees across a full date range in a single Odoo request.
+     */
+    async getBulkAttendanceRange(employeeIds, startDate, endDate) {
+        if (!employeeIds.length)
+            return [];
+        const start = `${startDate} 00:00:00`;
+        const end = `${endDate} 23:59:59`;
+        const records = await this.request('hr.attendance', 'search_read', {
+            domain: [
+                ['employee_id', 'in', employeeIds],
+                ['check_in', '>=', start],
+                ['check_in', '<=', end],
+            ],
+            fields: ['id', 'employee_id', 'check_in', 'check_out', 'worked_hours'],
+            limit: Math.max(1000, employeeIds.length * 40),
         });
         return records;
     }
@@ -3033,6 +3053,11 @@ class OdooClient {
     }
     async getVerifiedTargetWarehouse(warehouseId) {
         const targetCompanyId = await this.getTargetCompanyId();
+        const cacheKey = `${targetCompanyId}:${warehouseId}`;
+        const cached = OdooClient.verifiedWarehouseCache.get(cacheKey);
+        if (cached && Date.now() - cached.cachedAt < 15 * 60 * 1000) {
+            return cached;
+        }
         const warehouses = await this.searchReadRecords('stock.warehouse', {
             domain: [['id', '=', warehouseId], ['company_id', '=', targetCompanyId]],
             fields: ['id', 'name', 'code'],
@@ -3043,7 +3068,9 @@ class OdooClient {
         const code = String(warehouses[0].code || '').trim().toUpperCase();
         if (!code)
             throw new OdooClientError(`Configured warehouse ${warehouseId} has no Odoo warehouse code.`);
-        return { ...warehouses[0], code, companyId: targetCompanyId };
+        const verified = { ...warehouses[0], code, companyId: targetCompanyId, cachedAt: Date.now() };
+        OdooClient.verifiedWarehouseCache.set(cacheKey, verified);
+        return verified;
     }
     async getOpenBoardReceipts(warehouseId) {
         const warehouse = await this.getVerifiedTargetWarehouse(warehouseId);
