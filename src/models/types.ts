@@ -533,6 +533,7 @@ export interface PurchaseOrderSummary {
 
 export interface PurchaseOrderLine {
   id: number;
+  order_id?: [number, string] | number | false | null;
   name: string;
   product_id?: [number, string] | false | null;
   product_qty?: number | null;

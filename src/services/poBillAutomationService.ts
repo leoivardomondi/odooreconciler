@@ -73,6 +73,12 @@ const COLOR_STOP_WORDS = new Set([
   'grade',
 ]);
 
+// In-memory caches to prevent repeated Odoo RPC calls for static/frequently-read data
+let cachedValidatedDocumentTagId: number | null = null;
+let cachedDeliveryNoteDocumentTagId: number | null = null;
+const journalCache = new Map<string, { id: number; name: string; code: string } | null>();
+const vendorPartnerIdCache = new Map<string, { ids: number[]; expiresAt: number }>();
+
 interface OdooActionResult {
   res_id?: number;
   res_model?: string;
@@ -950,6 +956,15 @@ async function resolveVendorPartnerIds(
   client: OdooClient,
   parsedInvoice: PoBillAutomationResult['parsedInvoice'],
 ) {
+  const cacheKey = `${parsedInvoice.vendorName || ''}::${parsedInvoice.filenameVendorHint || ''}`;
+  const now = Date.now();
+  if (vendorPartnerIdCache.has(cacheKey)) {
+    const entry = vendorPartnerIdCache.get(cacheKey)!;
+    if (now < entry.expiresAt) {
+      return entry.ids;
+    }
+  }
+
   const hints = [parsedInvoice.vendorName, parsedInvoice.filenameVendorHint]
     .map((value) => normalizeVendorName(value).name)
     .filter(Boolean)
@@ -977,7 +992,9 @@ async function resolveVendorPartnerIds(
       ids.add(partner.id);
     }
   }
-  return [...ids];
+  const result = [...ids];
+  vendorPartnerIdCache.set(cacheKey, { ids: result, expiresAt: now + 15 * 60 * 1000 });
+  return result;
 }
 
 async function searchPurchaseOrdersAcrossPages(
@@ -1149,14 +1166,22 @@ async function findOrCreateValidatedDocumentTag(client: OdooClient): Promise<Doc
     .catch(() => []);
   const exact = existing.find((tag) => tag.name.toLowerCase() === 'validated');
   if (exact || existing[0]) {
-    return exact || existing[0];
+    const found = exact || existing[0];
+    cachedValidatedDocumentTagId = found.id;
+    return found;
   }
 
   const tagId = await client.createRecord('documents.tag', { name: 'Validated' }).catch(() => null);
+  if (tagId) {
+    cachedValidatedDocumentTagId = tagId;
+  }
   return tagId ? { id: tagId, name: 'Validated' } : null;
 }
 
 async function findValidatedDocumentTagId(client: OdooClient): Promise<number | null> {
+  if (cachedValidatedDocumentTagId !== null) {
+    return cachedValidatedDocumentTagId;
+  }
   const fields = await getAvailableModelFieldNames(client, 'documents.tag', ['id', 'name']);
   if (!fields.has('id') || !fields.has('name')) {
     return null;
@@ -1169,7 +1194,11 @@ async function findValidatedDocumentTagId(client: OdooClient): Promise<number | 
     order: 'id asc',
   }).catch(() => []);
 
-  return tags[0]?.id || null;
+  const id = tags[0]?.id || null;
+  if (id !== null) {
+    cachedValidatedDocumentTagId = id;
+  }
+  return id;
 }
 
 async function hasValidatedSourceDocument(client: OdooClient, attachment: AttachmentInfo) {
@@ -1232,6 +1261,9 @@ async function markSourceDocumentValidated(
 }
 
 async function findDeliveryNoteDocumentTagId(client: OdooClient): Promise<number | null> {
+  if (cachedDeliveryNoteDocumentTagId !== null) {
+    return cachedDeliveryNoteDocumentTagId;
+  }
   const fields = await getAvailableModelFieldNames(client, 'documents.tag', ['id', 'name']);
   if (!fields.has('id') || !fields.has('name')) {
     return null;
@@ -1244,7 +1276,11 @@ async function findDeliveryNoteDocumentTagId(client: OdooClient): Promise<number
     order: 'id asc',
   }).catch(() => []);
   const exact = tags.find((tag) => tag.name.trim().toLowerCase() === DELIVERY_NOTE_DOCUMENT_TAG_NAME.toLowerCase());
-  return (exact || tags[0])?.id || null;
+  const id = (exact || tags[0])?.id || null;
+  if (id !== null) {
+    cachedDeliveryNoteDocumentTagId = id;
+  }
+  return id;
 }
 
 async function findOrCreateDeliveryNoteDocumentTag(client: OdooClient): Promise<DocumentsTagSummary | null> {
@@ -1261,10 +1297,15 @@ async function findOrCreateDeliveryNoteDocumentTag(client: OdooClient): Promise<
   }).catch(() => []);
   const exact = existing.find((tag) => tag.name.trim().toLowerCase() === DELIVERY_NOTE_DOCUMENT_TAG_NAME.toLowerCase());
   if (exact || existing[0]) {
-    return exact || existing[0];
+    const found = exact || existing[0];
+    cachedDeliveryNoteDocumentTagId = found.id;
+    return found;
   }
 
   const tagId = await client.createRecord('documents.tag', { name: DELIVERY_NOTE_DOCUMENT_TAG_NAME }).catch(() => null);
+  if (tagId) {
+    cachedDeliveryNoteDocumentTagId = tagId;
+  }
   return tagId ? { id: tagId, name: DELIVERY_NOTE_DOCUMENT_TAG_NAME } : null;
 }
 
@@ -1735,12 +1776,46 @@ export async function findPurchaseOrderCandidates(
     filteredOrders.map((order) => order.id),
   );
 
-  const candidates = await Promise.all(
-    filteredOrders.map(async (order) => {
-      const lines = await getPurchaseOrderLines(client, order.id).catch(() => []);
-      return buildCandidate(order, lines, parsedInvoice, approvalDates.get(order.id) || null);
-    }),
+  // Pre-filter and rank candidates using vendor, amount, and date scores
+  // before fetching PO lines. This avoids fetching lines for mismatched POs.
+  const scoredOrders = filteredOrders.map((order) => {
+    const poVendor = getRelationLabel(order.partner_id);
+    const vendor = computeVendorScore(parsedInvoice.vendorName, poVendor, parsedInvoice.filenameVendorHint);
+    const total = computeTotalScore(
+      parsedInvoice.grandTotal,
+      order.amount_total,
+      parsedInvoice.untaxedTotal,
+      order.amount_untaxed,
+    );
+    const matchingPoDate = approvalDates.get(order.id) || order.date_order;
+    const date = computeDateScore(parseLooseDate(parsedInvoice.invoiceDate), matchingPoDate);
+    const preliminaryScore = vendor.score + total.score + date.score;
+    return {
+      order,
+      vendorScore: vendor.score,
+      totalScore: total.score,
+      dateScore: date.score,
+      preliminaryScore,
+    };
+  });
+
+  const viableOrders = scoredOrders
+    .filter((entry) => (!hasReadableVendor || entry.vendorScore > 0) && entry.preliminaryScore > 0)
+    .sort((a, b) => b.preliminaryScore - a.preliminaryScore);
+
+  // Take top candidates for full line inspection and scoring
+  const topCandidateOrders = viableOrders.slice(0, 20).map((entry) => entry.order);
+
+  // Bulk fetch lines for all top candidate orders in a single Odoo RPC request
+  const linesByOrderId = await getBulkPurchaseOrderLines(
+    client,
+    topCandidateOrders.map((order) => order.id),
   );
+
+  const candidates = topCandidateOrders.map((order) => {
+    const lines = linesByOrderId.get(order.id) || [];
+    return buildCandidate(order, lines, parsedInvoice, approvalDates.get(order.id) || null);
+  });
 
   return candidates
     .filter((candidate) => !hasReadableVendor || candidate.vendorScore > 0)
@@ -1749,14 +1824,24 @@ export async function findPurchaseOrderCandidates(
     .slice(0, 10);
 }
 
-export async function getPurchaseOrderLines(
+export async function getBulkPurchaseOrderLines(
   client: OdooClient,
-  purchaseOrderId: number,
-): Promise<PurchaseOrderLine[]> {
-  return client.searchReadRecords<PurchaseOrderLine>('purchase.order.line', {
-    domain: [['order_id', '=', purchaseOrderId]],
+  purchaseOrderIds: number[],
+): Promise<Map<number, PurchaseOrderLine[]>> {
+  const result = new Map<number, PurchaseOrderLine[]>();
+  const ids = [...new Set(purchaseOrderIds.filter((id) => Number.isInteger(id) && id > 0))];
+  ids.forEach((id) => result.set(id, []));
+  if (ids.length === 0) {
+    return result;
+  }
+
+  const rawLines = await client.searchReadRecords<
+    PurchaseOrderLine & { order_id?: [number, string] | number }
+  >('purchase.order.line', {
+    domain: [['order_id', 'in', ids]],
     fields: [
       'id',
+      'order_id',
       'name',
       'product_id',
       'product_qty',
@@ -1766,9 +1851,33 @@ export async function getPurchaseOrderLines(
       'price_subtotal',
       'price_total',
     ],
-    limit: 500,
+    limit: Math.max(1000, ids.length * 100),
     order: 'id asc',
+  }).catch((err) => {
+    console.warn('[po-bills] Failed to bulk load purchase.order.line:', err instanceof Error ? err.message : err);
+    return [];
   });
+
+  for (const line of rawLines) {
+    const orderId = Array.isArray(line.order_id)
+      ? line.order_id[0]
+      : typeof line.order_id === 'number'
+        ? line.order_id
+        : null;
+    if (orderId && result.has(orderId)) {
+      result.get(orderId)!.push(line);
+    }
+  }
+
+  return result;
+}
+
+export async function getPurchaseOrderLines(
+  client: OdooClient,
+  purchaseOrderId: number,
+): Promise<PurchaseOrderLine[]> {
+  const linesMap = await getBulkPurchaseOrderLines(client, [purchaseOrderId]);
+  return linesMap.get(purchaseOrderId) || [];
 }
 
 async function refreshPurchaseOrder(
@@ -2333,7 +2442,19 @@ async function findJournalByNameOrCode(
   client: OdooClient,
   ...searchTerms: string[]
 ): Promise<{ id: number; name: string; code: string } | null> {
+  const cacheKey = searchTerms.join('||');
+  if (journalCache.has(cacheKey)) {
+    return journalCache.get(cacheKey) || null;
+  }
+
   for (const term of searchTerms) {
+    if (journalCache.has(term)) {
+      const cached = journalCache.get(term);
+      if (cached) {
+        journalCache.set(cacheKey, cached);
+        return cached;
+      }
+    }
     const journals = await client
       .searchReadRecords<{ id: number; name: string; code: string }>('account.journal', {
         domain: ['|', ['name', 'ilike', term], ['code', 'ilike', term]],
@@ -2342,9 +2463,12 @@ async function findJournalByNameOrCode(
       })
       .catch(() => []);
     if (journals[0]) {
+      journalCache.set(term, journals[0]);
+      journalCache.set(cacheKey, journals[0]);
       return journals[0];
     }
   }
+  journalCache.set(cacheKey, null);
   return null;
 }
 
@@ -2830,18 +2954,46 @@ async function runPoBillAutomationInternal(
     !overridePurchaseOrder && parsedInvoice.orderNumber
       ? await findPurchaseOrder(client, parsedInvoice.orderNumber)
       : null;
-  const broadCandidates = input.onlyUnbilledPurchaseOrders
-    ? await findPurchaseOrderCandidates(client, parsedInvoice, {
+  let broadCandidates: PoBillAutomationCandidate[] | null = null;
+  let candidates: PoBillAutomationCandidate[];
+
+  if (input.onlyUnbilledPurchaseOrders) {
+    broadCandidates = await findPurchaseOrderCandidates(client, parsedInvoice, {
+      fromDate: input.matchFromDate,
+      toDate: input.matchToDate,
+      onlyUnbilled: false,
+    });
+
+    const orderIds = broadCandidates.map((candidate) => candidate.purchaseOrder.id);
+    const processedByPo: Record<number, PoBillProcessedDocumentEntry> =
+      await getLatestPoBillProcessedDocumentsByPurchaseOrderIds(orderIds).catch(() => ({}));
+
+    const eligibleInBroad = broadCandidates.filter((candidate) => {
+      const order = candidate.purchaseOrder;
+      if (!(order.state && ['purchase', 'to approve'].includes(order.state) && order.invoice_status !== 'invoiced')) {
+        return false;
+      }
+      const processed = processedByPo[order.id];
+      const hasProcessed = Boolean(processed && ['processed', 'processed_with_warnings'].includes(processed.status));
+      return isSchedulerEligiblePurchaseOrder(order, hasProcessed);
+    });
+
+    if (eligibleInBroad.length > 0 || (broadCandidates.length > 0 && broadCandidates[0].score >= AUTO_MATCH_THRESHOLD)) {
+      candidates = eligibleInBroad;
+    } else {
+      candidates = await findPurchaseOrderCandidates(client, parsedInvoice, {
         fromDate: input.matchFromDate,
         toDate: input.matchToDate,
-        onlyUnbilled: false,
-      })
-    : null;
-  const candidates = await findPurchaseOrderCandidates(client, parsedInvoice, {
-    fromDate: input.matchFromDate,
-    toDate: input.matchToDate,
-    onlyUnbilled: input.onlyUnbilledPurchaseOrders,
-  });
+        onlyUnbilled: true,
+      });
+    }
+  } else {
+    candidates = await findPurchaseOrderCandidates(client, parsedInvoice, {
+      fromDate: input.matchFromDate,
+      toDate: input.matchToDate,
+      onlyUnbilled: false,
+    });
+  }
   addUrbanVibePinCheck(checks, parsedInvoice.taxPin);
   const aiStatus = describeAiExtractionStatus(input.aiConfig, parsedInvoice.logs);
   addCheck(checks, 'AI Extraction', aiStatus.status, aiStatus.detail);

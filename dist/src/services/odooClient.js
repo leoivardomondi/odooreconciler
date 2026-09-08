@@ -39,6 +39,7 @@ function setOdooTrafficPaused(paused) {
 }
 let lastOdooRequestEndTime = 0;
 let odooRequestQueue = Promise.resolve();
+const globalModelFieldsCache = new Map();
 function enqueueOdooRequest(fn) {
     const minIntervalMs = Math.max(0, Number(env_1.env.ODOO_RATE_LIMIT_MIN_INTERVAL_MS) || 2500);
     const nextTask = odooRequestQueue.then(async () => {
@@ -845,14 +846,41 @@ class OdooClient {
         if (fieldNames.length === 0) {
             return [];
         }
-        return this.request('ir.model.fields', 'search_read', {
+        const cachedResults = [];
+        const missingFieldNames = [];
+        for (const name of fieldNames) {
+            const cacheKey = `${modelName}:${name}`;
+            if (globalModelFieldsCache.has(cacheKey)) {
+                const cached = globalModelFieldsCache.get(cacheKey);
+                if (cached) {
+                    cachedResults.push(cached);
+                }
+            }
+            else {
+                missingFieldNames.push(name);
+            }
+        }
+        if (missingFieldNames.length === 0) {
+            return cachedResults;
+        }
+        const fetched = await this.request('ir.model.fields', 'search_read', {
             domain: [
                 ['model', '=', modelName],
-                ['name', 'in', fieldNames],
+                ['name', 'in', missingFieldNames],
             ],
             fields: ['name', 'field_description'],
-            limit: fieldNames.length,
-        });
+            limit: missingFieldNames.length,
+        }).catch(() => []);
+        const fetchedMap = new Map(fetched.map((field) => [field.name, field]));
+        for (const name of missingFieldNames) {
+            const cacheKey = `${modelName}:${name}`;
+            const fieldData = fetchedMap.get(name) || null;
+            globalModelFieldsCache.set(cacheKey, fieldData);
+            if (fieldData) {
+                cachedResults.push(fieldData);
+            }
+        }
+        return cachedResults;
     }
     async createRecord(model, values, context = {}) {
         const result = await this.request(model, 'create', {

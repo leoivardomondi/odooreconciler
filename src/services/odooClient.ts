@@ -89,6 +89,7 @@ export function setOdooTrafficPaused(paused: boolean): void {
 
 let lastOdooRequestEndTime = 0;
 let odooRequestQueue: Promise<unknown> = Promise.resolve();
+const globalModelFieldsCache = new Map<string, { name: string; field_description?: string } | null>();
 
 export function enqueueOdooRequest<T>(fn: () => Promise<T>): Promise<T> {
   const minIntervalMs = Math.max(0, Number(env.ODOO_RATE_LIMIT_MIN_INTERVAL_MS) || 2500);
@@ -1273,18 +1274,49 @@ export class OdooClient {
       return [];
     }
 
-    return this.request<Array<{ name: string; field_description?: string }>>(
+    const cachedResults: Array<{ name: string; field_description?: string }> = [];
+    const missingFieldNames: string[] = [];
+
+    for (const name of fieldNames) {
+      const cacheKey = `${modelName}:${name}`;
+      if (globalModelFieldsCache.has(cacheKey)) {
+        const cached = globalModelFieldsCache.get(cacheKey);
+        if (cached) {
+          cachedResults.push(cached);
+        }
+      } else {
+        missingFieldNames.push(name);
+      }
+    }
+
+    if (missingFieldNames.length === 0) {
+      return cachedResults;
+    }
+
+    const fetched = await this.request<Array<{ name: string; field_description?: string }>>(
       'ir.model.fields',
       'search_read',
       {
         domain: [
           ['model', '=', modelName],
-          ['name', 'in', fieldNames],
+          ['name', 'in', missingFieldNames],
         ],
         fields: ['name', 'field_description'],
-        limit: fieldNames.length,
+        limit: missingFieldNames.length,
       },
-    );
+    ).catch(() => []);
+
+    const fetchedMap = new Map(fetched.map((field) => [field.name, field]));
+    for (const name of missingFieldNames) {
+      const cacheKey = `${modelName}:${name}`;
+      const fieldData = fetchedMap.get(name) || null;
+      globalModelFieldsCache.set(cacheKey, fieldData);
+      if (fieldData) {
+        cachedResults.push(fieldData);
+      }
+    }
+
+    return cachedResults;
   }
 
   async createRecord(
