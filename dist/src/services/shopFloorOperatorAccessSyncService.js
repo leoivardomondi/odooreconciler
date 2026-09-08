@@ -17,33 +17,9 @@ async function syncShopFloorOperatorAccess() {
         const client = new odooClient_1.OdooClient(settings.odoo);
         const departmentResults = await Promise.all(OPERATOR_DEPARTMENT_NAMES.map((name) => client.findDepartmentByName(name)));
         const departments = [...new Map(departmentResults.flat().map((department) => [department.id, department])).values()];
-        const employeeResults = await Promise.all(departments.map((department) => client.getEmployeesByDepartment(department.id, undefined, true)));
+        const employeeResults = await Promise.all(departments.map((department) => client.getEmployeesByDepartment(department.id, undefined, false)));
         const employees = [...new Map(employeeResults.flat().map((employee) => [employee.id, employee])).values()]
-            .filter((employee) => String(employee.work_email || '').trim());
-        // Save operator list into shared cache so /shop-floor/operators displays immediately (<5ms)
-        try {
-            const operatorSummaries = employees.map((emp) => ({
-                id: emp.id,
-                name: emp.name,
-                jobTitle: emp.job_title || null,
-                department: Array.isArray(emp.department_id) ? emp.department_id[1] : 'Operations',
-                workEmail: emp.work_email || null,
-                mobilePhone: emp.mobile_phone || null,
-                userId: Array.isArray(emp.user_id) ? emp.user_id[0] : null,
-                userName: Array.isArray(emp.user_id) ? emp.user_id[1] : null,
-                checkedIn: false,
-                checkedOut: false,
-                checkInTime: null,
-                assignedItems: [],
-            }));
-            await (0, repositories_1.saveShopFloorSharedCache)('shop-floor:operators-list:v1', {
-                allOperators: operatorSummaries,
-                departments: departments.map((d) => d.name),
-            });
-        }
-        catch (_cacheErr) {
-            // Non-critical cache save
-        }
+            .filter((employee) => String(employee.work_email || '').trim() && employee.active !== false);
         let added = 0;
         let updated = 0;
         for (const employee of employees) {

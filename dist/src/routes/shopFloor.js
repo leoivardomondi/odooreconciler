@@ -1452,12 +1452,14 @@ router.get('/shop-floor/operators', async (req, res) => {
             }
             // Deduplicate by ID
             const uniqueDepts = [...new Map(allDepartments.map((d) => [d.id, d])).values()];
-            // Get employees from each department (including inactive/archived)
+            // Get active employees from each department (exclude archived/inactive)
             const operators = [];
             const seenIds = new Set();
             for (const dept of uniqueDepts) {
-                const employees = await client.getEmployeesByDepartment(dept.id, undefined, true);
+                const employees = await client.getEmployeesByDepartment(dept.id, undefined, false);
                 for (const emp of employees) {
+                    if (emp.active === false)
+                        continue;
                     if (seenIds.has(emp.id))
                         continue;
                     seenIds.add(emp.id);
@@ -1535,7 +1537,7 @@ router.get('/shop-floor/operators', async (req, res) => {
             ? persistentCache.data
             : { allOperators: [], departments: [] };
         let { allOperators, departments } = await withMaxPageWait(operatorsPromise, persistentCache?.data?.allOperators?.length ? 400 : 1200, fallbackData);
-        // Guaranteed fallback: If Odoo wait timed out and persistent cache was missing, use approved users from MySQL
+        // Guaranteed fallback: If Odoo wait timed out and persistent cache was missing, use active approved users from MySQL
         if (!allOperators || allOperators.length === 0) {
             if (persistentCache?.data?.allOperators?.length) {
                 allOperators = persistentCache.data.allOperators;
@@ -1543,7 +1545,7 @@ router.get('/shop-floor/operators', async (req, res) => {
             }
             else {
                 const approvedUsers = await (0, repositories_1.getApprovedAuthUsers)().catch(() => []);
-                const shopFloorApproved = approvedUsers.filter((u) => u.apps?.includes('shop-floor'));
+                const shopFloorApproved = approvedUsers.filter((u) => u.apps?.includes('shop-floor') && u.active);
                 if (shopFloorApproved.length > 0) {
                     allOperators = shopFloorApproved.map((u, idx) => ({
                         id: idx + 1,
