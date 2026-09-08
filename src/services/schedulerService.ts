@@ -432,6 +432,20 @@ async function isSchedulerStopRequested(runId: string) {
   }
 }
 
+async function withTimeout<T>(operation: () => Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      operation(),
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms.`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function describeActiveSchedulerLock(runtimeState: Awaited<ReturnType<typeof getSchedulerRuntimeState>>) {
   if (!runtimeState.lockRunId) {
     return null;
@@ -755,8 +769,12 @@ export async function runPoBillSchedulerCycle(
   let failedCount = 0;
   let stopRequested = false;
   const documentOutcomes: Array<Record<string, unknown>> = [];
+  let heartbeatTimer: NodeJS.Timeout | null = null;
 
   try {
+    heartbeatTimer = setInterval(() => {
+      touchActiveSchedulerRunLock(run.id).catch(() => undefined);
+    }, 25000);
     await touchActiveSchedulerRunLock(run.id);
     // compute adaptive lookahead based on recent PO bill runs
     const recentPoBillRuns = await getRecentSchedulerRuns(PO_BILL_ADAPTIVE_LOOKAHEAD_RUNS);
@@ -1028,6 +1046,10 @@ export async function runPoBillSchedulerCycle(
 
     throw Object.assign(new Error(message), { schedulerRun: failedRun });
   } finally {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
     schedulerRunning = false;
     await releaseSchedulerRunLock(run.id);
     await cleanupStaleTempFiles().catch(() => undefined);
@@ -1247,14 +1269,21 @@ export async function runSchedulerCycle(
   let failedCount = 0;
   const orderOutcomes: Array<Record<string, unknown>> = [];
   let latestProcessedOrderDate = runtimeState.lastCheckpointAt;
+  let heartbeatTimer: NodeJS.Timeout | null = null;
 
   try {
+    heartbeatTimer = setInterval(() => {
+      touchActiveSchedulerRunLock(run.id).catch(() => undefined);
+    }, 25000);
     await touchActiveSchedulerRunLock(run.id);
-    const batchSize = Math.max(1, Number(settings.scheduler.batchSize) || 1);
+
+    const configuredBatchSize = Math.max(1, Number(settings.scheduler.batchSize) || 5);
+    const batchSize = Math.min(8, configuredBatchSize);
     const candidateLimit = plannedCandidateLimit;
-    const candidateOrders = await client.getConfirmedSalesOrdersSince(
-      effectiveConfirmedFromDate,
-      candidateLimit,
+    const candidateOrders = await withTimeout(
+      () => client.getConfirmedSalesOrdersSince(effectiveConfirmedFromDate, candidateLimit),
+      45000,
+      'Fetching candidate sales orders from Odoo',
     );
     const recentlyRoutineOrderIds = getRecentlyRoutineSalesOrderIds(recentSalesOrderRunsForPlanning);
     const orders = chooseSalesOrderBatch(candidateOrders, batchSize, recentlyRoutineOrderIds);
@@ -1540,6 +1569,10 @@ export async function runSchedulerCycle(
 
     throw Object.assign(new Error(message), { schedulerRun: failedRun });
   } finally {
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
     schedulerRunning = false;
     await releaseSchedulerRunLock(run.id);
   }

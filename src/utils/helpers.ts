@@ -83,7 +83,7 @@ export const DEFAULT_AI_EXTRACTION_CONFIG: AiExtractionConfig = {
 export const DEFAULT_SCHEDULER_CONFIG: SchedulerConfig = {
   enabled: false,
   intervalMinutes: 15,
-  batchSize: 15,
+  batchSize: 5,
   confirmedFromDate: '2026-04-08 00:00:00',
   cronToken: '',
   useInProcessInterval: false,

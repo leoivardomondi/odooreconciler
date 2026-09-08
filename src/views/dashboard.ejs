@@ -244,8 +244,37 @@
               <div class="small text-secondary mb-2"><%= run.summary || 'No summary recorded.' %></div>
               <% if (runHealth) { %>
                 <div class="small border rounded bg-body-tertiary p-2 mb-2">
-                  <span class="badge text-bg-<%= runHealth.tone %> me-1"><%= runHealth.label %></span>
-                  <span class="text-secondary"><%= runHealth.note %></span>
+                  <div class="d-flex align-items-center gap-2">
+                    <span class="badge text-bg-<%= runHealth.tone %>"><%= runHealth.label %></span>
+                    <span class="text-secondary"><%= runHealth.note %></span>
+                  </div>
+                  <%
+                    const allOutcomes = (run.context.orderOutcomes || run.context.documentOutcomes || []);
+                    const failedItems = allOutcomes.filter((o) =>
+                      o.status === 'failed' || ['unexpected_error', 'order_locked', 'stock_failed'].includes(o.category)
+                    );
+                  %>
+                  <% if (run.failedCount > 0 && failedItems.length > 0) { %>
+                    <div class="mt-2 pt-2 border-top">
+                      <div class="fw-semibold text-danger mb-1"><i class="bi bi-exclamation-octagon me-1"></i>Failed Documents:</div>
+                      <div class="d-flex flex-column gap-1">
+                        <% failedItems.forEach((fi) => { %>
+                          <div class="p-2 rounded border bg-white d-flex flex-column gap-1">
+                            <div class="d-flex justify-content-between align-items-center gap-2">
+                              <span class="fw-bold text-dark"><%= fi.orderName || (fi.orderId ? `SO #${fi.orderId}` : fi.attachmentName || 'Document') %></span>
+                              <span class="badge text-bg-danger"><%= fi.category || fi.status || 'failed' %></span>
+                            </div>
+                            <div class="text-danger small font-monospace"><%= fi.reason || 'Processing failed' %></div>
+                            <% if (fi.historyId) { %>
+                              <div>
+                                <a href="/extractions/<%= fi.historyId %>" class="btn btn-sm btn-outline-secondary py-0 px-2" style="font-size: 0.75rem;">View Extraction Details</a>
+                              </div>
+                            <% } %>
+                          </div>
+                        <% }) %>
+                      </div>
+                    </div>
+                  <% } %>
                 </div>
               <% } %>
               <% if (run.status === 'skipped' && (activeLockRun || run.context.activeLockRunId)) { %>

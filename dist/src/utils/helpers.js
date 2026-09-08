@@ -92,7 +92,7 @@ exports.DEFAULT_AI_EXTRACTION_CONFIG = {
 exports.DEFAULT_SCHEDULER_CONFIG = {
     enabled: false,
     intervalMinutes: 15,
-    batchSize: 15,
+    batchSize: 5,
     confirmedFromDate: '2026-04-08 00:00:00',
     cronToken: '',
     useInProcessInterval: false,
