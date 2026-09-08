@@ -1,4 +1,4 @@
-import { getApprovedAuthUserByEmail, getSettings, upsertApprovedAuthUser } from '../models/repositories';
+import { getApprovedAuthUserByEmail, getSettings, saveShopFloorSharedCache, upsertApprovedAuthUser } from '../models/repositories';
 import { AppFeature } from '../models/types';
 import { logEvent } from './logService';
 import { OdooClient } from './odooClient';
@@ -23,6 +23,30 @@ export async function syncShopFloorOperatorAccess() {
     const employees = [...new Map(employeeResults.flat().map((employee) => [employee.id, employee])).values()]
       .filter((employee) => String(employee.work_email || '').trim());
 
+    // Save operator list into shared cache so /shop-floor/operators displays immediately (<5ms)
+    try {
+      const operatorSummaries = employees.map((emp) => ({
+        id: emp.id,
+        name: emp.name,
+        jobTitle: emp.job_title || null,
+        department: Array.isArray(emp.department_id) ? emp.department_id[1] : 'Operations',
+        workEmail: emp.work_email || null,
+        mobilePhone: emp.mobile_phone || null,
+        userId: Array.isArray(emp.user_id) ? emp.user_id[0] : null,
+        userName: Array.isArray(emp.user_id) ? emp.user_id[1] : null,
+        checkedIn: false,
+        checkedOut: false,
+        checkInTime: null,
+        assignedItems: [],
+      }));
+      await saveShopFloorSharedCache('shop-floor:operators-list:v1', {
+        allOperators: operatorSummaries,
+        departments: departments.map((d) => d.name),
+      });
+    } catch (_cacheErr) {
+      // Non-critical cache save
+    }
+
     let added = 0;
     let updated = 0;
     for (const employee of employees) {
@@ -38,7 +62,6 @@ export async function syncShopFloorOperatorAccess() {
         employee.active !== false,
         null,
       );
-
     }
 
     if (added || updated) {

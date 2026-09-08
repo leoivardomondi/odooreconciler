@@ -411,30 +411,40 @@ function emptyOperatorDashboardShell(userEmail) {
  */
 async function buildInstantMysqlOperatorDashboard(userEmail) {
     const normalizedEmail = (userEmail || '').trim().toLowerCase();
-    const [sharedMoEntry, pendingProcesses, sharedIncidentsEntry, userSnapshot] = await Promise.all([
+    const [sharedMoEntry, pendingProcesses, sharedIncidentsEntry, userSnapshot, receiptsEntry, deliveriesEntry] = await Promise.all([
         (0, repositories_1.getShopFloorSharedCache)('shop-floor:shared-work-orders:v1').catch(() => null),
         (0, repositories_1.getPendingShopFloorProcesses)({ status: 'pending' }).catch(() => []),
         (0, repositories_1.getShopFloorSharedCache)('shop-floor:shared-incidents:v1').catch(() => null),
         (0, repositories_1.getShopFloorDashboardSnapshot)(normalizedEmail).catch(() => null),
+        (0, repositories_1.getShopFloorSharedCache)('shop-floor:receipts:1').catch(() => null),
+        (0, repositories_1.getShopFloorSharedCache)('shop-floor:deliveries:1').catch(() => null),
     ]);
     const sharedMo = sharedMoEntry?.data;
     const workOrders = sharedMo?.workOrders || [];
-    let stockAlerts = [];
+    // Build stock alerts from MySQL shop_floor_pending_processes and merge with any shared MO rawStockAlerts
+    const pendingAlerts = pendingProcesses.map((p) => ({
+        moName: p.mo_name,
+        product: p.product_name,
+        component: p.product_name,
+        qtyNeeded: p.qty_missing,
+        client: p.partner_name,
+        moId: p.mo_id,
+        confirmedAt: null,
+        overdueDays: 0,
+    }));
+    const stockAlertsMap = new Map();
+    for (const alert of pendingAlerts) {
+        stockAlertsMap.set(`${alert.moName}:${alert.product}`, alert);
+    }
     if (sharedMo?.rawStockAlerts && sharedMo.rawStockAlerts.length > 0) {
-        stockAlerts = applyOptimisticStockAlerts(sharedMo.rawStockAlerts);
+        for (const alert of sharedMo.rawStockAlerts) {
+            const key = `${alert.moName}:${alert.product}`;
+            if (!stockAlertsMap.has(key)) {
+                stockAlertsMap.set(key, alert);
+            }
+        }
     }
-    else if (pendingProcesses.length > 0) {
-        stockAlerts = pendingProcesses.map((p) => ({
-            moName: p.mo_name,
-            product: p.product_name,
-            component: p.product_name,
-            qtyNeeded: p.qty_missing,
-            client: p.partner_name,
-            moId: p.mo_id,
-            confirmedAt: null,
-            overdueDays: 0,
-        }));
-    }
+    const stockAlerts = applyOptimisticStockAlerts(Array.from(stockAlertsMap.values()));
     const incidents = (sharedIncidentsEntry?.data || []).map((r) => {
         let machineName = r.name || 'Unknown Machine';
         if (machineName.startsWith('Breakdown: ')) {
@@ -463,6 +473,16 @@ async function buildInstantMysqlOperatorDashboard(userEmail) {
     const attendance = userSnapshot?.data?.attendance || null;
     const areaPerformanceRates = sharedMo?.areaPerformanceRates || [];
     const reservedBoardsCount = sharedMo?.reservedBoardsCount || 0;
+    const openReceipts = Array.isArray(receiptsEntry?.data)
+        ? receiptsEntry.data.filter((r) => r.state !== 'done' && r.state !== 'cancel').length
+        : 0;
+    const openDeliveries = Array.isArray(deliveriesEntry?.data)
+        ? deliveriesEntry.data.filter((d) => d.state !== 'done' && d.state !== 'cancel').length
+        : 0;
+    const teamPenalties = userSnapshot?.data?.teamPenalties || {
+        undoneReceipts: openReceipts,
+        unmarkedDeliveries: openDeliveries,
+    };
     return {
         employee,
         attendance,
@@ -479,7 +499,7 @@ async function buildInstantMysqlOperatorDashboard(userEmail) {
         manufacturingTimingSummary: userSnapshot?.data?.manufacturingTimingSummary || null,
         manufacturingTimelineData: userSnapshot?.data?.manufacturingTimelineData || null,
         boardRegistrationSummary: userSnapshot?.data?.boardRegistrationSummary || null,
-        teamPenalties: userSnapshot?.data?.teamPenalties || null,
+        teamPenalties,
         isLimitedDashboard: false,
         machines: userSnapshot?.data?.machines || [],
         error: null,
@@ -1137,6 +1157,60 @@ router.get('/shop-floor', async (req, res) => {
             });
             data = await withMaxPageWait(fetchPromise, 1200, emptyOperatorDashboardShell(viewedEmail));
         }
+        // Ensure real-time app badge counts (receipts, deliveries, pending stock) are always populated
+        if (data) {
+            if (!data.teamPenalties || (data.teamPenalties.undoneReceipts === 0 && data.teamPenalties.unmarkedDeliveries === 0)) {
+                try {
+                    const [receiptsEntry, deliveriesEntry] = await Promise.all([
+                        (0, repositories_1.getShopFloorSharedCache)('shop-floor:receipts:1').catch(() => null),
+                        (0, repositories_1.getShopFloorSharedCache)('shop-floor:deliveries:1').catch(() => null),
+                    ]);
+                    const openReceipts = Array.isArray(receiptsEntry?.data)
+                        ? receiptsEntry.data.filter((r) => r.state !== 'done' && r.state !== 'cancel').length
+                        : 0;
+                    const openDeliveries = Array.isArray(deliveriesEntry?.data)
+                        ? deliveriesEntry.data.filter((d) => d.state !== 'done' && d.state !== 'cancel').length
+                        : 0;
+                    data.teamPenalties = {
+                        undoneReceipts: openReceipts,
+                        unmarkedDeliveries: openDeliveries,
+                    };
+                }
+                catch (_e) { }
+            }
+            if (!data.workOrders || data.workOrders.length === 0) {
+                try {
+                    const sharedMo = await (0, repositories_1.getShopFloorSharedCache)('shop-floor:shared-work-orders:v1').catch(() => null);
+                    if (sharedMo?.data?.workOrders?.length) {
+                        data.workOrders = sharedMo.data.workOrders;
+                    }
+                }
+                catch (_e) { }
+            }
+            try {
+                const pendingProcesses = await (0, repositories_1.getPendingShopFloorProcesses)({ status: 'pending' }).catch(() => []);
+                if (pendingProcesses.length > 0) {
+                    const existingKeys = new Set((data.stockAlerts || []).map((a) => `${a.moName}:${a.product}`));
+                    for (const p of pendingProcesses) {
+                        const key = `${p.mo_name}:${p.product_name}`;
+                        if (!existingKeys.has(key)) {
+                            existingKeys.add(key);
+                            data.stockAlerts.push({
+                                moName: p.mo_name,
+                                product: p.product_name,
+                                component: p.product_name,
+                                qtyNeeded: p.qty_missing,
+                                client: p.partner_name,
+                                moId: p.mo_id,
+                                confirmedAt: null,
+                                overdueDays: 0,
+                            });
+                        }
+                    }
+                }
+            }
+            catch (_e) { }
+        }
         const featureFlags = await featureFlagsPromise;
         res.render('shop-floor', {
             pageTitle: 'Shop Floor',
@@ -1303,6 +1377,54 @@ router.get('/shop-floor/payslip/:id/download', async (req, res) => {
     }
 });
 /**
+ * GET /shop-floor/api/app-badge-counts — Fast (<5ms) JSON endpoint returning real-time notification counts from MySQL.
+ */
+router.get('/shop-floor/api/app-badge-counts', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+    try {
+        const [sharedMoEntry, pendingProcesses, sharedIncidentsEntry, receiptsEntry, deliveriesEntry] = await Promise.all([
+            (0, repositories_1.getShopFloorSharedCache)('shop-floor:shared-work-orders:v1').catch(() => null),
+            (0, repositories_1.getPendingShopFloorProcesses)({ status: 'pending' }).catch(() => []),
+            (0, repositories_1.getShopFloorSharedCache)('shop-floor:shared-incidents:v1').catch(() => null),
+            (0, repositories_1.getShopFloorSharedCache)('shop-floor:receipts:1').catch(() => null),
+            (0, repositories_1.getShopFloorSharedCache)('shop-floor:deliveries:1').catch(() => null),
+        ]);
+        const workOrders = sharedMoEntry?.data?.workOrders || [];
+        const openWorkOrders = workOrders.filter((o) => o.state !== 'done').length;
+        const openIncidents = (sharedIncidentsEntry?.data || []).filter((i) => {
+            const isResolved = i.stage_id ? (i.stage_id[1] === 'Repaired' || i.stage_id[1] === 'Scrap') : false;
+            return !isResolved && (i.status === 'open' || !i.status);
+        }).length;
+        const openReceipts = Array.isArray(receiptsEntry?.data)
+            ? receiptsEntry.data.filter((r) => r.state !== 'done' && r.state !== 'cancel').length
+            : 0;
+        const openDeliveries = Array.isArray(deliveriesEntry?.data)
+            ? deliveriesEntry.data.filter((d) => d.state !== 'done' && d.state !== 'cancel').length
+            : 0;
+        const areaAttention = (area) => workOrders.filter((o) => {
+            if (o.area !== area || o.state === 'done')
+                return false;
+            return Boolean(o.isOverdue) || o.hasStockIssue || o.stockStatus === 'no_stock';
+        }).length;
+        res.json({
+            success: true,
+            counts: {
+                'start-finish': openWorkOrders,
+                'add-stock': pendingProcesses.length,
+                receipts: openReceipts,
+                deliveries: openDeliveries,
+                maintenance: openIncidents,
+                'table-saw': areaAttention('Table Saw Area'),
+                'edge-banding': areaAttention('Edge Banding Area'),
+                'panel-rack': areaAttention('Panel Rack Area'),
+            },
+        });
+    }
+    catch (err) {
+        res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+    }
+});
+/**
  * GET /shop-floor/operators — Admin view: list all operators from Odoo Operations/Production departments.
  */
 router.get('/shop-floor/operators', async (req, res) => {
@@ -1312,9 +1434,12 @@ router.get('/shop-floor/operators', async (req, res) => {
         res.status(403).redirect('/dashboard');
         return;
     }
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
     try {
         const settings = await (0, repositories_1.getSettings)();
         const operatorCacheKey = 'shop-floor:operators-list:v1';
+        // 1. Read persistent MySQL shared cache immediately (<5ms)
+        const persistentCache = await (0, repositories_1.getShopFloorSharedCache)(operatorCacheKey).catch(() => null);
         const operatorsPromise = shopFloorCache.getOrFetchTieredSWR(operatorCacheKey, req.query.refresh === 'true' ? 0 : 5 * 60 * 1000, // Non-blocking serve with background revalidation on refresh
         60 * 60 * 1000, // 60 minutes max stale
         async () => {
@@ -1327,11 +1452,11 @@ router.get('/shop-floor/operators', async (req, res) => {
             }
             // Deduplicate by ID
             const uniqueDepts = [...new Map(allDepartments.map((d) => [d.id, d])).values()];
-            // Get employees from each department
+            // Get employees from each department (including inactive/archived)
             const operators = [];
             const seenIds = new Set();
             for (const dept of uniqueDepts) {
-                const employees = await client.getEmployeesByDepartment(dept.id);
+                const employees = await client.getEmployeesByDepartment(dept.id, undefined, true);
                 for (const emp of employees) {
                     if (seenIds.has(emp.id))
                         continue;
@@ -1400,12 +1525,44 @@ router.get('/shop-floor/operators', async (req, res) => {
                     op.assignedItems = [];
                 }
             }
-            return { allOperators: operators, departments: uniqueDepts.map((d) => d.name) };
+            const freshData = { allOperators: operators, departments: uniqueDepts.map((d) => d.name) };
+            if (operators.length > 0) {
+                await (0, repositories_1.saveShopFloorSharedCache)(operatorCacheKey, freshData).catch(() => { });
+            }
+            return freshData;
         });
-        const { allOperators, departments } = await withMaxPageWait(operatorsPromise, 1200, {
-            allOperators: [],
-            departments: [],
-        });
+        const fallbackData = persistentCache?.data?.allOperators?.length
+            ? persistentCache.data
+            : { allOperators: [], departments: [] };
+        let { allOperators, departments } = await withMaxPageWait(operatorsPromise, persistentCache?.data?.allOperators?.length ? 400 : 1200, fallbackData);
+        // Guaranteed fallback: If Odoo wait timed out and persistent cache was missing, use approved users from MySQL
+        if (!allOperators || allOperators.length === 0) {
+            if (persistentCache?.data?.allOperators?.length) {
+                allOperators = persistentCache.data.allOperators;
+                departments = persistentCache.data.departments;
+            }
+            else {
+                const approvedUsers = await (0, repositories_1.getApprovedAuthUsers)().catch(() => []);
+                const shopFloorApproved = approvedUsers.filter((u) => u.apps?.includes('shop-floor'));
+                if (shopFloorApproved.length > 0) {
+                    allOperators = shopFloorApproved.map((u, idx) => ({
+                        id: idx + 1,
+                        name: u.email.split('@')[0].replace('.', ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+                        jobTitle: 'Operator',
+                        department: 'Operations',
+                        workEmail: u.email,
+                        mobilePhone: null,
+                        userId: null,
+                        userName: u.email.split('@')[0],
+                        checkedIn: false,
+                        checkedOut: false,
+                        checkInTime: null,
+                        assignedItems: [],
+                    }));
+                    departments = ['Operations'];
+                }
+            }
+        }
         res.render('shop-floor-operators', {
             pageTitle: 'Shop Floor Operators',
             appName: env_1.env.APP_NAME,

@@ -623,7 +623,7 @@ function emptyOperatorDashboardShell(userEmail: string): OperatorDashboardData {
 export async function buildInstantMysqlOperatorDashboard(userEmail: string): Promise<OperatorDashboardData> {
   const normalizedEmail = (userEmail || '').trim().toLowerCase();
 
-  const [sharedMoEntry, pendingProcesses, sharedIncidentsEntry, userSnapshot] = await Promise.all([
+  const [sharedMoEntry, pendingProcesses, sharedIncidentsEntry, userSnapshot, receiptsEntry, deliveriesEntry] = await Promise.all([
     getShopFloorSharedCache<{
       workOrders: any[];
       rawStockAlerts: StockAlert[];
@@ -633,26 +633,38 @@ export async function buildInstantMysqlOperatorDashboard(userEmail: string): Pro
     getPendingShopFloorProcesses({ status: 'pending' }).catch(() => []),
     getShopFloorSharedCache<any[]>('shop-floor:shared-incidents:v1').catch(() => null),
     getShopFloorDashboardSnapshot<OperatorDashboardData>(normalizedEmail).catch(() => null),
+    getShopFloorSharedCache<any[]>('shop-floor:receipts:1').catch(() => null),
+    getShopFloorSharedCache<any[]>('shop-floor:deliveries:1').catch(() => null),
   ]);
 
   const sharedMo = sharedMoEntry?.data;
   const workOrders = sharedMo?.workOrders || [];
 
-  let stockAlerts: StockAlert[] = [];
-  if (sharedMo?.rawStockAlerts && sharedMo.rawStockAlerts.length > 0) {
-    stockAlerts = applyOptimisticStockAlerts(sharedMo.rawStockAlerts);
-  } else if (pendingProcesses.length > 0) {
-    stockAlerts = pendingProcesses.map((p) => ({
-      moName: p.mo_name,
-      product: p.product_name,
-      component: p.product_name,
-      qtyNeeded: p.qty_missing,
-      client: p.partner_name,
-      moId: p.mo_id,
-      confirmedAt: null,
-      overdueDays: 0,
-    }));
+  // Build stock alerts from MySQL shop_floor_pending_processes and merge with any shared MO rawStockAlerts
+  const pendingAlerts: StockAlert[] = pendingProcesses.map((p) => ({
+    moName: p.mo_name,
+    product: p.product_name,
+    component: p.product_name,
+    qtyNeeded: p.qty_missing,
+    client: p.partner_name,
+    moId: p.mo_id,
+    confirmedAt: null,
+    overdueDays: 0,
+  }));
+
+  const stockAlertsMap = new Map<string, StockAlert>();
+  for (const alert of pendingAlerts) {
+    stockAlertsMap.set(`${alert.moName}:${alert.product}`, alert);
   }
+  if (sharedMo?.rawStockAlerts && sharedMo.rawStockAlerts.length > 0) {
+    for (const alert of sharedMo.rawStockAlerts) {
+      const key = `${alert.moName}:${alert.product}`;
+      if (!stockAlertsMap.has(key)) {
+        stockAlertsMap.set(key, alert);
+      }
+    }
+  }
+  const stockAlerts = applyOptimisticStockAlerts(Array.from(stockAlertsMap.values()));
 
   const incidents = (sharedIncidentsEntry?.data || []).map((r: any) => {
     let machineName = r.name || 'Unknown Machine';
@@ -685,6 +697,17 @@ export async function buildInstantMysqlOperatorDashboard(userEmail: string): Pro
   const areaPerformanceRates = sharedMo?.areaPerformanceRates || [];
   const reservedBoardsCount = sharedMo?.reservedBoardsCount || 0;
 
+  const openReceipts = Array.isArray(receiptsEntry?.data)
+    ? receiptsEntry.data.filter((r: any) => r.state !== 'done' && r.state !== 'cancel').length
+    : 0;
+  const openDeliveries = Array.isArray(deliveriesEntry?.data)
+    ? deliveriesEntry.data.filter((d: any) => d.state !== 'done' && d.state !== 'cancel').length
+    : 0;
+  const teamPenalties = userSnapshot?.data?.teamPenalties || {
+    undoneReceipts: openReceipts,
+    unmarkedDeliveries: openDeliveries,
+  };
+
   return {
     employee,
     attendance,
@@ -701,7 +724,7 @@ export async function buildInstantMysqlOperatorDashboard(userEmail: string): Pro
     manufacturingTimingSummary: userSnapshot?.data?.manufacturingTimingSummary || null,
     manufacturingTimelineData: userSnapshot?.data?.manufacturingTimelineData || null,
     boardRegistrationSummary: userSnapshot?.data?.boardRegistrationSummary || null,
-    teamPenalties: userSnapshot?.data?.teamPenalties || null,
+    teamPenalties,
     isLimitedDashboard: false,
     machines: userSnapshot?.data?.machines || [],
     error: null,
@@ -1439,6 +1462,60 @@ router.get('/shop-floor', async (req: Request, res: Response) => {
       data = await withMaxPageWait(fetchPromise, 1200, emptyOperatorDashboardShell(viewedEmail));
     }
 
+    // Ensure real-time app badge counts (receipts, deliveries, pending stock) are always populated
+    if (data) {
+      if (!data.teamPenalties || (data.teamPenalties.undoneReceipts === 0 && data.teamPenalties.unmarkedDeliveries === 0)) {
+        try {
+          const [receiptsEntry, deliveriesEntry] = await Promise.all([
+            getShopFloorSharedCache<any[]>('shop-floor:receipts:1').catch(() => null),
+            getShopFloorSharedCache<any[]>('shop-floor:deliveries:1').catch(() => null),
+          ]);
+          const openReceipts = Array.isArray(receiptsEntry?.data)
+            ? receiptsEntry.data.filter((r: any) => r.state !== 'done' && r.state !== 'cancel').length
+            : 0;
+          const openDeliveries = Array.isArray(deliveriesEntry?.data)
+            ? deliveriesEntry.data.filter((d: any) => d.state !== 'done' && d.state !== 'cancel').length
+            : 0;
+          data.teamPenalties = {
+            undoneReceipts: openReceipts,
+            unmarkedDeliveries: openDeliveries,
+          };
+        } catch (_e) {}
+      }
+
+      if (!data.workOrders || data.workOrders.length === 0) {
+        try {
+          const sharedMo = await getShopFloorSharedCache<any>('shop-floor:shared-work-orders:v1').catch(() => null);
+          if (sharedMo?.data?.workOrders?.length) {
+            data.workOrders = sharedMo.data.workOrders;
+          }
+        } catch (_e) {}
+      }
+
+      try {
+        const pendingProcesses = await getPendingShopFloorProcesses({ status: 'pending' }).catch(() => []);
+        if (pendingProcesses.length > 0) {
+          const existingKeys = new Set((data.stockAlerts || []).map((a) => `${a.moName}:${a.product}`));
+          for (const p of pendingProcesses) {
+            const key = `${p.mo_name}:${p.product_name}`;
+            if (!existingKeys.has(key)) {
+              existingKeys.add(key);
+              data.stockAlerts.push({
+                moName: p.mo_name,
+                product: p.product_name,
+                component: p.product_name,
+                qtyNeeded: p.qty_missing,
+                client: p.partner_name,
+                moId: p.mo_id,
+                confirmedAt: null,
+                overdueDays: 0,
+              });
+            }
+          }
+        }
+      } catch (_e) {}
+    }
+
     const featureFlags = await featureFlagsPromise;
     res.render('shop-floor', {
       pageTitle: 'Shop Floor',
@@ -1598,6 +1675,57 @@ router.get('/shop-floor/payslip/:id/download', async (req: Request, res: Respons
 });
 
 /**
+ * GET /shop-floor/api/app-badge-counts — Fast (<5ms) JSON endpoint returning real-time notification counts from MySQL.
+ */
+router.get('/shop-floor/api/app-badge-counts', async (req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+  try {
+    const [sharedMoEntry, pendingProcesses, sharedIncidentsEntry, receiptsEntry, deliveriesEntry] = await Promise.all([
+      getShopFloorSharedCache<{ workOrders: any[] }>('shop-floor:shared-work-orders:v1').catch(() => null),
+      getPendingShopFloorProcesses({ status: 'pending' }).catch(() => []),
+      getShopFloorSharedCache<any[]>('shop-floor:shared-incidents:v1').catch(() => null),
+      getShopFloorSharedCache<any[]>('shop-floor:receipts:1').catch(() => null),
+      getShopFloorSharedCache<any[]>('shop-floor:deliveries:1').catch(() => null),
+    ]);
+
+    const workOrders = sharedMoEntry?.data?.workOrders || [];
+    const openWorkOrders = workOrders.filter((o: any) => o.state !== 'done').length;
+    const openIncidents = (sharedIncidentsEntry?.data || []).filter((i: any) => {
+      const isResolved = i.stage_id ? (i.stage_id[1] === 'Repaired' || i.stage_id[1] === 'Scrap') : false;
+      return !isResolved && (i.status === 'open' || !i.status);
+    }).length;
+
+    const openReceipts = Array.isArray(receiptsEntry?.data)
+      ? receiptsEntry.data.filter((r: any) => r.state !== 'done' && r.state !== 'cancel').length
+      : 0;
+    const openDeliveries = Array.isArray(deliveriesEntry?.data)
+      ? deliveriesEntry.data.filter((d: any) => d.state !== 'done' && d.state !== 'cancel').length
+      : 0;
+
+    const areaAttention = (area: string) => workOrders.filter((o: any) => {
+      if (o.area !== area || o.state === 'done') return false;
+      return Boolean(o.isOverdue) || o.hasStockIssue || o.stockStatus === 'no_stock';
+    }).length;
+
+    res.json({
+      success: true,
+      counts: {
+        'start-finish': openWorkOrders,
+        'add-stock': pendingProcesses.length,
+        receipts: openReceipts,
+        deliveries: openDeliveries,
+        maintenance: openIncidents,
+        'table-saw': areaAttention('Table Saw Area'),
+        'edge-banding': areaAttention('Edge Banding Area'),
+        'panel-rack': areaAttention('Panel Rack Area'),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+/**
  * GET /shop-floor/operators — Admin view: list all operators from Odoo Operations/Production departments.
  */
 router.get('/shop-floor/operators', async (req: Request, res: Response) => {
@@ -1609,9 +1737,18 @@ router.get('/shop-floor/operators', async (req: Request, res: Response) => {
     return;
   }
 
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+
   try {
     const settings = await getSettings();
     const operatorCacheKey = 'shop-floor:operators-list:v1';
+
+    // 1. Read persistent MySQL shared cache immediately (<5ms)
+    const persistentCache = await getShopFloorSharedCache<{
+      allOperators: OperatorSummary[];
+      departments: string[];
+    }>(operatorCacheKey).catch(() => null);
+
     const operatorsPromise = shopFloorCache.getOrFetchTieredSWR(
       operatorCacheKey,
       req.query.refresh === 'true' ? 0 : 5 * 60 * 1000,   // Non-blocking serve with background revalidation on refresh
@@ -1629,12 +1766,12 @@ router.get('/shop-floor/operators', async (req: Request, res: Response) => {
         // Deduplicate by ID
         const uniqueDepts = [...new Map(allDepartments.map((d) => [d.id, d])).values()];
 
-        // Get employees from each department
+        // Get employees from each department (including inactive/archived)
         const operators: OperatorSummary[] = [];
         const seenIds = new Set<number>();
 
         for (const dept of uniqueDepts) {
-          const employees = await client.getEmployeesByDepartment(dept.id);
+          const employees = await client.getEmployeesByDepartment(dept.id, undefined, true);
           for (const emp of employees) {
             if (seenIds.has(emp.id)) continue;
             seenIds.add(emp.id);
@@ -1705,14 +1842,51 @@ router.get('/shop-floor/operators', async (req: Request, res: Response) => {
           }
         }
 
-        return { allOperators: operators, departments: uniqueDepts.map((d) => d.name) };
+        const freshData = { allOperators: operators, departments: uniqueDepts.map((d) => d.name) };
+        if (operators.length > 0) {
+          await saveShopFloorSharedCache(operatorCacheKey, freshData).catch(() => {});
+        }
+        return freshData;
       },
     );
 
-    const { allOperators, departments } = await withMaxPageWait(operatorsPromise, 1200, {
-      allOperators: [] as OperatorSummary[],
-      departments: [] as string[],
-    });
+    const fallbackData = persistentCache?.data?.allOperators?.length
+      ? persistentCache.data
+      : { allOperators: [] as OperatorSummary[], departments: [] as string[] };
+
+    let { allOperators, departments } = await withMaxPageWait(
+      operatorsPromise,
+      persistentCache?.data?.allOperators?.length ? 400 : 1200,
+      fallbackData,
+    );
+
+    // Guaranteed fallback: If Odoo wait timed out and persistent cache was missing, use approved users from MySQL
+    if (!allOperators || allOperators.length === 0) {
+      if (persistentCache?.data?.allOperators?.length) {
+        allOperators = persistentCache.data.allOperators;
+        departments = persistentCache.data.departments;
+      } else {
+        const approvedUsers = await getApprovedAuthUsers().catch(() => []);
+        const shopFloorApproved = approvedUsers.filter((u) => u.apps?.includes('shop-floor'));
+        if (shopFloorApproved.length > 0) {
+          allOperators = shopFloorApproved.map((u, idx) => ({
+            id: idx + 1,
+            name: u.email.split('@')[0].replace('.', ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
+            jobTitle: 'Operator',
+            department: 'Operations',
+            workEmail: u.email,
+            mobilePhone: null,
+            userId: null,
+            userName: u.email.split('@')[0],
+            checkedIn: false,
+            checkedOut: false,
+            checkInTime: null,
+            assignedItems: [],
+          }));
+          departments = ['Operations'];
+        }
+      }
+    }
 
     res.render('shop-floor-operators', {
       pageTitle: 'Shop Floor Operators',

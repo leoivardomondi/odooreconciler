@@ -77,7 +77,7 @@
     </div>
     <div class="shop-app-grid">
       <% enabledLauncherApps.forEach((app) => { %>
-        <a class="shop-app-tile" href="<%= app.href %>" style="--app-color:<%= app.color %>;--app-tint:<%= app.tint %>">
+        <a class="shop-app-tile" data-app-key="<%= app.key %>" href="<%= app.href %>" style="--app-color:<%= app.color %>;--app-tint:<%= app.tint %>">
           <span class="shop-app-icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="<%= app.iconPath %>" /></svg></span>
           <span class="shop-app-copy"><strong><%= app.label %></strong><small><%= app.subtitle %></small></span>
           <% if (appNotificationCounts[app.key] > 0) { %><span class="shop-app-notification" title="<%= appNotificationCounts[app.key] %> item<%= appNotificationCounts[app.key] === 1 ? '' : 's' %> requiring attention"><%= appNotificationCounts[app.key] > 99 ? '99+' : appNotificationCounts[app.key] %></span><% } %>
@@ -2484,6 +2484,71 @@ function openPauseMoModal(btn) {
   if (totalEl) totalEl.textContent = totalQty;
   if (qtyEl) qtyEl.value = producedQty || 0;
 }
+
+// Instant client-side hydration for Shop Floor launcher notification badges
+(function () {
+  async function refreshAppBadges() {
+    try {
+      var res = await fetch('/shop-floor/api/app-badge-counts', { cache: 'no-store' });
+      if (!res.ok) return;
+      var json = await res.json();
+      if (!json.success || !json.counts) return;
+
+      var total = 0;
+      document.querySelectorAll('.shop-app-tile[data-app-key]').forEach(function (tile) {
+        var key = tile.getAttribute('data-app-key');
+        var count = Number(json.counts[key]) || 0;
+        total += count;
+        var badge = tile.querySelector('.shop-app-notification');
+        if (count > 0) {
+          var label = count > 99 ? '99+' : String(count);
+          if (!badge) {
+            badge = document.createElement('span');
+            badge.className = 'shop-app-notification';
+            var arrow = tile.querySelector('.shop-app-arrow');
+            if (arrow) {
+              tile.insertBefore(badge, arrow);
+            } else {
+              tile.appendChild(badge);
+            }
+          }
+          badge.textContent = label;
+          badge.title = count + ' item' + (count === 1 ? '' : 's') + ' requiring attention';
+        } else if (badge) {
+          badge.remove();
+        }
+      });
+
+      var floatingCount = document.querySelector('.floating-apps-count');
+      var floatingBtn = document.querySelector('.floating-apps-button');
+      if (total > 0) {
+        var totalLabel = total > 99 ? '99+' : String(total);
+        if (floatingCount) {
+          floatingCount.textContent = totalLabel;
+        } else if (floatingBtn) {
+          var span = document.createElement('span');
+          span.className = 'floating-apps-count';
+          span.textContent = totalLabel;
+          floatingBtn.appendChild(span);
+        }
+      } else if (floatingCount) {
+        floatingCount.remove();
+      }
+    } catch (_err) {
+      // Non-blocking
+    }
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', refreshAppBadges);
+  } else {
+    refreshAppBadges();
+  }
+  window.addEventListener('focus', refreshAppBadges);
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') refreshAppBadges();
+  });
+})();
 </script>
 
 <!-- Pause Manufacturing Order Modal -->
