@@ -5303,8 +5303,8 @@ export async function pruneStalePendingProcessesForActiveMos(activeMoIds: number
     [],
   );
   if (!activeMoIds.length) return;
-  const existingPending = await queryAll<{ id: string; mo_id: number }>(
-    `SELECT id, mo_id FROM shop_floor_pending_processes WHERE status = 'pending'`,
+  const existingPending = await queryAll<{ id: string; mo_id: number; product_id: number }>(
+    `SELECT id, mo_id, product_id FROM shop_floor_pending_processes WHERE status = 'pending'`,
   );
 
   const activeSet = new Set(activeMoIds);
@@ -5314,7 +5314,10 @@ export async function pruneStalePendingProcessesForActiveMos(activeMoIds: number
       // If MO is no longer in active MO list (e.g. done or cancelled), remove its pending process
       if (!activeSet.has(row.mo_id)) return true;
       // If validKeys is provided, prune items whose component requirements were removed or fulfilled
-      if (validKeys.length > 0 && !validKeySet.has(row.id)) return true;
+      if (validKeys.length > 0) {
+        const compositeKey = `${row.mo_id}_${row.product_id}`;
+        if (!validKeySet.has(row.id) && !validKeySet.has(compositeKey)) return true;
+      }
       return false;
     })
     .map((row) => row.id);

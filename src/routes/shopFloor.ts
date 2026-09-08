@@ -2059,6 +2059,10 @@ router.get('/shop-floor/boards', async (req: Request, res: Response) => {
     return;
   }
 
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
+
   const featureFlags = await getShopFloorFeatureFlags();
   if (!featureFlags['add-stock'] && !canManageShopFloor(req)) {
     res.status(404).render('error', {

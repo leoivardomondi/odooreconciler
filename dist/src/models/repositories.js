@@ -3850,7 +3850,7 @@ async function pruneStalePendingProcessesForActiveMos(activeMoIds, validKeys) {
     await (0, db_1.execute)(`DELETE FROM shop_floor_pending_processes WHERE mo_name LIKE 'VA/%' OR partner_name = 'URBAN VIBE 2' OR partner_id = 350`, []);
     if (!activeMoIds.length)
         return;
-    const existingPending = await (0, db_1.queryAll)(`SELECT id, mo_id FROM shop_floor_pending_processes WHERE status = 'pending'`);
+    const existingPending = await (0, db_1.queryAll)(`SELECT id, mo_id, product_id FROM shop_floor_pending_processes WHERE status = 'pending'`);
     const activeSet = new Set(activeMoIds);
     const validKeySet = new Set(validKeys);
     const idsToDelete = existingPending
@@ -3859,8 +3859,11 @@ async function pruneStalePendingProcessesForActiveMos(activeMoIds, validKeys) {
         if (!activeSet.has(row.mo_id))
             return true;
         // If validKeys is provided, prune items whose component requirements were removed or fulfilled
-        if (validKeys.length > 0 && !validKeySet.has(row.id))
-            return true;
+        if (validKeys.length > 0) {
+            const compositeKey = `${row.mo_id}_${row.product_id}`;
+            if (!validKeySet.has(row.id) && !validKeySet.has(compositeKey))
+                return true;
+        }
         return false;
     })
         .map((row) => row.id);
