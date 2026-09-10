@@ -6,7 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const strict_1 = __importDefault(require("node:assert/strict"));
 const node_test_1 = __importDefault(require("node:test"));
 const aiCategoryService_1 = require("./aiCategoryService");
-(0, node_test_1.default)('boda service -> staff_transport_expense', async () => {
+(0, node_test_1.default)('boda service -> transport_expense', async () => {
     const result = await (0, aiCategoryService_1.categorizeWithAi)({
         details: 'Completed Pay Merchant',
         counterparty: 'Boda Driver',
@@ -15,7 +15,40 @@ const aiCategoryService_1 = require("./aiCategoryService");
         withdrawn: 200,
         notes: 'boda service',
     });
-    strict_1.default.equal(result.category, 'staff_transport_expense', `Expected staff_transport_expense, got ${result.category} (reason: ${result.reason})`);
+    strict_1.default.equal(result.category, 'transport_expense', `Expected transport_expense, got ${result.category} (reason: ${result.reason})`);
+});
+(0, node_test_1.default)('boda services -> transport_expense', async () => {
+    const result = await (0, aiCategoryService_1.categorizeWithAi)({
+        details: 'Customer Payment',
+        counterparty: 'Joseph Ouma Ochieng',
+        direction: 'out',
+        paidIn: null,
+        withdrawn: 300,
+        notes: 'boda services',
+    });
+    strict_1.default.equal(result.category, 'transport_expense');
+});
+(0, node_test_1.default)('boda fare -> transport_expense', async () => {
+    const result = await (0, aiCategoryService_1.categorizeWithAi)({
+        details: 'Customer Payment',
+        counterparty: 'Joseph Ouma Ochieng',
+        direction: 'out',
+        paidIn: null,
+        withdrawn: 150,
+        notes: 'boda fare',
+    });
+    strict_1.default.equal(result.category, 'transport_expense');
+});
+(0, node_test_1.default)('Joseph Ouma Ochieng (boda driver) -> transport_expense', async () => {
+    const result = await (0, aiCategoryService_1.categorizeWithAi)({
+        details: 'Customer Payment',
+        counterparty: 'Joseph Ouma Ochieng',
+        direction: 'out',
+        paidIn: null,
+        withdrawn: 400,
+        notes: 'paying boda boda',
+    });
+    strict_1.default.equal(result.category, 'transport_expense');
 });
 (0, node_test_1.default)('tuktuk service -> transport_expense', async () => {
     const result = await (0, aiCategoryService_1.categorizeWithAi)({

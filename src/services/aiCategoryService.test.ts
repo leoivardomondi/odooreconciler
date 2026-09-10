@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { categorizeWithAi } from './aiCategoryService';
 
-test('boda service -> staff_transport_expense', async () => {
+test('boda service -> transport_expense', async () => {
   const result = await categorizeWithAi({
     details: 'Completed Pay Merchant',
     counterparty: 'Boda Driver',
@@ -11,7 +11,43 @@ test('boda service -> staff_transport_expense', async () => {
     withdrawn: 200,
     notes: 'boda service',
   });
-  assert.equal(result.category, 'staff_transport_expense', `Expected staff_transport_expense, got ${result.category} (reason: ${result.reason})`);
+  assert.equal(result.category, 'transport_expense', `Expected transport_expense, got ${result.category} (reason: ${result.reason})`);
+});
+
+test('boda services -> transport_expense', async () => {
+  const result = await categorizeWithAi({
+    details: 'Customer Payment',
+    counterparty: 'Joseph Ouma Ochieng',
+    direction: 'out',
+    paidIn: null,
+    withdrawn: 300,
+    notes: 'boda services',
+  });
+  assert.equal(result.category, 'transport_expense');
+});
+
+test('boda fare -> transport_expense', async () => {
+  const result = await categorizeWithAi({
+    details: 'Customer Payment',
+    counterparty: 'Joseph Ouma Ochieng',
+    direction: 'out',
+    paidIn: null,
+    withdrawn: 150,
+    notes: 'boda fare',
+  });
+  assert.equal(result.category, 'transport_expense');
+});
+
+test('Joseph Ouma Ochieng (boda driver) -> transport_expense', async () => {
+  const result = await categorizeWithAi({
+    details: 'Customer Payment',
+    counterparty: 'Joseph Ouma Ochieng',
+    direction: 'out',
+    paidIn: null,
+    withdrawn: 400,
+    notes: 'paying boda boda',
+  });
+  assert.equal(result.category, 'transport_expense');
 });
 
 test('tuktuk service -> transport_expense', async () => {

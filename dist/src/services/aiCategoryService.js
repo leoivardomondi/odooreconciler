@@ -476,9 +476,9 @@ const OTHER_CATEGORY_KEYWORDS = [
     {
         category: 'staff_transport_expense',
         patterns: [
-            /\b(boda[ -]?boda|bodaboda|boda\s*service|boda\s*fare|boda|matatu|taxi|uber|bolt|fare|nduthi|cab|rider)\b/i,
-            /\b(staff|employee|worker|casuals?)\b.*\b(transport|fare|boda|taxi|uber|matatu|bus)\b/i,
-            /\b(transport|fare|boda|taxi|uber)\b.*\b(staff|employee|worker|casuals?)\b/i,
+            /\b(staff|employee|worker|casuals?)\b.*\b(fare|taxi|uber|matatu|bus)\b/i,
+            /\b(fare|taxi|uber|matatu)\b.*\b(staff|employee|worker|casuals?)\b/i,
+            /\b(matatu\s*fare|taxi\s*fare|uber\s*fare)\b/i,
         ],
     },
     {
@@ -513,6 +513,8 @@ const OTHER_CATEGORY_KEYWORDS = [
     {
         category: 'transport_expense',
         patterns: [
+            /\b(boda[ -]?boda|bodaboda|boda\s*services?|boda\s*fare|boda|nduthi)\b/i,
+            /\b(joseph\s*ouma(\s*ochieng)?|joseph\s*ochieng)\b/i,
             /\b(pick[ -]?up|pickup|tuk[ -]?tuk|tuktuk|tuk tuk)\b/i,
             /\b(lorry|canter|truck|fuso|trailer)\s*(transport|carrying|delivery)?\b/i,
             /\b(carrying|transport|deliver|load)\s+(boards?|timber|materials?|marine|plywood|mdf|goods|cargo|order)?\b/i,
@@ -600,9 +602,8 @@ function buildCategoryPrompt(input) {
         'CATEGORIES:',
         categoryList,
         '',
-        'KEY GUIDELINES:',
-        '- "staff_transport_expense" is for STAFF fare & transport services (e.g. mention of "boda", "boda service", "boda fare", "fare", "tuktuk", "matatu", "taxi", "uber", "bolt", "cab") unless heavy goods/materials are specified.',
-        '- "transport_expense" is for moving HEAVY GOODS/MATERIALS (e.g. carrying boards, timber, delivering items, lorry/truck/canter cargo).',
+        '- "transport_expense" is for ALL transport, logistics, carrying boards/materials, deliveries, and local transport services including "boda", "boda service", "boda services", "boda fare", "tuktuk", "courier", "Joseph Ouma Ochieng", "George Okullo", and lorry/truck/pickup.',
+        '- "staff_transport_expense" is strictly for public passenger fare (e.g. "matatu fare", "bus fare", "taxi fare", "uber fare") when personal staff movement is explicitly specified without boda/tuktuk.',
         '- "staff_overtime_expense" is for overtime payments to staff/casuals (e.g. "overtime 24th", "ot").',
         '- "staff_loading_expense" is for loading and offloading payments (e.g. "casuals offloaded...", "offloading", "loading", "unloading").',
         '- "staff_lunch_expense" is for buying food/meals for staff/casuals (e.g. "lunch for staff", "luch", "food").',
@@ -615,7 +616,7 @@ function buildCategoryPrompt(input) {
         '- "internal_transfer" is for money sent/deposited to own bank accounts (e.g. "sent to the bank", "deposited to ABC bank").',
         '- "bank_transfer" is for transfers between different bank accounts.',
         '- If the note mentions a PO number (e.g. "PO 631", "PO 789") or purchase order, choose "supplier_payment".',
-        '- If the note mentions "boda" or "boda service" or "fare", choose "staff_transport_expense".',
+        '- If the note mentions "boda", "boda service", "boda services", "boda fare", or refers to Joseph Ouma Ochieng (boda driver), ALWAYS choose "transport_expense".',
         '- If the note mentions "loading" or "offloading", choose "staff_loading_expense".',
         '- If the note mentions "overtime", choose "staff_overtime_expense".',
         '- If the note mentions "luch" or "lunch" or "food", choose "staff_lunch_expense".',
@@ -685,7 +686,11 @@ function analyzeTransportKeywords(input) {
         const goodsIndicators = /\b(goods|boards?|timber|marine|materials?|items?|stock|supplies|delivery|carrying|loading|cargo|hauling)\b/i;
         const hasStaff = staffIndicators.test(combinedText);
         const hasGoods = goodsIndicators.test(combinedText);
-        if (hasGoods && !hasStaff) {
+        const isBodaOrTuktukOrLocalCourier = /\b(boda|tuk[ -]?tuk|joseph\s*ouma|joseph\s*ochieng|george\s*okullo|courier|lakeland)\b/i.test(combinedText);
+        if (isBodaOrTuktukOrLocalCourier) {
+            subType = 'goods_transport';
+        }
+        else if (hasGoods && !hasStaff) {
             subType = 'goods_transport';
         }
         else if (hasStaff && !hasGoods) {
@@ -696,17 +701,11 @@ function analyzeTransportKeywords(input) {
         }
         else {
             // Check vehicle type for hint
-            if (/\b(truck|lorry|canter|trailer|pick[ -]?up)\b/i.test(combinedText)) {
+            if (/\b(truck|lorry|canter|trailer|pick[ -]?up|boda|tuk[ -]?tuk)\b/i.test(combinedText)) {
                 subType = 'goods_transport';
             }
-            else if (/\b(boda|tuk[ -]?tuk|taxi|uber|bolt|matatu)\b/i.test(combinedText)) {
-                // Could be either; check for goods keywords nearby
-                if (/\b(carry|deliver|goods|boards?|timber|material)\b/i.test(combinedText)) {
-                    subType = 'goods_transport';
-                }
-                else {
-                    subType = 'staff_transport';
-                }
+            else if (/\b(taxi|uber|bolt|matatu)\b/i.test(combinedText)) {
+                subType = 'staff_transport';
             }
         }
     }
