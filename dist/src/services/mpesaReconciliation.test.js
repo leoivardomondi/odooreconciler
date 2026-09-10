@@ -41,6 +41,7 @@ const node_test_1 = __importDefault(require("node:test"));
 const XLSX = __importStar(require("xlsx"));
 const mpesaSpreadsheetService_1 = require("./mpesaSpreadsheetService");
 const aiCategoryService_1 = require("./aiCategoryService");
+const mpesaReconciliation_1 = require("../routes/mpesaReconciliation");
 (0, node_test_1.default)('spreadsheet extraction: reliably extracts Other Party Info column and maps to counterparty, userSupplier and raw.otherPartyText', async () => {
     const sampleData = [
         ['Receipt No.', 'Completion Time', 'Details', 'Transaction Status', 'Paid In', 'Withdrawn', 'Balance', 'Transaction Type', 'Other Party Info'],
@@ -174,4 +175,33 @@ const aiCategoryService_1 = require("./aiCategoryService");
     strict_1.default.equal(result.category, 'staff_lunch_expense');
     strict_1.default.ok(result.confidence >= 0.4);
     strict_1.default.equal(result.method, 'keyword');
+});
+(0, node_test_1.default)('buildNotesExportPayload: outputs txt column with distinct frequencies and full column', () => {
+    const sampleRows = [
+        { notes: 'Lunch for staff', userCategory: 'staff_lunch_expense', amount: 800, direction: 'out', counterparty: 'Janet Ochieng' },
+        { notes: 'Tuktuk transport', userCategory: 'transport_expense', amount: 200, direction: 'out', counterparty: 'George Okullo' },
+        { notes: 'Lunch for staff', userCategory: 'staff_lunch_expense', amount: 600, direction: 'out', counterparty: 'Janet Ochieng' },
+        { notes: '', userCategory: 'outgoing_payment', amount: 1500, direction: 'out' }, // empty note
+    ];
+    // Full mode
+    const full = (0, mpesaReconciliation_1.buildNotesExportPayload)(sampleRows, { format: 'txt', mode: 'full' });
+    strict_1.default.equal(full.contentType, 'text/plain; charset=utf-8');
+    strict_1.default.ok(full.content.includes('[2x] "Lunch for staff" -> Category: [staff_lunch_expense]'));
+    strict_1.default.ok(full.content.includes('[1x] "Tuktuk transport" -> Category: [transport_expense]'));
+    strict_1.default.ok(full.content.includes('Total Rows with Notes: 3'));
+    strict_1.default.ok(full.content.includes('Unique Distinct Notes: 2'));
+    // Raw mode (for clean copy-paste / feeding directly into prompt)
+    const raw = (0, mpesaReconciliation_1.buildNotesExportPayload)(sampleRows, { format: 'txt', mode: 'raw' });
+    strict_1.default.equal(raw.content.trim(), 'Lunch for staff\r\nTuktuk transport\r\nLunch for staff');
+    // CSV mode
+    const csv = (0, mpesaReconciliation_1.buildNotesExportPayload)(sampleRows, { format: 'csv' });
+    strict_1.default.equal(csv.contentType, 'text/csv; charset=utf-8');
+    strict_1.default.ok(csv.content.startsWith('\uFEFF"Note","Category"'));
+    strict_1.default.ok(csv.content.includes('"Lunch for staff","staff_lunch_expense"'));
+    // JSON mode
+    const json = (0, mpesaReconciliation_1.buildNotesExportPayload)(sampleRows, { format: 'json' });
+    strict_1.default.equal(json.contentType, 'application/json; charset=utf-8');
+    const parsed = JSON.parse(json.content);
+    strict_1.default.equal(parsed.length, 3);
+    strict_1.default.equal(parsed[0].note, 'Lunch for staff');
 });

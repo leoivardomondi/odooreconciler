@@ -3,6 +3,7 @@ import test from 'node:test';
 import * as XLSX from 'xlsx';
 import { extractMpesaSpreadsheet } from './mpesaSpreadsheetService';
 import { categorizeWithAi, categorizeByKeywords } from './aiCategoryService';
+import { buildNotesExportPayload } from '../routes/mpesaReconciliation';
 
 test('spreadsheet extraction: reliably extracts Other Party Info column and maps to counterparty, userSupplier and raw.otherPartyText', async () => {
   const sampleData = [
@@ -156,3 +157,38 @@ test('keyword fallback: accurately scores and reasons notes without AI', () => {
   assert.ok(result.confidence >= 0.4);
   assert.equal(result.method, 'keyword');
 });
+
+test('buildNotesExportPayload: outputs txt column with distinct frequencies and full column', () => {
+  const sampleRows = [
+    { notes: 'Lunch for staff', userCategory: 'staff_lunch_expense', amount: 800, direction: 'out', counterparty: 'Janet Ochieng' },
+    { notes: 'Tuktuk transport', userCategory: 'transport_expense', amount: 200, direction: 'out', counterparty: 'George Okullo' },
+    { notes: 'Lunch for staff', userCategory: 'staff_lunch_expense', amount: 600, direction: 'out', counterparty: 'Janet Ochieng' },
+    { notes: '', userCategory: 'outgoing_payment', amount: 1500, direction: 'out' }, // empty note
+  ];
+
+  // Full mode
+  const full = buildNotesExportPayload(sampleRows, { format: 'txt', mode: 'full' });
+  assert.equal(full.contentType, 'text/plain; charset=utf-8');
+  assert.ok(full.content.includes('[2x] "Lunch for staff" -> Category: [staff_lunch_expense]'));
+  assert.ok(full.content.includes('[1x] "Tuktuk transport" -> Category: [transport_expense]'));
+  assert.ok(full.content.includes('Total Rows with Notes: 3'));
+  assert.ok(full.content.includes('Unique Distinct Notes: 2'));
+
+  // Raw mode (for clean copy-paste / feeding directly into prompt)
+  const raw = buildNotesExportPayload(sampleRows, { format: 'txt', mode: 'raw' });
+  assert.equal(raw.content.trim(), 'Lunch for staff\r\nTuktuk transport\r\nLunch for staff');
+
+  // CSV mode
+  const csv = buildNotesExportPayload(sampleRows, { format: 'csv' });
+  assert.equal(csv.contentType, 'text/csv; charset=utf-8');
+  assert.ok(csv.content.startsWith('\uFEFF"Note","Category"'));
+  assert.ok(csv.content.includes('"Lunch for staff","staff_lunch_expense"'));
+
+  // JSON mode
+  const json = buildNotesExportPayload(sampleRows, { format: 'json' });
+  assert.equal(json.contentType, 'application/json; charset=utf-8');
+  const parsed = JSON.parse(json.content);
+  assert.equal(parsed.length, 3);
+  assert.equal(parsed[0].note, 'Lunch for staff');
+});
+

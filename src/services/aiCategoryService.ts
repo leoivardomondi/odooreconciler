@@ -606,6 +606,7 @@ const OTHER_CATEGORY_KEYWORDS: CategoryKeywordRule[] = [
       /\b(lunch|luch|lunc|lunck|food|meal|eating|breakfast|dinner|supper|snacks?|chai|tea)\b/i,
       /\b(restaurant|cafe|hotel|kibandaski|eatery)\b/i,
       /\b(lunch|luch|lunc|food)\s+(for|ya)\s+(staff|workers?|employees?|wafanyi|casuals?)\b/i,
+      /\b(sugar\s*(for|purchase|office)?|milk|detergents?|soaps?|kitchen\s*(staff|supplies)?)\b/i,
     ],
   },
   {
@@ -621,20 +622,22 @@ const OTHER_CATEGORY_KEYWORDS: CategoryKeywordRule[] = [
     patterns: [
       /\b(overtime|ot\b|extra\s*hours|night\s*shift|weekend\s*work)\b/i,
       /\b(overtime\s*(done|worked|on|\d+th|\d+st|\d+nd|\d+rd)?)\b/i,
+      /\b(sunday\s*overtime|worked\s*on\s*holiday|holiday|id[ -]?aldha|eid|overtime\s*(for|worked|done)?)\b/i,
     ],
   },
   {
     category: 'staff_loading_expense',
     patterns: [
-      /\b(loading|offloading|offloaded|loaded|offload|unload|unloading)\b/i,
+      /\b(loading|offloading|offloaded|loaded|offload|unload|unloading|loaders?)\b/i,
       /\b(casuals?|casual|vibaria|kibarua)\b.*\b(loading|offloading|load|offload)\b/i,
-      /\b(loading|offloading|load|offload)\b.*\b(casuals?|casual|order|boards?)\b/i,
+      /\b(loading|offloading|load|offload)\b.*\b(casuals?|casual|order|boards?|trucks?|mzenge|juma)\b/i,
     ],
   },
   {
     category: 'advance_salary',
     patterns: [
       /\b(salary\s*advance|advance\s*salary|advance\s*pay|wages?\s*advance|adv\s*salary|salary\s*adv|adv\s*pay)\b/i,
+      /\b(advance\s*(for|to|paid)?\s*[a-z]+|advances?\b|taken\s*as\s*advance)\b/i,
     ],
   },
   {
@@ -649,6 +652,8 @@ const OTHER_CATEGORY_KEYWORDS: CategoryKeywordRule[] = [
       /\b(pick[ -]?up|pickup|tuk[ -]?tuk|tuktuk|tuk tuk)\b/i,
       /\b(lorry|canter|truck|fuso|trailer)\s*(transport|carrying|delivery)?\b/i,
       /\b(carrying|transport|deliver|load)\s+(boards?|timber|materials?|marine|plywood|mdf|goods|cargo|order)?\b/i,
+      /\b(courier|easy\s*coach|lakeland|logistics|carrying\s*tools|carrring\s*tools)\b/i,
+      /\b(transport|tuktuk|tuk\s*tuk|boda)\s*(from|to|for)\s*(timsales|comply|pabari|tiptop|tip\s*top|site|client|fundi)\b/i,
     ],
   },
   {
@@ -663,6 +668,7 @@ const OTHER_CATEGORY_KEYWORDS: CategoryKeywordRule[] = [
       /\b(supplier|vendor|wholesale|distributor|merchant|till|paybill|pay\s*bill|buy\s*goods)\b/i,
       /\b(payment\s*(to|for)\s*(supplier|vendor|company))\b/i,
       /\b(po\s*#?\s*\d+|purchase\s*order|lpo)\b/i,
+      /\b(coolant|sharpening|blades?|spanner|fabricator(\s*deposit)?|lipping)\b/i,
     ],
   },
   {
@@ -674,7 +680,7 @@ const OTHER_CATEGORY_KEYWORDS: CategoryKeywordRule[] = [
   {
     category: 'mpesa_charge',
     patterns: [
-      /\b(charge|charges|fee|fees|transaction\s*cost)\b/i,
+      /\b(charge|charges|fee|fees|transaction\s*cost|till\s*charges?)\b/i,
     ],
   },
   {
@@ -686,17 +692,17 @@ const OTHER_CATEGORY_KEYWORDS: CategoryKeywordRule[] = [
   {
     category: 'refunds',
     patterns: [
-      /\b(refund|refunds?|refunding|reversal|reversing|reverse|customer\s*refund|sales\s*refund)\b/i,
-      /\b(token|commission)\s+(to|for|ya)\b/i,
+      /\b(refund|refunds?|refunding|reversal|reversing|reverse|customer\s*refund|sales\s*refund|so\s*\d*\s*refund|refund\s*so\s*\d*)\b/i,
+      /\b(token|commission)\s+(to|for|ya|bringing|brought)\b/i,
       /\b(token|commission)\b/i,
     ],
   },
   {
     category: 'bank_transfer',
     patterns: [
-      /\b(deposited?\s+(to|into|in)\s+([a-z0-9\s]{1,30}\s+)?bank)\b/i,
+      /\b(banked(\s*abc)?|deposited?\s+(to|into|in)\s+([a-z0-9\s]{1,30}\s+)?bank)\b/i,
       /\b(deposited?\s*(to|into|in)\s*(the\s+)?(abc|kcb|equity|coop|cooperative|nbk|stanbic|absa|ncba|dtb|family|stanchart|citibank)?(\s*bank)?)\b/i,
-      /\b(bank\s*transfer|transfer\s*to\s*bank|bank\s*deposit|deposit\s*to\s*bank|sent?\s*to\s*(the\s+)?bank)\b/i,
+      /\b(bank\s*transfer|transfer\s*to\s*bank|transfer[r]?ed\s*to\s*([a-z0-9\s]{1,20}\s+)?bank|bank\s*deposit|deposit\s*to\s*bank|sent?\s*to\s*(the\s+)?bank)\b/i,
       /\b(bank|kcb|equity|coop|cooperative|nbk|stanbic|absa|standard\s*chartered|ncba|dtb|family\s*bank)\b.*\b(transfer|send|deposit)\b/i,
       /\b(transfer|send|deposit)\b.*\b(bank|account)\b/i,
     ],

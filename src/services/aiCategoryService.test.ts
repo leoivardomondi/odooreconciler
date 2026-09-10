@@ -121,3 +121,52 @@ test('refund to customer -> refunds', async () => {
   });
   assert.equal(result.category, 'refunds', `Expected refunds, got ${result.category} (reason: ${result.reason})`);
 });
+
+test('factory note: sugar for office -> staff_lunch_expense', async () => {
+  const result = await categorizeWithAi({
+    details: 'Pay Merchant',
+    counterparty: 'Janet Ochieng',
+    direction: 'out',
+    paidIn: null,
+    withdrawn: 450,
+    notes: 'SUGAR FOR OFFICE',
+  });
+  assert.equal(result.category, 'staff_lunch_expense');
+});
+
+test('factory note: Lakeland courier service -> transport_expense', async () => {
+  const result = await categorizeWithAi({
+    details: 'Customer Payment',
+    counterparty: 'Christine Akinyi',
+    direction: 'out',
+    paidIn: null,
+    withdrawn: 3000,
+    notes: 'Lakeland courier service',
+  });
+  assert.equal(result.category, 'transport_expense');
+});
+
+test('factory note: refund SO 2538 -> refunds', async () => {
+  const result = await categorizeWithAi({
+    details: 'Customer Payment',
+    counterparty: 'Benard Odhiambo',
+    direction: 'out',
+    paidIn: null,
+    withdrawn: 2000,
+    notes: 'refund SO 2538',
+  });
+  assert.equal(result.category, 'refunds');
+});
+
+test('factory note: token for new customer -> refunds', async () => {
+  const result = await categorizeWithAi({
+    details: 'Customer Payment',
+    counterparty: 'Silas Makwaka',
+    direction: 'out',
+    paidIn: null,
+    withdrawn: 500,
+    notes: 'token for bringing in new customer',
+  });
+  assert.equal(result.category, 'refunds');
+});
+

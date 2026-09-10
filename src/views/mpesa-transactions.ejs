@@ -16,6 +16,42 @@
         <span class="meta-label">Net</span>
         <strong><%= Number(totals.net || 0).toLocaleString('en-KE', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) %></strong>
       </span>
+      <div class="dropdown align-self-center">
+        <button
+          type="button"
+          class="btn btn-outline-secondary btn-sm dropdown-toggle"
+          id="downloadNotesDropdown"
+          data-bs-toggle="dropdown"
+          aria-expanded="false"
+          title="Download the entire column of transaction notes for AI training and knowledge base building"
+        >
+          📥 Download Notes
+        </button>
+        <ul class="dropdown-menu dropdown-menu-end shadow-sm" aria-labelledby="downloadNotesDropdown">
+          <li><h6 class="dropdown-header">Export Notes</h6></li>
+          <li>
+            <a class="dropdown-item" href="/mpesa-reconciliation/export-notes?format=txt&<%= filterQueryString %>">
+              📄 Notes Column (.txt)
+            </a>
+          </li>
+          <li>
+            <a class="dropdown-item" href="/mpesa-reconciliation/export-notes?format=csv&<%= filterQueryString %>">
+              📊 Notes with Details (.csv)
+            </a>
+          </li>
+          <li>
+            <a class="dropdown-item" href="/mpesa-reconciliation/export-notes?format=json&<%= filterQueryString %>">
+              📦 Dataset (.json)
+            </a>
+          </li>
+          <li><hr class="dropdown-divider"></li>
+          <li>
+            <button type="button" class="dropdown-item" onclick="copyAdminNotesToClipboard()">
+              📋 Copy Notes to Clipboard
+            </button>
+          </li>
+        </ul>
+      </div>
       <button
         type="button"
         class="btn btn-outline-primary btn-sm align-self-center"
@@ -349,6 +385,28 @@
     } finally {
       btn.disabled = false;
       btn.innerHTML = originalText;
+    }
+  }
+
+  async function copyAdminNotesToClipboard() {
+    try {
+      const qs = '<%= filterQueryString %>';
+      const url = '/mpesa-reconciliation/export-notes?format=txt&mode=raw' + (qs ? '&' + qs : '');
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error('Failed to fetch notes: HTTP ' + response.status);
+      }
+      const text = await response.text();
+      const cleanText = text.trim();
+      if (!cleanText) {
+        alert('No non-empty notes found in current view/filters.');
+        return;
+      }
+      await navigator.clipboard.writeText(cleanText);
+      const count = cleanText.split('\n').filter(Boolean).length;
+      alert('Copied ' + count + ' notes to clipboard! You can paste them directly into the chat.');
+    } catch (err) {
+      alert('Could not copy notes to clipboard: ' + (err.message || 'Unknown error'));
     }
   }
 </script>

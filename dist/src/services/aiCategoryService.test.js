@@ -116,3 +116,47 @@ const aiCategoryService_1 = require("./aiCategoryService");
     });
     strict_1.default.equal(result.category, 'refunds', `Expected refunds, got ${result.category} (reason: ${result.reason})`);
 });
+(0, node_test_1.default)('factory note: sugar for office -> staff_lunch_expense', async () => {
+    const result = await (0, aiCategoryService_1.categorizeWithAi)({
+        details: 'Pay Merchant',
+        counterparty: 'Janet Ochieng',
+        direction: 'out',
+        paidIn: null,
+        withdrawn: 450,
+        notes: 'SUGAR FOR OFFICE',
+    });
+    strict_1.default.equal(result.category, 'staff_lunch_expense');
+});
+(0, node_test_1.default)('factory note: Lakeland courier service -> transport_expense', async () => {
+    const result = await (0, aiCategoryService_1.categorizeWithAi)({
+        details: 'Customer Payment',
+        counterparty: 'Christine Akinyi',
+        direction: 'out',
+        paidIn: null,
+        withdrawn: 3000,
+        notes: 'Lakeland courier service',
+    });
+    strict_1.default.equal(result.category, 'transport_expense');
+});
+(0, node_test_1.default)('factory note: refund SO 2538 -> refunds', async () => {
+    const result = await (0, aiCategoryService_1.categorizeWithAi)({
+        details: 'Customer Payment',
+        counterparty: 'Benard Odhiambo',
+        direction: 'out',
+        paidIn: null,
+        withdrawn: 2000,
+        notes: 'refund SO 2538',
+    });
+    strict_1.default.equal(result.category, 'refunds');
+});
+(0, node_test_1.default)('factory note: token for new customer -> refunds', async () => {
+    const result = await (0, aiCategoryService_1.categorizeWithAi)({
+        details: 'Customer Payment',
+        counterparty: 'Silas Makwaka',
+        direction: 'out',
+        paidIn: null,
+        withdrawn: 500,
+        notes: 'token for bringing in new customer',
+    });
+    strict_1.default.equal(result.category, 'refunds');
+});

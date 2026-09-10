@@ -912,6 +912,232 @@ router.post('/mpesa-reconciliation/transactions', async (req, res) => {
   }
 });
 
+export function buildNotesExportPayload(
+  rows: Array<{
+    notes?: string | null;
+    userCategory?: string | null;
+    counterparty?: string | null;
+    amount?: number | null;
+    direction?: string | null;
+    transactionDate?: string | null;
+    receiptNumber?: string | null;
+    matchedPoName?: string | null;
+    aiNotes?: string | null;
+  }>,
+  options: {
+    format?: 'txt' | 'csv' | 'json';
+    mode?: 'raw' | 'full';
+    includeEmpty?: boolean;
+    title?: string;
+  } = {},
+): { content: string; contentType: string; filename: string } {
+  const format = options.format || 'txt';
+  const includeEmpty = Boolean(options.includeEmpty);
+  const nowStr = new Date().toISOString().slice(0, 10);
+  const filtered = rows.filter((r) => includeEmpty || Boolean(r.notes && r.notes.trim().length > 0));
+
+  if (format === 'json') {
+    const data = filtered.map((r) => ({
+      note: (r.notes || '').trim(),
+      category: r.userCategory || 'unknown',
+      amount: Number(r.amount || 0),
+      direction: r.direction || 'out',
+      counterparty: r.counterparty || '',
+      date: r.transactionDate ? String(r.transactionDate).slice(0, 10) : '',
+      receiptNumber: r.receiptNumber || '',
+      matchedPo: r.matchedPoName || null,
+      aiNotes: r.aiNotes || null,
+    }));
+    return {
+      content: JSON.stringify(data, null, 2),
+      contentType: 'application/json; charset=utf-8',
+      filename: `mpesa-notes-${nowStr}.json`,
+    };
+  }
+
+  if (format === 'csv') {
+    const escapeCsv = (val: unknown) => `"${String(val ?? '').replace(/"/g, '""')}"`;
+    const header = [
+      'Note',
+      'Category',
+      'Amount',
+      'Direction',
+      'Other Party',
+      'Transaction Date',
+      'Receipt Number',
+      'Matched PO',
+      'AI Notes',
+    ]
+      .map(escapeCsv)
+      .join(',');
+
+    const lines = filtered.map((r) =>
+      [
+        escapeCsv((r.notes || '').trim()),
+        escapeCsv(r.userCategory || ''),
+        escapeCsv(r.amount != null ? Number(r.amount) : ''),
+        escapeCsv(r.direction || ''),
+        escapeCsv(r.counterparty || ''),
+        escapeCsv(r.transactionDate ? String(r.transactionDate).slice(0, 10) : ''),
+        escapeCsv(r.receiptNumber || ''),
+        escapeCsv(r.matchedPoName || ''),
+        escapeCsv(r.aiNotes || ''),
+      ].join(','),
+    );
+
+    // UTF-8 BOM (\uFEFF) for Excel compatibility
+    return {
+      content: '\uFEFF' + [header, ...lines].join('\r\n'),
+      contentType: 'text/csv; charset=utf-8',
+      filename: `mpesa-notes-${nowStr}.csv`,
+    };
+  }
+
+  // format === 'txt'
+  if (options.mode === 'raw') {
+    const rawLines = filtered.map((r) => (r.notes || '').trim()).filter(Boolean);
+    return {
+      content: rawLines.join('\r\n'),
+      contentType: 'text/plain; charset=utf-8',
+      filename: `mpesa-notes-column-${nowStr}.txt`,
+    };
+  }
+
+  const frequencyMap = new Map<string, { count: number; categories: Set<string>; counterparties: Set<string> }>();
+  for (const r of filtered) {
+    const note = (r.notes || '').trim();
+    if (!note) continue;
+    const existing = frequencyMap.get(note) || {
+      count: 0,
+      categories: new Set<string>(),
+      counterparties: new Set<string>(),
+    };
+    existing.count += 1;
+    if (r.userCategory) existing.categories.add(r.userCategory);
+    if (r.counterparty) existing.counterparties.add(r.counterparty);
+    frequencyMap.set(note, existing);
+  }
+
+  const sortedDistinct = Array.from(frequencyMap.entries()).sort(
+    (a, b) => b[1].count - a[1].count || a[0].localeCompare(b[0]),
+  );
+
+  const banner = [
+    '================================================================================',
+    options.title || 'M-PESA TRANSACTION NOTES EXPORT',
+    `Generated: ${new Date().toISOString().replace('T', ' ').slice(0, 19)} UTC`,
+    `Total Rows with Notes: ${filtered.length}`,
+    `Unique Distinct Notes: ${sortedDistinct.length}`,
+    '================================================================================',
+  ].join('\r\n');
+
+  const summarySection = [
+    '',
+    '--------------------------------------------------------------------------------',
+    '1. DISTINCT WRITTEN NOTES & FREQUENCY (FOR KNOWLEDGE BASE & CATEGORY TRAINING)',
+    '--------------------------------------------------------------------------------',
+    ...sortedDistinct.map(([note, data]) => {
+      const cats = Array.from(data.categories).join(', ') || 'unassigned';
+      const parties = Array.from(data.counterparties).slice(0, 3).join(', ');
+      return `[${data.count}x] "${note}" -> Category: [${cats}]${parties ? ` | Parties: ${parties}` : ''}`;
+    }),
+  ].join('\r\n');
+
+  const fullColumnSection = [
+    '',
+    '--------------------------------------------------------------------------------',
+    '2. FULL TRANSACTION CONTEXT (IN ORDER)',
+    '--------------------------------------------------------------------------------',
+    ...filtered.map((r, i) => {
+      const note = (r.notes || '').trim();
+      const amountStr =
+        r.amount != null
+          ? `KES ${Number(r.amount).toLocaleString('en-KE', { minimumFractionDigits: 2 })}`
+          : '-';
+      const dirStr = (r.direction || 'out').toUpperCase();
+      const dateStr = r.transactionDate ? String(r.transactionDate).slice(0, 10) : '';
+      const partyStr = r.counterparty ? ` | Party: ${r.counterparty}` : '';
+      const catStr = r.userCategory ? ` [Category: ${r.userCategory}]` : '';
+      return `${i + 1}. [${amountStr} | ${dirStr} | ${dateStr}${partyStr}]${catStr}\r\n   Note: ${note}`;
+    }),
+  ].join('\r\n');
+
+  const rawSection = [
+    '',
+    '--------------------------------------------------------------------------------',
+    '3. RAW NOTES LIST (ONE PER LINE - FOR AI / PROMPT INGESTION)',
+    '--------------------------------------------------------------------------------',
+    ...filtered.map((r) => (r.notes || '').trim()).filter(Boolean),
+  ].join('\r\n');
+
+  return {
+    content: [banner, summarySection, fullColumnSection, rawSection].join('\r\n'),
+    contentType: 'text/plain; charset=utf-8',
+    filename: `mpesa-notes-column-${nowStr}.txt`,
+  };
+}
+
+/**
+ * GET /mpesa-reconciliation/export-notes
+ * Export the entire column of transaction notes from M-Pesa transactions explorer.
+ */
+router.get('/mpesa-reconciliation/export-notes', async (req, res) => {
+  if (!requireAdmin(req, res)) {
+    return;
+  }
+
+  try {
+    const filters = readTransactionExplorerFilters(req.query as Record<string, unknown>);
+    const rows = await getMpesaTransactionExplorerRows(filters);
+    const format = (String(req.query.format || 'txt').toLowerCase()) as 'txt' | 'csv' | 'json';
+    const mode = (String(req.query.mode || 'full').toLowerCase()) as 'raw' | 'full';
+    const includeEmpty = req.query.includeEmpty === '1';
+
+    const payload = buildNotesExportPayload(rows, {
+      format,
+      mode,
+      includeEmpty,
+      title: 'M-PESA ADMIN TRANSACTIONS - ALL NOTES EXPORT',
+    });
+
+    res.setHeader('Content-Type', payload.contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${payload.filename}"`);
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.send(payload.content);
+  } catch (error) {
+    res.status(500).type('text/plain').send(error instanceof Error ? error.message : 'Could not export notes.');
+  }
+});
+
+/**
+ * GET /mpesa-reconciliation/batches/:batchId/export-notes
+ * Export transaction notes for a specific M-Pesa batch/statement.
+ */
+router.get('/mpesa-reconciliation/batches/:batchId/export-notes', async (req, res) => {
+  try {
+    const batchId = req.params.batchId;
+    const batch = await getMpesaStatementBatchById(batchId);
+    const transactions = await getMpesaTransactionsByBatchId(batchId);
+    const format = (String(req.query.format || 'txt').toLowerCase()) as 'txt' | 'csv' | 'json';
+    const mode = (String(req.query.mode || 'full').toLowerCase()) as 'raw' | 'full';
+    const includeEmpty = req.query.includeEmpty === '1';
+
+    const payload = buildNotesExportPayload(transactions, {
+      format,
+      mode,
+      includeEmpty,
+      title: `M-PESA BATCH NOTES EXPORT - ${batch.originalFilename || batchId}`,
+    });
+
+    res.setHeader('Content-Type', payload.contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${payload.filename}"`);
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.send(payload.content);
+  } catch (error) {
+    res.status(500).type('text/plain').send(error instanceof Error ? error.message : 'Could not export batch notes.');
+  }
+});
+
 router.get('/mpesa-reconciliation/batches/:batchId/download', async (req, res) => {
   try {
     const batch = await getMpesaStatementBatchById(req.params.batchId);

@@ -501,6 +501,24 @@
             >
               ✨ Categorize from Notes
             </button>
+            <div class="dropdown d-inline-block">
+              <button
+                type="button"
+                class="btn btn-sm btn-outline-secondary dropdown-toggle"
+                id="batchNotesDropdown"
+                data-bs-toggle="dropdown"
+                aria-expanded="false"
+                title="Download notes column from this statement"
+              >
+                📥 Download Notes
+              </button>
+              <ul class="dropdown-menu dropdown-menu-end shadow-sm" aria-labelledby="batchNotesDropdown">
+                <li><h6 class="dropdown-header">Batch Notes</h6></li>
+                <li><a class="dropdown-item" href="/mpesa-reconciliation/batches/<%= selectedBatch.id %>/export-notes?format=txt">📄 Notes Column (.txt)</a></li>
+                <li><a class="dropdown-item" href="/mpesa-reconciliation/batches/<%= selectedBatch.id %>/export-notes?format=csv">📊 Notes with Details (.csv)</a></li>
+                <li><a class="dropdown-item" href="/mpesa-reconciliation/batches/<%= selectedBatch.id %>/export-notes?format=json">📦 Dataset (.json)</a></li>
+              </ul>
+            </div>
             <button type="submit" class="btn btn-primary">Save Grid</button>
           </div>
         </div>
