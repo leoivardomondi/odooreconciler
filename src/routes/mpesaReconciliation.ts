@@ -1524,16 +1524,17 @@ router.post('/mpesa-reconciliation/batches/:batchId/categorize-from-notes', asyn
         continue;
       }
 
-      // Strictly exclude PO-matched transactions
-      if (tx.matchedPoId) {
-        skippedPoCount += 1;
-        continue;
-      }
-
       const clientNote = typeof notesMap[tx.id] === 'string' ? notesMap[tx.id].trim() : undefined;
       const effectiveNote = clientNote !== undefined ? clientNote : (tx.notes || '').trim();
 
       if (!effectiveNote) {
+        continue;
+      }
+
+      // Check if note explicitly references a PO (e.g. "PO 631", "purchase order", "LPO")
+      const hasExplicitPoInNote = /\b(?:po\s*[:#-]?\s*\d+|purchase\s*order|lpo)\b/i.test(effectiveNote);
+      if (tx.matchedPoId && hasExplicitPoInNote) {
+        skippedPoCount += 1;
         continue;
       }
 
@@ -1559,6 +1560,8 @@ router.post('/mpesa-reconciliation/batches/:batchId/categorize-from-notes', asyn
       reviewStatus: MpesaTransaction['reviewStatus'];
       notes?: string;
       aiNotes?: string;
+      matchedPoId?: number | null;
+      matchedPoName?: string | null;
     }> = [];
 
     const results: Array<{
@@ -1595,6 +1598,7 @@ router.post('/mpesa-reconciliation/batches/:batchId/categorize-from-notes', asyn
           reviewStatus: 'reviewed',
           notes: effectiveNote,
           aiNotes: aiNote,
+          ...(tx.matchedPoId ? { matchedPoId: null, matchedPoName: null } : {}),
         });
 
         results.push({
@@ -1796,11 +1800,11 @@ async function matchTransactionsByNotesPoRef(
 
     patches.push({
       id: tx.id,
-      matchedPoId: exactPo.id,
-      matchedPoName: exactPo.name,
+      matchedPoId: null, // PO is never automatically selected; candidate is provided for manual selection
+      matchedPoName: null,
       matchConfidence: 100,
       candidates,
-      reviewStatus: 'reviewed',
+      reviewStatus: tx.reviewStatus,
       notes: tx.notes,
     });
   }
@@ -1893,21 +1897,21 @@ router.post('/mpesa-reconciliation/batches/:batchId/auto-match', async (req, res
     }
 
     // Second pass: match by PO reference found in existing transaction NOTES
-    let notesMatched = 0;
+    let notesCandidatesCount = 0;
     if (client) {
       const poRefPatches = await matchTransactionsByNotesPoRef(existingTransactions, client, batchId);
       if (poRefPatches.length > 0) {
         await updateMpesaTransactions(batchId, poRefPatches);
-        notesMatched = poRefPatches.filter((p) => p.matchedPoId !== null).length;
+        notesCandidatesCount = poRefPatches.filter((p) => (p.candidates || []).length > 0).length;
       }
     }
 
-    const extractionMatched = patches.filter((p) => p.matchedPoId !== null).length;
-    const totalMatched = extractionMatched + notesMatched;
+    const extractionCandidatesCount = patches.filter((p) => (p.candidates || []).length > 0).length;
+    const totalCandidates = extractionCandidatesCount + notesCandidatesCount;
 
     res.redirect(
       `/mpesa-reconciliation?batch=${encodeURIComponent(batch.id)}&message=${encodeURIComponent(
-        `Matched ${totalMatched} transaction(s) to POs/invoices (${extractionMatched} from extraction, ${notesMatched} from notes).`,
+        `Updated candidates for ${totalCandidates} transaction(s) (${extractionCandidatesCount} from extraction, ${notesCandidatesCount} from notes). POs are left unselected for manual confirmation.`,
       )}`,
     );
   } catch (error) {

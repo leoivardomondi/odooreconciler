@@ -2925,6 +2925,8 @@ export async function updateMpesaTransactionAdminReviewFields(
     reviewStatus?: MpesaTransaction['reviewStatus'];
     notes?: string | null;
     aiNotes?: string | null;
+    matchedPoId?: number | null;
+    matchedPoName?: string | null;
   }>,
 ) {
   const batchIds = new Set<string>();
@@ -2936,6 +2938,7 @@ export async function updateMpesaTransactionAdminReviewFields(
 
     const shouldUpdateNotes = Object.prototype.hasOwnProperty.call(patch, 'notes') && patch.notes !== undefined;
     const shouldUpdateAiNotes = Object.prototype.hasOwnProperty.call(patch, 'aiNotes') && patch.aiNotes !== undefined;
+    const shouldUpdateMatchedPo = Object.prototype.hasOwnProperty.call(patch, 'matchedPoId');
 
     await execute(
       `
@@ -2945,6 +2948,8 @@ export async function updateMpesaTransactionAdminReviewFields(
           review_status = ?,
           notes = CASE WHEN ? = 1 THEN ? ELSE notes END,
           ai_notes = CASE WHEN ? = 1 THEN ? ELSE ai_notes END,
+          matched_po_id = CASE WHEN ? = 1 THEN ? ELSE matched_po_id END,
+          matched_po_name = CASE WHEN ? = 1 THEN ? ELSE matched_po_name END,
           updated_at = CURRENT_TIMESTAMP
         WHERE id = ? AND batch_id = ?
       `,
@@ -2955,6 +2960,10 @@ export async function updateMpesaTransactionAdminReviewFields(
         patch.notes || null,
         shouldUpdateAiNotes ? 1 : 0,
         patch.aiNotes || null,
+        shouldUpdateMatchedPo ? 1 : 0,
+        patch.matchedPoId ?? null,
+        shouldUpdateMatchedPo ? 1 : 0,
+        patch.matchedPoName ?? null,
         patch.id,
         patch.batchId,
       ],

@@ -1737,10 +1737,10 @@ async function addOdooReconciliationCandidates(
       return {
         ...transaction,
         candidates,
-        matchedPoId: singlePo ? singlePo.id : null,
-        matchedPoName: singlePo ? singlePo.name : null,
+        matchedPoId: null, // POs must never be automatically selected
+        matchedPoName: null,
         matchConfidence: singlePo ? 100 : null,
-        reviewStatus: singlePo ? transaction.reviewStatus : 'needs_followup',
+        reviewStatus: transaction.reviewStatus,
       };
     }
 
@@ -1754,8 +1754,8 @@ async function addOdooReconciliationCandidates(
     return {
       ...transaction,
       candidates,
-      matchedPoId: best && best.score >= 70 ? best.id : null,
-      matchedPoName: best && best.score >= 70 ? best.name : null,
+      matchedPoId: null, // POs must never be automatically selected
+      matchedPoName: null,
       matchConfidence: best ? best.score : null,
     };
   });

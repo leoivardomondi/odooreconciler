@@ -2235,6 +2235,7 @@ async function updateMpesaTransactionAdminReviewFields(patches) {
         }
         const shouldUpdateNotes = Object.prototype.hasOwnProperty.call(patch, 'notes') && patch.notes !== undefined;
         const shouldUpdateAiNotes = Object.prototype.hasOwnProperty.call(patch, 'aiNotes') && patch.aiNotes !== undefined;
+        const shouldUpdateMatchedPo = Object.prototype.hasOwnProperty.call(patch, 'matchedPoId');
         await (0, db_1.execute)(`
         UPDATE mpesa_transactions
         SET
@@ -2242,6 +2243,8 @@ async function updateMpesaTransactionAdminReviewFields(patches) {
           review_status = ?,
           notes = CASE WHEN ? = 1 THEN ? ELSE notes END,
           ai_notes = CASE WHEN ? = 1 THEN ? ELSE ai_notes END,
+          matched_po_id = CASE WHEN ? = 1 THEN ? ELSE matched_po_id END,
+          matched_po_name = CASE WHEN ? = 1 THEN ? ELSE matched_po_name END,
           updated_at = CURRENT_TIMESTAMP
         WHERE id = ? AND batch_id = ?
       `, [
@@ -2251,6 +2254,10 @@ async function updateMpesaTransactionAdminReviewFields(patches) {
             patch.notes || null,
             shouldUpdateAiNotes ? 1 : 0,
             patch.aiNotes || null,
+            shouldUpdateMatchedPo ? 1 : 0,
+            patch.matchedPoId ?? null,
+            shouldUpdateMatchedPo ? 1 : 0,
+            patch.matchedPoName ?? null,
             patch.id,
             patch.batchId,
         ]);
