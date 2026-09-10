@@ -58,6 +58,14 @@ interface StockAlertRecipient {
   partnerId: number | null;
 }
 
+interface StockProcessingOrderCache {
+  manufacturingOrdersBySaleLineId: Map<number, Awaited<ReturnType<OdooClient['getManufacturingOrdersBySaleLineId']>>>;
+  productVariantsById: Map<number, Awaited<ReturnType<OdooClient['getProductVariant']>>>;
+  bomCandidatesByProductKey: Map<string, Awaited<ReturnType<OdooClient['getBomCandidatesForProduct']>>>;
+  bomLinesByBomId: Map<number, Awaited<ReturnType<OdooClient['getBomLines']>>>;
+  productVariantsByTemplateId: Map<number, Awaited<ReturnType<OdooClient['getProductVariantsByTemplate']>>>;
+}
+
 interface StockProcessingLogItemContext {
   extractedColor: string;
   normalizedColor: string;
@@ -562,6 +570,7 @@ async function resolveComponentFromBOM(
   client: OdooClient,
   item: AggregatedStockItem,
   matchedLine: SaleOrderLine,
+  cache?: StockProcessingOrderCache,
 ): Promise<StockComponentResolution> {
   const matchedProductId = Array.isArray(matchedLine.product_id) ? matchedLine.product_id[0] : 0;
   if (!matchedProductId) {
@@ -574,7 +583,14 @@ async function resolveComponentFromBOM(
     };
   }
 
-  const product = await client.getProductVariant(matchedProductId);
+  let product: Awaited<ReturnType<OdooClient['getProductVariant']>> = null;
+  if (cache && cache.productVariantsById.has(matchedProductId)) {
+    product = cache.productVariantsById.get(matchedProductId)!;
+  } else {
+    product = await client.getProductVariant(matchedProductId);
+    if (cache) cache.productVariantsById.set(matchedProductId, product);
+  }
+
   const templateId = Array.isArray(product?.product_tmpl_id) ? product.product_tmpl_id[0] : 0;
 
   if (!product || !templateId) {
@@ -587,7 +603,15 @@ async function resolveComponentFromBOM(
     };
   }
 
-  const bomCandidates = await client.getBomCandidatesForProduct(product.id, templateId);
+  const bomCacheKey = `${product.id}:${templateId}`;
+  let bomCandidates: Awaited<ReturnType<OdooClient['getBomCandidatesForProduct']>> = [];
+  if (cache && cache.bomCandidatesByProductKey.has(bomCacheKey)) {
+    bomCandidates = cache.bomCandidatesByProductKey.get(bomCacheKey)!;
+  } else {
+    bomCandidates = await client.getBomCandidatesForProduct(product.id, templateId);
+    if (cache) cache.bomCandidatesByProductKey.set(bomCacheKey, bomCandidates);
+  }
+
   const companySpecificBoms = bomCandidates.filter((candidate) => Array.isArray(candidate.company_id));
   const scopedBomCandidates = companySpecificBoms.length > 0 ? companySpecificBoms : bomCandidates;
 
@@ -630,7 +654,14 @@ async function resolveComponentFromBOM(
     };
   }
 
-  const bomLines = await client.getBomLines(selectedBom.id);
+  let bomLines: Awaited<ReturnType<OdooClient['getBomLines']>> = [];
+  if (cache && cache.bomLinesByBomId.has(selectedBom.id)) {
+    bomLines = cache.bomLinesByBomId.get(selectedBom.id)!;
+  } else {
+    bomLines = await client.getBomLines(selectedBom.id);
+    if (cache) cache.bomLinesByBomId.set(selectedBom.id, bomLines);
+  }
+
   const matchingLines = bomLines.filter((line) => {
     const relationLabel = Array.isArray(line.product_id)
       ? line.product_id[1]
@@ -688,7 +719,13 @@ async function resolveComponentFromBOM(
     };
   }
 
-  const variants = await client.getProductVariantsByTemplate(templateIdFromComponent);
+  let variants: Awaited<ReturnType<OdooClient['getProductVariantsByTemplate']>> = [];
+  if (cache && cache.productVariantsByTemplateId.has(templateIdFromComponent)) {
+    variants = cache.productVariantsByTemplateId.get(templateIdFromComponent)!;
+  } else {
+    variants = await client.getProductVariantsByTemplate(templateIdFromComponent);
+    if (cache) cache.productVariantsByTemplateId.set(templateIdFromComponent, variants);
+  }
   const matchingVariants = variants.filter((variant) => {
     const label = variant.display_name || variant.name;
     const componentColor = extractEdgeBandRollColor(label);
@@ -942,6 +979,7 @@ export async function processStockItem(
   preview: boolean,
   processedVariantIds: Set<number>,
   matchedLineOverride?: SaleOrderLine | null,
+  cache?: StockProcessingOrderCache,
 ): Promise<StockProcessingItemResult> {
   const result = createBaseItemResult(item);
   const matchedLine = matchedLineOverride === undefined ? matchSoLine(item, lines) : matchedLineOverride;
@@ -956,7 +994,14 @@ export async function processStockItem(
     (Array.isArray(matchedLine.product_id) ? matchedLine.product_id[1] : '') || matchedLine.name;
   result.orderedMeters = Math.round(Math.max(0, Number(matchedLine.product_uom_qty || 0)));
 
-  const manufacturingOrders = await client.getManufacturingOrdersBySaleLineId(matchedLine.id);
+  let manufacturingOrders: Awaited<ReturnType<OdooClient['getManufacturingOrdersBySaleLineId']>> = [];
+  if (cache && cache.manufacturingOrdersBySaleLineId.has(matchedLine.id)) {
+    manufacturingOrders = cache.manufacturingOrdersBySaleLineId.get(matchedLine.id)!;
+  } else {
+    manufacturingOrders = await client.getManufacturingOrdersBySaleLineId(matchedLine.id);
+    if (cache) cache.manufacturingOrdersBySaleLineId.set(matchedLine.id, manufacturingOrders);
+  }
+
   const readyManufacturingOrder =
     manufacturingOrders.find((order) => isManufacturingOrderReady(order.state)) || null;
   const latestManufacturingOrder = readyManufacturingOrder || manufacturingOrders[0] || null;
@@ -987,7 +1032,7 @@ export async function processStockItem(
     return result;
   }
 
-  const component = await resolveComponentFromBOM(client, item, matchedLine);
+  const component = await resolveComponentFromBOM(client, item, matchedLine, cache);
   result.componentFound = component.found;
   result.componentName = component.componentName;
   result.variantId = component.variantId;
@@ -1105,6 +1150,14 @@ export async function processAllItems(
     const missingSoProducts: string[] = [];
     const componentMissingMessages = new Set<string>();
 
+    const cache: StockProcessingOrderCache = {
+      manufacturingOrdersBySaleLineId: new Map(),
+      productVariantsById: new Map(),
+      bomCandidatesByProductKey: new Map(),
+      bomLinesByBomId: new Map(),
+      productVariantsByTemplateId: new Map(),
+    };
+
     for (const item of run.items) {
       const result = await processStockItem(
         client,
@@ -1116,6 +1169,7 @@ export async function processAllItems(
         preview,
         processedVariantIds,
         matchedLines.get(item) || null,
+        cache,
       );
 
       if (!preview && result.status === 'processed' && result.variantId) {
@@ -1162,6 +1216,17 @@ export async function processAllItems(
         (item) => item.status === 'skipped' && item.skipReason === 'Already processed for this Job Summary signature',
       );
 
+    const failedItems = results.filter((item) => item.status === 'failed');
+    const failureDetails = failedItems
+      .map((item) => {
+        const itemLabel = item.normalizedColor || item.expectedSoProduct || 'Item';
+        return `${itemLabel}: ${item.skipReason}`;
+      })
+      .filter(Boolean);
+    const failureSummary = failureDetails.length > 0
+      ? `Stock reconciliation finished with failures: ${failureDetails.join('; ')}`
+      : 'Stock reconciliation finished with failures.';
+
     const finalResult: StockProcessingRunResult = {
       ...initialResult,
       items: results,
@@ -1173,7 +1238,7 @@ export async function processAllItems(
         : alreadyProcessedOnly
           ? 'This Job Summary signature was already processed locally; no stock changes were applied.'
           : summary.failedCount > 0
-            ? 'Stock reconciliation finished with failures.'
+            ? failureSummary
             : 'Stock reconciliation completed successfully.',
     };
 

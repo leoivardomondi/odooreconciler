@@ -1,5 +1,11 @@
 import { Router } from 'express';
-import { getExtractionQueueHealth, getRecentHistory, getSettings } from '../models/repositories';
+import {
+  getExtractionQueueHealth,
+  getRecentHistory,
+  getSentReportLogs,
+  getSettings,
+  markOrphanedStartedRunsAsFailed,
+} from '../models/repositories';
 import { HistoryEntry } from '../models/types';
 import { fetchRecentLogsAsync } from '../services/logService';
 import { getSchedulerStatus } from '../services/schedulerService';
@@ -12,11 +18,14 @@ router.get('/dashboard', async (req, res) => {
     return res.redirect('/shop-floor');
   }
 
-  const [settings, history, logs, scheduler] = await Promise.all([
+  await markOrphanedStartedRunsAsFailed().catch(() => undefined);
+
+  const [settings, history, logs, scheduler, sentReports] = await Promise.all([
     getSettings(),
     getRecentHistory(12),
     fetchRecentLogsAsync(12),
     getSchedulerStatus(),
+    getSentReportLogs(15),
   ]);
   const lastRun = history[0] || null;
   const message = typeof req.query.message === 'string' ? req.query.message : '';
@@ -30,6 +39,7 @@ router.get('/dashboard', async (req, res) => {
     logs,
     scheduler,
     queueHealth,
+    sentReports,
     status: message
       ? { type: 'success', message }
       : error

@@ -202,7 +202,7 @@ async function startServer() {
             (0, shopFloorOperatorAccessSyncService_1.startShopFloorOperatorAccessSyncInterval)();
             (0, boardIntakeSyncService_1.startBoardIntakeSyncInterval)();
             (0, shopFloorPendingSyncService_1.startShopFloorPendingSyncInterval)();
-            (0, weeklyShopFloorReportService_1.startWeeklyShopFloorReportInterval)();
+            (0, weeklyShopFloorReportService_1.startWeeklyShopFloorReportWarmup)();
             (0, startupState_1.markStartupReady)();
             console.log('[startup] Application initialization completed successfully.');
             writeStartupLog('Application initialization completed successfully.');

@@ -351,7 +351,11 @@ function buildMailConfigFromSource(source, existing) {
                     frequency: ['hourly', 'daily', 'weekly'].includes(frequency) ? frequency : 'daily',
                     interval: Math.min(168, Math.max(1, Number(source[`mailAutomation${number}Interval`]) || 1)),
                     dayOfWeek: Math.min(6, Math.max(0, Number(source[`mailAutomation${number}DayOfWeek`]) || 0)),
-                    hour: Math.min(23, Math.max(0, Number(source[`mailAutomation${number}Hour`]) || 0)),
+                    hour: systemKey === 'weekly-shop-floor-report'
+                        ? 7
+                        : Math.min(23, Math.max(0, Number(source[`mailAutomation${number}Hour`]) || 0)) === 7
+                            ? 8
+                            : Math.min(23, Math.max(0, Number(source[`mailAutomation${number}Hour`]) || 0)),
                     recipients: (source[`mailAutomation${number}Recipients`] || '').trim(),
                     subject: (source[`mailAutomation${number}Subject`] || '').trim(),
                     body: source[`mailAutomation${number}Body`] || '',
@@ -727,7 +731,10 @@ async function renderSettingsPage(res, options = {}) {
     };
     const missingMappings = (0, helpers_1.getMissingFieldMappingLabels)(sanitizeFieldMappings(mappingSource, saleOrderFieldState.fields, existing.fieldMappings).sanitized);
     const mappingDiagnostics = buildMappingDiagnostics(mappingSource, saleOrderFieldState.fields, existing.fieldMappings);
-    const approvedUsers = await (0, repositories_1.getApprovedAuthUsers)().catch(() => []);
+    const [approvedUsers, sentReports] = await Promise.all([
+        (0, repositories_1.getApprovedAuthUsers)().catch(() => []),
+        (0, repositories_1.getSentReportLogs)(30).catch(() => []),
+    ]);
     res.render('settings', {
         pageTitle: 'Settings',
         form,
@@ -739,6 +746,7 @@ async function renderSettingsPage(res, options = {}) {
         missingMappings,
         mappingDiagnostics,
         approvedUsers,
+        sentReports,
     });
 }
 router.get('/settings', async (req, res) => {

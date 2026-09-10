@@ -484,6 +484,85 @@
             </div>
           <% }) %>
         </div>
+
+        <div class="mt-4 pt-3 border-top">
+          <div class="d-flex justify-content-between align-items-center mb-3">
+            <div>
+              <h3 class="h6 fw-bold mb-1 d-flex align-items-center gap-2">
+                <span>Recent Automation Dispatch Log</span>
+                <span class="badge bg-secondary-subtle text-secondary border small">Last <%= (typeof sentReports !== 'undefined' && sentReports) ? sentReports.length : 0 %> runs</span>
+              </h3>
+              <p class="text-secondary small mb-0">Audit log of automatic reports, hourly reminders, and alerts dispatched by the background worker.</p>
+            </div>
+            <% if (typeof sentReports !== 'undefined' && sentReports.some(r => r.downloadUrl)) { %>
+              <a href="/shop-floor/operators/weekly-report.pdf" target="_blank" class="btn btn-sm btn-outline-primary">
+                📄 Download Latest Report PDF
+              </a>
+            <% } %>
+          </div>
+
+          <% if (typeof sentReports === 'undefined' || !sentReports || sentReports.length === 0) { %>
+            <div class="text-muted small py-3 border rounded text-center bg-light">
+              No recent automated email or report runs recorded.
+            </div>
+          <% } else { %>
+            <div class="table-responsive border rounded bg-white">
+              <table class="table table-sm align-middle mb-0" style="font-size: 0.84rem;">
+                <thead class="table-light">
+                  <tr>
+                    <th>Report / Event</th>
+                    <th>Recipients</th>
+                    <th>Status</th>
+                    <th>Dispatched At</th>
+                    <th class="text-end">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <% sentReports.forEach((report) => { %>
+                    <%
+                      const rStatusClass = 
+                        report.status === 'sent' || report.status === 'completed' ? 'success' :
+                        report.status === 'failed' ? 'danger' :
+                        report.status === 'warning' ? 'warning' : 'secondary';
+                    %>
+                    <tr>
+                      <td>
+                        <strong><%= report.reportName %></strong>
+                        <div class="text-muted small text-truncate" style="max-width: 320px;"><%= report.summary %></div>
+                      </td>
+                      <td>
+                        <% if (report.recipients && report.recipients.length > 0) { %>
+                          <% report.recipients.forEach((rcp) => { %>
+                            <span class="badge bg-light text-dark border me-1 font-monospace" style="font-size: 0.72rem;">
+                              <%= rcp %>
+                            </span>
+                          <% }) %>
+                        <% } else { %>
+                          <span class="text-muted small">—</span>
+                        <% } %>
+                      </td>
+                      <td>
+                        <span class="badge text-bg-<%= rStatusClass %> text-capitalize">
+                          <%= report.status %>
+                        </span>
+                      </td>
+                      <td class="text-nowrap text-secondary small">
+                        <%= formatDateTime(report.timestamp) %>
+                      </td>
+                      <td class="text-end text-nowrap">
+                        <% if (report.downloadUrl) { %>
+                          <a href="<%= report.downloadUrl %>" target="_blank" class="btn btn-xs btn-outline-primary py-0 px-2 small">
+                            PDF
+                          </a>
+                        <% } %>
+                      </td>
+                    </tr>
+                  <% }) %>
+                </tbody>
+              </table>
+            </div>
+          <% } %>
+        </div>
         </div>
       </div>
     </div>

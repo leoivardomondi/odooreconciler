@@ -139,6 +139,20 @@ export interface EmailAutomation {
   lastSentAt: string;
 }
 
+export interface SentReportLogEntry {
+  id: string;
+  reportName: string;
+  reportType: 'weekly_pdf' | 'task_reminders' | 'mpesa_review' | 'overtime_suggestion' | 'campaign_summary' | 'unreadable_doc' | 'custom_email' | 'general';
+  status: 'sent' | 'completed' | 'failed' | 'warning';
+  level: 'info' | 'warn' | 'error';
+  timestamp: string;
+  recipients: string[];
+  summary: string;
+  details: Record<string, unknown>;
+  downloadUrl?: string;
+  rawMessage: string;
+}
+
 export interface MailConfig {
   transport: MailTransportMode;
   fallbackTransport: MailFallbackTransportMode;

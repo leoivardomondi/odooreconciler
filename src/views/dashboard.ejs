@@ -185,6 +185,118 @@
         </div>
       </div>
 
+      <div class="card shadow-sm border-0 app-card mb-4" id="sent-automated-reports">
+        <div class="card-body p-4">
+          <div class="d-flex justify-content-between align-items-center gap-3 flex-wrap mb-3">
+            <div>
+              <div class="d-flex align-items-center gap-2">
+                <h2 class="h4 mb-0">Sent Automated Reports & Notifications</h2>
+                <span class="badge rounded-pill bg-primary-subtle text-primary border border-primary-subtle px-2 py-1 small">
+                  Live Dispatch Log
+                </span>
+              </div>
+              <p class="text-secondary small mb-0 mt-1">
+                Real-time record of automated reports, scheduled operator reminders, and operational alerts sent via SMTP.
+              </p>
+            </div>
+            <div class="d-flex align-items-center gap-2">
+              <a href="/shop-floor/operators/weekly-report.pdf" target="_blank" class="btn btn-outline-primary btn-sm">
+                📄 View Latest Weekly PDF
+              </a>
+              <a href="/settings#section-email-automation" class="btn btn-outline-secondary btn-sm">
+                ⚙️ Email Rules
+              </a>
+            </div>
+          </div>
+
+          <% if (typeof sentReports === 'undefined' || !sentReports || sentReports.length === 0) { %>
+            <div class="text-secondary small py-3 border rounded text-center bg-body-tertiary">
+              No automated reports or email dispatches recorded in recent logs.
+            </div>
+          <% } else { %>
+            <div class="table-responsive">
+              <table class="table table-sm align-middle mb-0">
+                <thead class="table-light">
+                  <tr>
+                    <th>Report / Notification</th>
+                    <th>Recipients</th>
+                    <th>Status</th>
+                    <th>Timestamp</th>
+                    <th class="text-end">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <% sentReports.forEach((report) => { %>
+                    <%
+                      const reportBadgeClass = 
+                        report.status === 'sent' || report.status === 'completed' ? 'success' :
+                        report.status === 'failed' ? 'danger' :
+                        report.status === 'warning' ? 'warning' : 'secondary';
+                      
+                      const reportIcon = 
+                        report.reportType === 'weekly_pdf' ? '📄' :
+                        report.reportType === 'task_reminders' ? '⏰' :
+                        report.reportType === 'mpesa_review' ? '💰' :
+                        report.reportType === 'overtime_suggestion' ? '⏱️' :
+                        report.reportType === 'campaign_summary' ? '📊' :
+                        report.reportType === 'unreadable_doc' ? '⚠️' : '✉️';
+                    %>
+                    <tr>
+                      <td>
+                        <div class="d-flex align-items-start gap-2">
+                          <span class="fs-5" aria-hidden="true"><%= reportIcon %></span>
+                          <div>
+                            <strong class="d-block"><%= report.reportName %></strong>
+                            <span class="small text-secondary"><%= report.summary %></span>
+                          </div>
+                        </div>
+                      </td>
+                      <td>
+                        <% if (report.recipients && report.recipients.length > 0) { %>
+                          <% report.recipients.forEach((rcp) => { %>
+                            <span class="badge bg-light text-dark border me-1 font-monospace small" style="font-size: 0.75rem;">
+                              <%= rcp %>
+                            </span>
+                          <% }) %>
+                        <% } else { %>
+                          <span class="text-secondary small">—</span>
+                        <% } %>
+                      </td>
+                      <td>
+                        <span class="badge text-bg-<%= reportBadgeClass %> text-capitalize">
+                          <%= report.status %>
+                        </span>
+                      </td>
+                      <td class="text-nowrap small text-secondary">
+                        <%= formatDateTime(report.timestamp) %>
+                      </td>
+                      <td class="text-end text-nowrap">
+                        <% if (report.downloadUrl) { %>
+                          <a href="<%= report.downloadUrl %>" target="_blank" class="btn btn-xs btn-outline-primary py-0 px-2 small" title="Download Report PDF">
+                            Download PDF
+                          </a>
+                        <% } %>
+                        <% if (report.details && Object.keys(report.details).length > 0) { %>
+                          <details class="d-inline-block text-start position-relative">
+                            <summary class="btn btn-xs btn-outline-secondary py-0 px-2 small ms-1" style="list-style: none; cursor: pointer;">
+                              Details
+                            </summary>
+                            <div class="position-absolute end-0 p-3 bg-body-tertiary border rounded shadow mt-1 z-3" style="min-width: 320px; max-width: 450px; text-align: left;">
+                              <div class="small fw-bold mb-1">Dispatch Context</div>
+                              <pre class="small text-secondary mb-0 bg-white p-2 border rounded" style="max-height: 180px; overflow: auto; font-size: 0.72rem;"><%= JSON.stringify(report.details, null, 2) %></pre>
+                            </div>
+                          </details>
+                        <% } %>
+                      </td>
+                    </tr>
+                  <% }) %>
+                </tbody>
+              </table>
+            </div>
+          <% } %>
+        </div>
+      </div>
+
       <div class="card shadow-sm border-0 app-card mb-4">
         <div class="card-body p-4">
           <h2 class="h4 mb-3">Scheduler Run Summary</h2>
@@ -218,6 +330,7 @@
                 : cooldownBlockedCount > 0 ? { label: 'Waiting for retry window', tone: 'warning', note: `${cooldownBlockedCount} document(s) are cooling down before the next automatic check.` }
                 : eligibleCount === 0 ? { label: 'No Finance documents found', tone: 'secondary', note: 'The scheduler completed normally, but there were no candidate Finance documents in its lookback window.' }
                 : { label: 'No documents scanned', tone: 'info', note: 'Candidates were found, but none were eligible for this batch.' })
+              : run.status === 'started' ? { label: 'In progress', tone: 'primary', note: run.summary || 'Processing documents...' }
               : run.failedCount > 0 ? { label: 'Attention required', tone: 'danger', note: `${run.failedCount} document(s) failed during this run.` }
               : run.processedCount > 0 ? { label: 'Work completed', tone: 'success', note: `${run.processedCount} document(s) were processed successfully.` }
               : null; %>
@@ -264,7 +377,17 @@
                               <span class="fw-bold text-dark"><%= fi.orderName || (fi.orderId ? `SO #${fi.orderId}` : fi.attachmentName || 'Document') %></span>
                               <span class="badge text-bg-danger"><%= fi.category || fi.status || 'failed' %></span>
                             </div>
-                            <div class="text-danger small font-monospace"><%= fi.reason || 'Processing failed' %></div>
+                            <div class="text-danger small font-monospace">
+                              <% if (Array.isArray(fi.failedItemReasons) && fi.failedItemReasons.length > 0) { %>
+                                <ul class="mb-0 ps-3">
+                                  <% fi.failedItemReasons.forEach((r) => { %>
+                                    <li><%= r %></li>
+                                  <% }) %>
+                                </ul>
+                              <% } else { %>
+                                <%= fi.reason || 'Processing failed' %>
+                              <% } %>
+                            </div>
                             <% if (fi.historyId) { %>
                               <div>
                                 <a href="/extractions/<%= fi.historyId %>" class="btn btn-sm btn-outline-secondary py-0 px-2" style="font-size: 0.75rem;">View Extraction Details</a>

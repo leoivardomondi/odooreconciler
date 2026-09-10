@@ -1,5 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.nairobiNow = nairobiNow;
+exports.isDue = isDue;
 exports.runEmailAutomations = runEmailAutomations;
 exports.startEmailAutomationInterval = startEmailAutomationInterval;
 const repositories_1 = require("../models/repositories");
@@ -11,10 +13,11 @@ const shopFloorTaskReminderService_1 = require("./shopFloorTaskReminderService")
 const weeklyShopFloorReportService_1 = require("./weeklyShopFloorReportService");
 let timer = null;
 let running = false;
+let lastSentWeeklyReportDateKey = '';
 function recipients(value) {
     return [...new Set(value.split(/[,\n;]/).map((email) => email.trim().toLowerCase()).filter(Boolean))];
 }
-function nairobiNow() {
+function nairobiNow(date = new Date()) {
     const parts = new Intl.DateTimeFormat('en-CA', {
         timeZone: 'Africa/Nairobi',
         year: 'numeric',
@@ -24,9 +27,10 @@ function nairobiNow() {
         hour: '2-digit',
         minute: '2-digit',
         hour12: false,
-    }).formatToParts(new Date());
+    }).formatToParts(date);
     const get = (type) => parts.find((part) => part.type === type)?.value || '';
     return {
+        dateKey: `${get('year')}-${get('month')}-${get('day')}`,
         hour: Number(get('hour')),
         minute: Number(get('minute')),
         dayOfWeek: ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].indexOf(get('weekday')),
@@ -35,11 +39,38 @@ function nairobiNow() {
 function isDue(item, now = new Date()) {
     if (!item.enabled)
         return false;
-    const local = nairobiNow();
+    const local = nairobiNow(now);
+    // EXCLUSIVITY RULE: On Wednesday at 7:00 AM Nairobi time, ONLY the weekly-shop-floor-report
+    // is permitted to dispatch. All other emails (hourly reminders, daily notifications, custom emails)
+    // are strictly suppressed at that exact time to avoid duplications.
+    if (local.dayOfWeek === 3 && local.hour === 7 && item.systemKey !== 'weekly-shop-floor-report') {
+        return false;
+    }
+    // GENERAL 7:00 AM GUARD: 7:00 AM is reserved exclusively for the Wednesday Shop Floor Report.
+    // No other email automation is allowed to fire at 7:00 AM on any day.
+    if (local.hour === 7 && item.systemKey !== 'weekly-shop-floor-report') {
+        return false;
+    }
+    // DEDUPLICATION RULE FOR WEEKLY REPORT:
+    // Strictly prevent sending more than once on Wednesday at 7:00 AM.
+    if (item.systemKey === 'weekly-shop-floor-report') {
+        if (local.dayOfWeek !== 3 || local.hour !== 7)
+            return false;
+        const lastKey = item.lastSentAt ? nairobiNow(new Date(item.lastSentAt)).dateKey : '';
+        if (lastKey === local.dateKey || lastSentWeeklyReportDateKey === local.dateKey) {
+            return false;
+        }
+        return true;
+    }
     const last = item.lastSentAt ? new Date(item.lastSentAt) : null;
     const elapsedHours = last && Number.isFinite(last.getTime()) ? (now.getTime() - last.getTime()) / 3_600_000 : Infinity;
-    if (item.frequency === 'hourly')
+    if (item.frequency === 'hourly') {
+        // Hourly reminders only run during operator shift hours (8:00 AM to 5:00 PM), never before 8:00 AM or on Sunday
+        if (local.hour < 8 || local.hour > 17 || local.dayOfWeek === 0) {
+            return false;
+        }
         return elapsedHours >= Math.max(1, item.interval);
+    }
     if (item.systemKey === 'mo-overtime') {
         return local.hour === 16 && local.minute >= 50 && local.minute < 60 && elapsedHours >= 23;
     }
@@ -78,16 +109,26 @@ async function dispatch(item) {
         }
     }
 }
-async function runEmailAutomations() {
+async function runEmailAutomations(now = new Date()) {
     if (running)
         return;
     running = true;
     try {
         let settings = await (0, repositories_1.getSettings)();
+        const local = nairobiNow(now);
+        const isWednesdayReportHour = local.dayOfWeek === 3 && local.hour === 7;
         for (const item of settings.mail.automations) {
-            if (!isDue(item))
+            // Exclusivity rule: At 7:00 AM on Wednesday, ONLY the weekly-shop-floor-report
+            // is permitted to dispatch. All other emails are suppressed at that exact time to avoid duplications.
+            if (isWednesdayReportHour && item.systemKey !== 'weekly-shop-floor-report') {
+                continue;
+            }
+            if (!isDue(item, now))
                 continue;
             try {
+                if (item.systemKey === 'weekly-shop-floor-report') {
+                    lastSentWeeklyReportDateKey = local.dateKey;
+                }
                 const result = await dispatch(item);
                 if (result && typeof result === 'object' && 'skipped' in result && result.skipped) {
                     continue;

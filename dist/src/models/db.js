@@ -844,6 +844,11 @@ async function ensureSqliteDatabase(config) {
     await ensureColumnSqlite(db, 'mpesa_extraction_jobs', 'next_retry_at', 'TEXT');
     await ensureColumnSqlite(db, 'invoice_extraction_jobs', 'retry_count', 'INTEGER NOT NULL DEFAULT 0');
     await ensureColumnSqlite(db, 'invoice_extraction_jobs', 'next_retry_at', 'TEXT');
+    await sqliteExec(db, `
+    UPDATE settings
+    SET mail_config_json = REPLACE(mail_config_json, '"hour":8', '"hour":7')
+    WHERE id = 1 AND mail_config_json LIKE '%"systemKey":"weekly-shop-floor-report"%' AND mail_config_json LIKE '%"hour":8%';
+  `).catch(() => undefined);
 }
 async function ensureMysqlDatabase(config) {
     const pool = await getMysqlPool(config);
@@ -1435,6 +1440,11 @@ async function ensureMysqlDatabase(config) {
     await ensureColumnMysql(pool, 'mpesa_extraction_jobs', 'next_retry_at', 'DATETIME NULL', config.mysqlDatabase);
     await ensureColumnMysql(pool, 'invoice_extraction_jobs', 'retry_count', 'INT NOT NULL DEFAULT 0', config.mysqlDatabase);
     await ensureColumnMysql(pool, 'invoice_extraction_jobs', 'next_retry_at', 'DATETIME NULL', config.mysqlDatabase);
+    await query('migrate weekly report default hour', `
+    UPDATE settings
+    SET mail_config_json = REPLACE(mail_config_json, '"hour":8', '"hour":7')
+    WHERE id = 1 AND mail_config_json LIKE '%"systemKey":"weekly-shop-floor-report"%' AND mail_config_json LIKE '%"hour":8%'
+  `).catch(() => undefined);
 }
 async function ensureDatabase() {
     const config = getRuntimeDatabaseConfig();

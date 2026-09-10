@@ -16,7 +16,7 @@ import { startShopFloorPendingSyncInterval, stopShopFloorPendingSyncInterval } f
 import { startMpesaExtractionJobWorker, stopMpesaExtractionJobWorker } from './src/services/mpesaExtractionJobService';
 import { startInvoiceExtractionJobWorker, stopInvoiceExtractionJobWorker } from './src/services/invoiceExtractionJobService';
 import { startPoBillManualJobWorker, stopPoBillManualJobWorker } from './src/services/poBillManualJobService';
-import { startWeeklyShopFloorReportInterval } from './src/services/weeklyShopFloorReportService';
+import { startWeeklyShopFloorReportWarmup } from './src/services/weeklyShopFloorReportService';
 import { markStartupFailed, markStartupReady, markStartupStep } from './src/services/startupState';
 import { storageDirectoryPath } from './src/utils/paths';
 
@@ -240,7 +240,7 @@ export async function startServer() {
       startShopFloorOperatorAccessSyncInterval();
       startBoardIntakeSyncInterval();
       startShopFloorPendingSyncInterval();
-      startWeeklyShopFloorReportInterval();
+      startWeeklyShopFloorReportWarmup();
       markStartupReady();
       console.log('[startup] Application initialization completed successfully.');
       writeStartupLog('Application initialization completed successfully.');

@@ -5,6 +5,7 @@ import {
   clearGeminiOAuthCredentials,
   getApprovedAuthUsers,
   getCachedModelFields,
+  getSentReportLogs,
   getSettings,
   saveCachedModelFields,
   saveSettings,
@@ -441,7 +442,11 @@ function buildMailConfigFromSource(source: Record<string, string>, existing: Mai
                 frequency: ['hourly', 'daily', 'weekly'].includes(frequency) ? frequency : 'daily',
                 interval: Math.min(168, Math.max(1, Number(source[`mailAutomation${number}Interval`]) || 1)),
                 dayOfWeek: Math.min(6, Math.max(0, Number(source[`mailAutomation${number}DayOfWeek`]) || 0)),
-                hour: Math.min(23, Math.max(0, Number(source[`mailAutomation${number}Hour`]) || 0)),
+                hour: systemKey === 'weekly-shop-floor-report'
+                  ? 7
+                  : Math.min(23, Math.max(0, Number(source[`mailAutomation${number}Hour`]) || 0)) === 7
+                  ? 8
+                  : Math.min(23, Math.max(0, Number(source[`mailAutomation${number}Hour`]) || 0)),
                 recipients: (source[`mailAutomation${number}Recipients`] || '').trim(),
                 subject: (source[`mailAutomation${number}Subject`] || '').trim(),
                 body: source[`mailAutomation${number}Body`] || '',
@@ -920,7 +925,10 @@ async function renderSettingsPage(
     existing.fieldMappings,
   );
 
-  const approvedUsers = await getApprovedAuthUsers().catch(() => []);
+  const [approvedUsers, sentReports] = await Promise.all([
+    getApprovedAuthUsers().catch(() => []),
+    getSentReportLogs(30).catch(() => []),
+  ]);
 
   res.render('settings', {
     pageTitle: 'Settings',
@@ -933,6 +941,7 @@ async function renderSettingsPage(
     missingMappings,
     mappingDiagnostics,
     approvedUsers,
+    sentReports,
   });
 }
 

@@ -695,6 +695,15 @@ async function runPoBillSchedulerCycle(trigger = 'manual') {
             return Number(left.id || 0) - Number(right.id || 0);
         })
             .slice(0, batchSize);
+        await (0, repositories_1.updateSchedulerRun)(run.id, {
+            scannedCount: queue.length,
+            summary: `Processing ${queue.length} candidate Finance document(s)...`,
+            context: {
+                ...run.context,
+                candidateFinancePdfCount: recentPdfs.length,
+                eligibleCount: queueCandidates.length,
+            },
+        }).catch(() => undefined);
         for (const pdf of queue) {
             if (await isSchedulerStopRequested(run.id)) {
                 stopRequested = true;
@@ -804,6 +813,17 @@ async function runPoBillSchedulerCycle(trigger = 'manual') {
                 });
             }
             await touchActiveSchedulerRunLock(run.id);
+            await (0, repositories_1.updateSchedulerRun)(run.id, {
+                scannedCount: queue.length,
+                processedCount,
+                skippedCount,
+                failedCount,
+                summary: `Processing ${scannedCount} of ${queue.length} Finance document(s) (${processedCount} processed, ${skippedCount} skipped, ${failedCount} failed)...`,
+                context: {
+                    ...run.context,
+                    documentOutcomes: [...documentOutcomes],
+                },
+            }).catch(() => undefined);
         }
         if (!stopRequested && failedCount === 0) {
             await (0, repositories_1.markSchedulerRunSucceeded)(run.id, runtimeState.lastCheckpointAt);
@@ -1078,8 +1098,8 @@ async function runSchedulerCycle(trigger = 'manual') {
             touchActiveSchedulerRunLock(run.id).catch(() => undefined);
         }, 25000);
         await touchActiveSchedulerRunLock(run.id);
-        const configuredBatchSize = Math.max(1, Number(settings.scheduler.batchSize) || 5);
-        const batchSize = Math.min(8, configuredBatchSize);
+        const configuredBatchSize = Math.max(1, Number(settings.scheduler.batchSize) || 3);
+        const batchSize = Math.min(4, configuredBatchSize);
         const candidateLimit = plannedCandidateLimit;
         const candidateOrders = await withTimeout(() => client.getConfirmedSalesOrdersSince(effectiveConfirmedFromDate, candidateLimit), 45000, 'Fetching candidate sales orders from Odoo');
         const recentlyRoutineOrderIds = getRecentlyRoutineSalesOrderIds(recentSalesOrderRunsForPlanning);
@@ -1090,6 +1110,16 @@ async function runSchedulerCycle(trigger = 'manual') {
                 latestProcessedOrderDate = order.date_order;
             }
         }
+        await (0, repositories_1.updateSchedulerRun)(run.id, {
+            scannedCount,
+            summary: `Scanning ${scannedCount} candidate Sales Order(s)...`,
+            context: {
+                ...run.context,
+                candidateOrderCount: candidateOrders.length,
+                selectedOrderIds: orders.map((o) => o.id),
+                selectedOrderNames: orders.map((o) => o.name),
+            },
+        }).catch(() => undefined);
         const processOrder = async (order) => {
             try {
                 await touchActiveSchedulerRunLock(run.id);
@@ -1173,6 +1203,13 @@ async function runSchedulerCycle(trigger = 'manual') {
                 const stockResult = await (0, stockProcessingService_1.processSaleOrderStock)(order.id);
                 await touchActiveSchedulerRunLock(run.id);
                 if (stockResult.summary.failedCount > 0) {
+                    const failedItemReasons = stockResult.items
+                        .filter((item) => item.status === 'failed')
+                        .map((item) => `${item.normalizedColor || item.expectedSoProduct || 'Item'}: ${item.skipReason}`)
+                        .filter(Boolean);
+                    const detailedReason = failedItemReasons.length > 0
+                        ? failedItemReasons.join('; ')
+                        : stockResult.statusMessage;
                     return {
                         result: 'failed',
                         outcome: {
@@ -1183,7 +1220,8 @@ async function runSchedulerCycle(trigger = 'manual') {
                             status: 'failed',
                             category: 'stock_failed',
                             stage: 'stock_reconciliation',
-                            reason: stockResult.statusMessage,
+                            reason: detailedReason,
+                            failedItemReasons,
                             historyId: history.id,
                             extractionSkipped: sendResult.skipped,
                             stockSignature: stockResult.signature,
@@ -1272,6 +1310,18 @@ async function runSchedulerCycle(trigger = 'manual') {
                 orderOutcomes.push(result.outcome);
             }
             await touchActiveSchedulerRunLock(run.id);
+            const doneCount = processedCount + skippedCount + failedCount;
+            await (0, repositories_1.updateSchedulerRun)(run.id, {
+                scannedCount,
+                processedCount,
+                skippedCount,
+                failedCount,
+                summary: `Processing ${doneCount} of ${scannedCount} Sales Order(s) (${processedCount} reconciled, ${skippedCount} skipped, ${failedCount} failed)...`,
+                context: {
+                    ...run.context,
+                    orderOutcomes: [...orderOutcomes],
+                },
+            }).catch(() => undefined);
             if (SO_SCHEDULER_ORDER_DELAY_MS > 0 && index + SO_SCHEDULER_CONCURRENCY < orders.length) {
                 await wait(SO_SCHEDULER_ORDER_DELAY_MS);
             }

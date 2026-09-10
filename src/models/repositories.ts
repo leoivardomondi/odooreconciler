@@ -31,6 +31,7 @@ import {
   ProcessedStockItemEntry,
   SchedulerRunEntry,
   SchedulerRuntimeState,
+  SentReportLogEntry,
   SignatureComparisonResult,
   ShopFloorFeatureFlags,
   ShopFloorFeatureKey,
@@ -327,7 +328,9 @@ function readMailConfig(mailConfigJson: string | null): MailConfig {
         frequency: ['hourly', 'daily', 'weekly'].includes(frequency) ? frequency : 'daily',
         interval: positiveNumberValue(item.interval, fallback?.interval || 1),
         dayOfWeek: Math.min(6, Math.max(0, Number(item.dayOfWeek ?? fallback?.dayOfWeek ?? 1))),
-        hour: Math.min(23, Math.max(0, Number(item.hour ?? fallback?.hour ?? 8))),
+        hour: systemKey === 'weekly-shop-floor-report' && (Number(item.hour) === 8 || item.hour === undefined || item.hour === null)
+          ? 7
+          : Math.min(23, Math.max(0, Number(item.hour ?? fallback?.hour ?? 7))),
         recipients: stringValue(item.recipients, fallback?.recipients || '').trim(),
         subject: stringValue(item.subject, fallback?.subject || '').trim(),
         body: stringValue(item.body, fallback?.body || ''),
@@ -3029,6 +3032,215 @@ export async function getRecentLogs(limit = 50, historyId?: string): Promise<Log
   }));
 }
 
+export async function getSentReportLogs(limit = 30): Promise<SentReportLogEntry[]> {
+  const maxLimit = Math.max(1, Math.min(limit, 100));
+  const rows = await queryAll<{
+    id: string;
+    level: 'info' | 'warn' | 'error';
+    message: string;
+    context_json: string;
+    created_at: string;
+  }>(
+    `
+      SELECT id, level, message, context_json, created_at
+      FROM logs
+      WHERE message IN (
+        'Wednesday Shop Floor report sent',
+        'Hourly shop-floor task reminders completed',
+        'M-Pesa review notification sent',
+        'Large MO overtime suggestion sent',
+        'Sent campaign summary report email to dbadmin',
+        'Unreadable PO bill document notification sent',
+        'Email automation completed',
+        'Email automation failed',
+        'Failed sending campaign report email to dbadmin'
+      )
+      OR message LIKE '%Shop Floor report sent%'
+      OR message LIKE '%report sent%'
+      OR message LIKE '%notification sent%'
+      ORDER BY created_at DESC, id DESC
+      LIMIT ?
+    `,
+    [maxLimit * 2],
+  );
+
+  const results: SentReportLogEntry[] = [];
+  for (const row of rows) {
+    const ctx = safeJsonParse<Record<string, any>>(row.context_json, {});
+    const msg = row.message;
+
+    if (msg.includes('Wednesday Shop Floor report sent') || msg.includes('Shop Floor report sent')) {
+      const recipients = Array.isArray(ctx.recipients) ? ctx.recipients : (ctx.recipient ? [ctx.recipient] : []);
+      const smtpAcc = ctx.smtpAccount ? ` via ${ctx.smtpAccount}` : '';
+      results.push({
+        id: row.id,
+        reportName: 'Wednesday Shop Floor Accountability Report',
+        reportType: 'weekly_pdf',
+        status: 'sent',
+        level: row.level,
+        timestamp: row.created_at,
+        recipients,
+        summary: ctx.response ? `Sent${smtpAcc} (${ctx.response})` : `Delivered to ${recipients.length} recipient(s)${smtpAcc}`,
+        details: ctx,
+        downloadUrl: '/shop-floor/operators/weekly-report.pdf',
+        rawMessage: msg,
+      });
+      continue;
+    }
+
+    if (msg === 'Hourly shop-floor task reminders completed') {
+      const sentCount = Number(ctx.sent || 0);
+      const usersWithTasks = Number(ctx.usersWithTasks || 0);
+      const excl = Array.isArray(ctx.excluded) && ctx.excluded.length > 0 ? ` (excl: ${ctx.excluded.join(', ')})` : '';
+      results.push({
+        id: row.id,
+        reportName: 'Shop Floor Task Reminders',
+        reportType: 'task_reminders',
+        status: 'completed',
+        level: row.level,
+        timestamp: row.created_at,
+        recipients: [`${sentCount} operator(s)${excl}`],
+        summary: `Dispatched task notifications to ${sentCount} operator(s) with active work (${usersWithTasks} operators with tasks)`,
+        details: ctx,
+        rawMessage: msg,
+      });
+      continue;
+    }
+
+    if (msg === 'M-Pesa review notification sent') {
+      const recipient = String(ctx.recipient || '');
+      const statementCount = Number(ctx.statementCount || 0);
+      results.push({
+        id: row.id,
+        reportName: 'Daily M-Pesa Review Notification',
+        reportType: 'mpesa_review',
+        status: 'sent',
+        level: row.level,
+        timestamp: row.created_at,
+        recipients: recipient ? [recipient] : [],
+        summary: `Dispatched review alert for ${statementCount} statement(s)`,
+        details: ctx,
+        rawMessage: msg,
+      });
+      continue;
+    }
+
+    if (msg === 'Large MO overtime suggestion sent') {
+      const recipient = String(ctx.recipient || '');
+      const moIds = Array.isArray(ctx.moIds) ? ctx.moIds : [];
+      results.push({
+        id: row.id,
+        reportName: 'Large MO Overtime Suggestion',
+        reportType: 'overtime_suggestion',
+        status: 'sent',
+        level: row.level,
+        timestamp: row.created_at,
+        recipients: recipient ? [recipient] : [],
+        summary: `Sent overtime suggestion for ${moIds.length} large cutting MO(s)`,
+        details: ctx,
+        rawMessage: msg,
+      });
+      continue;
+    }
+
+    if (msg === 'Sent campaign summary report email to dbadmin') {
+      const recipient = String(ctx.recipient || '');
+      const scanned = ctx.metrics?.totalScanned ?? 0;
+      const passed = ctx.metrics?.totalPassed ?? 0;
+      results.push({
+        id: row.id,
+        reportName: 'PO Bill Campaign Summary Report',
+        reportType: 'campaign_summary',
+        status: 'sent',
+        level: row.level,
+        timestamp: row.created_at,
+        recipients: recipient ? [recipient] : [],
+        summary: `Emailed campaign summary (Scanned: ${scanned}, Passed: ${passed})`,
+        details: ctx,
+        rawMessage: msg,
+      });
+      continue;
+    }
+
+    if (msg === 'Unreadable PO bill document notification sent') {
+      const recipient = String(ctx.recipient || '');
+      results.push({
+        id: row.id,
+        reportName: 'Unreadable PO Bill Document Notification',
+        reportType: 'unreadable_doc',
+        status: 'warning',
+        level: row.level,
+        timestamp: row.created_at,
+        recipients: recipient ? [recipient] : [],
+        summary: `Alert sent for attachment #${ctx.attachmentId || ''} (${ctx.attachmentName || 'document'})`,
+        details: ctx,
+        rawMessage: msg,
+      });
+      continue;
+    }
+
+    if (msg === 'Email automation failed') {
+      const name = String(ctx.name || ctx.id || 'Email Automation');
+      results.push({
+        id: row.id,
+        reportName: name,
+        reportType: 'general',
+        status: 'failed',
+        level: 'error',
+        timestamp: row.created_at,
+        recipients: [],
+        summary: String(ctx.error || 'Automation failed to execute'),
+        details: ctx,
+        rawMessage: msg,
+      });
+      continue;
+    }
+
+    if (msg === 'Email automation completed') {
+      const id = String(ctx.id || '');
+      if (id === 'shop-floor-reminders') {
+        continue;
+      }
+      const name = String(ctx.name || id || 'Automated Email');
+      let reportType: SentReportLogEntry['reportType'] = 'custom_email';
+      if (id === 'weekly-shop-floor-report') reportType = 'weekly_pdf';
+      else if (id === 'mpesa-review') reportType = 'mpesa_review';
+      else if (id === 'mo-overtime') reportType = 'overtime_suggestion';
+
+      results.push({
+        id: row.id,
+        reportName: name,
+        reportType,
+        status: 'completed',
+        level: row.level,
+        timestamp: row.created_at,
+        recipients: [],
+        summary: `Automation "${name}" (${ctx.frequency || 'scheduled'}) completed cycle`,
+        details: ctx,
+        rawMessage: msg,
+      });
+      continue;
+    }
+
+    if (msg.toLowerCase().includes('report') || msg.toLowerCase().includes('notification')) {
+      results.push({
+        id: row.id,
+        reportName: msg,
+        reportType: 'general',
+        status: row.level === 'error' ? 'failed' : row.level === 'warn' ? 'warning' : 'sent',
+        level: row.level,
+        timestamp: row.created_at,
+        recipients: Array.isArray(ctx.recipients) ? ctx.recipients : (ctx.recipient ? [ctx.recipient] : []),
+        summary: msg,
+        details: ctx,
+        rawMessage: msg,
+      });
+    }
+  }
+
+  return results.slice(0, maxLimit);
+}
+
 function mapHistoryRow(row: {
   id: string;
   order_id: number;
@@ -5101,6 +5313,10 @@ export async function saveShopFloorSharedCache(cacheKey: string, data: any): Pro
 
 export async function deleteShopFloorSharedCache(cacheKey: string): Promise<void> {
   await execute('DELETE FROM shop_floor_shared_cache WHERE cache_key = ?', [cacheKey]);
+}
+
+export async function deleteShopFloorSharedCachePrefix(prefix: string): Promise<void> {
+  await execute('DELETE FROM shop_floor_shared_cache WHERE cache_key LIKE ?', [`${prefix}%`]);
 }
 
 export async function deleteShopFloorDashboardSnapshot(email?: string): Promise<void> {

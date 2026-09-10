@@ -6,6 +6,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.buildWeeklyShopFloorReport = buildWeeklyShopFloorReport;
 exports.renderWeeklyShopFloorReportPdf = renderWeeklyShopFloorReportPdf;
 exports.sendWeeklyShopFloorReport = sendWeeklyShopFloorReport;
+exports.startWeeklyShopFloorReportWarmup = startWeeklyShopFloorReportWarmup;
+exports.purgeWeeklyReportCaches = purgeWeeklyReportCaches;
 exports.startWeeklyShopFloorReportInterval = startWeeklyShopFloorReportInterval;
 exports.getWeeklyReportCacheKey = getWeeklyReportCacheKey;
 exports.getOrBuildWeeklyShopFloorReportPdf = getOrBuildWeeklyShopFloorReportPdf;
@@ -593,7 +595,7 @@ async function sendWeeklyShopFloorReport(additionalRecipients = [], includeDefau
     const [settings, users, reportResult] = await Promise.all([
         (0, repositories_1.getSettings)(),
         (0, repositories_1.getApprovedAuthUsers)(),
-        getOrBuildWeeklyShopFloorReportPdf(),
+        getOrBuildWeeklyShopFloorReportPdf(undefined, { forceRefresh: true }),
     ]);
     const pdf = reportResult.pdf;
     const filename = reportResult.filename;
@@ -626,33 +628,34 @@ async function sendWeeklyShopFloorReport(additionalRecipients = [], includeDefau
     });
     return recipients;
 }
-let interval = null;
-let lastSentDate = '';
-function startWeeklyShopFloorReportInterval() {
-    if (interval)
+let warmupTimeout = null;
+function startWeeklyShopFloorReportWarmup() {
+    if (warmupTimeout)
         return;
-    const check = async () => {
-        const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Nairobi', weekday: 'short', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', hour12: false }).formatToParts(new Date());
-        const get = (type) => parts.find((part) => part.type === type)?.value || '';
-        const key = `${get('year')}-${get('month')}-${get('day')}`;
-        if (get('weekday') === 'Wed' && Number(get('hour')) >= 8 && lastSentDate !== key) {
-            try {
-                await sendWeeklyShopFloorReport();
-                lastSentDate = key;
-            }
-            catch (error) {
-                console.error('[weekly-report]', error);
-            }
-        }
-    };
-    void check();
-    interval = setInterval(() => void check(), 60 * 60 * 1000);
     // Background pre-warm the default report PDF snapshot so downloads are instant (<50ms)
-    setTimeout(() => {
-        void generateAndCacheWeeklyReportPdf().catch((err) => {
+    warmupTimeout = setTimeout(() => {
+        void (async () => {
+            await purgeWeeklyReportCaches();
+            await generateAndCacheWeeklyReportPdf();
+        })().catch((err) => {
             console.warn('[weekly-report] Initial warmup failed:', err?.message || err);
         });
-    }, 5 * 60 * 1000);
+    }, 60 * 1000);
+}
+async function purgeWeeklyReportCaches() {
+    try {
+        await (0, repositories_1.deleteShopFloorSharedCachePrefix)('shop-floor:weekly-report-pdf:');
+    }
+    catch (err) {
+        console.warn('[weekly-report] Failed to purge old weekly report caches:', err);
+    }
+}
+/**
+ * @deprecated Automated email delivery is managed centrally by emailAutomationService using settings.mail.automations.
+ * This function is preserved for backward compatibility and delegates to background warmup.
+ */
+function startWeeklyShopFloorReportInterval() {
+    startWeeklyShopFloorReportWarmup();
 }
 function getWeeklyReportCacheKey(start, end) {
     return `shop-floor:weekly-report-pdf:${start}:${end}`;

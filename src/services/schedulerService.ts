@@ -859,6 +859,16 @@ export async function runPoBillSchedulerCycle(
       })
       .slice(0, batchSize);
 
+    await updateSchedulerRun(run.id, {
+      scannedCount: queue.length,
+      summary: `Processing ${queue.length} candidate Finance document(s)...`,
+      context: {
+        ...run.context,
+        candidateFinancePdfCount: recentPdfs.length,
+        eligibleCount: queueCandidates.length,
+      },
+    }).catch(() => undefined);
+
     for (const pdf of queue) {
       if (await isSchedulerStopRequested(run.id)) {
         stopRequested = true;
@@ -973,6 +983,18 @@ export async function runPoBillSchedulerCycle(
         });
       }
       await touchActiveSchedulerRunLock(run.id);
+
+      await updateSchedulerRun(run.id, {
+        scannedCount: queue.length,
+        processedCount,
+        skippedCount,
+        failedCount,
+        summary: `Processing ${scannedCount} of ${queue.length} Finance document(s) (${processedCount} processed, ${skippedCount} skipped, ${failedCount} failed)...`,
+        context: {
+          ...run.context,
+          documentOutcomes: [...documentOutcomes],
+        },
+      }).catch(() => undefined);
     }
 
     if (!stopRequested && failedCount === 0) {
@@ -1277,8 +1299,8 @@ export async function runSchedulerCycle(
     }, 25000);
     await touchActiveSchedulerRunLock(run.id);
 
-    const configuredBatchSize = Math.max(1, Number(settings.scheduler.batchSize) || 5);
-    const batchSize = Math.min(8, configuredBatchSize);
+    const configuredBatchSize = Math.max(1, Number(settings.scheduler.batchSize) || 3);
+    const batchSize = Math.min(4, configuredBatchSize);
     const candidateLimit = plannedCandidateLimit;
     const candidateOrders = await withTimeout(
       () => client.getConfirmedSalesOrdersSince(effectiveConfirmedFromDate, candidateLimit),
@@ -1294,6 +1316,17 @@ export async function runSchedulerCycle(
         latestProcessedOrderDate = order.date_order;
       }
     }
+
+    await updateSchedulerRun(run.id, {
+      scannedCount,
+      summary: `Scanning ${scannedCount} candidate Sales Order(s)...`,
+      context: {
+        ...run.context,
+        candidateOrderCount: candidateOrders.length,
+        selectedOrderIds: orders.map((o) => o.id),
+        selectedOrderNames: orders.map((o) => o.name),
+      },
+    }).catch(() => undefined);
 
     const processOrder = async (order: (typeof orders)[number]) => {
       try {
@@ -1393,6 +1426,14 @@ export async function runSchedulerCycle(
         await touchActiveSchedulerRunLock(run.id);
 
         if (stockResult.summary.failedCount > 0) {
+          const failedItemReasons = stockResult.items
+            .filter((item) => item.status === 'failed')
+            .map((item) => `${item.normalizedColor || item.expectedSoProduct || 'Item'}: ${item.skipReason}`)
+            .filter(Boolean);
+          const detailedReason = failedItemReasons.length > 0
+            ? failedItemReasons.join('; ')
+            : stockResult.statusMessage;
+
           return {
             result: 'failed' as const,
             outcome: {
@@ -1403,7 +1444,8 @@ export async function runSchedulerCycle(
               status: 'failed',
               category: 'stock_failed',
               stage: 'stock_reconciliation',
-              reason: stockResult.statusMessage,
+              reason: detailedReason,
+              failedItemReasons,
               historyId: history.id,
               extractionSkipped: sendResult.skipped,
               stockSignature: stockResult.signature,
@@ -1493,6 +1535,19 @@ export async function runSchedulerCycle(
         orderOutcomes.push(result.outcome);
       }
       await touchActiveSchedulerRunLock(run.id);
+
+      const doneCount = processedCount + skippedCount + failedCount;
+      await updateSchedulerRun(run.id, {
+        scannedCount,
+        processedCount,
+        skippedCount,
+        failedCount,
+        summary: `Processing ${doneCount} of ${scannedCount} Sales Order(s) (${processedCount} reconciled, ${skippedCount} skipped, ${failedCount} failed)...`,
+        context: {
+          ...run.context,
+          orderOutcomes: [...orderOutcomes],
+        },
+      }).catch(() => undefined);
 
       if (SO_SCHEDULER_ORDER_DELAY_MS > 0 && index + SO_SCHEDULER_CONCURRENCY < orders.length) {
         await wait(SO_SCHEDULER_ORDER_DELAY_MS);

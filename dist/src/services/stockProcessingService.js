@@ -401,7 +401,7 @@ async function resolveStockLocation(client) {
         label: matches[0].complete_name || matches[0].name,
     };
 }
-async function resolveComponentFromBOM(client, item, matchedLine) {
+async function resolveComponentFromBOM(client, item, matchedLine, cache) {
     const matchedProductId = Array.isArray(matchedLine.product_id) ? matchedLine.product_id[0] : 0;
     if (!matchedProductId) {
         return {
@@ -412,7 +412,15 @@ async function resolveComponentFromBOM(client, item, matchedLine) {
             reason: `Matched Sales Order line does not have a product for ${item.expectedSoProduct}`,
         };
     }
-    const product = await client.getProductVariant(matchedProductId);
+    let product = null;
+    if (cache && cache.productVariantsById.has(matchedProductId)) {
+        product = cache.productVariantsById.get(matchedProductId);
+    }
+    else {
+        product = await client.getProductVariant(matchedProductId);
+        if (cache)
+            cache.productVariantsById.set(matchedProductId, product);
+    }
     const templateId = Array.isArray(product?.product_tmpl_id) ? product.product_tmpl_id[0] : 0;
     if (!product || !templateId) {
         return {
@@ -423,7 +431,16 @@ async function resolveComponentFromBOM(client, item, matchedLine) {
             reason: `Could not load the Sales Order product for ${item.expectedSoProduct}`,
         };
     }
-    const bomCandidates = await client.getBomCandidatesForProduct(product.id, templateId);
+    const bomCacheKey = `${product.id}:${templateId}`;
+    let bomCandidates = [];
+    if (cache && cache.bomCandidatesByProductKey.has(bomCacheKey)) {
+        bomCandidates = cache.bomCandidatesByProductKey.get(bomCacheKey);
+    }
+    else {
+        bomCandidates = await client.getBomCandidatesForProduct(product.id, templateId);
+        if (cache)
+            cache.bomCandidatesByProductKey.set(bomCacheKey, bomCandidates);
+    }
     const companySpecificBoms = bomCandidates.filter((candidate) => Array.isArray(candidate.company_id));
     const scopedBomCandidates = companySpecificBoms.length > 0 ? companySpecificBoms : bomCandidates;
     const exactVariantBoms = scopedBomCandidates.filter((candidate) => Array.isArray(candidate.product_id) && candidate.product_id[0] === product.id);
@@ -455,7 +472,15 @@ async function resolveComponentFromBOM(client, item, matchedLine) {
             reason: `No BOM found for ${item.expectedSoProduct}`,
         };
     }
-    const bomLines = await client.getBomLines(selectedBom.id);
+    let bomLines = [];
+    if (cache && cache.bomLinesByBomId.has(selectedBom.id)) {
+        bomLines = cache.bomLinesByBomId.get(selectedBom.id);
+    }
+    else {
+        bomLines = await client.getBomLines(selectedBom.id);
+        if (cache)
+            cache.bomLinesByBomId.set(selectedBom.id, bomLines);
+    }
     const matchingLines = bomLines.filter((line) => {
         const relationLabel = Array.isArray(line.product_id)
             ? line.product_id[1]
@@ -508,7 +533,15 @@ async function resolveComponentFromBOM(client, item, matchedLine) {
             reason: `Could not resolve the BOM component variant for ${item.expectedSoProduct}`,
         };
     }
-    const variants = await client.getProductVariantsByTemplate(templateIdFromComponent);
+    let variants = [];
+    if (cache && cache.productVariantsByTemplateId.has(templateIdFromComponent)) {
+        variants = cache.productVariantsByTemplateId.get(templateIdFromComponent);
+    }
+    else {
+        variants = await client.getProductVariantsByTemplate(templateIdFromComponent);
+        if (cache)
+            cache.productVariantsByTemplateId.set(templateIdFromComponent, variants);
+    }
     const matchingVariants = variants.filter((variant) => {
         const label = variant.display_name || variant.name;
         const componentColor = extractEdgeBandRollColor(label);
@@ -702,7 +735,7 @@ async function resolveAllowedNotificationRecipient(client, kind) {
         partnerId: user.partnerId,
     };
 }
-async function processStockItem(client, orderId, item, lines, location, signature, preview, processedVariantIds, matchedLineOverride) {
+async function processStockItem(client, orderId, item, lines, location, signature, preview, processedVariantIds, matchedLineOverride, cache) {
     const result = createBaseItemResult(item);
     const matchedLine = matchedLineOverride === undefined ? matchSoLine(item, lines) : matchedLineOverride;
     if (!matchedLine) {
@@ -714,7 +747,15 @@ async function processStockItem(client, orderId, item, lines, location, signatur
     result.matchedSoProductName =
         (Array.isArray(matchedLine.product_id) ? matchedLine.product_id[1] : '') || matchedLine.name;
     result.orderedMeters = Math.round(Math.max(0, Number(matchedLine.product_uom_qty || 0)));
-    const manufacturingOrders = await client.getManufacturingOrdersBySaleLineId(matchedLine.id);
+    let manufacturingOrders = [];
+    if (cache && cache.manufacturingOrdersBySaleLineId.has(matchedLine.id)) {
+        manufacturingOrders = cache.manufacturingOrdersBySaleLineId.get(matchedLine.id);
+    }
+    else {
+        manufacturingOrders = await client.getManufacturingOrdersBySaleLineId(matchedLine.id);
+        if (cache)
+            cache.manufacturingOrdersBySaleLineId.set(matchedLine.id, manufacturingOrders);
+    }
     const readyManufacturingOrder = manufacturingOrders.find((order) => (0, manufacturingStatus_1.isManufacturingOrderReady)(order.state)) || null;
     const latestManufacturingOrder = readyManufacturingOrder || manufacturingOrders[0] || null;
     if (!latestManufacturingOrder) {
@@ -739,7 +780,7 @@ async function processStockItem(client, orderId, item, lines, location, signatur
                 : 'No unused quantity to add';
         return result;
     }
-    const component = await resolveComponentFromBOM(client, item, matchedLine);
+    const component = await resolveComponentFromBOM(client, item, matchedLine, cache);
     result.componentFound = component.found;
     result.componentName = component.componentName;
     result.variantId = component.variantId;
@@ -839,8 +880,15 @@ async function processAllItems(orderId, options = {}) {
         const results = [];
         const missingSoProducts = [];
         const componentMissingMessages = new Set();
+        const cache = {
+            manufacturingOrdersBySaleLineId: new Map(),
+            productVariantsById: new Map(),
+            bomCandidatesByProductKey: new Map(),
+            bomLinesByBomId: new Map(),
+            productVariantsByTemplateId: new Map(),
+        };
         for (const item of run.items) {
-            const result = await processStockItem(client, orderId, item, lines, location, run.signature, preview, processedVariantIds, matchedLines.get(item) || null);
+            const result = await processStockItem(client, orderId, item, lines, location, run.signature, preview, processedVariantIds, matchedLines.get(item) || null, cache);
             if (!preview && result.status === 'processed' && result.variantId) {
                 await (0, repositories_1.insertProcessedStockItem)({
                     orderId,
@@ -871,6 +919,16 @@ async function processAllItems(orderId, options = {}) {
         const alreadyProcessedOnly = !preview &&
             results.length > 0 &&
             results.every((item) => item.status === 'skipped' && item.skipReason === 'Already processed for this Job Summary signature');
+        const failedItems = results.filter((item) => item.status === 'failed');
+        const failureDetails = failedItems
+            .map((item) => {
+            const itemLabel = item.normalizedColor || item.expectedSoProduct || 'Item';
+            return `${itemLabel}: ${item.skipReason}`;
+        })
+            .filter(Boolean);
+        const failureSummary = failureDetails.length > 0
+            ? `Stock reconciliation finished with failures: ${failureDetails.join('; ')}`
+            : 'Stock reconciliation finished with failures.';
         const finalResult = {
             ...initialResult,
             items: results,
@@ -882,7 +940,7 @@ async function processAllItems(orderId, options = {}) {
                 : alreadyProcessedOnly
                     ? 'This Job Summary signature was already processed locally; no stock changes were applied.'
                     : summary.failedCount > 0
-                        ? 'Stock reconciliation finished with failures.'
+                        ? failureSummary
                         : 'Stock reconciliation completed successfully.',
         };
         if (!preview) {

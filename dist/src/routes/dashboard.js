@@ -10,11 +10,13 @@ router.get('/dashboard', async (req, res) => {
     if (authUser && authUser.role !== 'admin' && authUser.apps?.includes('shop-floor')) {
         return res.redirect('/shop-floor');
     }
-    const [settings, history, logs, scheduler] = await Promise.all([
+    await (0, repositories_1.markOrphanedStartedRunsAsFailed)().catch(() => undefined);
+    const [settings, history, logs, scheduler, sentReports] = await Promise.all([
         (0, repositories_1.getSettings)(),
         (0, repositories_1.getRecentHistory)(12),
         (0, logService_1.fetchRecentLogsAsync)(12),
         (0, schedulerService_1.getSchedulerStatus)(),
+        (0, repositories_1.getSentReportLogs)(15),
     ]);
     const lastRun = history[0] || null;
     const message = typeof req.query.message === 'string' ? req.query.message : '';
@@ -27,6 +29,7 @@ router.get('/dashboard', async (req, res) => {
         logs,
         scheduler,
         queueHealth,
+        sentReports,
         status: message
             ? { type: 'success', message }
             : error
