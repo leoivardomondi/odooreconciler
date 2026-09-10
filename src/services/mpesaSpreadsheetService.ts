@@ -49,10 +49,15 @@ function inferredTransactionType(transactionTypeText: string, paidIn: number, wi
 }
 
 export async function extractMpesaSpreadsheet(input: {
-  filePath: string;
+  filePath?: string;
+  buffer?: Buffer;
   originalFilename: string;
 }) {
-  const workbook = XLSX.read(await readFile(input.filePath), { type: 'buffer', cellDates: true });
+  const fileData = input.buffer || (input.filePath ? await readFile(input.filePath) : null);
+  if (!fileData) {
+    throw new Error('Neither buffer nor filePath was provided for spreadsheet extraction.');
+  }
+  const workbook = XLSX.read(fileData, { type: 'buffer', cellDates: true });
   const transactions: ParsedMpesaTransaction[] = [];
   const warnings: string[] = [];
 
@@ -80,7 +85,17 @@ export async function extractMpesaSpreadsheet(input: {
       withdrawn: column('withdrawn', 'paidout'),
       balance: column('balance'),
       transactionType: column('transactiontype', 'type'),
-      otherParty: column('otherparty', 'otherpart', 'counterparty'),
+      otherParty: column(
+        'otherpartyinfo',
+        'otherpartydetails',
+        'otherpartyinformation',
+        'otherparty',
+        'otherpart',
+        'counterparty',
+        'party',
+        'payee',
+        'payer',
+      ),
     };
 
     rows.slice(headerIndex + 1).forEach((row) => {
@@ -101,6 +116,20 @@ export async function extractMpesaSpreadsheet(input: {
       }
 
       const transactionTypeText = text(row[columns.transactionType]);
+      const rawOtherParty = text(row[columns.otherParty]);
+      const phoneMatch = rawOtherParty.match(/\b(?:254\d{9}|0[17]\d{8}|254\d{3}\*{3}\d{3}|0[17]\d{2}\*{3}\d{3})\b/);
+      const phoneNumber = phoneMatch ? phoneMatch[0] : null;
+
+      let cleanParty = rawOtherParty;
+      if (phoneMatch) {
+        cleanParty = cleanParty.replace(phoneMatch[0], '').replace(/^[-:\s]+|[-:\s]+$/g, '').trim();
+      }
+      const tillPrefixMatch = cleanParty.match(/^\d{5,8}\s*[-:]\s*(.+)$/);
+      if (tillPrefixMatch) {
+        cleanParty = tillPrefixMatch[1].trim();
+      }
+      const finalCounterparty = cleanParty || rawOtherParty || null;
+
       const direction = paidIn !== null ? 'in' : 'out';
       const details = text(row[columns.details]) || transactionTypeText || text(row[columns.status]);
       transactions.push({
@@ -114,19 +143,23 @@ export async function extractMpesaSpreadsheet(input: {
         balance: columns.balance >= 0 ? amount(row[columns.balance]) : null,
         amount: paidIn ?? withdrawn,
         direction,
-        counterparty: text(row[columns.otherParty]) || null,
-        phoneNumber: null,
+        counterparty: finalCounterparty,
+        phoneNumber,
         transactionType: inferredTransactionType(transactionTypeText, paidIn || 0, withdrawn || 0),
         matchedPoId: null,
         matchedPoName: null,
         matchConfidence: null,
         userCategory: null,
-        userSupplier: text(row[columns.otherParty]) || null,
+        userSupplier: finalCounterparty,
         reviewStatus: 'new',
         notes: transactionTypeText || null,
         aiNotes: null,
         candidates: [],
-        raw: { row: JSON.stringify(row), spreadsheetTransactionType: transactionTypeText },
+        raw: {
+          row: JSON.stringify(row),
+          spreadsheetTransactionType: transactionTypeText,
+          otherPartyText: rawOtherParty,
+        },
       });
     });
   });

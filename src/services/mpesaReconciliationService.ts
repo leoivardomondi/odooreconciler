@@ -376,6 +376,30 @@ function extractCounterparty(details: string) {
     }
   }
 
+  // Check for till/phone prefix with name (common in Safaricom "Other Party Info" column)
+  // e.g. "254717***721 - JEREMIAH ODERA" or "400200 - TIMSALES LTD" or "0712345678 - JOHN DOE"
+  const partyWithPrefixMatch = details.match(
+    /(?:^|\b)(?:254\d{3}\*{3}\d{3}|0[17]\d{2}\*{3}\d{3}|254\d{9}|0[17]\d{8}|\d{5,8})\s*[-:]\s*([A-Za-z0-9\s.'&-]+?)(?:\s+Completed|\s+Customer|\s+Merchant|\s+OD|\s+Payment|\s+Transfer|$)/i,
+  );
+  if (partyWithPrefixMatch) {
+    const value = cleanPartyName(partyWithPrefixMatch[1]);
+    if (value && value.length >= 2 && !/^(?:completed|customer|merchant|transfer|payment)$/i.test(value)) {
+      return { counterparty: titleCaseName(value.slice(0, 180)), phoneNumber };
+    }
+  }
+
+  // Check if details is a standalone entity/party name (e.g. from dedicated "Other Party Info" column)
+  const trimmed = cleanPartyName(details);
+  if (
+    trimmed &&
+    trimmed.length >= 3 &&
+    trimmed.length <= 120 &&
+    /^[A-Za-z][A-Za-z0-9\s.'&-]+$/.test(trimmed) &&
+    !/^(?:completed|customer|merchant|transfer|payment|balance|details|withdrawn|paid\s*in|m-?pesa|transaction)$/i.test(trimmed)
+  ) {
+    return { counterparty: titleCaseName(trimmed.slice(0, 180)), phoneNumber };
+  }
+
   return { counterparty: null, phoneNumber };
 }
 
@@ -710,7 +734,6 @@ function cleanupDetails(row: string, receiptNumber: string | null, dateText: str
     .replace(/\b(?:completion time|receipt no\.?|details|paid in|withdrawn|balance|transaction status|completed)\b/gi, ' ')
     .replace(/(?:KES|KSH|KSh)?\s*-?\d[\d,]*(?:\.\d{1,2})?/g, ' ')
     .replace(/\b(?:customer\s+merchant\s+payment|merchant\s+customer\s+payment|od\s+payment\s+transfer)\b/gi, ' ')
-    .replace(/\b\d{6,8}-\s*[A-Z\s]+$/i, ' ')
     .replace(/\s{2,}/g, ' ')
     .trim();
 
@@ -790,7 +813,12 @@ function trimTrailingTransactionOverlap(details: string): string {
   return details;
 }
 
-function parseTransactionRow(row: string, rowIndex: number, forcedMoneyValues?: number[]): ParsedMpesaTransaction | null {
+function parseTransactionRow(
+  row: string,
+  rowIndex: number,
+  forcedMoneyValues?: number[],
+  explicitOtherPartyText?: string,
+): ParsedMpesaTransaction | null {
   const receiptDateMatch = row.match(new RegExp(`^\\s*(${MPESA_RECEIPT_PATTERN.source})\\s*(\\d{4}[-/]\\d{1,2}[-/]\\d{1,2})`, 'i'));
   const receiptNumber = (receiptDateMatch?.[1] || row.match(MPESA_RECEIPT_PATTERN)?.[0] || null)?.toUpperCase() || null;
   const normalizedRow = receiptDateMatch
@@ -847,7 +875,8 @@ function parseTransactionRow(row: string, rowIndex: number, forcedMoneyValues?: 
       : classified.direction === 'out'
         ? withdrawn
         : paidIn || withdrawn || moneyValues[0] || null;
-  const counterparty = extractCounterparty(rawDetails);
+  const partySource = [rawDetails, explicitOtherPartyText || ''].filter(Boolean).join(' ');
+  const counterparty = extractCounterparty(partySource);
   const details = summarizeDetails({
     rawDetails,
     classified,
@@ -861,8 +890,14 @@ function parseTransactionRow(row: string, rowIndex: number, forcedMoneyValues?: 
     details,
     classified,
     counterparty: counterparty.counterparty,
+    otherPartyText: explicitOtherPartyText,
     withdrawn,
   });
+
+  const finalOtherPartyText =
+    explicitOtherPartyText ||
+    counterparty.counterparty ||
+    null;
 
   return {
     rowIndex,
@@ -891,7 +926,11 @@ function parseTransactionRow(row: string, rowIndex: number, forcedMoneyValues?: 
     notes: null,
     aiNotes: null,
     candidates: [],
-    raw: { row: normalizedRow, rawDetails },
+    raw: {
+      row: normalizedRow,
+      rawDetails,
+      otherPartyText: finalOtherPartyText,
+    },
   };
 }
 
@@ -1141,16 +1180,46 @@ function parseEmbeddedPdfTransactions(text: string) {
         return null;
       }
 
-      // Keep party descriptions, but remove incidental phone/account numbers
-      // before handing the row to the normal classifier. The only numeric
-      // values that should be parsed here are the signed amount and balance.
+      // Capture trailing text after completion amounts (which often contains the Other Party column)
+      let trailingText = '';
+      if (completionIndex >= 0) {
+        const afterCompleted = block.slice(completionIndex);
+        const amountRegex = /-?\s*\d[\d,]*\.\d{2}/g;
+        let lastMatch: RegExpExecArray | null = null;
+        let count = 0;
+        let m: RegExpExecArray | null;
+        while ((m = amountRegex.exec(afterCompleted)) !== null && count < 3) {
+          lastMatch = m;
+          count += 1;
+        }
+        if (lastMatch) {
+          const afterAmountsIdx = completionIndex + lastMatch.index + lastMatch[0].length;
+          trailingText = block.slice(afterAmountsIdx).trim();
+        }
+      }
+
+      const cleanTrailing = trailingText
+        .replace(/\bPage\s+\d+\s+of\s+\d+\b/gi, ' ')
+        .replace(/\b(?:Statement Period|Printed On|Disclaimer)\b.*/gi, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+
       const header = block.slice(0, completionIndex).replace(/\b(20\d{2}[-/]\d{1,2}[-/]\d{1,2})\s+(\d{1,2}:\d{2}(?::\d{2})?)\b/, '$1 $2');
-      const sanitizedHeader = header.replace(/\d[\d* -]*/g, ' ');
       const receipt = match[1];
       const dateTime = header.match(/20\d{2}[-/]\d{1,2}[-/]\d{1,2}\s+\d{1,2}:\d{2}(?::\d{2})?/i)?.[0] || '';
-      const row = `${receipt} ${dateTime} ${sanitizedHeader} Completed ${completionAmounts.join(' ')}`;
+      const row = `${receipt} ${dateTime} ${header} Completed ${completionAmounts.join(' ')} ${cleanTrailing}`.trim();
       const forcedMoneyValues = completionAmounts;
-      const parsedRow = parseTransactionRow(row, index + 1, forcedMoneyValues);
+
+      // Extract candidate other party from trailing text or header
+      let explicitOtherParty: string | undefined = cleanTrailing || undefined;
+      if (!explicitOtherParty) {
+        const headerParty = extractCounterparty(header).counterparty;
+        if (headerParty) {
+          explicitOtherParty = headerParty;
+        }
+      }
+
+      const parsedRow = parseTransactionRow(row, index + 1, forcedMoneyValues, explicitOtherParty);
       return parsedRow;
     })
     .filter((transaction): transaction is ParsedMpesaTransaction => Boolean(transaction));

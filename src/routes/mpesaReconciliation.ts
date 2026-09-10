@@ -293,6 +293,11 @@ async function autoMatchCategoriesOnGridSave(
 
   for (const patch of patches) {
     const existing = transactionById.get(patch.id);
+    // Never auto-override transactions matched to a PO
+    if (patch.matchedPoId || existing?.matchedPoId) {
+      continue;
+    }
+
     const effectiveNote = patch.notes !== undefined ? patch.notes : existing?.notes || '';
     const noteText = String(effectiveNote || '').trim();
 
@@ -1367,17 +1372,19 @@ router.post('/mpesa-reconciliation/ai-categorize', async (req, res) => {
     }
 
     // Filter to only uncategorized or "new" transactions (optional: skip already-reviewed)
+    // Strictly exclude transactions already matched to a Purchase Order
     const targetTransactions = transactions.filter(
       (tx) =>
         tx.direction === 'out' &&
         (tx.withdrawn && tx.withdrawn > 0) &&
-        tx.transactionType !== 'mpesa_charge',
+        tx.transactionType !== 'mpesa_charge' &&
+        !tx.matchedPoId,
     );
 
     if (targetTransactions.length === 0) {
       return res.json({
         ok: true,
-        message: 'No eligible transactions to categorize (only outgoing non-charge payments).',
+        message: 'No eligible transactions to categorize (only outgoing non-charge payments not matched to a PO).',
         categorized: 0,
         results: [],
       });
@@ -1469,6 +1476,158 @@ router.post('/mpesa-reconciliation/ai-categorize', async (req, res) => {
     res.status(500).json({
       ok: false,
       error: error instanceof Error ? error.message : 'AI categorization failed.',
+    });
+  }
+});
+
+/**
+ * POST /mpesa-reconciliation/batches/:batchId/categorize-from-notes
+ * Uses the notes (from client DOM inputs or database) to auto-categorize outgoing non-PO transactions.
+ * Transactions matched to a Purchase Order are protected and strictly excluded.
+ */
+router.post('/mpesa-reconciliation/batches/:batchId/categorize-from-notes', async (req, res) => {
+  if (!requireAdmin(req, res)) {
+    return;
+  }
+
+  const batchId = req.params.batchId;
+
+  try {
+    const transactions = await getMpesaTransactionsByBatchId(batchId);
+    if (!transactions.length) {
+      return res.status(404).json({
+        ok: false,
+        error: 'No transactions found for the provided batch.',
+      });
+    }
+
+    const notesMap: Record<string, string> =
+      req.body.notesByTransactionId && typeof req.body.notesByTransactionId === 'object'
+        ? req.body.notesByTransactionId
+        : {};
+
+    const targetIds: string[] = Array.isArray(req.body.transactionIds)
+      ? req.body.transactionIds.filter((id: unknown) => typeof id === 'string')
+      : [];
+
+    let skippedPoCount = 0;
+    const eligibleTransactions: Array<{ transaction: MpesaTransaction; effectiveNote: string }> = [];
+
+    for (const tx of transactions) {
+      if (targetIds.length > 0 && !targetIds.includes(tx.id)) {
+        continue;
+      }
+
+      // Must be outgoing and not an M-Pesa fee
+      const isOutgoing = tx.direction === 'out' || (typeof tx.withdrawn === 'number' && tx.withdrawn > 0);
+      if (!isOutgoing || tx.transactionType === 'mpesa_charge') {
+        continue;
+      }
+
+      // Strictly exclude PO-matched transactions
+      if (tx.matchedPoId) {
+        skippedPoCount += 1;
+        continue;
+      }
+
+      const clientNote = typeof notesMap[tx.id] === 'string' ? notesMap[tx.id].trim() : undefined;
+      const effectiveNote = clientNote !== undefined ? clientNote : (tx.notes || '').trim();
+
+      if (!effectiveNote) {
+        continue;
+      }
+
+      eligibleTransactions.push({ transaction: tx, effectiveNote });
+    }
+
+    if (eligibleTransactions.length === 0) {
+      return res.json({
+        ok: true,
+        message: skippedPoCount > 0
+          ? `No un-categorized non-PO rows with notes found (${skippedPoCount} PO payment rows were protected).`
+          : 'No eligible transactions with notes to categorize.',
+        categorized: 0,
+        skippedPoCount,
+        results: [],
+      });
+    }
+
+    const patches: Array<{
+      id: string;
+      batchId: string;
+      userCategory: string;
+      reviewStatus: MpesaTransaction['reviewStatus'];
+      notes?: string;
+      aiNotes?: string;
+    }> = [];
+
+    const results: Array<{
+      id: string;
+      category: string;
+      categoryLabel: string;
+      reviewStatus: string;
+      notes: string;
+      aiNotes: string;
+      confidence: number;
+      reason: string;
+    }> = [];
+
+    for (const { transaction: tx, effectiveNote } of eligibleTransactions) {
+      const matchResult = await categorizeWithAi({
+        details: tx.details,
+        counterparty: tx.counterparty,
+        direction: tx.direction,
+        paidIn: tx.paidIn,
+        withdrawn: tx.withdrawn,
+        phoneNumber: tx.phoneNumber,
+        notes: effectiveNote,
+        rawDetails: typeof tx.raw?.rawDetails === 'string' ? tx.raw.rawDetails : undefined,
+      }).catch(() => null);
+
+      if (matchResult && matchResult.category !== 'unknown' && matchResult.confidence >= 0.35) {
+        const categoryLabel = matchResult.categoryLabel || matchResult.category;
+        const aiNote = `${matchResult.method === 'ai' ? 'AI' : 'Keyword'} (${Math.round(matchResult.confidence * 100)}%): ${matchResult.reason}`;
+
+        patches.push({
+          id: tx.id,
+          batchId: tx.batchId,
+          userCategory: matchResult.category,
+          reviewStatus: 'reviewed',
+          notes: effectiveNote,
+          aiNotes: aiNote,
+        });
+
+        results.push({
+          id: tx.id,
+          category: matchResult.category,
+          categoryLabel,
+          reviewStatus: 'reviewed',
+          notes: effectiveNote,
+          aiNotes: aiNote,
+          confidence: matchResult.confidence,
+          reason: matchResult.reason,
+        });
+      }
+    }
+
+    let updatedCount = 0;
+    if (patches.length > 0) {
+      updatedCount = await updateMpesaTransactionAdminReviewFields(patches);
+      await trainMpesaCategoryRulesFromPatches(transactions, patches);
+    }
+
+    res.json({
+      ok: true,
+      message: `Categorized ${updatedCount} transaction(s) from notes.${skippedPoCount > 0 ? ` (${skippedPoCount} PO matches protected)` : ''}`,
+      categorized: updatedCount,
+      skippedPoCount,
+      results,
+    });
+  } catch (error) {
+    console.error('[categorize-from-notes] Error:', error);
+    res.status(500).json({
+      ok: false,
+      error: error instanceof Error ? error.message : 'Categorization from notes failed.',
     });
   }
 });

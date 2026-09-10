@@ -490,6 +490,15 @@
             >
               Expand statement columns
             </button>
+            <button
+              type="button"
+              id="categorizeFromNotesBtn"
+              class="btn btn-sm btn-outline-success"
+              title="Auto-categorize outgoing non-PO transactions using the text in Notes"
+              data-batch-id="<%= selectedBatch.id %>"
+            >
+              ✨ Categorize from Notes
+            </button>
             <button type="submit" class="btn btn-primary">Save Grid</button>
           </div>
         </div>
@@ -772,6 +781,124 @@
   }
 
   searchInput.addEventListener('input', filterRows);
+})();
+
+(function() {
+  var btn = document.getElementById('categorizeFromNotesBtn');
+  if (!btn) return;
+
+  btn.addEventListener('click', async function() {
+    var batchId = btn.getAttribute('data-batch-id');
+    if (!batchId) return;
+
+    var originalHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span> Categorizing...';
+
+    // Collect all transaction IDs and notes from current inputs in the DOM
+    var notesByTransactionId = {};
+    var rows = document.querySelectorAll('#mpesa-transactions-grid tbody tr');
+    rows.forEach(function(row) {
+      var idInput = row.querySelector('input[name="transactionId[]"]');
+      var noteInput = row.querySelector('input[name="notes[]"]');
+      if (idInput && idInput.value) {
+        notesByTransactionId[idInput.value] = (noteInput ? noteInput.value : '').trim();
+      }
+    });
+
+    var csrfToken = document.querySelector('input[name="_csrf"]')?.value || '';
+
+    try {
+      var res = await fetch('/mpesa-reconciliation/batches/' + encodeURIComponent(batchId) + '/categorize-from-notes', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'CSRF-Token': csrfToken,
+          'X-CSRF-Token': csrfToken,
+        },
+        body: JSON.stringify({
+          _csrf: csrfToken,
+          notesByTransactionId: notesByTransactionId,
+        }),
+      });
+
+      var data = await res.json();
+      if (!data.ok) {
+        throw new Error(data.error || 'Failed to categorize from notes.');
+      }
+
+      if (!data.results || data.results.length === 0) {
+        alert(data.message || 'No eligible transactions with notes to categorize.');
+        return;
+      }
+
+      // Map results by transaction ID
+      var resultMap = {};
+      data.results.forEach(function(item) {
+        resultMap[item.id] = item;
+      });
+
+      var updatedRowsCount = 0;
+
+      rows.forEach(function(row) {
+        var idInput = row.querySelector('input[name="transactionId[]"]');
+        if (!idInput || !resultMap[idInput.value]) return;
+
+        var result = resultMap[idInput.value];
+        updatedRowsCount++;
+
+        // Update Category select
+        var catSelect = row.querySelector('select[name="userCategory[]"]');
+        if (catSelect) {
+          catSelect.value = result.category;
+        }
+
+        // Update Review Status select & badge
+        var reviewSelect = row.querySelector('select[name="reviewStatus[]"]');
+        if (reviewSelect) {
+          reviewSelect.value = result.reviewStatus || 'reviewed';
+        }
+        var reviewBadge = row.querySelector('.mpesa-review-select ~ .badge');
+        if (reviewBadge) {
+          reviewBadge.textContent = result.reviewStatus || 'reviewed';
+          reviewBadge.className = 'badge text-bg-success mt-1';
+        }
+
+        // Update AI Notes cell
+        var aiCell = row.cells[11]; // 12th column: AI Notes
+        if (aiCell && result.aiNotes) {
+          aiCell.innerHTML = '<div class="small text-secondary d-flex align-items-start gap-1" style="max-width:250px; line-height:1.2">' +
+            '<span class="fs-6">🤖</span><span>' + result.aiNotes + '</span></div>';
+        }
+
+        // Flash highlight row
+        row.classList.add('table-success');
+        setTimeout(function() {
+          row.classList.remove('table-success');
+        }, 3500);
+      });
+
+      // Show temporary alert banner above table
+      var banner = document.getElementById('categorize-from-notes-alert');
+      if (!banner) {
+        banner = document.createElement('div');
+        banner.id = 'categorize-from-notes-alert';
+        banner.className = 'alert alert-success alert-dismissible fade show py-2 mb-2 shadow-sm';
+        var gridShell = document.querySelector('.mpesa-grid-shell');
+        if (gridShell) {
+          gridShell.insertBefore(banner, gridShell.firstChild);
+        }
+      }
+      banner.innerHTML = '<strong>✨ Done!</strong> ' + data.message +
+        '<button type="button" class="btn-close py-2" data-bs-dismiss="alert" aria-label="Close"></button>';
+
+    } catch (err) {
+      alert('Categorization error: ' + (err.message || String(err)));
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = originalHtml;
+    }
+  });
 })();
 </script>
 
