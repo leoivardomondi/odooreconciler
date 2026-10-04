@@ -19,3 +19,8 @@ export function isBoardProductName(value: string | null | undefined): boolean {
   // for example "Congo 18mm", "Honey Bee 18mm", and "Mahogany 20mm".
   return /\b(?:3|4|6|8|9|12|15|16|18|20|25|30|36)\s*mm\b/.test(name);
 }
+
+export function isStockExemptEdgeBandingService(value: string | null | undefined): boolean {
+  const normalized = String(value || '').trim().toLowerCase();
+  return normalized.includes('edge banding service') || normalized.includes('edging banding service');
+}

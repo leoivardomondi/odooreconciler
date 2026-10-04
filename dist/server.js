@@ -22,6 +22,7 @@ const shopFloorPendingSyncService_1 = require("./src/services/shopFloorPendingSy
 const mpesaExtractionJobService_1 = require("./src/services/mpesaExtractionJobService");
 const invoiceExtractionJobService_1 = require("./src/services/invoiceExtractionJobService");
 const poBillManualJobService_1 = require("./src/services/poBillManualJobService");
+const shopFloorValidationJobService_1 = require("./src/services/shopFloorValidationJobService");
 const weeklyShopFloorReportService_1 = require("./src/services/weeklyShopFloorReportService");
 const startupState_1 = require("./src/services/startupState");
 const paths_1 = require("./src/utils/paths");
@@ -147,6 +148,7 @@ async function startServer() {
         (0, mpesaExtractionJobService_1.stopMpesaExtractionJobWorker)();
         (0, invoiceExtractionJobService_1.stopInvoiceExtractionJobWorker)();
         (0, poBillManualJobService_1.stopPoBillManualJobWorker)();
+        (0, shopFloorValidationJobService_1.stopShopFloorValidationJobWorker)();
         (0, shopFloorPendingSyncService_1.stopShopFloorPendingSyncInterval)();
         await new Promise((resolve) => {
             server.close(() => resolve());
@@ -193,6 +195,7 @@ async function startServer() {
             (0, mpesaExtractionJobService_1.startMpesaExtractionJobWorker)();
             (0, invoiceExtractionJobService_1.startInvoiceExtractionJobWorker)();
             (0, poBillManualJobService_1.startPoBillManualJobWorker)();
+            (0, shopFloorValidationJobService_1.startShopFloorValidationJobWorker)();
             (0, startupState_1.markStartupStep)('initializing scheduler');
             await withStartupTimeout('Scheduler initialization', () => (0, schedulerService_1.startSchedulerInterval)());
             (0, emailAutomationService_1.startEmailAutomationInterval)();

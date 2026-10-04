@@ -661,6 +661,43 @@ export interface PoBillManualJob {
   completedAt: string | null;
 }
 
+export interface ShopFloorValidationJob {
+  id: string;
+  jobType: 'receipt' | 'delivery';
+  pickingId: number;
+  actorEmail: string;
+  actorName: string;
+  status: 'pending' | 'running' | 'completed' | 'failed';
+  errorMessage: string | null;
+  createdAt: string;
+  updatedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+}
+
+export interface MoMissingComponent {
+  id: number;
+  productId: number;
+  productName: string;
+  requiredQty: number;
+  availableQty: number;
+  missingQty: number;
+  uom: string;
+  state: string;
+  isBoard: boolean;
+}
+
+export interface MoStockAvailabilityResult {
+  moId: number;
+  moName: string;
+  moState: string;
+  isFullyAvailable: boolean;
+  totalComponents: number;
+  missingComponents: MoMissingComponent[];
+  hasMissingBoards: boolean;
+  hasMissingHardware: boolean;
+}
+
 export interface MpesaPurchaseOrderCandidate {
   id: number;
   name: string;

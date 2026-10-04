@@ -572,6 +572,26 @@ async function ensureSqliteDatabase(config) {
     CREATE INDEX IF NOT EXISTS idx_po_bill_manual_jobs_status
       ON po_bill_manual_jobs(status, created_at);
 
+    CREATE TABLE IF NOT EXISTS shop_floor_validation_jobs (
+      id TEXT PRIMARY KEY,
+      job_type TEXT NOT NULL DEFAULT 'receipt',
+      picking_id INTEGER NOT NULL,
+      actor_email TEXT NOT NULL DEFAULT '',
+      actor_name TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'pending',
+      error_message TEXT,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      started_at TEXT,
+      completed_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_shop_floor_validation_jobs_status
+      ON shop_floor_validation_jobs(status, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_shop_floor_validation_jobs_picking
+      ON shop_floor_validation_jobs(picking_id, job_type);
+
     CREATE TABLE IF NOT EXISTS mpesa_category_training_rules (
       id TEXT PRIMARY KEY,
       match_scope TEXT NOT NULL DEFAULT 'any',
@@ -1414,6 +1434,23 @@ async function ensureMysqlDatabase(config) {
       started_at DATETIME NULL,
       completed_at DATETIME NULL,
       KEY idx_po_bill_manual_jobs_status (status, created_at)
+    )
+  `);
+    await query('create shop floor validation jobs table', `
+    CREATE TABLE IF NOT EXISTS shop_floor_validation_jobs (
+      id VARCHAR(64) PRIMARY KEY,
+      job_type VARCHAR(32) NOT NULL DEFAULT 'receipt',
+      picking_id INT NOT NULL,
+      actor_email VARCHAR(128) NOT NULL DEFAULT '',
+      actor_name VARCHAR(128) NOT NULL DEFAULT '',
+      status VARCHAR(32) NOT NULL DEFAULT 'pending',
+      error_message TEXT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      started_at DATETIME NULL,
+      completed_at DATETIME NULL,
+      KEY idx_shop_floor_val_jobs_status (status, created_at),
+      KEY idx_shop_floor_val_jobs_picking (picking_id, job_type)
     )
   `);
     await ensureColumnMysql(pool, 'history', 'computed_signature', 'TEXT NULL', config.mysqlDatabase);

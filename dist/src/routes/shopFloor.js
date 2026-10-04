@@ -1,10 +1,12 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.shopFloorCache = exports.manuallyPausedMoIds = void 0;
 exports.buildInstantMysqlOperatorDashboard = buildInstantMysqlOperatorDashboard;
 exports.buildOperatorDashboard = buildOperatorDashboard;
 const express_1 = require("express");
 const crypto_1 = require("crypto");
 const repositories_1 = require("../models/repositories");
+const shopFloorValidationJobService_1 = require("../services/shopFloorValidationJobService");
 const odooClient_1 = require("../services/odooClient");
 const payrollBridgeService_1 = require("../services/payrollBridgeService");
 const repositories_2 = require("../models/repositories");
@@ -30,7 +32,7 @@ const SHOP_FLOOR_FEATURE_KEYS = [
 ];
 const purchaseApprovalEmailCooldown = new Map();
 const PURCHASE_APPROVAL_EMAIL_COOLDOWN_MS = 30 * 60 * 1000;
-const manuallyPausedMoIds = new Set();
+exports.manuallyPausedMoIds = new Set();
 async function sendPurchaseApprovalRequest(input) {
     const pendingOrders = input.procurement.purchaseOrders.filter((po) => ['draft', 'sent', 'to approve'].includes(po.state));
     if (!pendingOrders.length)
@@ -328,7 +330,7 @@ class MemoryCache {
         return promise;
     }
 }
-const shopFloorCache = new MemoryCache();
+exports.shopFloorCache = new MemoryCache();
 const optimisticBoardIntakes = [];
 function activeOptimisticBoardIntakes() {
     const now = Date.now();
@@ -372,7 +374,7 @@ async function withMaxPageWait(promise, maxWaitMs, fallback) {
     return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timer));
 }
 function emptyOperatorDashboardShell(userEmail) {
-    const sharedMo = shopFloorCache.get('shop-floor:shared-work-orders:v1');
+    const sharedMo = exports.shopFloorCache.get('shop-floor:shared-work-orders:v1');
     return {
         employee: {
             id: 0,
@@ -633,7 +635,7 @@ async function buildOperatorDashboard(client, userEmail, req, stockScope) {
             employee ? client.getLateCountThisMonth(employee.id) : Promise.resolve(0),
             // 3. Work orders and stock alerts (Shared factory data: cached in RAM + MySQL!)
             (async () => {
-                const sharedMoData = await shopFloorCache.getOrFetchTieredSWR('shop-floor:shared-work-orders:v1', 3 * 60 * 1000, // 3 minutes fresh
+                const sharedMoData = await exports.shopFloorCache.getOrFetchTieredSWR('shop-floor:shared-work-orders:v1', 3 * 60 * 1000, // 3 minutes fresh
                 30 * 60 * 1000, // 30 minutes max stale
                 async () => {
                     const [allOrdersRaw, performanceOrders] = await Promise.all([
@@ -728,7 +730,7 @@ async function buildOperatorDashboard(client, userEmail, req, stockScope) {
                         const baseTiming = (0, moOverdueService_1.getMoOverdueState)({ createDate: o.create_date, plannedStart: o.date_start, clientDeadline: o.date_deadline, quantity: o.product_qty, productName: Array.isArray(o.product_id) ? o.product_id[1] : String(o.product_id || '') });
                         const queueTiming = confirmedQueueSchedule.get(o.id);
                         const rawWoState = workOrderStateMap.get(o.id);
-                        const isManuallyPaused = manuallyPausedMoIds.has(o.id);
+                        const isManuallyPaused = exports.manuallyPausedMoIds.has(o.id);
                         const effectiveState = isManuallyPaused || rawWoState === 'pending'
                             ? 'paused'
                             : rawWoState === 'progress' || o.state === 'progress'
@@ -860,7 +862,7 @@ async function buildOperatorDashboard(client, userEmail, req, stockScope) {
                 };
             })(),
             // 4. Incidents (now from Odoo!)
-            shopFloorCache.getOrFetchTieredSWR('shop-floor:shared-incidents:v1', 3 * 60 * 1000, 30 * 60 * 1000, () => client.getMaintenanceRequests(20)),
+            exports.shopFloorCache.getOrFetchTieredSWR('shop-floor:shared-incidents:v1', 3 * 60 * 1000, 30 * 60 * 1000, () => client.getMaintenanceRequests(20)),
             // 5. Assigned items (now from Odoo!)
             employee ? client.getEmployeeAssignedEquipment(employee.id) : Promise.resolve([]),
             // 6. Payslips
@@ -878,11 +880,11 @@ async function buildOperatorDashboard(client, userEmail, req, stockScope) {
             // 11. Manufacturing timeline data for charting
             employee ? getDailyManufacturingAnalytics('timeline-data-v2', () => client.getManufacturingTimelineData(employee.id, employee.name)) : Promise.resolve(null),
             // 12. Board registration summary from physical inventory
-            shopFloorCache.getOrFetchTieredSWR(`shop-floor:shared-board-reg:${JSON.stringify(stockScope || {})}`, 3 * 60 * 1000, 30 * 60 * 1000, () => client.getBoardRegistrationSummary(stockScope)),
+            exports.shopFloorCache.getOrFetchTieredSWR(`shop-floor:shared-board-reg:${JSON.stringify(stockScope || {})}`, 3 * 60 * 1000, 30 * 60 * 1000, () => client.getBoardRegistrationSummary(stockScope)),
             // 13. Team Penalties
-            shopFloorCache.getOrFetchTieredSWR(`shop-floor:shared-team-penalties:${JSON.stringify(stockScope || {})}`, 3 * 60 * 1000, 30 * 60 * 1000, () => client.getTeamPenalties(stockScope)),
+            exports.shopFloorCache.getOrFetchTieredSWR(`shop-floor:shared-team-penalties:${JSON.stringify(stockScope || {})}`, 3 * 60 * 1000, 30 * 60 * 1000, () => client.getTeamPenalties(stockScope)),
             // 14. Equipment list for breakdown reporting (now from Odoo!)
-            shopFloorCache.getOrFetchTieredSWR('shop-floor:shared-machines:v1', 10 * 60 * 1000, 60 * 60 * 1000, () => client.getMaintenanceEquipment()),
+            exports.shopFloorCache.getOrFetchTieredSWR('shop-floor:shared-machines:v1', 10 * 60 * 1000, 60 * 60 * 1000, () => client.getMaintenanceEquipment()),
         ]);
         // Handle Attendance Result
         if (attendanceRes.status === 'fulfilled' && attendanceRes.value) {
@@ -1098,14 +1100,14 @@ router.get('/shop-floor', async (req, res) => {
         const settings = await (0, repositories_1.getSettings)();
         // Multi-tier cache for operator dashboard:
         // Tier 1: In-memory RAM cache
-        let data = shopFloorCache.get(cacheKey);
+        let data = exports.shopFloorCache.get(cacheKey);
         // Tier 2: MySQL persistent snapshot if RAM misses (e.g. cold restart or Login As)
         if (!data) {
             try {
                 const snapshot = await (0, repositories_1.getShopFloorDashboardSnapshot)(normalizedEmail);
                 if (snapshot && snapshot.data && ((snapshot.data.workOrders && snapshot.data.workOrders.length > 0) || (snapshot.data.stockAlerts && snapshot.data.stockAlerts.length > 0))) {
                     data = snapshot.data;
-                    shopFloorCache.set(cacheKey, data, 60 * 60 * 1000, 3 * 60 * 1000);
+                    exports.shopFloorCache.set(cacheKey, data, 60 * 60 * 1000, 3 * 60 * 1000);
                 }
             }
             catch (dbErr) {
@@ -1119,7 +1121,7 @@ router.get('/shop-floor', async (req, res) => {
                 const instantData = await buildInstantMysqlOperatorDashboard(viewedEmail);
                 if (instantData.workOrders.length > 0 || instantData.stockAlerts.length > 0) {
                     data = instantData;
-                    shopFloorCache.set(cacheKey, data, 60 * 60 * 1000, 3 * 60 * 1000);
+                    exports.shopFloorCache.set(cacheKey, data, 60 * 60 * 1000, 3 * 60 * 1000);
                 }
             }
             catch (mysqlErr) {
@@ -1128,12 +1130,12 @@ router.get('/shop-floor', async (req, res) => {
         }
         // If data exists, serve immediately (<5ms)! Revalidate in background if explicit refresh or stale
         if (data && ((data.workOrders && data.workOrders.length > 0) || (data.stockAlerts && data.stockAlerts.length > 0))) {
-            if ((isExplicitRefresh || shopFloorCache.isStale(cacheKey)) && !shopFloorCache.isInFlight(cacheKey)) {
+            if ((isExplicitRefresh || exports.shopFloorCache.isStale(cacheKey)) && !exports.shopFloorCache.isInFlight(cacheKey)) {
                 void (async () => {
                     try {
                         const client = new odooClient_1.OdooClient(settings.odoo);
                         const fresh = await buildOperatorDashboard(client, viewedEmail, req, settings.stock);
-                        shopFloorCache.set(cacheKey, fresh, 60 * 60 * 1000, 3 * 60 * 1000);
+                        exports.shopFloorCache.set(cacheKey, fresh, 60 * 60 * 1000, 3 * 60 * 1000);
                         await (0, repositories_1.saveShopFloorDashboardSnapshot)(normalizedEmail, fresh);
                     }
                     catch (bgErr) {
@@ -1145,7 +1147,7 @@ router.get('/shop-floor', async (req, res) => {
         else {
             // Tier 4: Cold fallback if MySQL has no data yet (first deploy before any sync)
             // Never block page render for more than 1200ms; return instant shell if Odoo takes longer
-            const fetchPromise = shopFloorCache.getOrFetchSWR(cacheKey, 3 * 60 * 1000, // 3 minutes fresh
+            const fetchPromise = exports.shopFloorCache.getOrFetchSWR(cacheKey, 3 * 60 * 1000, // 3 minutes fresh
             60 * 60 * 1000, // 60 minutes max stale
             async () => {
                 const client = new odooClient_1.OdooClient(settings.odoo);
@@ -1240,7 +1242,7 @@ async function resolveShopFloorEmployeeRecord(email, client) {
     if (!norm)
         return null;
     const cacheKey = `shop-floor-dashboard:v3:${norm}`;
-    const cached = shopFloorCache.get(cacheKey);
+    const cached = exports.shopFloorCache.get(cacheKey);
     if (cached?.employee?.id) {
         return { id: cached.employee.id, name: cached.employee.name };
     }
@@ -1316,7 +1318,7 @@ router.get('/shop-floor/stock-alerts/notifications', async (req, res) => {
     try {
         const viewedEmail = getViewedUserEmail(req);
         const cacheKey = `shop-floor-dashboard:v3:${viewedEmail.toLowerCase()}`;
-        const data = await shopFloorCache.get(cacheKey);
+        const data = await exports.shopFloorCache.get(cacheKey);
         const alerts = !data || data.isLimitedDashboard
             ? []
             : data.stockAlerts.map((alert) => ({
@@ -1440,7 +1442,7 @@ router.get('/shop-floor/operators', async (req, res) => {
         const operatorCacheKey = 'shop-floor:operators-list:v1';
         // 1. Read persistent MySQL shared cache immediately (<5ms)
         const persistentCache = await (0, repositories_1.getShopFloorSharedCache)(operatorCacheKey).catch(() => null);
-        const operatorsPromise = shopFloorCache.getOrFetchTieredSWR(operatorCacheKey, req.query.refresh === 'true' ? 0 : 5 * 60 * 1000, // Non-blocking serve with background revalidation on refresh
+        const operatorsPromise = exports.shopFloorCache.getOrFetchTieredSWR(operatorCacheKey, req.query.refresh === 'true' ? 0 : 5 * 60 * 1000, // Non-blocking serve with background revalidation on refresh
         60 * 60 * 1000, // 60 minutes max stale
         async () => {
             const client = new odooClient_1.OdooClient(settings.odoo);
@@ -1797,7 +1799,7 @@ router.post('/shop-floor/incident', async (req, res) => {
             priority,
         });
         // Invalidate cached operator dashboards because of the new incident
-        shopFloorCache.clearPrefix('shop-floor-dashboard:');
+        exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
         res.redirect('/shop-floor?message=' + encodeURIComponent('Incident reported.'));
     }
     catch (err) {
@@ -1825,7 +1827,7 @@ router.post('/shop-floor/incident/:id/resolve', async (req, res) => {
             await (0, repositories_1.resolveShopFloorIncident)(req.params.id);
         }
         // Invalidate cached operator dashboards as an incident was resolved
-        shopFloorCache.clearPrefix('shop-floor-dashboard:');
+        exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
         res.redirect('/shop-floor?message=' + encodeURIComponent('Incident resolved.'));
     }
     catch (err) {
@@ -1856,7 +1858,7 @@ router.post('/shop-floor/work-order/:id/plan-date', async (req, res) => {
         const settings = await (0, repositories_1.getSettings)();
         const client = new odooClient_1.OdooClient(settings.odoo);
         await client.setManufacturingOrderPlanDate(moId, `${planDate} 23:59:59`);
-        shopFloorCache.clearPrefix('shop-floor-dashboard:');
+        exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
         res.redirect(`${returnTo}?message=${encodeURIComponent('Plan date saved.')}`);
     }
     catch (err) {
@@ -1883,7 +1885,7 @@ router.post('/shop-floor/assign-item', async (req, res) => {
         await client.assignEquipmentToEmployee(emailStr, String(req.body.itemName || ''), String(req.body.assignedDate || new Date().toISOString().slice(0, 10)));
         // Invalidate the cache for this specific operator
         if (emailStr) {
-            shopFloorCache.delete(`shop-floor-dashboard:v3:${emailStr.toLowerCase()}`);
+            exports.shopFloorCache.delete(`shop-floor-dashboard:v3:${emailStr.toLowerCase()}`);
         }
         res.redirect('/shop-floor/operators?message=' + encodeURIComponent('Item assigned.'));
     }
@@ -1933,13 +1935,13 @@ router.get('/shop-floor/boards', async (req, res) => {
         const viewedEmail = getViewedUserEmail(req);
         const normalizedEmail = viewedEmail.trim().toLowerCase();
         const dashboardCacheKey = `shop-floor-dashboard:v3:${normalizedEmail}`;
-        let cachedDashboard = shopFloorCache.get(dashboardCacheKey);
+        let cachedDashboard = exports.shopFloorCache.get(dashboardCacheKey);
         if (!cachedDashboard) {
             try {
                 const snapshot = await (0, repositories_1.getShopFloorDashboardSnapshot)(normalizedEmail);
                 if (snapshot && snapshot.data) {
                     cachedDashboard = snapshot.data;
-                    shopFloorCache.set(dashboardCacheKey, cachedDashboard, 60 * 60 * 1000, 3 * 60 * 1000);
+                    exports.shopFloorCache.set(dashboardCacheKey, cachedDashboard, 60 * 60 * 1000, 3 * 60 * 1000);
                 }
             }
             catch (_e) {
@@ -2139,38 +2141,53 @@ router.post('/shop-floor/work-order/:id/advance', async (req, res) => {
         if (!employee) {
             throw new Error('Your signed-in account is not linked to an Odoo employee. Ask an administrator to match your email.');
         }
-        if (action === 'start') {
-            const procurement = await client.getManufacturingOrderBoardProcurement(moId);
-            if (procurement.waitingForBoards) {
-                const approvedPurchaseOrders = procurement.purchaseOrders.filter((po) => ['purchase', 'done'].includes(po.state));
-                const pendingPurchaseOrders = procurement.purchaseOrders.filter((po) => ['draft', 'sent', 'to approve'].includes(po.state));
-                if (approvedPurchaseOrders.length) {
-                    const message = `${procurement.moName} is waiting for purchased boards. Validate their reception before starting the job.`;
-                    const redirectTo = `/shop-floor/receipts?message=${encodeURIComponent(message)}`;
-                    if (wantsJson) {
-                        res.status(409).json({ ok: false, code: 'receipt_required', message, redirectTo });
-                        return;
+        // Enforce 100% component availability for BOTH start and finish actions
+        const stockCheck = await client.checkManufacturingOrderStockAvailability(moId);
+        if (!stockCheck.isFullyAvailable) {
+            if (stockCheck.hasMissingBoards) {
+                try {
+                    const procurement = await client.getManufacturingOrderBoardProcurement(moId);
+                    const pendingPurchaseOrders = procurement.purchaseOrders.filter((po) => ['draft', 'sent', 'to approve'].includes(po.state));
+                    if (pendingPurchaseOrders.length) {
+                        await client.approvePurchaseOrdersForShopFloor(pendingPurchaseOrders);
                     }
-                    res.redirect(redirectTo);
-                    return;
                 }
-                if (pendingPurchaseOrders.length) {
-                    const approved = await client.approvePurchaseOrdersForShopFloor(pendingPurchaseOrders);
-                    const poNames = approved.map((po) => po.name).join(', ');
-                    const message = `${poNames} approved automatically by the configured dbadmin Odoo account. Validate the incoming receipt before starting ${procurement.moName}.`;
-                    const redirectTo = `/shop-floor/receipts?message=${encodeURIComponent(message)}&moId=${encodeURIComponent(String(moId))}`;
-                    if (wantsJson) {
-                        res.status(409).json({ ok: false, code: 'receipt_required', message, redirectTo });
-                        return;
-                    }
-                    res.redirect(redirectTo);
-                    return;
-                }
+                catch (_) { }
             }
+            const missingSummary = stockCheck.missingComponents
+                .slice(0, 5)
+                .map((c) => `${c.productName} (Need ${c.missingQty} ${c.uom})`)
+                .join(', ') + (stockCheck.missingComponents.length > 5 ? ` and ${stockCheck.missingComponents.length - 5} more` : '');
+            const actionVerb = action === 'finish' ? 'finish or close' : 'start';
+            const message = `Cannot ${actionVerb} ${stockCheck.moName}: Missing required components in stock (${missingSummary}). Add or receive the required stock before proceeding.`;
+            let redirectTo = '/shop-floor';
+            if (stockCheck.hasMissingBoards) {
+                redirectTo = `/shop-floor/boards?message=${encodeURIComponent(message)}`;
+            }
+            else if (stockCheck.hasMissingHardware) {
+                redirectTo = `/shop-floor/receipts?message=${encodeURIComponent(message)}`;
+            }
+            if (wantsJson) {
+                res.status(409).json({
+                    ok: false,
+                    code: 'stock_missing',
+                    action,
+                    moId,
+                    moName: stockCheck.moName,
+                    message,
+                    missingComponents: stockCheck.missingComponents,
+                    hasMissingBoards: stockCheck.hasMissingBoards,
+                    hasMissingHardware: stockCheck.hasMissingHardware,
+                    redirectTo,
+                });
+                return;
+            }
+            res.redirect(redirectTo);
+            return;
         }
         const advanceResult = await client.advanceManufacturingOrder(moId, action, employee.id);
-        manuallyPausedMoIds.delete(moId);
-        shopFloorCache.clearPrefix('shop-floor-dashboard:');
+        exports.manuallyPausedMoIds.delete(moId);
+        exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
         const message = action === 'finish'
             ? 'Current operation finished.'
             : `Manufacturing operation started for ${employee.name}.`;
@@ -2210,6 +2227,23 @@ router.post('/shop-floor/work-order/:id/advance', async (req, res) => {
             operatorEmail: getViewedUserEmail(req),
             error: message,
         });
+        if (err?.code === 'stock_missing') {
+            const stockAvailability = err.stockAvailability;
+            if (wantsJson) {
+                res.status(409).json({
+                    ok: false,
+                    code: 'stock_missing',
+                    action,
+                    moId,
+                    moName: stockAvailability?.moName || 'Manufacturing Order',
+                    message,
+                    missingComponents: stockAvailability?.missingComponents || [],
+                    hasMissingBoards: stockAvailability?.hasMissingBoards ?? false,
+                    hasMissingHardware: stockAvailability?.hasMissingHardware ?? false,
+                });
+                return;
+            }
+        }
         const permissionDenied = /access denied|access error|not allowed|permission|forbidden/i.test(message);
         if (wantsJson) {
             res.status(permissionDenied ? 403 : 500).json({
@@ -2220,6 +2254,30 @@ router.post('/shop-floor/work-order/:id/advance', async (req, res) => {
             return;
         }
         res.redirect('/shop-floor?error=' + encodeURIComponent(message) + '#manufacturing-orders');
+    }
+});
+router.get('/shop-floor/work-order/:id/stock-check', async (req, res) => {
+    if (!req.authUser) {
+        res.status(401).json({ ok: false, code: 'session_expired', message: 'Your session has expired.' });
+        return;
+    }
+    const moId = Number(req.params.id);
+    if (!Number.isFinite(moId) || moId <= 0) {
+        res.status(400).json({ ok: false, message: 'Invalid manufacturing order.' });
+        return;
+    }
+    try {
+        const settings = await (0, repositories_1.getSettings)();
+        const client = new odooClient_1.OdooClient(settings.odoo);
+        const stockCheck = await client.checkManufacturingOrderStockAvailability(moId);
+        res.json({
+            ok: true,
+            ...stockCheck,
+        });
+    }
+    catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to check stock availability in Odoo.';
+        res.status(500).json({ ok: false, message });
     }
 });
 router.get('/shop-floor/work-order/:id/pause', (req, res) => {
@@ -2241,8 +2299,8 @@ router.post('/shop-floor/work-order/:id/pause', async (req, res) => {
         if (!employee)
             throw new Error('Your account is not linked to an Odoo employee.');
         await client.pauseManufacturingOrder(moId, { createBackorder, qtyProduced }, employee.id);
-        manuallyPausedMoIds.add(moId);
-        shopFloorCache.clearPrefix('shop-floor-dashboard:');
+        exports.manuallyPausedMoIds.add(moId);
+        exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
         await (0, logService_1.logEvent)('info', 'Manufacturing order paused', { moId, actor: employee.name, createBackorder });
         res.redirect('/shop-floor?message=' + encodeURIComponent('Manufacturing order paused successfully.') + '#manufacturing-orders');
     }
@@ -2301,7 +2359,7 @@ router.post('/shop-floor/features', async (req, res) => {
         return result;
     }, {});
     await (0, repositories_1.saveShopFloorFeatureFlags)(flags);
-    shopFloorCache.clear();
+    exports.shopFloorCache.clear();
     await (0, logService_1.logEvent)('info', 'Shop Floor app availability updated', { updatedBy: req.authUser?.email, flags }).catch(() => undefined);
     res.redirect('/shop-floor?message=' + encodeURIComponent('Shop Floor apps updated.'));
 });
@@ -2360,7 +2418,7 @@ router.post('/shop-floor/board-intake', async (req, res) => {
             quantity: qty,
         });
         optimisticBoardIntakes.push({ id: optimisticId, partnerId, productId, productName, customerName, quantity: qty, expiresAt: Date.now() + 10 * 60 * 1000 });
-        shopFloorCache.clearPrefix('shop-floor-dashboard:');
+        exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
         const successMessage = `Boards saved immediately: ${qty} x ${productName} for ${customerName}${vehicleRegistration ? ` (${vehicleRegistration})` : ''}. Odoo synchronization and MO reservation are continuing in the background.`;
         if (wantsJson) {
             res.json({
@@ -2407,7 +2465,7 @@ router.post('/shop-floor/board-intake', async (req, res) => {
                 const optimisticIndex = optimisticBoardIntakes.findIndex((entry) => entry.id === optimisticId);
                 if (optimisticIndex >= 0)
                     optimisticBoardIntakes.splice(optimisticIndex, 1);
-                shopFloorCache.clearPrefix('shop-floor-dashboard:');
+                exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
                 await (0, logService_1.logEvent)('info', 'Board intake background MO reservation completed', {
                     productId, partnerId, quantity: qty,
                     matchingMoCount: syncResult.matchingMoCount || 0,
@@ -2477,14 +2535,40 @@ router.get('/shop-floor/receipts', async (req, res) => {
         const warehouseId = Number(settings.stock.warehouseId || 0);
         if (!warehouseId)
             throw new Error('The Urban Vibe warehouse ID is not configured.');
-        const receiptsPromise = shopFloorCache.getOrFetchTieredSWR(`shop-floor:receipts:${warehouseId}`, req.query.refresh === 'true' ? 0 : 3 * 60 * 1000, // Non-blocking serve with background revalidation on refresh
+        const receiptsPromise = exports.shopFloorCache.getOrFetchTieredSWR(`shop-floor:receipts:${warehouseId}`, req.query.refresh === 'true' ? 0 : 3 * 60 * 1000, // Non-blocking serve with background revalidation on refresh
         30 * 60 * 1000, // 30 minutes max stale
         async () => new odooClient_1.OdooClient(settings.odoo).getOpenBoardReceipts(warehouseId));
-        const receipts = await withMaxPageWait(receiptsPromise, 1200, []);
-        res.render('shop-floor-receipts', { pageTitle: 'Board Receipts', appName: env_1.env.APP_NAME, receipts, authUser: req.authUser, csrfToken: req.csrfToken || null, message: req.query.message || null, error: req.query.error || null });
+        const [receipts, activeJobs] = await Promise.all([
+            withMaxPageWait(receiptsPromise, 1200, []),
+            (0, repositories_1.getActiveShopFloorValidationJobs)('receipt').catch(() => []),
+        ]);
+        res.render('shop-floor-receipts', { pageTitle: 'Board Receipts', appName: env_1.env.APP_NAME, receipts, activeJobs, authUser: req.authUser, csrfToken: req.csrfToken || null, message: req.query.message || null, error: req.query.error || null });
     }
     catch (error) {
         res.status(500).render('error', { pageTitle: 'Board Receipts', errorMessage: error instanceof Error ? error.message : 'Could not load receipts.', details: [], csrfToken: req.csrfToken || null });
+    }
+});
+router.get('/shop-floor/receipts/queue-status', async (req, res) => {
+    if (!req.authUser) {
+        res.status(401).json({ ok: false, error: 'Unauthorized' });
+        return;
+    }
+    try {
+        const [activeJobs, recentJobs] = await Promise.all([
+            (0, repositories_1.getActiveShopFloorValidationJobs)('receipt'),
+            (0, repositories_1.getRecentShopFloorValidationJobs)('receipt', 10),
+        ]);
+        res.json({
+            ok: true,
+            activeJobs,
+            recentJobs,
+        });
+    }
+    catch (error) {
+        res.status(500).json({
+            ok: false,
+            error: error instanceof Error ? error.message : 'Failed to query validation queue status.',
+        });
     }
 });
 router.post('/shop-floor/board-intake/:id/retry', async (req, res) => {
@@ -2494,7 +2578,7 @@ router.post('/shop-floor/board-intake/:id/retry', async (req, res) => {
     }
     try {
         await (0, boardIntakeSyncService_1.syncBoardIntakeEntry)(String(req.params.id || ''));
-        shopFloorCache.clearPrefix('shop-floor-dashboard:');
+        exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
         res.redirect('/shop-floor/boards?message=' + encodeURIComponent('Board log synchronized with Odoo successfully.'));
     }
     catch (error) {
@@ -2527,7 +2611,7 @@ router.post('/shop-floor/board-intake/:id/revert', async (req, res) => {
         const message = result.alreadyReverted
             ? 'This board log was already reverted.'
             : 'Board log reverted in Odoo successfully.';
-        shopFloorCache.clearPrefix('shop-floor-dashboard:');
+        exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
         res.redirect('/shop-floor/boards?message=' + encodeURIComponent(message) + '&boardLogPage=' + encodeURIComponent(String(req.body.boardLogPage || '1')));
     }
     catch (error) {
@@ -2557,25 +2641,49 @@ router.get('/shop-floor/board-intake/status', async (req, res) => {
 });
 router.post('/shop-floor/receipts/:id/validate', async (req, res) => {
     if (!req.authUser) {
+        if (req.xhr || req.headers.accept?.includes('application/json')) {
+            res.status(401).json({ ok: false, error: 'Unauthorized' });
+            return;
+        }
         res.redirect('/login');
         return;
     }
+    const isAjax = Boolean(req.xhr ||
+        req.headers.accept?.includes('application/json') ||
+        req.body?.ajax === 'true' ||
+        req.query?.ajax === 'true');
     try {
-        const settings = await (0, repositories_1.getSettings)();
         const pickingId = Number(req.params.id);
-        const warehouseId = Number(settings.stock.warehouseId || 0);
-        if (!warehouseId)
-            throw new Error('The Urban Vibe warehouse ID is not configured.');
+        if (!Number.isInteger(pickingId) || pickingId <= 0) {
+            throw new Error('Invalid board receipt ID provided.');
+        }
         const actorName = req.authUser.displayName || req.authUser.email;
-        await new odooClient_1.OdooClient(settings.odoo).validateBoardReceipt(pickingId, actorName, warehouseId);
-        shopFloorCache.clearPrefix('shop-floor-dashboard:');
-        shopFloorCache.clearPrefix('shop-floor:receipts:');
-        void (0, stockMirrorService_1.refreshStockMirror)();
-        await (0, logService_1.logEvent)('info', 'Odoo board receipt validated', { pickingId, actor: actorName, actorEmail: req.authUser.email });
-        res.redirect('/shop-floor/receipts?message=' + encodeURIComponent('Receipt validated in Odoo. Manufacturing Order readiness updated immediately.'));
+        const job = await (0, repositories_1.enqueueShopFloorValidationJob)({
+            jobType: 'receipt',
+            pickingId,
+            actorEmail: req.authUser.email,
+            actorName,
+        });
+        (0, shopFloorValidationJobService_1.wakeShopFloorValidationJobWorker)();
+        if (isAjax) {
+            res.json({
+                ok: true,
+                jobId: job.id,
+                pickingId: job.pickingId,
+                status: job.status,
+                message: 'Receipt queued for background validation (FIFO).',
+            });
+            return;
+        }
+        res.redirect('/shop-floor/receipts?message=' + encodeURIComponent('Receipt queued for validation in background.'));
     }
     catch (error) {
-        res.redirect('/shop-floor/receipts?error=' + encodeURIComponent(error instanceof Error ? error.message : 'Receipt validation failed.'));
+        const message = error instanceof Error ? error.message : 'Receipt validation failed.';
+        if (isAjax) {
+            res.status(500).json({ ok: false, error: message });
+            return;
+        }
+        res.redirect('/shop-floor/receipts?error=' + encodeURIComponent(message));
     }
 });
 router.get('/shop-floor/deliveries', async (req, res) => {
@@ -2588,7 +2696,7 @@ router.get('/shop-floor/deliveries', async (req, res) => {
         const warehouseId = Number(settings.stock.warehouseId || 0);
         if (!warehouseId)
             throw new Error('The Urban Vibe warehouse ID is not configured.');
-        const deliveriesPromise = shopFloorCache.getOrFetchTieredSWR(`shop-floor:deliveries:${warehouseId}`, req.query.refresh === 'true' ? 0 : 3 * 60 * 1000, // Non-blocking serve with background revalidation on refresh
+        const deliveriesPromise = exports.shopFloorCache.getOrFetchTieredSWR(`shop-floor:deliveries:${warehouseId}`, req.query.refresh === 'true' ? 0 : 3 * 60 * 1000, // Non-blocking serve with background revalidation on refresh
         30 * 60 * 1000, // 30 minutes max stale
         async () => new odooClient_1.OdooClient(settings.odoo).getOpenDeliveries(warehouseId));
         const deliveries = await withMaxPageWait(deliveriesPromise, 1200, []);
@@ -2613,8 +2721,8 @@ router.post('/shop-floor/deliveries/:id/validate', async (req, res) => {
             throw new Error('The Urban Vibe warehouse ID is not configured.');
         const actorName = req.authUser.displayName || req.authUser.email;
         await new odooClient_1.OdooClient(settings.odoo).validateDelivery(pickingId, actorName, warehouseId);
-        shopFloorCache.clearPrefix('shop-floor-dashboard:');
-        shopFloorCache.clearPrefix('shop-floor:deliveries:');
+        exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
+        exports.shopFloorCache.clearPrefix('shop-floor:deliveries:');
         void (0, stockMirrorService_1.refreshStockMirror)();
         await (0, logService_1.logEvent)('info', 'Odoo delivery validated', { pickingId, actor: actorName, actorEmail: req.authUser.email });
         res.redirect('/shop-floor/deliveries?message=' + encodeURIComponent('Delivery validated in Odoo.'));

@@ -16,6 +16,7 @@ import { startShopFloorPendingSyncInterval, stopShopFloorPendingSyncInterval } f
 import { startMpesaExtractionJobWorker, stopMpesaExtractionJobWorker } from './src/services/mpesaExtractionJobService';
 import { startInvoiceExtractionJobWorker, stopInvoiceExtractionJobWorker } from './src/services/invoiceExtractionJobService';
 import { startPoBillManualJobWorker, stopPoBillManualJobWorker } from './src/services/poBillManualJobService';
+import { startShopFloorValidationJobWorker, stopShopFloorValidationJobWorker } from './src/services/shopFloorValidationJobService';
 import { startWeeklyShopFloorReportWarmup } from './src/services/weeklyShopFloorReportService';
 import { markStartupFailed, markStartupReady, markStartupStep } from './src/services/startupState';
 import { storageDirectoryPath } from './src/utils/paths';
@@ -176,6 +177,7 @@ export async function startServer() {
     stopMpesaExtractionJobWorker();
     stopInvoiceExtractionJobWorker();
     stopPoBillManualJobWorker();
+    stopShopFloorValidationJobWorker();
     stopShopFloorPendingSyncInterval();
 
     await new Promise<void>((resolve) => {
@@ -231,6 +233,7 @@ export async function startServer() {
       startMpesaExtractionJobWorker();
       startInvoiceExtractionJobWorker();
       startPoBillManualJobWorker();
+      startShopFloorValidationJobWorker();
       markStartupStep('initializing scheduler');
       await withStartupTimeout('Scheduler initialization', () => startSchedulerInterval());
       startEmailAutomationInterval();

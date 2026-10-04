@@ -3,25 +3,394 @@
 <main class="container py-4" style="max-width:1100px">
   <%- include('partials/shop-floor-nav', { activeShopFloorTab: 'receipts' }) %>
   <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
-    <div><h1 class="h3 fw-bold mb-1">Board Receipts</h1><p class="text-muted mb-0">Validate purchased boards received in Odoo.</p></div>
-    <a class="btn btn-outline-secondary" href="/shop-floor">Back to Apps</a>
+    <div>
+      <h1 class="h3 fw-bold mb-1">Board Receipts</h1>
+      <p class="text-muted mb-0">Validate purchased boards received in Odoo. Validations run in the background (FIFO).</p>
+    </div>
+    <div class="d-flex align-items-center gap-2">
+      <span id="queueBadge" class="badge rounded-pill bg-primary px-3 py-2 <%- activeJobs && activeJobs.length ? '' : 'd-none' %>">
+        <span class="spinner-border spinner-border-sm me-1" style="width: 0.75rem; height: 0.75rem;"></span>
+        <span id="queueCountText"><%= activeJobs ? activeJobs.length : 0 %></span> in queue (FIFO)
+      </span>
+      <a class="btn btn-outline-secondary" href="/shop-floor">Back to Apps</a>
+    </div>
   </div>
+
   <% if (message) { %><div class="alert alert-success"><%= message %></div><% } %>
   <% if (error) { %><div class="alert alert-danger"><%= error %></div><% } %>
-  <% if (!receipts.length) { %><div class="app-card p-5 text-center text-muted">No purchased-board receipts need validation.</div><% } %>
-  <div class="d-grid gap-3">
-    <% receipts.forEach((receipt) => { %>
-      <article class="app-card p-4">
-        <div class="d-flex flex-wrap justify-content-between gap-3">
-          <div><h2 class="h6 fw-bold mb-1"><%= receipt.name %></h2><div class="small text-muted"><%= receipt.origin || 'No purchase reference' %> &middot; <%= Array.isArray(receipt.partner_id) ? receipt.partner_id[1] : 'Supplier' %> &middot; <%= String(receipt.scheduled_date || '').slice(0,10) %></div></div>
-          <form method="post" action="/shop-floor/receipts/<%= receipt.id %>/validate" data-confirm="Validate this board receipt in Odoo?">
-            <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
-            <button class="btn btn-success" type="submit">Validate Receipt</button>
-          </form>
+
+  <!-- Toast Notification Container -->
+  <div id="receiptToastContainer" class="position-fixed bottom-0 end-0 p-3" style="z-index: 1080;"></div>
+
+  <div id="emptyReceiptsCard" class="app-card p-5 text-center text-muted <%- (!receipts || !receipts.length) ? '' : 'd-none' %>">
+    No purchased-board receipts need validation.
+  </div>
+
+  <div class="d-grid gap-3" id="receiptsGrid">
+    <% (receipts || []).forEach((receipt) => { 
+      const activeJob = (activeJobs || []).find(j => j.pickingId === receipt.id);
+      const isQueued = Boolean(activeJob && (activeJob.status === 'pending' || activeJob.status === 'running'));
+      const isRunning = Boolean(activeJob && activeJob.status === 'running');
+    %>
+      <article class="app-card p-4 receipt-card <%- isQueued ? 'receipt-card--in-queue' : '' %>" id="receipt-card-<%= receipt.id %>" data-picking-id="<%= receipt.id %>" data-receipt-name="<%= receipt.name %>">
+        <div class="d-flex flex-wrap justify-content-between gap-3 align-items-center">
+          <div>
+            <div class="d-flex align-items-center gap-2 mb-1">
+              <h2 class="h6 fw-bold mb-0"><%= receipt.name %></h2>
+              <span class="badge bg-secondary-subtle text-secondary small status-pill <%- isQueued ? '' : 'd-none' %>" id="status-pill-<%= receipt.id %>">
+                <%= isRunning ? 'Validating in Odoo...' : 'In Queue (FIFO)' %>
+              </span>
+            </div>
+            <div class="small text-muted"><%= receipt.origin || 'No purchase reference' %> &middot; <%= Array.isArray(receipt.partner_id) ? receipt.partner_id[1] : 'Supplier' %> &middot; <%= String(receipt.scheduled_date || '').slice(0,10) %></div>
+          </div>
+          <div class="receipt-action-slot" id="action-slot-<%= receipt.id %>">
+            <% if (isQueued) { %>
+              <button class="btn <%- isRunning ? 'btn-outline-primary' : 'btn-outline-warning' %> btn-sm" disabled id="btn-validate-<%= receipt.id %>">
+                <span class="spinner-border spinner-border-sm me-1.5" role="status" aria-hidden="true" style="width:0.85rem;height:0.85rem;border-width:1.5px"></span>
+                <span><%= isRunning ? 'Validating in Odoo...' : 'In Queue (FIFO)...' %></span>
+              </button>
+            <% } else { %>
+              <form method="post" action="/shop-floor/receipts/<%= receipt.id %>/validate" class="receipt-validate-form" data-picking-id="<%= receipt.id %>" data-confirm="Validate this board receipt in Odoo?" data-no-loading="true">
+                <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+                <button class="btn btn-success" type="submit" id="btn-validate-<%= receipt.id %>">Validate Receipt</button>
+              </form>
+            <% } %>
+          </div>
         </div>
-        <div class="table-responsive mt-3"><table class="table table-sm mb-0"><thead><tr><th>Board</th><th>Ordered</th><th>Received</th></tr></thead><tbody><% receipt.items.forEach((item) => { %><tr><td><%= item.name %></td><td><%= item.ordered %></td><td><%= item.received %></td></tr><% }) %></tbody></table></div>
+        <div class="table-responsive mt-3">
+          <table class="table table-sm mb-0">
+            <thead><tr><th>Board</th><th>Ordered</th><th>Received</th></tr></thead>
+            <tbody>
+              <% receipt.items.forEach((item) => { %>
+                <tr><td><%= item.name %></td><td><%= item.ordered %></td><td><%= item.received %></td></tr>
+              <% }) %>
+            </tbody>
+          </table>
+        </div>
+        <div class="receipt-error-container mt-2 d-none" id="error-<%= receipt.id %>"></div>
       </article>
     <% }) %>
   </div>
 </main>
+
+<style>
+.receipt-card {
+  transition: transform 0.25s ease, opacity 0.3s ease, border-color 0.25s ease, box-shadow 0.25s ease;
+  border-left: 4px solid transparent;
+}
+.receipt-card--in-queue {
+  border-left-color: #f59e0b;
+  background-color: rgba(245, 158, 11, 0.02);
+}
+.receipt-card--running {
+  border-left-color: #3b82f6;
+  background-color: rgba(59, 130, 246, 0.03);
+}
+.receipt-card--completed {
+  border-left-color: #10b981;
+  background-color: rgba(16, 185, 129, 0.05);
+}
+.receipt-card.is-collapsing {
+  opacity: 0;
+  transform: translateY(-8px) scale(0.98);
+  pointer-events: none;
+}
+.receipt-toast {
+  min-width: 280px;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+  animation: toastFadeIn 0.25s ease-out;
+}
+@keyframes toastFadeIn {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+</style>
+
+<script>
+(() => {
+  let pollerTimer = null;
+  const activeJobsMap = new Map();
+
+  function showToast(message, type = 'info') {
+    const container = document.getElementById('receiptToastContainer');
+    if (!container) return;
+    const toast = document.createElement('div');
+    toast.className = `alert alert-${type} receipt-toast alert-dismissible fade show mb-2 d-flex align-items-center justify-content-between py-2 px-3`;
+    toast.role = 'alert';
+    toast.innerHTML = `
+      <div class="d-flex align-items-center gap-2">
+        <span>${message}</span>
+      </div>
+      <button type="button" class="btn-close ms-2 p-1" style="font-size:0.7rem;position:static" data-bs-dismiss="alert" aria-label="Close"></button>
+    `;
+    container.appendChild(toast);
+    setTimeout(() => {
+      toast.classList.remove('show');
+      setTimeout(() => toast.remove(), 250);
+    }, 4500);
+  }
+
+  function updateQueueBadge(count) {
+    const badge = document.getElementById('queueBadge');
+    const text = document.getElementById('queueCountText');
+    if (!badge || !text) return;
+    if (count > 0) {
+      text.textContent = count;
+      badge.classList.remove('d-none');
+    } else {
+      badge.classList.add('d-none');
+    }
+  }
+
+  function setCardQueued(pickingId, receiptName) {
+    const card = document.getElementById(`receipt-card-${pickingId}`);
+    if (!card) return;
+    card.classList.add('receipt-card--in-queue');
+    card.classList.remove('receipt-card--running');
+
+    const statusPill = document.getElementById(`status-pill-${pickingId}`);
+    if (statusPill) {
+      statusPill.textContent = 'In Queue (FIFO)';
+      statusPill.className = 'badge bg-warning-subtle text-warning-emphasis small status-pill';
+      statusPill.classList.remove('d-none');
+    }
+
+    const actionSlot = document.getElementById(`action-slot-${pickingId}`);
+    if (actionSlot) {
+      actionSlot.innerHTML = `
+        <button class="btn btn-outline-warning btn-sm" disabled id="btn-validate-${pickingId}">
+          <span class="spinner-border spinner-border-sm me-1.5" role="status" aria-hidden="true" style="width:0.85rem;height:0.85rem;border-width:1.5px"></span>
+          <span>In Queue (FIFO)...</span>
+        </button>
+      `;
+    }
+  }
+
+  function setCardRunning(pickingId) {
+    const card = document.getElementById(`receipt-card-${pickingId}`);
+    if (!card) return;
+    card.classList.remove('receipt-card--in-queue');
+    card.classList.add('receipt-card--running');
+
+    const statusPill = document.getElementById(`status-pill-${pickingId}`);
+    if (statusPill) {
+      statusPill.textContent = 'Validating in Odoo...';
+      statusPill.className = 'badge bg-primary-subtle text-primary small status-pill';
+      statusPill.classList.remove('d-none');
+    }
+
+    const actionSlot = document.getElementById(`action-slot-${pickingId}`);
+    if (actionSlot) {
+      actionSlot.innerHTML = `
+        <button class="btn btn-outline-primary btn-sm" disabled id="btn-validate-${pickingId}">
+          <span class="spinner-border spinner-border-sm me-1.5" role="status" aria-hidden="true" style="width:0.85rem;height:0.85rem;border-width:1.5px"></span>
+          <span>Validating in Odoo...</span>
+        </button>
+      `;
+    }
+  }
+
+  function setCardCompleted(pickingId, receiptName) {
+    const card = document.getElementById(`receipt-card-${pickingId}`);
+    if (!card) return;
+    card.classList.remove('receipt-card--in-queue', 'receipt-card--running');
+    card.classList.add('receipt-card--completed');
+
+    const statusPill = document.getElementById(`status-pill-${pickingId}`);
+    if (statusPill) {
+      statusPill.textContent = 'Validated';
+      statusPill.className = 'badge bg-success-subtle text-success small status-pill';
+    }
+
+    const actionSlot = document.getElementById(`action-slot-${pickingId}`);
+    if (actionSlot) {
+      actionSlot.innerHTML = `
+        <span class="text-success fw-bold small d-inline-flex align-items-center gap-1">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+          Done
+        </span>
+      `;
+    }
+
+    showToast(`✓ ${receiptName || 'Receipt'} validated successfully in Odoo!`, 'success');
+
+    // Smoothly remove card after celebration
+    setTimeout(() => {
+      card.classList.add('is-collapsing');
+      setTimeout(() => {
+        card.remove();
+        checkEmptyGrid();
+      }, 300);
+    }, 1200);
+  }
+
+  function setCardFailed(pickingId, receiptName, errorMessage) {
+    const card = document.getElementById(`receipt-card-${pickingId}`);
+    if (!card) return;
+    card.classList.remove('receipt-card--in-queue', 'receipt-card--running');
+    card.style.borderLeftColor = '#ef4444';
+
+    const statusPill = document.getElementById(`status-pill-${pickingId}`);
+    if (statusPill) {
+      statusPill.textContent = 'Validation Failed';
+      statusPill.className = 'badge bg-danger-subtle text-danger small status-pill';
+    }
+
+    const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+    const actionSlot = document.getElementById(`action-slot-${pickingId}`);
+    if (actionSlot) {
+      actionSlot.innerHTML = `
+        <form method="post" action="/shop-floor/receipts/${pickingId}/validate" class="receipt-validate-form" data-picking-id="${pickingId}" data-confirm="Retry validating this board receipt in Odoo?" data-no-loading="true">
+          <input type="hidden" name="_csrf" value="${csrfToken}" />
+          <button class="btn btn-outline-danger btn-sm" type="submit">Retry Validation</button>
+        </form>
+      `;
+    }
+
+    const errorDiv = document.getElementById(`error-${pickingId}`);
+    if (errorDiv) {
+      errorDiv.className = 'receipt-error-container mt-2 alert alert-danger py-1 px-2 small';
+      errorDiv.textContent = errorMessage || 'Validation failed in Odoo.';
+      errorDiv.classList.remove('d-none');
+    }
+
+    showToast(`Validation failed for ${receiptName || 'Receipt'}: ${errorMessage || 'Unknown error'}`, 'danger');
+  }
+
+  function checkEmptyGrid() {
+    const grid = document.getElementById('receiptsGrid');
+    const emptyCard = document.getElementById('emptyReceiptsCard');
+    if (!grid || !emptyCard) return;
+    const remainingCards = grid.querySelectorAll('.receipt-card');
+    if (remainingCards.length === 0) {
+      emptyCard.classList.remove('d-none');
+    }
+  }
+
+  async function pollQueueStatus() {
+    try {
+      const res = await fetch('/shop-floor/receipts/queue-status', {
+        headers: { 'Accept': 'application/json' },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data.ok) return;
+
+      const activeJobs = data.activeJobs || [];
+      const recentJobs = data.recentJobs || [];
+      updateQueueBadge(activeJobs.length);
+
+      // Process active jobs
+      activeJobs.forEach((job) => {
+        const pickingId = job.pickingId;
+        const previousStatus = activeJobsMap.get(pickingId);
+        activeJobsMap.set(pickingId, job.status);
+
+        if (job.status === 'running' && previousStatus !== 'running') {
+          setCardRunning(pickingId);
+        } else if (job.status === 'pending' && !previousStatus) {
+          setCardQueued(pickingId);
+        }
+      });
+
+      // Process completed or failed jobs from recent
+      recentJobs.forEach((job) => {
+        const pickingId = job.pickingId;
+        if (activeJobsMap.has(pickingId)) {
+          const card = document.getElementById(`receipt-card-${pickingId}`);
+          const receiptName = card?.dataset.receiptName || `Receipt #${pickingId}`;
+
+          if (job.status === 'completed') {
+            activeJobsMap.delete(pickingId);
+            setCardCompleted(pickingId, receiptName);
+          } else if (job.status === 'failed') {
+            activeJobsMap.delete(pickingId);
+            setCardFailed(pickingId, receiptName, job.errorMessage);
+          }
+        }
+      });
+
+      // If active jobs remain, continue polling
+      if (activeJobs.length > 0) {
+        scheduleNextPoll(2500);
+      } else {
+        scheduleNextPoll(5000);
+      }
+    } catch (_err) {
+      scheduleNextPoll(6000);
+    }
+  }
+
+  function scheduleNextPoll(delayMs = 2500) {
+    clearTimeout(pollerTimer);
+    pollerTimer = setTimeout(pollQueueStatus, delayMs);
+  }
+
+  // Intercept form submissions via event delegation
+  document.addEventListener('submit', async (e) => {
+    const form = e.target.closest('.receipt-validate-form');
+    if (!form) return;
+
+    // e is already past confirmation dialog (because setupConfirmDialogs runs before this)
+    e.preventDefault();
+    e.stopImmediatePropagation();
+
+    const pickingId = form.dataset.pickingId;
+    const card = document.getElementById(`receipt-card-${pickingId}`);
+    const receiptName = card?.dataset.receiptName || `Receipt #${pickingId}`;
+
+    // Mark queued immediately in the UI (optimistic)
+    setCardQueued(pickingId, receiptName);
+    activeJobsMap.set(Number(pickingId), 'pending');
+    updateQueueBadge(activeJobsMap.size);
+
+    showToast(`Receipt ${receiptName} added to validation queue (FIFO).`, 'info');
+    if (typeof window.startTopProgress === 'function') {
+      window.startTopProgress();
+    }
+
+    try {
+      const formData = new FormData(form);
+      formData.set('ajax', 'true');
+      const params = new URLSearchParams(formData);
+
+      const res = await fetch(form.action, {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: params,
+      });
+
+      if (typeof window.finishTopProgress === 'function') {
+        window.finishTopProgress();
+      }
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `HTTP error ${res.status}`);
+      }
+
+      const data = await res.json();
+      if (data.ok) {
+        scheduleNextPoll(1000);
+      } else {
+        throw new Error(data.error || 'Failed to queue receipt');
+      }
+    } catch (err) {
+      activeJobsMap.delete(Number(pickingId));
+      updateQueueBadge(activeJobsMap.size);
+      setCardFailed(pickingId, receiptName, err.message);
+    }
+  }, true);
+
+  // Initial poll check if there are pre-existing active jobs
+  const initialActiveBadge = document.getElementById('queueBadge');
+  if (initialActiveBadge && !initialActiveBadge.classList.contains('d-none')) {
+    scheduleNextPoll(1500);
+  }
+})();
+</script>
+
 <%- include('partials/footer') %>

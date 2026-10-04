@@ -57,6 +57,14 @@ exports.claimNextPoBillManualJob = claimNextPoBillManualJob;
 exports.completePoBillManualJob = completePoBillManualJob;
 exports.reclaimStalePoBillManualJobs = reclaimStalePoBillManualJobs;
 exports.touchPoBillManualJob = touchPoBillManualJob;
+exports.enqueueShopFloorValidationJob = enqueueShopFloorValidationJob;
+exports.getShopFloorValidationJobById = getShopFloorValidationJobById;
+exports.claimNextShopFloorValidationJob = claimNextShopFloorValidationJob;
+exports.completeShopFloorValidationJob = completeShopFloorValidationJob;
+exports.touchShopFloorValidationJob = touchShopFloorValidationJob;
+exports.reclaimStaleShopFloorValidationJobs = reclaimStaleShopFloorValidationJobs;
+exports.getActiveShopFloorValidationJobs = getActiveShopFloorValidationJobs;
+exports.getRecentShopFloorValidationJobs = getRecentShopFloorValidationJobs;
 exports.deleteMpesaStatementBatch = deleteMpesaStatementBatch;
 exports.getMpesaTransactionsByBatchId = getMpesaTransactionsByBatchId;
 exports.getMpesaTransactionsByIds = getMpesaTransactionsByIds;
@@ -164,9 +172,10 @@ exports.upsertPendingShopFloorProcesses = upsertPendingShopFloorProcesses;
 exports.markPendingShopFloorProcessesLoaded = markPendingShopFloorProcessesLoaded;
 exports.deleteStaleCompletedProcesses = deleteStaleCompletedProcesses;
 exports.pruneStalePendingProcessesForActiveMos = pruneStalePendingProcessesForActiveMos;
+const crypto_1 = require("crypto");
 const uuid_1 = require("uuid");
 const db_1 = require("./db");
-const crypto_1 = require("../utils/crypto");
+const crypto_2 = require("../utils/crypto");
 const helpers_1 = require("../utils/helpers");
 const dateTime_1 = require("../utils/dateTime");
 const env_1 = require("../utils/env");
@@ -184,7 +193,7 @@ function readStoredGeminiOAuthCredentials(payload) {
     if (!encrypted)
         return null;
     try {
-        const parsed = JSON.parse((0, crypto_1.decryptSecret)(encrypted));
+        const parsed = JSON.parse((0, crypto_2.decryptSecret)(encrypted));
         if (!parsed.refreshToken)
             return null;
         return {
@@ -206,7 +215,7 @@ function readStoredGeminiOAuthClient(payload) {
     if (!encrypted)
         return null;
     try {
-        const parsed = JSON.parse((0, crypto_1.decryptSecret)(encrypted));
+        const parsed = JSON.parse((0, crypto_2.decryptSecret)(encrypted));
         if (!parsed.clientId && !parsed.clientSecret)
             return null;
         return {
@@ -321,7 +330,7 @@ function decryptMailPassword(encrypted, accountLabel) {
         return '';
     }
     try {
-        return (0, crypto_1.decryptSecret)(encrypted);
+        return (0, crypto_2.decryptSecret)(encrypted);
     }
     catch (error) {
         console.warn(`[settings] Stored SMTP password for ${accountLabel || 'mail account'} could not be decrypted. Re-save Outgoing Mail settings using the current APP_ENCRYPTION_KEY.`, error instanceof Error ? error.message : error);
@@ -425,7 +434,7 @@ function buildStoredMailConfig(mail) {
             fromEmail: account.fromEmail,
             fromName: account.fromName,
             enabled: account.enabled,
-            passwordEncrypted: account.password ? (0, crypto_1.encryptSecret)(account.password) : '',
+            passwordEncrypted: account.password ? (0, crypto_2.encryptSecret)(account.password) : '',
         })),
     };
 }
@@ -444,7 +453,7 @@ function decryptPayrollBridgeToken(encrypted) {
         return '';
     }
     try {
-        return (0, crypto_1.decryptSecret)(encrypted);
+        return (0, crypto_2.decryptSecret)(encrypted);
     }
     catch (error) {
         console.warn('[settings] Stored payroll bridge token could not be decrypted. Re-save Payroll Bridge settings using the current APP_ENCRYPTION_KEY.', error instanceof Error ? error.message : error);
@@ -475,7 +484,7 @@ function buildStoredPayrollBridgeConfig(payrollBridge) {
         autoCreatePayRun: payrollBridge.autoCreatePayRun,
         salaryStructure: payrollBridge.salaryStructure,
         payRunNameTemplate: payrollBridge.payRunNameTemplate,
-        tokenEncrypted: payrollBridge.token ? (0, crypto_1.encryptSecret)(payrollBridge.token) : '',
+        tokenEncrypted: payrollBridge.token ? (0, crypto_2.encryptSecret)(payrollBridge.token) : '',
     };
 }
 async function getSettings() {
@@ -507,7 +516,7 @@ async function getSettings() {
             return;
         }
         try {
-            aiApiKeys[key] = (0, crypto_1.decryptSecret)(encrypted);
+            aiApiKeys[key] = (0, crypto_2.decryptSecret)(encrypted);
         }
         catch (error) {
             console.warn(`[settings] Stored ${key} AI API key could not be decrypted. Re-save AI settings using the current APP_ENCRYPTION_KEY.`, error instanceof Error ? error.message : error);
@@ -519,7 +528,7 @@ async function getSettings() {
         if (!encrypted)
             continue;
         try {
-            nvidiaModelKeys[model] = (0, crypto_1.decryptSecret)(encrypted);
+            nvidiaModelKeys[model] = (0, crypto_2.decryptSecret)(encrypted);
         }
         catch (error) {
             console.warn(`[settings] Stored NVIDIA model API key for ${model} could not be decrypted.`, error instanceof Error ? error.message : error);
@@ -528,7 +537,7 @@ async function getSettings() {
     let aiOcrApiKey = '';
     if (rawAiOcr.apiKeyEncrypted) {
         try {
-            aiOcrApiKey = (0, crypto_1.decryptSecret)(rawAiOcr.apiKeyEncrypted);
+            aiOcrApiKey = (0, crypto_2.decryptSecret)(rawAiOcr.apiKeyEncrypted);
         }
         catch (error) {
             console.warn('[settings] Stored NVIDIA OCR API key could not be decrypted. Re-save OCR settings using the current APP_ENCRYPTION_KEY.', error instanceof Error ? error.message : error);
@@ -582,7 +591,7 @@ async function getSettings() {
     let odooShopFloorPassword = '';
     if (row.odoo_api_key_encrypted) {
         try {
-            odooApiKey = (0, crypto_1.decryptSecret)(row.odoo_api_key_encrypted);
+            odooApiKey = (0, crypto_2.decryptSecret)(row.odoo_api_key_encrypted);
         }
         catch (error) {
             console.warn('[settings] Stored Odoo API key could not be decrypted. Re-save the Odoo credentials in Settings using the current APP_ENCRYPTION_KEY.', error instanceof Error ? error.message : error);
@@ -590,7 +599,7 @@ async function getSettings() {
     }
     if (row.odoo_shop_floor_password_encrypted) {
         try {
-            odooShopFloorPassword = (0, crypto_1.decryptSecret)(row.odoo_shop_floor_password_encrypted);
+            odooShopFloorPassword = (0, crypto_2.decryptSecret)(row.odoo_shop_floor_password_encrypted);
         }
         catch (error) {
             console.warn('[settings] Stored Odoo Shop Floor web password could not be decrypted. Re-save it in Settings using the current APP_ENCRYPTION_KEY.', error instanceof Error ? error.message : error);
@@ -709,12 +718,12 @@ async function saveSettings(input) {
             nvidiaModelKeys[model] = submitted;
     }
     const encryptedProviderKeys = Object.keys(aiApiKeys).reduce((accumulator, key) => {
-        accumulator[key] = aiApiKeys[key] ? (0, crypto_1.encryptSecret)(aiApiKeys[key]) : '';
+        accumulator[key] = aiApiKeys[key] ? (0, crypto_2.encryptSecret)(aiApiKeys[key]) : '';
         return accumulator;
     }, {});
     const encryptedNvidiaModelKeys = Object.entries(nvidiaModelKeys).reduce((accumulator, [model, key]) => {
         if (key)
-            accumulator[model] = (0, crypto_1.encryptSecret)(key);
+            accumulator[model] = (0, crypto_2.encryptSecret)(key);
         return accumulator;
     }, {});
     const encryptedAiPayload = {
@@ -730,7 +739,7 @@ async function saveSettings(input) {
         ? ''
         : submittedGeminiClientSecret || existingGeminiOAuthClient?.clientSecret || env_1.env.GOOGLE_GEMINI_OAUTH_CLIENT_SECRET.trim();
     if (nextGeminiClientId || nextGeminiClientSecret) {
-        encryptedAiPayload.geminiOAuthClient = (0, crypto_1.encryptSecret)(JSON.stringify({
+        encryptedAiPayload.geminiOAuthClient = (0, crypto_2.encryptSecret)(JSON.stringify({
             clientId: nextGeminiClientId,
             clientSecret: nextGeminiClientSecret,
         }));
@@ -754,9 +763,9 @@ async function saveSettings(input) {
             apiKeyEncrypted: (submittedAi.ocr || {}).clearApiKey
                 ? ''
                 : (submittedAi.ocr || {}).apiKey?.trim()
-                    ? (0, crypto_1.encryptSecret)((submittedAi.ocr || {}).apiKey.trim())
+                    ? (0, crypto_2.encryptSecret)((submittedAi.ocr || {}).apiKey.trim())
                     : existing.ai.ocr.apiKey
-                        ? (0, crypto_1.encryptSecret)(existing.ai.ocr.apiKey)
+                        ? (0, crypto_2.encryptSecret)(existing.ai.ocr.apiKey)
                         : '',
         },
         apiKeysEncryptedJson: JSON.stringify(encryptedAiPayload),
@@ -821,8 +830,8 @@ async function saveSettings(input) {
             input.baseUrl,
             input.database,
             input.username,
-            (0, crypto_1.encryptSecret)(nextApiKey),
-            nextShopFloorPassword ? (0, crypto_1.encryptSecret)(nextShopFloorPassword) : '',
+            (0, crypto_2.encryptSecret)(nextApiKey),
+            nextShopFloorPassword ? (0, crypto_2.encryptSecret)(nextShopFloorPassword) : '',
             JSON.stringify(fieldMappings),
             JSON.stringify(parser),
             JSON.stringify(ai),
@@ -853,7 +862,7 @@ async function saveSettings(input) {
             input.baseUrl,
             input.database,
             input.username,
-            (0, crypto_1.encryptSecret)(nextApiKey),
+            (0, crypto_2.encryptSecret)(nextApiKey),
             JSON.stringify(fieldMappings),
             JSON.stringify(parser),
             JSON.stringify(ai),
@@ -889,7 +898,7 @@ async function saveGeminiOAuthCredentials(input) {
         scopes: input.scopes,
         connectedAt: new Date().toISOString(),
     };
-    encryptedKeysPayload.geminiOAuth = (0, crypto_1.encryptSecret)(JSON.stringify(credentials));
+    encryptedKeysPayload.geminiOAuth = (0, crypto_2.encryptSecret)(JSON.stringify(credentials));
     rawAi.apiKeysEncryptedJson = JSON.stringify(encryptedKeysPayload);
     rawAi.geminiOAuth = {
         connected: true,
@@ -909,7 +918,7 @@ async function updateGeminiOAuthAccessToken(input) {
     const row = await getSettingsRow();
     const rawAi = (0, helpers_1.safeJsonParse)(row.ai_config_json, {});
     const encryptedKeysPayload = (0, helpers_1.safeJsonParse)(String(rawAi.apiKeysEncryptedJson || ''), {});
-    encryptedKeysPayload.geminiOAuth = (0, crypto_1.encryptSecret)(JSON.stringify({
+    encryptedKeysPayload.geminiOAuth = (0, crypto_2.encryptSecret)(JSON.stringify({
         ...credentials,
         accessToken: input.accessToken,
         accessTokenExpiresAt: input.accessTokenExpiresAt,
@@ -1329,6 +1338,21 @@ function mapPoBillManualJobRow(row) {
         mode: row.mode,
         status: row.status,
         result: row.result_json ? (0, helpers_1.safeJsonParse)(row.result_json, null) : null,
+        errorMessage: row.error_message,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        startedAt: row.started_at,
+        completedAt: row.completed_at,
+    };
+}
+function mapShopFloorValidationJobRow(row) {
+    return {
+        id: row.id,
+        jobType: row.job_type,
+        pickingId: Number(row.picking_id),
+        actorEmail: row.actor_email || '',
+        actorName: row.actor_name || '',
+        status: row.status,
         errorMessage: row.error_message,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
@@ -1913,6 +1937,46 @@ async function reclaimStalePoBillManualJobs(minutes = 30) {
 }
 async function touchPoBillManualJob(id) {
     await (0, db_1.execute)(`UPDATE po_bill_manual_jobs SET updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'running'`, [id]);
+}
+async function enqueueShopFloorValidationJob(input) {
+    const existing = await (0, db_1.queryOne)(`SELECT id FROM shop_floor_validation_jobs WHERE picking_id = ? AND job_type = ? AND status IN ('pending', 'running') LIMIT 1`, [input.pickingId, input.jobType]);
+    if (existing) {
+        return getShopFloorValidationJobById(existing.id);
+    }
+    const id = (0, crypto_1.randomUUID)();
+    const now = new Date().toISOString();
+    await (0, db_1.execute)(`INSERT INTO shop_floor_validation_jobs (id, job_type, picking_id, actor_email, actor_name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`, [id, input.jobType, input.pickingId, input.actorEmail, input.actorName, now, now]);
+    return getShopFloorValidationJobById(id);
+}
+async function getShopFloorValidationJobById(id) {
+    const row = await (0, db_1.queryOne)(`SELECT id, job_type, picking_id, actor_email, actor_name, status, error_message, created_at, updated_at, started_at, completed_at FROM shop_floor_validation_jobs WHERE id = ?`, [id]);
+    if (!row)
+        throw new Error(`Shop floor validation job ${id} was not found.`);
+    return mapShopFloorValidationJobRow(row);
+}
+async function claimNextShopFloorValidationJob() {
+    const candidate = await (0, db_1.queryOne)(`SELECT id FROM shop_floor_validation_jobs WHERE status = 'pending' ORDER BY created_at ASC, id ASC LIMIT 1`);
+    if (!candidate)
+        return null;
+    const result = await (0, db_1.execute)(`UPDATE shop_floor_validation_jobs SET status = 'running', started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'pending'`, [candidate.id]);
+    return result.affectedRows > 0 ? getShopFloorValidationJobById(candidate.id) : null;
+}
+async function completeShopFloorValidationJob(input) {
+    await (0, db_1.execute)(`UPDATE shop_floor_validation_jobs SET status = ?, error_message = ?, completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [input.status, input.errorMessage || null, input.id]);
+}
+async function touchShopFloorValidationJob(id) {
+    await (0, db_1.execute)(`UPDATE shop_floor_validation_jobs SET updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'running'`, [id]);
+}
+async function reclaimStaleShopFloorValidationJobs(minutes = 15) {
+    await (0, db_1.execute)(`UPDATE shop_floor_validation_jobs SET status = 'pending', started_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE status = 'running' AND updated_at < ?`, [staleJobCutoff(minutes)]);
+}
+async function getActiveShopFloorValidationJobs(jobType = 'receipt') {
+    const rows = await (0, db_1.queryAll)(`SELECT id, job_type, picking_id, actor_email, actor_name, status, error_message, created_at, updated_at, started_at, completed_at FROM shop_floor_validation_jobs WHERE job_type = ? AND status IN ('pending', 'running') ORDER BY created_at ASC`, [jobType]);
+    return rows.map(mapShopFloorValidationJobRow);
+}
+async function getRecentShopFloorValidationJobs(jobType = 'receipt', limit = 20) {
+    const rows = await (0, db_1.queryAll)(`SELECT id, job_type, picking_id, actor_email, actor_name, status, error_message, created_at, updated_at, started_at, completed_at FROM shop_floor_validation_jobs WHERE job_type = ? ORDER BY created_at DESC LIMIT ?`, [jobType, limit]);
+    return rows.map(mapShopFloorValidationJobRow);
 }
 async function deleteMpesaStatementBatch(id) {
     const batch = await getMpesaStatementBatchById(id);

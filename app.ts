@@ -31,6 +31,7 @@ import { getStartupState, markStartupFailedIfStale } from './src/services/startu
 import { getInvoiceExtractionJobWorkerStatus } from './src/services/invoiceExtractionJobService';
 import { getMpesaExtractionJobWorkerStatus } from './src/services/mpesaExtractionJobService';
 import { getPoBillManualJobWorkerStatus } from './src/services/poBillManualJobService';
+import { getShopFloorValidationJobWorkerStatus } from './src/services/shopFloorValidationJobService';
 import { resolveLocalUserDisplayName } from './src/services/userIdentityService';
 import { logEvent } from './src/services/logService';
 
@@ -172,6 +173,7 @@ app.get('/health', (_req: Request, res: Response) => {
     mpesaExtraction: getMpesaExtractionJobWorkerStatus(),
     invoiceExtraction: getInvoiceExtractionJobWorkerStatus(),
     poBillManual: getPoBillManualJobWorkerStatus(),
+    shopFloorValidation: getShopFloorValidationJobWorkerStatus(),
   };
   const workersReady = Object.values(workers).every((worker) => worker.healthy);
   const workerDiagnostics = Object.fromEntries(

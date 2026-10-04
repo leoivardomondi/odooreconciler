@@ -1440,10 +1440,30 @@
           <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
         </div>
         <div class="modal-body p-4">
-          <div id="addStockNotice" class="alert alert-danger d-none" role="alert" tabindex="-1">
-            <div class="fw-bold mb-1">ADD STOCK NOTICE</div>
-            <div class="small mb-3">This manufacturing order has no available stock. Add or receive the required stock before starting.</div>
-            <a href="/shop-floor/boards" class="btn btn-danger btn-sm">Add Stock</a>
+          <div id="addStockNotice" class="alert alert-danger d-none rounded-3 border-danger shadow-sm" role="alert" tabindex="-1">
+            <div class="d-flex align-items-center gap-2 mb-2">
+              <i class="bi bi-shield-lock-fill text-danger fs-5" aria-hidden="true"></i>
+              <div class="fw-bold text-danger" id="addStockNoticeTitle">STOCK ENFORCEMENT NOTICE</div>
+            </div>
+            <div class="small mb-2 text-dark" id="addStockNoticeMessage">
+              This manufacturing order cannot be started or finished without all required components being physically available and reserved in stock.
+            </div>
+            <div id="addStockMissingList" class="mb-3 d-none">
+              <div class="small fw-semibold text-muted text-uppercase mb-1" style="font-size: 0.72rem; letter-spacing: 0.05em;">Missing Required Components:</div>
+              <ul class="list-group list-group-flush rounded-2 border small bg-white" id="addStockMissingItems" style="max-height: 160px; overflow-y: auto;">
+              </ul>
+            </div>
+            <div class="d-flex flex-wrap gap-2 align-items-center" id="addStockNoticeActions">
+              <a href="/shop-floor/boards" id="addStockBoardLink" class="btn btn-danger btn-sm rounded-pill px-3 fw-bold">
+                <i class="bi bi-layers-fill me-1"></i>Board Intake
+              </a>
+              <a href="/shop-floor/receipts" id="addStockReceiptLink" class="btn btn-outline-danger btn-sm rounded-pill px-3 fw-bold">
+                <i class="bi bi-box-seam me-1"></i>Receive Deliveries
+              </a>
+              <button type="button" id="addStockRetryButton" class="btn btn-light btn-sm border rounded-pill px-3 fw-medium">
+                <i class="bi bi-arrow-clockwise me-1"></i>Check Again
+              </button>
+            </div>
           </div>
           <div id="manufacturingOrderActionStatus" class="alert d-none" role="status" aria-live="polite"></div>
           <div class="d-grid gap-3">
@@ -1566,6 +1586,82 @@
     showToast.timer = window.setTimeout(function() { toast.classList.add('d-none'); }, 5000);
   }
 
+  function escapeHtml(str) {
+    var div = document.createElement('div');
+    div.textContent = str || '';
+    return div.innerHTML;
+  }
+
+  function renderMissingComponents(missingComponents, hasMissingBoards, hasMissingHardware) {
+    var listEl = document.getElementById('addStockMissingItems');
+    var listContainer = document.getElementById('addStockMissingList');
+    if (!listEl || !listContainer) return;
+    listEl.innerHTML = '';
+    if (missingComponents && missingComponents.length > 0) {
+      missingComponents.forEach(function(item) {
+        var li = document.createElement('li');
+        li.className = 'list-group-item d-flex justify-content-between align-items-center py-2 px-2.5';
+        li.innerHTML =
+          '<div class="me-2 text-truncate">' +
+            '<div class="fw-semibold text-dark text-truncate">' + escapeHtml(item.productName) + '</div>' +
+            '<div class="text-muted" style="font-size:0.7rem">' + (item.isBoard ? '<span class="badge bg-secondary-subtle text-secondary me-1">Board</span>' : '<span class="badge bg-light text-dark border me-1">Hardware</span>') + 'Required: ' + item.requiredQty + ' ' + escapeHtml(item.uom) + ' · In Stock: ' + item.availableQty + ' ' + escapeHtml(item.uom) + '</div>' +
+          '</div>' +
+          '<span class="badge bg-danger text-white rounded-pill flex-shrink-0" style="font-size:0.7rem">Need ' + item.missingQty + '</span>';
+        listEl.appendChild(li);
+      });
+      listContainer.classList.remove('d-none');
+    } else {
+      listContainer.classList.add('d-none');
+    }
+    var boardLink = document.getElementById('addStockBoardLink');
+    var receiptLink = document.getElementById('addStockReceiptLink');
+    if (boardLink) boardLink.classList.toggle('d-none', !hasMissingBoards);
+    if (receiptLink) receiptLink.classList.toggle('d-none', !hasMissingHardware);
+  }
+
+  async function fetchStockCheck(moId, isManualRetry) {
+    if (!moId) return;
+    if (isManualRetry) {
+      showToast('Checking component stock in Odoo...');
+    }
+    try {
+      var res = await fetch('/shop-floor/work-order/' + encodeURIComponent(moId) + '/stock-check');
+      var data = await res.json();
+      if (data && data.ok) {
+        if (data.isFullyAvailable) {
+          addStockNotice.classList.add('d-none');
+          currentStockStatus = 'ready';
+          stockBadge.textContent = 'Ready';
+          stockBadge.className = 'badge rounded-pill bg-success-subtle text-success';
+          actionButton.disabled = false;
+          if (isManualRetry) {
+            showToast('All required stock is available! You may start or finish this order.');
+          }
+        } else {
+          currentStockStatus = 'no_stock';
+          stockBadge.textContent = 'No Stock';
+          stockBadge.className = 'badge rounded-pill bg-danger-subtle text-danger';
+          var titleEl = document.getElementById('addStockNoticeTitle');
+          var msgEl = document.getElementById('addStockNoticeMessage');
+          if (titleEl) titleEl.textContent = 'STOCK ENFORCEMENT NOTICE';
+          if (msgEl) msgEl.textContent = 'All required components must be physically available and reserved in stock before starting or finishing this order.';
+          renderMissingComponents(data.missingComponents, data.hasMissingBoards, data.hasMissingHardware);
+          addStockNotice.classList.remove('d-none');
+          if (isManualRetry) {
+            showToast('Still missing components in stock (' + data.missingComponents.length + ' item' + (data.missingComponents.length === 1 ? '' : 's') + ').');
+          }
+        }
+      }
+    } catch (_) {}
+  }
+
+  var retryBtn = document.getElementById('addStockRetryButton');
+  if (retryBtn) {
+    retryBtn.addEventListener('click', function() {
+      fetchStockCheck(currentMoId, true);
+    });
+  }
+
   actionModal.addEventListener('show.bs.modal', function(event) {
     var trigger = event.relatedTarget;
     if (!trigger) return;
@@ -1586,12 +1682,31 @@
     actionButton.classList.toggle('btn-success', !isInProgress);
     actionButton.classList.toggle('btn-primary', isInProgress);
     addStockNotice.classList.add('d-none');
+    var missingListContainer = document.getElementById('addStockMissingList');
+    if (missingListContainer) missingListContainer.classList.add('d-none');
     actionStatus.className = 'alert d-none';
     actionStatus.textContent = '';
 
     var stockLabels = { ready: 'Ready', incoming: 'Incoming / Purchase', no_stock: 'No Stock' };
     stockBadge.textContent = stockLabels[currentStockStatus] || currentStockStatus;
     stockBadge.className = 'badge rounded-pill ' + (currentStockStatus === 'ready' ? 'bg-success-subtle text-success' : currentStockStatus === 'incoming' ? 'bg-warning-subtle text-warning-emphasis' : 'bg-danger-subtle text-danger');
+
+    if (currentStockStatus === 'no_stock') {
+      var titleEl = document.getElementById('addStockNoticeTitle');
+      var msgEl = document.getElementById('addStockNoticeMessage');
+      if (titleEl) titleEl.textContent = 'STOCK ENFORCEMENT NOTICE';
+      if (msgEl) msgEl.textContent = 'This manufacturing order cannot be started or finished without all required components being physically available in stock.';
+      addStockNotice.classList.remove('d-none');
+      fetchStockCheck(moId, false);
+    } else if (currentStockStatus === 'incoming') {
+      var titleEl = document.getElementById('addStockNoticeTitle');
+      var msgEl = document.getElementById('addStockNoticeMessage');
+      if (titleEl) titleEl.textContent = 'INCOMING DELIVERIES PENDING';
+      if (msgEl) msgEl.textContent = 'Components are on order or in transit. Validate incoming receipts under Deliveries/Receipts before proceeding.';
+      addStockNotice.classList.remove('d-none');
+      var receiptLink = document.getElementById('addStockReceiptLink');
+      if (receiptLink) receiptLink.classList.remove('d-none');
+    }
   });
 
   function applyMoOptimisticUpdate(moId, targetState) {
@@ -1723,10 +1838,11 @@
   form.addEventListener('submit', async function(event) {
     event.preventDefault();
     if (requestInProgress) return;
-    if (actionValue.value === 'start' && currentStockStatus === 'no_stock') {
+    if (currentStockStatus === 'no_stock') {
       addStockNotice.classList.remove('d-none');
       addStockNotice.focus();
       addStockNotice.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      showToast('Cannot proceed: Add or receive required components first.');
       return;
     }
 
@@ -1778,6 +1894,18 @@
       if (!response.ok || !result.ok) {
         if (rollback) rollback();
         showToast(result.message || 'Could not update this job.');
+        if (result.code === 'stock_missing') {
+          currentStockStatus = 'no_stock';
+          var reopenModal = bootstrap.Modal.getOrCreateInstance(actionModal);
+          reopenModal.show();
+          var titleEl = document.getElementById('addStockNoticeTitle');
+          var msgEl = document.getElementById('addStockNoticeMessage');
+          if (titleEl) titleEl.textContent = 'STOCK ENFORCEMENT NOTICE';
+          if (msgEl) msgEl.textContent = result.message || 'Cannot start or finish: components are missing from stock.';
+          renderMissingComponents(result.missingComponents, result.hasMissingBoards, result.hasMissingHardware);
+          addStockNotice.classList.remove('d-none');
+          actionButton.disabled = true;
+        }
         return;
       }
 

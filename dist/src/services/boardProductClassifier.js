@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.normalizeBoardProductName = normalizeBoardProductName;
 exports.isBoardProductName = isBoardProductName;
+exports.isStockExemptEdgeBandingService = isStockExemptEdgeBandingService;
 function normalizeBoardProductName(value) {
     return String(value || '').toLowerCase().replace(/[×*]/g, ' x ').replace(/\s+/g, ' ').trim();
 }
@@ -21,4 +22,8 @@ function isBoardProductName(value) {
     // Some board colors omit the material family and are named only by thickness,
     // for example "Congo 18mm", "Honey Bee 18mm", and "Mahogany 20mm".
     return /\b(?:3|4|6|8|9|12|15|16|18|20|25|30|36)\s*mm\b/.test(name);
+}
+function isStockExemptEdgeBandingService(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    return normalized.includes('edge banding service') || normalized.includes('edging banding service');
 }

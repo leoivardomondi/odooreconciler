@@ -35,10 +35,12 @@ import {
   SafeSaleOrderUpdateResult,
   SalesOrderDetails,
   SalesOrderSummary,
+  MoMissingComponent,
+  MoStockAvailabilityResult,
 } from '../models/types';
 import { env } from '../utils/env';
 import { sanitizeBaseUrl } from '../utils/helpers';
-import { isBoardProductName } from './boardProductClassifier';
+import { isBoardProductName, isStockExemptEdgeBandingService } from './boardProductClassifier';
 
 interface OdooErrorResponse {
   name?: string;
@@ -292,7 +294,7 @@ export class OdooClient {
     } catch (authErr: any) {
       const errMessage = authErr instanceof Error ? authErr.message : String(authErr);
       const isAuthIssue = /not authenticated|unauthorized|bearer|access denied|login/i.test(errMessage) || authErr?.status === 401 || authErr?.status === 403;
-      
+
       let hint = '';
       if (isAuthIssue) {
         hint = ` [Diagnostic Hint]: Authentication failed for user '${this.credentials.username}' on database '${this.credentials.database}'. If 2FA (Two-Factor Authentication) is enabled on this account, regular web passwords will be rejected by Odoo. Generate an API Key under User Profile -> Account Security -> Developer API Keys in Odoo and paste it into Settings.`;
@@ -2125,6 +2127,131 @@ export class OdooClient {
     return stateMap;
   }
 
+  /**
+   * Check whether 100% of required raw materials/components for a Manufacturing Order
+   * have been physically made available and assigned in stock.
+   * If stock is newly arrived, triggers action_assign first to reserve it.
+   */
+  async checkManufacturingOrderStockAvailability(moId: number): Promise<MoStockAvailabilityResult> {
+    if (!moId || !Number.isSafeInteger(moId) || moId <= 0) {
+      throw new OdooClientError('Invalid manufacturing order ID for stock check.');
+    }
+
+    const productions = await this.searchReadRecords<{
+      id: number;
+      name: string;
+      state: string;
+      product_id: [number, string] | false;
+    }>('mrp.production', {
+      domain: [['id', '=', moId]],
+      fields: ['id', 'name', 'state', 'product_id'],
+      limit: 1,
+    });
+
+    const production = productions[0];
+    if (!production) {
+      throw new OdooClientError(`Manufacturing order ${moId} was not found in Odoo.`);
+    }
+
+    const manufacturedProductName = Array.isArray(production.product_id) ? production.product_id[1] : '';
+    if (isStockExemptEdgeBandingService(manufacturedProductName)) {
+      return {
+        moId: production.id,
+        moName: production.name,
+        moState: production.state,
+        isFullyAvailable: true,
+        totalComponents: 0,
+        missingComponents: [],
+        hasMissingBoards: false,
+        hasMissingHardware: false,
+      };
+    }
+
+    if (production.state === 'done') {
+      return {
+        moId: production.id,
+        moName: production.name,
+        moState: production.state,
+        isFullyAvailable: true,
+        totalComponents: 0,
+        missingComponents: [],
+        hasMissingBoards: false,
+        hasMissingHardware: false,
+      };
+    }
+
+    // Attempt to allocate/reserve any recently received stock to this MO
+    if (!['cancel'].includes(production.state)) {
+      try {
+        await this.callRecordMethod('mrp.production', 'action_assign', [moId]);
+      } catch (_) { }
+    }
+
+    const rawMoves = await this.searchReadRecords<{
+      id: number;
+      product_id: [number, string] | false;
+      product_uom_qty: number;
+      quantity: number;
+      product_uom: [number, string] | false;
+      state: string;
+      forecast_availability: number | string | null | boolean;
+    }>('stock.move', {
+      domain: [
+        ['raw_material_production_id', '=', moId],
+        ['state', '!=', 'cancel'],
+      ],
+      fields: ['id', 'product_id', 'product_uom_qty', 'quantity', 'product_uom', 'state', 'forecast_availability'],
+      limit: 1000,
+    });
+
+    const missingComponents: MoMissingComponent[] = [];
+
+    for (const move of rawMoves) {
+      const requiredQty = Number(move.product_uom_qty || 0);
+      const availableQty = Number(move.quantity || 0);
+      const state = move.state;
+
+      // Moves with 0 demand do not require stock
+      if (requiredQty <= 0) continue;
+
+      // Consumed components are fully satisfied
+      if (state === 'done') continue;
+
+      // If state is assigned and available >= required, move is satisfied
+      if (state === 'assigned' && availableQty >= requiredQty) continue;
+
+      // Otherwise component is missing or partially missing
+      const missingQty = Math.max(0, requiredQty - availableQty);
+      const productId = Array.isArray(move.product_id) ? move.product_id[0] : 0;
+      const productName = Array.isArray(move.product_id) ? move.product_id[1] : 'Unknown Product';
+      const uom = Array.isArray(move.product_uom) ? move.product_uom[1] : 'Units';
+      const isBoard = isBoardProductName(productName);
+
+      missingComponents.push({
+        id: move.id,
+        productId,
+        productName,
+        requiredQty,
+        availableQty,
+        missingQty,
+        uom,
+        state,
+        isBoard,
+      });
+    }
+
+    return {
+      moId: production.id,
+      moName: production.name,
+      moState: production.state,
+      isFullyAvailable: missingComponents.length === 0,
+      totalComponents: rawMoves.length,
+      missingComponents,
+      hasMissingBoards: missingComponents.some((c) => c.isBoard),
+      hasMissingHardware: missingComponents.some((c) => !c.isBoard),
+    };
+  }
+
   async getManufacturingOrderBoardProcurement(moId: number) {
     const [productions, components] = await Promise.all([
       this.searchReadRecords<{
@@ -2168,16 +2295,16 @@ export class OdooClient {
 
     const purchaseOrders = production.origin
       ? await this.searchReadRecords<{
-          id: number;
-          name: string;
-          state: string;
-          partner_id: [number, string] | false;
-        }>('purchase.order', {
-          domain: [['origin', '=', production.origin], ['state', '!=', 'cancel']],
-          fields: ['id', 'name', 'state', 'partner_id'],
-          order: 'id desc',
-          limit: 100,
-        })
+        id: number;
+        name: string;
+        state: string;
+        partner_id: [number, string] | false;
+      }>('purchase.order', {
+        domain: [['origin', '=', production.origin], ['state', '!=', 'cancel']],
+        fields: ['id', 'name', 'state', 'partner_id'],
+        order: 'id desc',
+        limit: 100,
+      })
       : [];
 
     return {
@@ -2433,7 +2560,7 @@ export class OdooClient {
         },
       );
       const failed: Array<{ date: string; hours: number; nextDayCheckIn: string | null }> = [];
-      
+
       for (const rec of records) {
         if (!rec.check_in) continue;
         const checkInDate = new Date(rec.check_in.includes('T') ? rec.check_in : rec.check_in.replace(' ', 'T') + 'Z');
@@ -2545,7 +2672,7 @@ export class OdooClient {
         'search_read',
         {
           domain: [
-          ['date_deadline', '!=', false],
+            ['date_deadline', '!=', false],
             ['date_deadline', '>=', firstDayStr],
             ['state', 'not in', ['done', 'cancel']],
             ['date_deadline', '<=', lastDayStr],
@@ -2570,11 +2697,11 @@ export class OdooClient {
         'search_read',
         {
           domain: [
-          ['workcenter_id', 'in', wcIds],
-          ['state', 'not in', ['done', 'cancel']],
-          ['date_start', '!=', false],
-          ['date_start', '>=', firstDayStr],
-          ['date_start', '<=', lastDayStr],
+            ['workcenter_id', 'in', wcIds],
+            ['state', 'not in', ['done', 'cancel']],
+            ['date_start', '!=', false],
+            ['date_start', '>=', firstDayStr],
+            ['date_start', '<=', lastDayStr],
           ],
           fields: ['id', 'duration_expected', 'date_start', 'qty_production', 'qty_produced', 'state'],
           limit: 500,
@@ -3064,17 +3191,17 @@ export class OdooClient {
         create_date?: string | null;
       }>>(
         'mrp.production',
-          'search_read',
-          {
-            domain: [
-              ['company_id', '=', targetCompanyId],
-              ['state', 'not in', ['cancel']],
-              ['origin', '!=', false],
-            ],
-            fields: ['id', 'name', 'origin', 'product_id', 'product_qty', 'date_start', 'date_finished', 'create_date'],
-            limit: 5000,
-            order: 'date_start desc, id desc',
-          },
+        'search_read',
+        {
+          domain: [
+            ['company_id', '=', targetCompanyId],
+            ['state', 'not in', ['cancel']],
+            ['origin', '!=', false],
+          ],
+          fields: ['id', 'name', 'origin', 'product_id', 'product_qty', 'date_start', 'date_finished', 'create_date'],
+          limit: 5000,
+          order: 'date_start desc, id desc',
+        },
       );
 
       const cuttingByOrigin = cuttingOrders.filter((mo) => isCuttingWorkOrderProductName(Array.isArray(mo.product_id) ? mo.product_id[1] : ''));
@@ -3184,13 +3311,13 @@ export class OdooClient {
       }>>(
         'stock.move',
         'search_read',
-          {
-            domain: [
-              ['company_id', '=', targetCompanyId],
-              ['state', '=', 'done'],
-              ['date', '>=', firstDayStr],
-              ['date', '<=', lastDayStr],
-            ],
+        {
+          domain: [
+            ['company_id', '=', targetCompanyId],
+            ['state', '=', 'done'],
+            ['date', '>=', firstDayStr],
+            ['date', '<=', lastDayStr],
+          ],
           fields: ['id', 'product_id', 'quantity', 'product_uom_qty', 'reference', 'origin', 'state', 'is_inventory', 'location_dest_id', 'company_id', 'date'],
           limit: 5000,
           order: 'date desc, id desc',
@@ -3982,9 +4109,15 @@ export class OdooClient {
 
   private extractErrorMessage(data: unknown, status: number): string {
     if (data && typeof data === 'object') {
-      const payload = data as OdooErrorResponse;
+      const payload = data as any;
       if (payload.message) {
         return payload.message;
+      }
+      if (payload.error?.data?.message) {
+        return payload.error.data.message;
+      }
+      if (payload.error?.message) {
+        return payload.error.message;
       }
       if (payload.name) {
         return `${payload.name} (${status})`;
@@ -4972,6 +5105,21 @@ export class OdooClient {
       throw new OdooClientError('This manufacturing order is outside the Shop Floor warehouse.');
     }
 
+    // Strictly enforce that 100% of required stock is available before starting or finishing
+    const stockCheck = await this.checkManufacturingOrderStockAvailability(moId);
+    if (!stockCheck.isFullyAvailable) {
+      const missingDetails = stockCheck.missingComponents
+        .map((c) => `${c.productName} (Required: ${c.requiredQty} ${c.uom}, Available: ${c.availableQty} ${c.uom})`)
+        .join('; ');
+      const actionVerb = action === 'finish' ? 'finish or close' : 'start';
+      const error = new OdooClientError(
+        `Cannot ${actionVerb} ${stockCheck.moName}: Missing required components in stock. Add or receive stock before proceeding. Missing: ${missingDetails}`,
+      );
+      (error as any).code = 'stock_missing';
+      (error as any).stockAvailability = stockCheck;
+      throw error;
+    }
+
     const assertEmployeeMayUseWorkcenter = async (workorder: {
       id: number;
       workcenter_id: [number, string] | false;
@@ -5002,7 +5150,7 @@ export class OdooClient {
       if (workorder.state === 'pending') {
         try {
           await this.callRecordMethod('mrp.workorder', 'button_start', [workorder.id]);
-        } catch (_) {}
+        } catch (_) { }
       }
       try {
         await this.callRecordMethod(
@@ -5014,7 +5162,7 @@ export class OdooClient {
             context: { mrp_display: true },
           },
         );
-      } catch (_) {}
+      } catch (_) { }
       const verifiedWorkorder = await this.searchReadRecords<{ id: number; state: string; employee_ids: number[] }>('mrp.workorder', {
         domain: [['id', '=', workorder.id]],
         fields: ['id', 'state', 'employee_ids'],
@@ -5023,7 +5171,7 @@ export class OdooClient {
       if (verifiedWorkorder[0]?.state !== 'progress') {
         try {
           await this.callRecordMethod('mrp.workorder', 'button_start', [workorder.id]);
-        } catch (_) {}
+        } catch (_) { }
       }
       return { workorderId: workorder.id, state: 'progress' as const, operatorLinked: true };
     }
@@ -5270,16 +5418,16 @@ export class OdooClient {
 
       const purchaseOrders = filteredOrigins.length > 0
         ? await this.searchReadRecords<{
-            id: number;
-            origin: string | false;
-          }>('purchase.order', {
-            domain: [
-              ['company_id', '=', targetCompanyId],
-              ['origin', 'in', filteredOrigins],
-            ],
-            fields: ['id', 'origin'],
-            limit: 500,
-          })
+          id: number;
+          origin: string | false;
+        }>('purchase.order', {
+          domain: [
+            ['company_id', '=', targetCompanyId],
+            ['origin', 'in', filteredOrigins],
+          ],
+          fields: ['id', 'origin'],
+          limit: 500,
+        })
         : [];
 
       // Check PO lines for board products
@@ -5452,16 +5600,16 @@ export class OdooClient {
 
       const purchaseOrders = clientOrigins.length > 0
         ? await this.searchReadRecords<{
-            id: number;
-            origin: string | false;
-          }>('purchase.order', {
-            domain: [
-              ['company_id', '=', targetCompanyId],
-              ['origin', 'in', clientOrigins],
-            ],
-            fields: ['id', 'origin'],
-            limit: 500,
-          })
+          id: number;
+          origin: string | false;
+        }>('purchase.order', {
+          domain: [
+            ['company_id', '=', targetCompanyId],
+            ['origin', 'in', clientOrigins],
+          ],
+          fields: ['id', 'origin'],
+          limit: 500,
+        })
         : [];
 
       const originProductPOKeys = new Set<string>();

@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import {
   AppSettings,
@@ -17,6 +18,7 @@ import {
   MpesaExtractionJob,
   InvoiceExtractionJob,
   PoBillManualJob,
+  ShopFloorValidationJob,
   MpesaStatementBatch,
   MpesaTransaction,
   MpesaTransactionExplorerFilters,
@@ -1636,6 +1638,34 @@ function mapPoBillManualJobRow(row: {
   };
 }
 
+function mapShopFloorValidationJobRow(row: {
+  id: string;
+  job_type: ShopFloorValidationJob['jobType'];
+  picking_id: number | string;
+  actor_email: string;
+  actor_name: string;
+  status: ShopFloorValidationJob['status'];
+  error_message: string | null;
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+}): ShopFloorValidationJob {
+  return {
+    id: row.id,
+    jobType: row.job_type,
+    pickingId: Number(row.picking_id),
+    actorEmail: row.actor_email || '',
+    actorName: row.actor_name || '',
+    status: row.status,
+    errorMessage: row.error_message,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+  };
+}
+
 function mapMpesaTransactionRow(row: {
   id: string;
   batch_id: string;
@@ -2488,6 +2518,88 @@ export async function reclaimStalePoBillManualJobs(minutes = 30) {
 
 export async function touchPoBillManualJob(id: string) {
   await execute(`UPDATE po_bill_manual_jobs SET updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'running'`, [id]);
+}
+
+export async function enqueueShopFloorValidationJob(input: {
+  jobType: ShopFloorValidationJob['jobType'];
+  pickingId: number;
+  actorEmail: string;
+  actorName: string;
+}): Promise<ShopFloorValidationJob> {
+  const existing = await queryOne<{ id: string }>(
+    `SELECT id FROM shop_floor_validation_jobs WHERE picking_id = ? AND job_type = ? AND status IN ('pending', 'running') LIMIT 1`,
+    [input.pickingId, input.jobType],
+  );
+  if (existing) {
+    return getShopFloorValidationJobById(existing.id);
+  }
+
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  await execute(
+    `INSERT INTO shop_floor_validation_jobs (id, job_type, picking_id, actor_email, actor_name, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`,
+    [id, input.jobType, input.pickingId, input.actorEmail, input.actorName, now, now],
+  );
+  return getShopFloorValidationJobById(id);
+}
+
+export async function getShopFloorValidationJobById(id: string): Promise<ShopFloorValidationJob> {
+  const row = await queryOne<Parameters<typeof mapShopFloorValidationJobRow>[0]>(
+    `SELECT id, job_type, picking_id, actor_email, actor_name, status, error_message, created_at, updated_at, started_at, completed_at FROM shop_floor_validation_jobs WHERE id = ?`,
+    [id],
+  );
+  if (!row) throw new Error(`Shop floor validation job ${id} was not found.`);
+  return mapShopFloorValidationJobRow(row);
+}
+
+export async function claimNextShopFloorValidationJob(): Promise<ShopFloorValidationJob | null> {
+  const candidate = await queryOne<{ id: string }>(
+    `SELECT id FROM shop_floor_validation_jobs WHERE status = 'pending' ORDER BY created_at ASC, id ASC LIMIT 1`,
+  );
+  if (!candidate) return null;
+  const result = await execute(
+    `UPDATE shop_floor_validation_jobs SET status = 'running', started_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'pending'`,
+    [candidate.id],
+  );
+  return result.affectedRows > 0 ? getShopFloorValidationJobById(candidate.id) : null;
+}
+
+export async function completeShopFloorValidationJob(input: {
+  id: string;
+  status: Extract<ShopFloorValidationJob['status'], 'completed' | 'failed'>;
+  errorMessage?: string | null;
+}) {
+  await execute(
+    `UPDATE shop_floor_validation_jobs SET status = ?, error_message = ?, completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+    [input.status, input.errorMessage || null, input.id],
+  );
+}
+
+export async function touchShopFloorValidationJob(id: string) {
+  await execute(`UPDATE shop_floor_validation_jobs SET updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'running'`, [id]);
+}
+
+export async function reclaimStaleShopFloorValidationJobs(minutes = 15) {
+  await execute(
+    `UPDATE shop_floor_validation_jobs SET status = 'pending', started_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE status = 'running' AND updated_at < ?`,
+    [staleJobCutoff(minutes)],
+  );
+}
+
+export async function getActiveShopFloorValidationJobs(jobType = 'receipt'): Promise<ShopFloorValidationJob[]> {
+  const rows = await queryAll<Parameters<typeof mapShopFloorValidationJobRow>[0]>(
+    `SELECT id, job_type, picking_id, actor_email, actor_name, status, error_message, created_at, updated_at, started_at, completed_at FROM shop_floor_validation_jobs WHERE job_type = ? AND status IN ('pending', 'running') ORDER BY created_at ASC`,
+    [jobType],
+  );
+  return rows.map(mapShopFloorValidationJobRow);
+}
+
+export async function getRecentShopFloorValidationJobs(jobType = 'receipt', limit = 20): Promise<ShopFloorValidationJob[]> {
+  const rows = await queryAll<Parameters<typeof mapShopFloorValidationJobRow>[0]>(
+    `SELECT id, job_type, picking_id, actor_email, actor_name, status, error_message, created_at, updated_at, started_at, completed_at FROM shop_floor_validation_jobs WHERE job_type = ? ORDER BY created_at DESC LIMIT ?`,
+    [jobType, limit],
+  );
+  return rows.map(mapShopFloorValidationJobRow);
 }
 
 export async function deleteMpesaStatementBatch(id: string): Promise<MpesaStatementBatch> {

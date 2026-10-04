@@ -20,6 +20,7 @@ const startupState_1 = require("./src/services/startupState");
 const invoiceExtractionJobService_1 = require("./src/services/invoiceExtractionJobService");
 const mpesaExtractionJobService_1 = require("./src/services/mpesaExtractionJobService");
 const poBillManualJobService_1 = require("./src/services/poBillManualJobService");
+const shopFloorValidationJobService_1 = require("./src/services/shopFloorValidationJobService");
 const userIdentityService_1 = require("./src/services/userIdentityService");
 const logService_1 = require("./src/services/logService");
 const app = (0, express_1.default)();
@@ -140,6 +141,7 @@ app.get('/health', (_req, res) => {
         mpesaExtraction: (0, mpesaExtractionJobService_1.getMpesaExtractionJobWorkerStatus)(),
         invoiceExtraction: (0, invoiceExtractionJobService_1.getInvoiceExtractionJobWorkerStatus)(),
         poBillManual: (0, poBillManualJobService_1.getPoBillManualJobWorkerStatus)(),
+        shopFloorValidation: (0, shopFloorValidationJobService_1.getShopFloorValidationJobWorkerStatus)(),
     };
     const workersReady = Object.values(workers).every((worker) => worker.healthy);
     const workerDiagnostics = Object.fromEntries(Object.entries(workers).map(([name, worker]) => [
