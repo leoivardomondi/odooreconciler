@@ -1015,7 +1015,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--date-end", help="New pay run end date, for example 2026-05-31.")
     parser.add_argument("--salary-structure", help="Salary structure for payslip generation. Defaults to rules value, usually All.")
     parser.add_argument("--employee-domain-json", help="Optional Odoo domain JSON for employees. Defaults to active employees.")
-    parser.add_argument("--advance-file", help="CSV or JSON export from reconciler.flowcode.co.ke containing M-Pesa salary advances.")
+    parser.add_argument("--advance-file", help="CSV or JSON export from app.urbanvibeinteriordesign.co.ke containing M-Pesa salary advances.")
     parser.add_argument("--execute", action="store_true", help="Actually call configured Odoo workflow methods.")
     parser.add_argument("--report", help="Optional JSON report output path.")
     return parser.parse_args()

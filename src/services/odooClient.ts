@@ -1399,13 +1399,17 @@ export class OdooClient {
     });
   }
 
-  async postModelChatterMessage(model: string, recordId: number, message: string) {
-    return this.request<number>(model, 'message_post', {
+  async postModelChatterMessage(model: string, recordId: number, message: string, partnerIds?: number[]) {
+    const kwargs: Record<string, unknown> = {
       ids: [recordId],
       body: message,
       message_type: 'comment',
       subtype_xmlid: 'mail.mt_note',
-    });
+    };
+    if (partnerIds && partnerIds.length > 0) {
+      kwargs.partner_ids = partnerIds;
+    }
+    return this.request<number>(model, 'message_post', kwargs);
   }
 
   async callRecordMethod<T>(

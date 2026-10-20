@@ -127,12 +127,50 @@
     <!-- Left Column (Top on mobile): Board Intake Form -->
     <div class="col-12 col-xl-5">
       <div class="card border-0 rounded-4" style="background: #ffffff; border: 1px solid #e2e8f0 !important; box-shadow: 0 4px 12px rgba(0,0,0,0.02);">
-        <div class="px-4 py-3 border-bottom" style="background: #fafafb;">
-          <h2 class="h6 mb-0 fw-bold" style="color: #1e293b; font-size: 1.05rem;">Log Board Intake</h2>
-          <span class="text-muted small" style="font-size: 0.78rem;">Record boards brought in by a client</span>
+        <div class="px-4 py-3 border-bottom d-flex align-items-center justify-content-between flex-wrap gap-2" style="background: #fafafb;">
+          <div>
+            <h2 class="h6 mb-0 fw-bold" style="color: #1e293b; font-size: 1.05rem;">Log Board Intake</h2>
+            <span class="text-muted small" style="font-size: 0.78rem;">Record boards brought in by a client</span>
+          </div>
+          <% const isAdminUser = Boolean(authUser && (authUser.role === 'admin' || authUser.apps?.includes('shop-floor-admin'))); %>
+          <% if (isAdminUser) { %>
+            <!-- Recipient email control widget (Admin only) -->
+            <div class="d-flex align-items-center gap-1.5" id="boardLogEmailWidget">
+              <span class="badge rounded-pill d-inline-flex align-items-center gap-1 px-2.5 py-1.5 border" style="background: #f8fafc; color: #475569; font-size: 0.76rem; border-color: #cbd5e1 !important;" title="Board log completion details are emailed to this address">
+                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+                <span>Email:</span>
+                <strong id="boardLogEmailDisplay"><%= boardLogEmail || 'sharon@urbanvibeinteriordesign.co.ke' %></strong>
+              </span>
+              <button type="button" class="btn btn-outline-secondary btn-sm rounded-pill px-2 py-0.5" id="editBoardLogEmailBtn" style="font-size: 0.72rem; line-height: 1.4;" title="Change recipient email">
+                Change
+              </button>
+            </div>
+          <% } %>
         </div>
 
+        <% if (isAdminUser) { %>
+          <!-- Inline Email Editor Box (Admin only) -->
+          <div id="boardLogEmailEditBox" class="px-4 py-2.5 border-bottom d-none" style="background: #f1f5f9; border-color: #e2e8f0 !important;">
+            <form id="boardLogEmailForm" class="d-flex align-items-center gap-2 flex-wrap" method="post" action="/shop-floor/boards/notification-email">
+              <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+              <div class="input-group input-group-sm flex-nowrap" style="max-width: 320px;">
+                <span class="input-group-text bg-white border-end-0">✉</span>
+                <input type="email" id="boardLogEmailInput" name="email" class="form-control border-start-0" value="<%= boardLogEmail || 'sharon@urbanvibeinteriordesign.co.ke' %>" placeholder="recipient@urbanvibe.co.ke" required />
+              </div>
+              <button type="submit" id="saveBoardLogEmailBtn" class="btn btn-primary btn-sm rounded-pill px-3 py-1 fw-semibold" style="font-size: 0.78rem;">
+                Save Email
+              </button>
+              <button type="button" id="cancelBoardLogEmailBtn" class="btn btn-light btn-sm rounded-pill px-2.5 py-1 text-muted" style="font-size: 0.78rem;">
+                Cancel
+              </button>
+              <span id="boardLogEmailFeedback" class="small fw-semibold ms-1 d-none"></span>
+            </form>
+          </div>
+        <% } %>
+
         <% if (stockAlerts && stockAlerts.length) {
+          const pendingAlerts = stockAlerts.filter(a => !a.isSyncing);
+          const syncingAlerts = stockAlerts.filter(a => a.isSyncing);
           const alertsByClient = {};
           stockAlerts.forEach((alert) => {
             const key = alert.client || 'No Client';
@@ -140,53 +178,99 @@
             alertsByClient[key].push(alert);
           });
         %>
-          <section class="border-bottom overflow-hidden" style="background:#fff7ed;border-color:#fed7aa !important" aria-labelledby="stockNeededHeading">
+          <section id="stockNeededSection" class="border-bottom overflow-hidden" style="background:#fff7ed;border-color:#fed7aa !important" aria-labelledby="stockNeededHeading">
             <div class="px-4 py-3 d-flex justify-content-between align-items-center gap-2" style="background:#ffedd5;border-bottom:1px solid #fed7aa">
-              <h3 id="stockNeededHeading" class="h6 mb-0 fw-bold" style="color:#9a3412">Stock Needed — No Purchase Orders</h3>
-              <span class="badge rounded-pill flex-shrink-0" style="background:#fff7ed;color:#c2410c;border:1px solid #fed7aa;font-weight:700"><%= stockAlerts.length %> item(s)</span>
+              <h3 id="stockNeededHeading" class="h6 mb-0 fw-bold d-flex align-items-center gap-2 flex-wrap" style="color:#9a3412">
+                <span>Stock Needed — No Purchase Orders</span>
+                <span id="undoneCountBadge" class="badge rounded-pill flex-shrink-0" style="<%= pendingAlerts.length === 0 ? 'background:#f0fdf4;color:#15803d;border:1px solid #bbf7d0;' : 'background:#fff7ed;color:#c2410c;border:1px solid #fed7aa;' %>font-weight:700">
+                  <span id="undoneCountNumber"><%= pendingAlerts.length %></span> <%= pendingAlerts.length === 1 ? 'undone item' : 'undone items' %>
+                </span>
+                <% if (syncingAlerts.length > 0) { %>
+                  <span id="syncingCountBadge" class="badge rounded-pill flex-shrink-0 bg-warning-subtle text-warning-emphasis border border-warning-subtle" style="font-weight:600">
+                    <span id="syncingCountNumber"><%= syncingAlerts.length %></span> syncing
+                  </span>
+                <% } %>
+              </h3>
             </div>
             <% Object.entries(alertsByClient).forEach(([client, items]) => { %>
-              <div class="px-4 py-3 border-bottom" style="border-color:#fed7aa !important">
+              <div class="px-4 py-3 border-bottom stock-client-group" data-client-group="<%= client.toLowerCase() %>" style="border-color:#fed7aa !important">
                 <div class="d-flex justify-content-between align-items-center mb-2 gap-2 flex-wrap">
-                  <div class="fw-bold" style="font-size:.85rem;color:#431407">Client: <%= client %></div>
+                  <div class="fw-bold d-flex align-items-center gap-2" style="font-size:.85rem;color:#431407">Client: <%= client %></div>
                   <% if (items.length === 1) { 
                     const item = items[0];
                   %>
-                    <button type="button" class="btn btn-sm text-white fw-bold px-3 py-1 rounded-pill auto-fill-stock-btn d-inline-flex align-items-center gap-1 shadow-sm"
-                      style="background:#16a34a;border:1px solid #15803d;font-size:0.78rem;box-shadow:0 2px 6px rgba(22,163,74,0.3);cursor:pointer;"
-                      data-client="<%= client %>"
-                      data-partner-id="<%= item.partnerId || '' %>"
-                      data-component="<%= item.component %>"
-                      data-product-id="<%= item.productId || '' %>"
-                      data-qty="<%= item.qtyNeeded %>"
-                      title="Fill form with <%= client %> and <%= item.component %>">
-                      <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-                      <span>Fill Form</span>
-                    </button>
+                    <% if (item.isSyncing) { %>
+                      <span class="badge rounded-pill d-inline-flex align-items-center gap-1.5 px-3 py-1.5 fw-bold syncing-locked-badge" style="background: #fef3c7; color: #92400e; border: 1px solid #fde68a; font-size: 0.78rem;">
+                        <span class="spinner-border spinner-border-sm text-warning" role="status" style="width: 12px; height: 12px; border-width: 2px;"></span>
+                        <span>⏳ Logged · Syncing to Odoo...</span>
+                      </span>
+                    <% } else { %>
+                      <button type="button" class="btn btn-sm text-white fw-bold px-3 py-1 rounded-pill auto-fill-stock-btn d-inline-flex align-items-center gap-1 shadow-sm"
+                        style="background:#16a34a;border:1px solid #15803d;font-size:0.78rem;box-shadow:0 2px 6px rgba(22,163,74,0.3);cursor:pointer;"
+                        data-client="<%= client %>"
+                        data-partner-id="<%= item.partnerId || '' %>"
+                        data-component="<%= item.component %>"
+                        data-product-id="<%= item.productId || '' %>"
+                        data-qty="<%= item.qtyNeeded %>"
+                        title="Fill form with <%= client %> and <%= item.component %>">
+                        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                        <span>Fill Form</span>
+                      </button>
+                    <% } %>
                   <% } %>
                 </div>
                 <% items.forEach((item, index) => { %>
-                  <div class="mb-2 pb-2" style="<%= index < items.length - 1 ? 'border-bottom:1px dashed rgba(194,65,12,.15);' : '' %>font-size:.82rem">
+                  <div class="stock-alert-item mb-2 pb-2 <%= item.isSyncing ? 'item-syncing-locked' : 'item-undone' %>"
+                    data-client="<%= client.toLowerCase() %>"
+                    data-partner-id="<%= item.partnerId || '' %>"
+                    data-component="<%= (item.component || '').toLowerCase() %>"
+                    data-product-id="<%= item.productId || '' %>"
+                    data-qty="<%= item.qtyNeeded %>"
+                    data-is-syncing="<%= item.isSyncing ? 'true' : 'false' %>"
+                    style="<%= index < items.length - 1 ? 'border-bottom:1px dashed rgba(194,65,12,.15);' : '' %>font-size:.82rem; <%= item.isSyncing ? 'opacity: 0.78;' : '' %>">
                     <div class="d-flex justify-content-between align-items-center gap-2">
-                      <span class="fw-bold" style="color:#c2410c"><%= item.component %></span>
                       <div class="d-flex align-items-center gap-2">
-                        <span class="badge bg-danger-subtle text-danger border border-danger-subtle rounded-pill">Need: <%= item.qtyNeeded %></span>
-                        <% if (items.length > 1) { %>
-                          <button type="button" class="btn btn-sm text-white fw-bold px-2.5 py-0.5 rounded-pill auto-fill-stock-btn d-inline-flex align-items-center gap-1 shadow-sm"
-                            style="background:#16a34a;border:1px solid #15803d;font-size:0.72rem;box-shadow:0 2px 6px rgba(22,163,74,0.3);cursor:pointer;"
-                            data-client="<%= client %>"
-                            data-partner-id="<%= item.partnerId || '' %>"
-                            data-component="<%= item.component %>"
-                            data-product-id="<%= item.productId || '' %>"
-                            data-qty="<%= item.qtyNeeded %>"
-                            title="Fill form with <%= item.component %>">
-                            <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-                            <span>Fill Form</span>
-                          </button>
+                        <span class="fw-bold" style="color:#c2410c"><%= item.component %></span>
+                        <% if (item.isSyncing) { %>
+                          <span class="badge rounded-pill bg-warning-subtle text-warning-emphasis border border-warning-subtle px-2 py-0.5" style="font-size: 0.68rem;">
+                            Syncing <%= item.syncingQty ? '(' + item.syncingQty + ')' : '' %>
+                          </span>
+                        <% } %>
+                      </div>
+                      <div class="d-flex align-items-center gap-2 action-container">
+                        <% if (item.isSyncing) { %>
+                          <span class="badge rounded-pill d-inline-flex align-items-center gap-1.5 px-2.5 py-1 fw-semibold text-warning-emphasis border border-warning-subtle bg-white" style="font-size: 0.72rem;">
+                            <span class="spinner-border spinner-border-sm text-warning" role="status" style="width: 10px; height: 10px; border-width: 1.5px;"></span>
+                            🔒 Locked · In Odoo Queue
+                          </span>
+                        <% } else { %>
+                          <span class="badge bg-danger-subtle text-danger border border-danger-subtle rounded-pill">Need: <%= item.qtyNeeded %></span>
+                          <% if (items.length > 1) { %>
+                            <button type="button" class="btn btn-sm text-white fw-bold px-2.5 py-0.5 rounded-pill auto-fill-stock-btn d-inline-flex align-items-center gap-1 shadow-sm"
+                              style="background:#16a34a;border:1px solid #15803d;font-size:0.72rem;box-shadow:0 2px 6px rgba(22,163,74,0.3);cursor:pointer;"
+                              data-client="<%= client %>"
+                              data-partner-id="<%= item.partnerId || '' %>"
+                              data-component="<%= item.component %>"
+                              data-product-id="<%= item.productId || '' %>"
+                              data-qty="<%= item.qtyNeeded %>"
+                              title="Fill form with <%= item.component %>">
+                              <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                              <span>Fill Form</span>
+                            </button>
+                          <% } %>
                         <% } %>
                       </div>
                     </div>
-                    <div class="text-muted mt-1" style="font-size:.72rem"><%= item.moName %> · <%= item.product %> · <% if ((item.overdueDays || 0) > 0) { %><span class="text-danger fw-semibold">Overdue: <%= item.overdueDays %> day<%= item.overdueDays === 1 ? '' : 's' %></span><% } else { %><span class="text-warning fw-semibold">Due today</span><% } %></div>
+                    <div class="text-muted mt-1" style="font-size:.72rem">
+                      <%= item.moName %> · <%= item.product %> · 
+                      <% if (item.isSyncing) { %>
+                        <span class="text-warning-emphasis fw-bold">⏳ Intake recorded · background reservation active</span>
+                      <% } else if ((item.overdueDays || 0) > 0) { %>
+                        <span class="text-danger fw-semibold">Overdue: <%= item.overdueDays %> day<%= item.overdueDays === 1 ? '' : 's' %></span>
+                      <% } else { %>
+                        <span class="text-warning fw-semibold">Due today</span>
+                      <% } %>
+                    </div>
                   </div>
                 <% }) %>
               </div>
@@ -1211,6 +1295,104 @@
       });
     });
 
+    // Inline Email Editor logic
+    var editEmailBtn = document.getElementById('editBoardLogEmailBtn');
+    var emailEditBox = document.getElementById('boardLogEmailEditBox');
+    var emailForm = document.getElementById('boardLogEmailForm');
+    var emailInput = document.getElementById('boardLogEmailInput');
+    var emailDisplay = document.getElementById('boardLogEmailDisplay');
+    var cancelEmailBtn = document.getElementById('cancelBoardLogEmailBtn');
+    var emailFeedback = document.getElementById('boardLogEmailFeedback');
+    var saveEmailBtn = document.getElementById('saveBoardLogEmailBtn');
+
+    if (editEmailBtn && emailEditBox) {
+      editEmailBtn.addEventListener('click', function() {
+        emailEditBox.classList.remove('d-none');
+        if (emailInput) {
+          emailInput.focus();
+          emailInput.select();
+        }
+      });
+    }
+
+    if (cancelEmailBtn && emailEditBox) {
+      cancelEmailBtn.addEventListener('click', function() {
+        emailEditBox.classList.add('d-none');
+        if (emailFeedback) emailFeedback.classList.add('d-none');
+      });
+    }
+
+    if (emailForm) {
+      emailForm.addEventListener('submit', async function(e) {
+        e.preventDefault();
+        var emailVal = (emailInput ? emailInput.value : '').trim();
+        if (!emailVal || !emailVal.includes('@')) {
+          if (emailFeedback) {
+            emailFeedback.className = 'small fw-semibold ms-1 text-danger';
+            emailFeedback.textContent = 'Please enter a valid email.';
+            emailFeedback.classList.remove('d-none');
+          }
+          return;
+        }
+
+        if (saveEmailBtn) {
+          saveEmailBtn.setAttribute('disabled', 'disabled');
+          saveEmailBtn.textContent = 'Saving...';
+        }
+
+        try {
+          var res = await fetch(emailForm.action, {
+            method: 'POST',
+            headers: {
+              'Accept': 'application/json',
+              'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'
+            },
+            body: new URLSearchParams(new FormData(emailForm)).toString()
+          });
+          var data = await res.json().catch(function() { return { ok: false }; });
+          if (!res.ok || !data.ok) {
+            throw new Error(data.error || 'Failed to save email');
+          }
+          if (emailDisplay) emailDisplay.textContent = emailVal;
+          if (emailFeedback) {
+            emailFeedback.className = 'small fw-semibold ms-1 text-success';
+            emailFeedback.textContent = '✓ Saved!';
+            emailFeedback.classList.remove('d-none');
+          }
+          setTimeout(function() {
+            if (emailEditBox) emailEditBox.classList.add('d-none');
+            if (emailFeedback) emailFeedback.classList.add('d-none');
+          }, 1200);
+        } catch (err) {
+          if (emailFeedback) {
+            emailFeedback.className = 'small fw-semibold ms-1 text-danger';
+            emailFeedback.textContent = err.message || 'Save failed';
+            emailFeedback.classList.remove('d-none');
+          }
+        } finally {
+          if (saveEmailBtn) {
+            saveEmailBtn.removeAttribute('disabled');
+            saveEmailBtn.textContent = 'Save Email';
+          }
+        }
+      });
+    }
+
+    // Auto-focus smoothly on still undone logs if any exist
+    function focusOnStillUndoneLogs() {
+      if (window.location.hash && window.location.hash !== '#stockNeededSection') return;
+      var firstUndone = document.querySelector('.stock-alert-item.item-undone');
+      if (firstUndone) {
+        firstUndone.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        firstUndone.style.transition = 'background-color 0.5s ease';
+        firstUndone.style.backgroundColor = 'rgba(254, 215, 170, 0.45)';
+        setTimeout(function() {
+          firstUndone.style.backgroundColor = '';
+        }, 2200);
+      }
+    }
+    focusOnStillUndoneLogs();
+
     // Form submission spinner state & validation overrides
     function escapeHtml(str) {
       if (str === null || str === undefined) return '';
@@ -1256,6 +1438,21 @@
               badge.className = 'badge rounded-pill bg-success-subtle text-success';
               badge.textContent = 'Synced to Odoo';
               pendingLogIds.delete(String(entry.id));
+
+              // Also update any matching locked alert items to indicate completion
+              var syncedPartnerName = (entry.customer_name || '').toLowerCase().trim();
+              var syncedProductName = (entry.product_name || '').toLowerCase().trim();
+              document.querySelectorAll('.stock-alert-item.item-syncing-locked').forEach(function(itemEl) {
+                var client = (itemEl.getAttribute('data-client') || '').toLowerCase().trim();
+                var comp = (itemEl.getAttribute('data-component') || '').toLowerCase().trim();
+                if (syncedPartnerName && client && (client.includes(syncedPartnerName) || syncedPartnerName.includes(client)) &&
+                    syncedProductName && comp && (comp.includes(syncedProductName) || syncedProductName.includes(comp))) {
+                  var actionContainer = itemEl.querySelector('.action-container');
+                  if (actionContainer) {
+                    actionContainer.innerHTML = '<span class="badge rounded-pill bg-success-subtle text-success border border-success-subtle px-2.5 py-1" style="font-size:0.72rem">✓ Synced &amp; Reserved</span>';
+                  }
+                }
+              });
             } else if (entry.status === 'failed') {
               badge.className = 'badge rounded-pill bg-danger-subtle text-danger';
               badge.textContent = 'Sync failed';
@@ -1550,9 +1747,78 @@
 
           form.classList.remove('was-validated');
 
-          // Reset focus to the Client field for the next entry
-          if (partnerSearch) {
-            partnerSearch.focus();
+          // Transition the submitted item immediately to locked syncing feedback
+          var submittedPartnerId = String(result.item.partner_id || '');
+          var submittedPartnerName = (result.item.customer_name || '').toLowerCase().trim();
+          var submittedProductId = String(result.item.product_id || '');
+          var submittedProductName = (result.item.product_name || '').toLowerCase().trim();
+
+          document.querySelectorAll('.stock-alert-item').forEach(function(itemEl) {
+            var pId = itemEl.getAttribute('data-partner-id');
+            var client = (itemEl.getAttribute('data-client') || '').toLowerCase().trim();
+            var prodId = itemEl.getAttribute('data-product-id');
+            var comp = (itemEl.getAttribute('data-component') || '').toLowerCase().trim();
+
+            var partnerMatch = (pId && pId === submittedPartnerId) || (client && (client.includes(submittedPartnerName) || submittedPartnerName.includes(client)));
+            var productMatch = (prodId && prodId === submittedProductId) || (comp && (comp.includes(submittedProductName) || submittedProductName.includes(comp)));
+
+            if (partnerMatch && productMatch) {
+              itemEl.setAttribute('data-is-syncing', 'true');
+              itemEl.classList.remove('item-undone');
+              itemEl.classList.add('item-syncing-locked');
+              itemEl.style.opacity = '0.78';
+
+              var actionContainer = itemEl.querySelector('.action-container');
+              if (actionContainer) {
+                actionContainer.innerHTML =
+                  '<span class="badge rounded-pill d-inline-flex align-items-center gap-1.5 px-2.5 py-1 fw-semibold text-warning-emphasis border border-warning-subtle bg-white" style="font-size: 0.72rem;">' +
+                    '<span class="spinner-border spinner-border-sm text-warning" role="status" style="width: 10px; height: 10px; border-width: 1.5px;"></span>' +
+                    '🔒 Locked · In Odoo Queue' +
+                  '</span>';
+              }
+
+              var clientGroup = itemEl.closest('.stock-client-group');
+              if (clientGroup) {
+                var groupBtn = clientGroup.querySelector('.auto-fill-stock-btn');
+                if (groupBtn) {
+                  groupBtn.outerHTML =
+                    '<span class="badge rounded-pill d-inline-flex align-items-center gap-1.5 px-3 py-1.5 fw-bold syncing-locked-badge" style="background: #fef3c7; color: #92400e; border: 1px solid #fde68a; font-size: 0.78rem;">' +
+                      '<span class="spinner-border spinner-border-sm text-warning" role="status" style="width: 12px; height: 12px; border-width: 2px;"></span>' +
+                      '<span>⏳ Logged · Syncing to Odoo...</span>' +
+                    '</span>';
+                }
+              }
+            }
+          });
+
+          // Update undone count in header badge
+          var remainingUndoneItems = document.querySelectorAll('.stock-alert-item.item-undone');
+          var undoneCountNumber = document.getElementById('undoneCountNumber');
+          var undoneCountBadge = document.getElementById('undoneCountBadge');
+          if (undoneCountNumber) {
+            undoneCountNumber.textContent = remainingUndoneItems.length;
+          }
+          if (remainingUndoneItems.length === 0 && undoneCountBadge) {
+            undoneCountBadge.style.background = '#f0fdf4';
+            undoneCountBadge.style.color = '#15803d';
+            undoneCountBadge.style.borderColor = '#bbf7d0';
+            undoneCountBadge.innerHTML = '✓ All items logged &amp; syncing';
+          }
+
+          // Smoothly open and focus on the still undone logs
+          if (remainingUndoneItems.length > 0) {
+            var nextUndone = remainingUndoneItems[0];
+            nextUndone.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            nextUndone.style.transition = 'background-color 0.4s ease';
+            nextUndone.style.backgroundColor = 'rgba(254, 215, 170, 0.45)';
+            setTimeout(function() {
+              nextUndone.style.backgroundColor = '';
+            }, 2500);
+          } else {
+            // Reset focus to the Client field for the next entry
+            if (partnerSearch) {
+              partnerSearch.focus();
+            }
           }
         } catch (err) {
           if (alertContainer) {

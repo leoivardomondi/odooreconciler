@@ -933,13 +933,17 @@ class OdooClient {
             fields,
         });
     }
-    async postModelChatterMessage(model, recordId, message) {
-        return this.request(model, 'message_post', {
+    async postModelChatterMessage(model, recordId, message, partnerIds) {
+        const kwargs = {
             ids: [recordId],
             body: message,
             message_type: 'comment',
             subtype_xmlid: 'mail.mt_note',
-        });
+        };
+        if (partnerIds && partnerIds.length > 0) {
+            kwargs.partner_ids = partnerIds;
+        }
+        return this.request(model, 'message_post', kwargs);
     }
     async callRecordMethod(model, method, ids, values = {}) {
         return this.request(model, method, { ids, ...values });

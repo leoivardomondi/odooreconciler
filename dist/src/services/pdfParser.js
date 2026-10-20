@@ -68,6 +68,85 @@ function flushCurrentItem(current, items, logs) {
     });
     return null;
 }
+function extractJobSummaryMetadata(rawText, logs) {
+    const optSheetsMatch = rawText.match(/Optimized\s+Sheets\s*:\s*(\d+)/i);
+    const optimizedSheets = optSheetsMatch ? parseInt(optSheetsMatch[1], 10) : null;
+    const totalPanelsMatch = rawText.match(/Total\s+Panels\s*:\s*(\d+)/i);
+    const totalPanels = totalPanelsMatch ? parseInt(totalPanelsMatch[1], 10) : null;
+    const clientMatch = rawText.match(/Client\s+Name\s*:\s*([^:\n\r]+?)(?:Optimized\s+Sheets|\r|\n|$)/i);
+    const clientName = clientMatch ? clientMatch[1].trim() : null;
+    const sheetMaterials = [];
+    const sheetHeaderIdx = rawText.toLowerCase().indexOf('sheet materials');
+    const edgingHeaderIdx = rawText.toLowerCase().indexOf('edging materials');
+    if (sheetHeaderIdx !== -1) {
+        const sheetSection = edgingHeaderIdx !== -1 && edgingHeaderIdx > sheetHeaderIdx
+            ? rawText.slice(sheetHeaderIdx, edgingHeaderIdx)
+            : rawText.slice(sheetHeaderIdx);
+        const lines = sheetSection
+            .split('\n')
+            .map((l) => l.replace(/\s+/g, ' ').trim())
+            .filter(Boolean);
+        let currentMaterial = null;
+        for (let i = 1; i < lines.length; i++) {
+            const line = lines[i];
+            const thicknessMatch = line.match(/^Thickness\s*:\s*([\d.,]+)\s*mm/i);
+            const sheetsMatch = line.match(/^Sheets\s*:\s*(\d+)/i);
+            const panelsMatch = line.match(/^(?:Material\s+)?Panels\s*:\s*(\d+)/i);
+            const sheetLengthMatch = line.match(/^Sheet\s+Length\s*:\s*([\d.,]+)\s*mm/i);
+            const sheetWidthMatch = line.match(/^Sheet\s+Width\s*:\s*([\d.,]+)\s*mm/i);
+            if (thicknessMatch && currentMaterial) {
+                currentMaterial.thickness_mm = parseFloat(thicknessMatch[1].replace(/,/g, ''));
+            }
+            else if (sheetsMatch && currentMaterial) {
+                currentMaterial.sheets = parseInt(sheetsMatch[1], 10);
+            }
+            else if (panelsMatch && currentMaterial) {
+                currentMaterial.panels = parseInt(panelsMatch[1], 10);
+            }
+            else if (sheetLengthMatch && currentMaterial) {
+                currentMaterial.length_mm = parseFloat(sheetLengthMatch[1].replace(/,/g, ''));
+            }
+            else if (sheetWidthMatch && currentMaterial) {
+                currentMaterial.width_mm = parseFloat(sheetWidthMatch[1].replace(/,/g, ''));
+            }
+            else if (!line.includes(':') &&
+                !line.toLowerCase().startsWith('has grain') &&
+                !line.toLowerCase().startsWith('material wastage') &&
+                !line.toLowerCase().startsWith('area') &&
+                !line.toLowerCase().startsWith('sheet materials')) {
+                if (currentMaterial && currentMaterial.name) {
+                    sheetMaterials.push(currentMaterial);
+                }
+                currentMaterial = {
+                    name: line.trim(),
+                    thickness_mm: null,
+                    sheets: null,
+                    panels: null,
+                    length_mm: null,
+                    width_mm: null,
+                };
+            }
+        }
+        if (currentMaterial && currentMaterial.name) {
+            sheetMaterials.push(currentMaterial);
+        }
+    }
+    if (optimizedSheets !== null) {
+        logs.push(`Captured Optimized Sheets: ${optimizedSheets}.`);
+    }
+    if (totalPanels !== null) {
+        logs.push(`Captured Total Panels: ${totalPanels}.`);
+    }
+    if (sheetMaterials.length > 0) {
+        logs.push(`Extracted ${sheetMaterials.length} sheet material(s): ${sheetMaterials.map((s) => `${s.name} (${s.sheets} sheets)`).join(', ')}.`);
+    }
+    return {
+        clientName,
+        optimizedSheets,
+        totalPanels,
+        sheetMaterials,
+    };
+}
 async function parseJobSummaryPdf(fileBuffer, config) {
     const resolvedConfig = {
         ...helpers_1.DEFAULT_PARSER_CONFIG,
@@ -86,6 +165,7 @@ async function parseJobSummaryPdf(fileBuffer, config) {
         };
     }
     const headerIndex = rawText.toLowerCase().indexOf(resolvedConfig.sectionHeader.toLowerCase());
+    const metadata = extractJobSummaryMetadata(rawText, logs);
     if (headerIndex === -1) {
         return {
             items: [],
@@ -93,6 +173,10 @@ async function parseJobSummaryPdf(fileBuffer, config) {
             sectionText: '',
             rawText,
             logs: [`Section "${resolvedConfig.sectionHeader}" was not found.`],
+            clientName: metadata.clientName,
+            optimizedSheets: metadata.optimizedSheets,
+            totalPanels: metadata.totalPanels,
+            sheetMaterials: metadata.sheetMaterials,
         };
     }
     logs.push(`Found section header "${resolvedConfig.sectionHeader}".`);
@@ -181,6 +265,10 @@ async function parseJobSummaryPdf(fileBuffer, config) {
         sectionText: sectionLines.join('\n'),
         rawText,
         logs,
+        clientName: metadata.clientName,
+        optimizedSheets: metadata.optimizedSheets,
+        totalPanels: metadata.totalPanels,
+        sheetMaterials: metadata.sheetMaterials,
     };
 }
 function parseMoneyValue(value) {

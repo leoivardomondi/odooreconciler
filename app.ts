@@ -438,7 +438,7 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
 app.use(enforceCsrf);
 
 app.use((req: Request, res: Response, next: NextFunction) => {
-  const publicPathPrefixes = ['/public', '/auth/', '/staff-onboarding'];
+  const publicPathPrefixes = ['/public', '/auth/', '/staff-onboarding', '/api/webhooks'];
   const publicExactPaths = [
     '/health',
     '/login',
@@ -451,6 +451,8 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     '/jobs/run-po-bill-scheduler',
     '/jobs/send-mpesa-review-notification',
     '/jobs/send-shop-floor-task-reminders',
+    '/jobs/odoo-sync',
+    '/api/webhooks/odoo-sync',
   ];
 
   if (publicExactPaths.includes(req.path) || publicPathPrefixes.some((prefix) => req.path.startsWith(prefix))) {

@@ -1768,6 +1768,19 @@
                 When set, chatter for missing BOM components will prepend a mention-style name and address the alert to this Odoo user.
               </div>
             </div>
+            <div class="col-12">
+              <label class="form-label">Board Log Notification Recipient Email</label>
+              <input
+                type="email"
+                class="form-control"
+                name="stockBoardLogNotificationEmail"
+                value="<%= form.stockBoardLogNotificationEmail %>"
+                placeholder="sharon@urbanvibeinteriordesign.co.ke"
+              />
+              <div class="form-text">
+                Email address where board intake completion alerts (board type, quantity, customer, vehicle registration, gate) are automatically dispatched.
+              </div>
+            </div>
           </div>
 
           <div class="alert alert-light border small mt-3 mb-0" role="alert">

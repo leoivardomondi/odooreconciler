@@ -52,7 +52,7 @@ class AdvancePayload(BaseModel):
 class AdvanceBatchPayload(BaseModel):
     period_start: str
     period_end: str
-    source: str = "reconciler.flowcode.co.ke"
+    source: str = "app.urbanvibeinteriordesign.co.ke"
     records: List[AdvancePayload]
 
 

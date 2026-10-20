@@ -146,6 +146,13 @@
             <dd class="col-sm-8">
               <code><%= `${appBaseUrl}/jobs/attachment-uploaded?token=${settings.scheduler.cronToken || 'set-a-token-in-settings'}` %></code>
             </dd>
+            <dt class="col-sm-4 text-secondary">Live Odoo Sync Webhook URL</dt>
+            <dd class="col-sm-8">
+              <code><%= `${appBaseUrl}/api/webhooks/odoo-sync?token=${settings.scheduler.cronToken || 'set-a-token-in-settings'}` %></code>
+              <div class="small text-muted mt-1">
+                Supports <code>&type=mo</code> for Manufacturing Orders / Boards, or <code>&type=picking</code> for Receipts & Deliveries. Odoo 19 Automated Actions trigger instant syncs without polling or hitting rate limits.
+              </div>
+            </dd>
           </dl>
           <% if (scheduler.lastRun) { %>
             <div class="mt-3 small text-secondary">

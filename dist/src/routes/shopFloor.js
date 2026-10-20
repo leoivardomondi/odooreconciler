@@ -1922,6 +1922,8 @@ router.get('/shop-floor/boards', async (req, res) => {
             // Trigger fresh sync from Odoo in background without blocking initial render
             void (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(true).catch(() => null);
         }
+        // Reconcile pending processes against already-synced board logs first
+        await (0, repositories_1.reconcilePendingProcessesWithBoardLogs)().catch(() => 0);
         const [settings, stockMirror, recentIntakeRows, pendingProcesses, customers] = await Promise.all([
             (0, repositories_1.getSettings)(),
             (0, stockMirrorService_1.getStockMirrorForPage)(isRefresh),
@@ -1949,19 +1951,35 @@ router.get('/shop-floor/boards', async (req, res) => {
             }
         }
         const dashboardData = cachedDashboard || { stockAlerts: [], isLimitedDashboard: false };
+        const optimisticSyncs = activeOptimisticBoardIntakes();
+        const activeQueueSyncs = recentIntakes.filter((row) => row.status === 'processing' || row.status === 'pending');
         // Format local stock alerts from pending processes in MySQL
-        const localStockAlerts = pendingProcesses.map((p) => ({
-            moName: p.mo_name,
-            product: p.product_name,
-            component: p.product_name,
-            qtyNeeded: p.qty_missing,
-            client: p.partner_name,
-            moId: p.mo_id,
-            confirmedAt: null,
-            overdueDays: 0,
-            partnerId: p.partner_id || null,
-            productId: p.product_id || null,
-        }));
+        const localStockAlerts = pendingProcesses.map((p) => {
+            const pPartner = String(p.partner_name || '').trim().toLowerCase();
+            const pProduct = String(p.product_name || '').trim().toLowerCase();
+            const matchingSync = optimisticSyncs.find((s) => (s.partnerId === p.partner_id ||
+                s.customerName.trim().toLowerCase() === pPartner) &&
+                (s.productId === p.product_id ||
+                    s.productName.toLowerCase().includes(pProduct) ||
+                    pProduct.includes(s.productName.toLowerCase()))) ||
+                activeQueueSyncs.find((q) => String(q.customer_name || '').trim().toLowerCase() === pPartner &&
+                    (String(q.product_name || '').toLowerCase().includes(pProduct) ||
+                        pProduct.includes(String(q.product_name || '').toLowerCase())));
+            return {
+                moName: p.mo_name,
+                product: p.product_name,
+                component: p.product_name,
+                qtyNeeded: p.qty_missing,
+                client: p.partner_name,
+                moId: p.mo_id,
+                confirmedAt: null,
+                overdueDays: 0,
+                partnerId: p.partner_id || null,
+                productId: p.product_id || null,
+                isSyncing: Boolean(matchingSync),
+                syncingQty: matchingSync ? Number(matchingSync.quantity || matchingSync.qty || 0) : undefined,
+            };
+        });
         // If local table is empty on first boot, kick off initial sync in background
         if (!pendingProcesses.length && !isRefresh) {
             void (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(false).catch(() => null);
@@ -1975,6 +1993,7 @@ router.get('/shop-floor/boards', async (req, res) => {
             boardLogPage,
             hasNextBoardLogPage,
             stockAlerts: localStockAlerts.length > 0 ? localStockAlerts : (dashboardData.isLimitedDashboard ? [] : dashboardData.stockAlerts),
+            boardLogEmail: settings.stock?.boardLogNotificationEmail || 'sharon@urbanvibeinteriordesign.co.ke',
             customers,
             authUser: req.authUser,
             csrfToken: req.csrfToken || null,
@@ -2414,6 +2433,8 @@ router.post('/shop-floor/board-intake', async (req, res) => {
         const updatedRequirements = await (0, repositories_1.markPendingShopFloorProcessesLoaded)({
             partnerId,
             productId,
+            customerName,
+            productName,
             loadedBy: actorName,
             quantity: qty,
         });
@@ -2448,7 +2469,17 @@ router.post('/shop-floor/board-intake', async (req, res) => {
         void (async () => {
             try {
                 const syncResult = await (0, boardIntakeSyncService_1.syncBoardIntakeEntry)(optimisticId);
+                // Ensure pending processes are re-marked loaded in MySQL even if background Odoo sync ran
+                await (0, repositories_1.markPendingShopFloorProcessesLoaded)({
+                    partnerId,
+                    productId,
+                    customerName,
+                    productName,
+                    loadedBy: actorName,
+                    quantity: qty,
+                }).catch(() => 0);
                 const settings = await (0, repositories_1.getSettings)();
+                const recipientEmail = settings.stock?.boardLogNotificationEmail?.trim() || 'sharon@urbanvibeinteriordesign.co.ke';
                 const reportDate = new Intl.DateTimeFormat('en-CA', { timeZone: env_1.env.APP_TIMEZONE || 'Africa/Nairobi', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
                 const safeCustomerName = escapeHtml(customerName);
                 const safeProductName = escapeHtml(productName);
@@ -2458,10 +2489,10 @@ router.post('/shop-floor/board-intake', async (req, res) => {
                 const safeActorEmail = escapeHtml(actorName);
                 const subjectCustomerName = customerName.replace(/[\r\n]+/g, ' ').trim();
                 await (0, mailTransport_1.sendMailWithConfig)(settings.mail, {
-                    to: 'sharon@urbanvibeinteriordesign.co.ke',
+                    to: recipientEmail,
                     subject: `${subjectCustomerName} - Board Log - ${reportDate}`,
                     html: `<p><strong>Board log completed</strong></p><p>Client: ${safeCustomerName}<br>Board: ${safeProductName}<br>Quantity: ${qty}<br>Gate: ${safeGate}<br>Vehicle Reg: ${safeVehicleReg}<br>Arrival Time: ${safeArrivalTime}<br>Date: ${reportDate}<br>Logged by: ${safeActorEmail}</p>`,
-                }).catch((mailError) => (0, logService_1.logEvent)('error', 'Board log email to Sharon failed', { customerName, productName, quantity: qty, vehicleRegistration, arrivalTime, gate, actor: actorName, actorEmail: req.authUser?.email, error: mailError instanceof Error ? mailError.message : String(mailError) }));
+                }).catch((mailError) => (0, logService_1.logEvent)('error', `Board log email to ${recipientEmail} failed`, { customerName, productName, quantity: qty, vehicleRegistration, arrivalTime, gate, actor: actorName, actorEmail: req.authUser?.email, error: mailError instanceof Error ? mailError.message : String(mailError) }));
                 const optimisticIndex = optimisticBoardIntakes.findIndex((entry) => entry.id === optimisticId);
                 if (optimisticIndex >= 0)
                     optimisticBoardIntakes.splice(optimisticIndex, 1);
@@ -2480,49 +2511,73 @@ router.post('/shop-floor/board-intake', async (req, res) => {
             }
         })();
         return;
-        /* Legacy synchronous reservation path removed.
-        const [productRecords, customerRecord, matchingMOs] = await Promise.all([
-          client.readRecords<{ name: string }>('product.product', [productId], ['name']),
-          client.getPartnerById(partnerId),
-          client.findMOsForBoardIntake({ productId, partnerId }),
-        ]);
-        const productName = productRecords[0]?.name || `Product #${productId}`;
-        const customerName = customerRecord?.name || `Client #${partnerId}`;
-    
-        let reserveResult: { reserved: number[]; failed: number[] } = { reserved: [], failed: [] };
-        let reservedMONames: string[] = [];
-    
-        if (matchingMOs.length > 0) {
-          // Step 3: Reserve stock on matching MOs
-          const moIds = matchingMOs.map(m => m.moId);
-          reserveResult = await client.reserveStockOnMOs(moIds);
-    
-          // Get reserved MO names
-          reservedMONames = matchingMOs
-            .filter(m => reserveResult.reserved.includes(m.moId))
-            .map(m => m.moName + (m.origin ? ` (${m.origin})` : ''));
-        }
-    
-        // Build success message
-        const parts: string[] = [];
-        parts.push(`✓ ${qty} × ${productName} added to stock for ${customerName} (${stockResult.previousQty} → ${stockResult.newQty}).`);
-    
-        if (reservedMONames.length > 0) {
-          parts.push(`✓ Auto-reserved on ${reservedMONames.length} MO(s): ${reservedMONames.join(', ')}.`);
-        } else if (matchingMOs.length === 0) {
-          parts.push('ℹ No pending manufacturing orders require this board for this client (or POs already cover it).');
-        }
-    
-        if (reserveResult.failed.length > 0) {
-          parts.push(`⚠ Failed to reserve on ${reserveResult.failed.length} MO(s).`);
-        }
-    
-        shopFloorCache.clearPrefix('shop-floor-dashboard:');
-        res.redirect('/shop-floor/boards?message=' + encodeURIComponent(parts.join(' ')));
-        */
     }
     catch (err) {
         res.redirect('/shop-floor/boards?error=' + encodeURIComponent(err instanceof Error ? err.message : 'Failed to process board intake.'));
+    }
+});
+/**
+ * POST /shop-floor/boards/notification-email — Update the email that receives board log intake notifications.
+ */
+router.post('/shop-floor/boards/notification-email', async (req, res) => {
+    const wantsJson = Boolean(req.xhr || req.headers.accept?.includes('application/json') || req.is('json'));
+    if (!req.authUser) {
+        if (wantsJson) {
+            res.status(401).json({ ok: false, error: 'Please sign in first.' });
+            return;
+        }
+        res.redirect('/login');
+        return;
+    }
+    if (!canManageShopFloor(req)) {
+        const errorMsg = 'Administrator access required to update board log notification email.';
+        if (wantsJson) {
+            res.status(403).json({ ok: false, error: errorMsg });
+            return;
+        }
+        res.status(403).redirect('/shop-floor/boards?error=' + encodeURIComponent(errorMsg));
+        return;
+    }
+    const rawEmail = String(req.body.email || req.body.stockBoardLogNotificationEmail || '').trim();
+    if (!rawEmail || !rawEmail.includes('@')) {
+        const errorMsg = 'Please provide a valid email address.';
+        if (wantsJson) {
+            res.status(400).json({ ok: false, error: errorMsg });
+            return;
+        }
+        res.redirect('/shop-floor/boards?error=' + encodeURIComponent(errorMsg));
+        return;
+    }
+    try {
+        const settings = await (0, repositories_1.getSettings)();
+        await (0, repositories_1.saveSettings)({
+            baseUrl: settings.odoo.baseUrl,
+            database: settings.odoo.database,
+            username: settings.odoo.username,
+            apiKey: settings.odoo.apiKey,
+            keepExistingApiKey: true,
+            stock: {
+                ...settings.stock,
+                boardLogNotificationEmail: rawEmail,
+            },
+        });
+        await (0, logService_1.logEvent)('info', 'Board log notification email updated', {
+            updatedBy: req.authUser.email,
+            boardLogNotificationEmail: rawEmail,
+        });
+        if (wantsJson) {
+            res.json({ ok: true, email: rawEmail, message: 'Notification recipient email updated successfully.' });
+            return;
+        }
+        res.redirect('/shop-floor/boards?message=' + encodeURIComponent('Board log notification email updated to ' + rawEmail));
+    }
+    catch (error) {
+        const errorMsg = error instanceof Error ? error.message : 'Failed to update email.';
+        if (wantsJson) {
+            res.status(500).json({ ok: false, error: errorMsg });
+            return;
+        }
+        res.redirect('/shop-floor/boards?error=' + encodeURIComponent(errorMsg));
     }
 });
 router.get('/shop-floor/receipts', async (req, res) => {

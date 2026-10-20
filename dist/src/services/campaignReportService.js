@@ -141,7 +141,7 @@ async function generateCampaignPdfReport(metrics, odooBaseUrl) {
 }
 async function notifyDbAdminCampaignReport(client, recipientEmail) {
     const settings = await (0, repositories_1.getSettings)();
-    const odooBaseUrl = settings.odoo.baseUrl || 'https://reconciler.flowcode.co.ke';
+    const odooBaseUrl = settings.odoo.baseUrl || env_1.env.APP_BASE_URL || 'https://app.urbanvibeinteriordesign.co.ke';
     const metrics = await computeMayCampaignMetrics(client, odooBaseUrl);
     const pdfBuffer = await generateCampaignPdfReport(metrics, odooBaseUrl);
     const fallbackEmail = env_1.env.AUTH_LOCAL_ADMIN_EMAIL || settings.mail.accounts[0]?.username || 'dbadmin@urbanvibeinteriordesign.co.ke';

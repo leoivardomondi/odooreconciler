@@ -108,6 +108,7 @@ export interface StockConfig {
   pickingTypeId: string;
   missingSoAlertUserLogin: string;
   missingComponentAlertUserLogin: string;
+  boardLogNotificationEmail?: string;
 }
 
 export type MailTransportMode = 'smtp';
@@ -496,12 +497,25 @@ export interface ParsedEdgingItem {
   roll_length_mm: number | null;
 }
 
+export interface ParsedSheetMaterial {
+  name: string;
+  thickness_mm: number | null;
+  sheets: number | null;
+  panels: number | null;
+  length_mm: number | null;
+  width_mm: number | null;
+}
+
 export interface ParsedJobSummaryResult {
   items: ParsedEdgingItem[];
   sectionFound: boolean;
   sectionText: string;
   rawText: string;
   logs: string[];
+  clientName?: string | null;
+  optimizedSheets?: number | null;
+  totalPanels?: number | null;
+  sheetMaterials?: ParsedSheetMaterial[];
 }
 
 export interface ParsedVendorInvoiceLine {

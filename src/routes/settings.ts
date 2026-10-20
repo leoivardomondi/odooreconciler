@@ -198,6 +198,7 @@ const stockValidators = [
   body('stockPickingTypeId').optional({ values: 'falsy' }).trim(),
   body('stockMissingSoAlertUserLogin').optional({ values: 'falsy' }).trim(),
   body('stockMissingComponentAlertUserLogin').optional({ values: 'falsy' }).trim(),
+  body('stockBoardLogNotificationEmail').optional({ values: 'falsy' }).trim(),
 ];
 
 const mailValidators = [
@@ -708,6 +709,8 @@ async function buildFormValues(
       source.stockMissingSoAlertUserLogin ?? resolvedExisting.stock.missingSoAlertUserLogin,
     stockMissingComponentAlertUserLogin:
       source.stockMissingComponentAlertUserLogin ?? resolvedExisting.stock.missingComponentAlertUserLogin,
+    stockBoardLogNotificationEmail:
+      source.stockBoardLogNotificationEmail ?? resolvedExisting.stock.boardLogNotificationEmail ?? 'sharon@urbanvibeinteriordesign.co.ke',
     ...buildMailFormValues(source, resolvedExisting.mail),
     ...buildPayrollBridgeFormValues(source, resolvedExisting.payrollBridge),
   };
@@ -1445,6 +1448,7 @@ router.post('/settings', validators, async (req: Request, res: Response) => {
         pickingTypeId: req.body.stockPickingTypeId?.trim() || '',
         missingSoAlertUserLogin: req.body.stockMissingSoAlertUserLogin?.trim() || '',
         missingComponentAlertUserLogin: req.body.stockMissingComponentAlertUserLogin?.trim() || '',
+        boardLogNotificationEmail: req.body.stockBoardLogNotificationEmail?.trim() || req.body.boardLogNotificationEmail?.trim() || currentSettings.stock.boardLogNotificationEmail || 'sharon@urbanvibeinteriordesign.co.ke',
       },
     });
 

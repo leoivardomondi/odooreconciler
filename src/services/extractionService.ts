@@ -34,6 +34,7 @@ import {
   computePdfSignature,
   getSignatureComparisonLabel,
 } from './signatureService';
+import { syncQuotationWithJobSummary } from './quotationSyncService';
 
 async function getConfiguredClient() {
   const settings = await getSettings();
@@ -450,6 +451,21 @@ export async function sendExtractedResultToOdoo(historyId: string, forceSend = f
         orderName: history.orderName,
       });
       await client.postChatterMessage(history.orderId, chatterMessage);
+    }
+
+    try {
+      await syncQuotationWithJobSummary(client, history.orderId, extracted.resultJson);
+    } catch (quotationSyncErr) {
+      await logEvent(
+        'warn',
+        'Failed to synchronize quotation lines with Job Summary',
+        {
+          historyId,
+          orderId: history.orderId,
+          error: quotationSyncErr instanceof Error ? quotationSyncErr.message : String(quotationSyncErr),
+        },
+        historyId,
+      );
     }
 
     await updateHistory(historyId, {

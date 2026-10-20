@@ -178,7 +178,7 @@ export async function notifyDbAdminCampaignReport(
   recipientEmail?: string,
 ): Promise<{ sent: boolean; message: string }> {
   const settings = await getSettings();
-  const odooBaseUrl = settings.odoo.baseUrl || 'https://reconciler.flowcode.co.ke';
+  const odooBaseUrl = settings.odoo.baseUrl || env.APP_BASE_URL || 'https://app.urbanvibeinteriordesign.co.ke';
   const metrics = await computeMayCampaignMetrics(client, odooBaseUrl);
   const pdfBuffer = await generateCampaignPdfReport(metrics, odooBaseUrl);
 

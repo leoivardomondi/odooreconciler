@@ -94,7 +94,7 @@ exports.DEFAULT_SCHEDULER_CONFIG = {
     intervalMinutes: 15,
     batchSize: 3,
     confirmedFromDate: '2026-04-08 00:00:00',
-    cronToken: '',
+    cronToken: 'reconciler-odoo-webhook-2026-8fK29sLmQx7PzA4n',
     useInProcessInterval: false,
 };
 exports.DEFAULT_PO_BILL_SCHEDULER_CONFIG = {
@@ -116,6 +116,7 @@ exports.DEFAULT_STOCK_CONFIG = {
     pickingTypeId: '',
     missingSoAlertUserLogin: '',
     missingComponentAlertUserLogin: '',
+    boardLogNotificationEmail: 'sharon@urbanvibeinteriordesign.co.ke',
 };
 function positiveInteger(value, fallback) {
     const parsed = Number(value || '');

@@ -9,6 +9,7 @@ const path_1 = __importDefault(require("path"));
 const express_1 = require("express");
 const repositories_1 = require("../models/repositories");
 const extractionService_1 = require("../services/extractionService");
+const poJobSummaryAuditService_1 = require("../services/poJobSummaryAuditService");
 const jobSummaryReminderService_1 = require("../services/jobSummaryReminderService");
 const logService_1 = require("../services/logService");
 const mpesaReviewNotificationService_1 = require("../services/mpesaReviewNotificationService");
@@ -18,6 +19,9 @@ const shopFloorTaskReminderService_1 = require("../services/shopFloorTaskReminde
 const odooClient_1 = require("../services/odooClient");
 const schedulerService_1 = require("../services/schedulerService");
 const schedulerFailureAnalysisService_1 = require("../services/schedulerFailureAnalysisService");
+const shopFloorPendingSyncService_1 = require("../services/shopFloorPendingSyncService");
+const stockMirrorService_1 = require("../services/stockMirrorService");
+const shopFloor_1 = require("./shopFloor");
 const env_1 = require("../utils/env");
 const helpers_1 = require("../utils/helpers");
 const paths_1 = require("../utils/paths");
@@ -96,6 +100,37 @@ function timingSafeTokenMatches(providedToken, expectedToken) {
     const provided = Buffer.from(providedToken);
     const expected = Buffer.from(expectedToken);
     return provided.length === expected.length && (0, node_crypto_1.timingSafeEqual)(provided, expected);
+}
+async function isAuthorizedWebhookOrCronRequest(token) {
+    if (!token) {
+        return false;
+    }
+    const configuredWebhookToken = env_1.env.ODOO_WEBHOOK_TOKEN?.trim();
+    if (configuredWebhookToken && timingSafeTokenMatches(token, configuredWebhookToken)) {
+        return true;
+    }
+    const settings = await (0, repositories_1.getSettings)();
+    const cronToken = settings.scheduler?.cronToken?.trim() || env_1.env.SCHEDULER_CRON_TOKEN?.trim();
+    if (cronToken && timingSafeTokenMatches(token, cronToken)) {
+        return true;
+    }
+    const poCronToken = settings.poBillScheduler?.cronToken?.trim();
+    if (poCronToken && timingSafeTokenMatches(token, poCronToken)) {
+        return true;
+    }
+    return false;
+}
+function isCompanyExcluded(companyId, name) {
+    if (companyId === 3 || companyId === '3')
+        return true;
+    if (Array.isArray(companyId) && (companyId[0] === 3 || companyId[0] === '3'))
+        return true;
+    if (companyId && typeof companyId === 'object' && !Array.isArray(companyId) && companyId.id === 3) {
+        return true;
+    }
+    if (typeof name === 'string' && name.toUpperCase().startsWith('VA/'))
+        return true;
+    return false;
 }
 function parsePositiveInteger(value) {
     if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
@@ -795,4 +830,174 @@ router.get('/jobs/scheduler-failures/json', async (req, res) => {
         return res.status(500).json({ ok: false, message: 'Could not fetch failure report.' });
     }
 });
+async function handleOdooSyncWebhook(req, res) {
+    const bodyToken = req.body && typeof req.body === 'object' && typeof req.body.token === 'string'
+        ? String(req.body.token).trim()
+        : '';
+    const token = getWebhookToken(req) || bodyToken;
+    if (!(await isAuthorizedWebhookOrCronRequest(token))) {
+        writeWebhookTrace('sync_rejected_invalid_token', {
+            ip: req.ip || req.socket.remoteAddress,
+            path: req.originalUrl || req.path,
+            hasToken: Boolean(token),
+        });
+        return res.status(401).json({
+            ok: false,
+            error: 'Invalid or missing authentication token. Provide ?token=..., Bearer header, or X-Odoo-Webhook-Token.',
+        });
+    }
+    const payload = req.body && typeof req.body === 'object' && !Array.isArray(req.body)
+        ? req.body
+        : {};
+    const companyId = payload.company_id ?? req.query.company_id;
+    const recordName = payload.name ?? req.query.name;
+    if (isCompanyExcluded(companyId, recordName)) {
+        writeWebhookTrace('sync_skipped_excluded_company', {
+            companyId,
+            recordName,
+        });
+        return res.json({
+            ok: true,
+            status: 'ignored',
+            message: 'Event is for excluded company (URBAN VIBE 2 / VA prefix). Sync ignored.',
+        });
+    }
+    const rawModel = String(payload.model || payload._model || req.query.model || '')
+        .toLowerCase()
+        .trim();
+    const rawType = String(payload.type || req.query.type || '')
+        .toLowerCase()
+        .trim();
+    let resolvedType = 'all';
+    if (rawModel === 'mrp.production' ||
+        rawModel === 'mrp.workorder' ||
+        ['mo', 'mrp', 'workorder', 'board', 'boards'].includes(rawType)) {
+        resolvedType = 'mo';
+    }
+    else if (rawModel === 'stock.picking' ||
+        ['receipt', 'receipts', 'delivery', 'deliveries', 'picking', 'pickings'].includes(rawType)) {
+        resolvedType = 'picking';
+    }
+    else if (rawModel === 'stock.quant' || ['stock', 'quant', 'inventory'].includes(rawType)) {
+        resolvedType = 'stock';
+    }
+    else if (rawModel === 'purchase.order' ||
+        ['po', 'purchase', 'purchases', 'procurement'].includes(rawType)) {
+        resolvedType = 'po';
+    }
+    else if (rawModel === 'sale.order' ||
+        rawModel === 'ir.attachment' ||
+        ['so', 'sale', 'sales', 'job_summary', 'jobsummary', 'scheduler'].includes(rawType)) {
+        resolvedType = 'so';
+    }
+    writeWebhookTrace('sync_received', {
+        syncType: resolvedType,
+        rawModel,
+        rawType,
+        recordId: payload.id ?? payload.res_id ?? req.query.id ?? null,
+    });
+    // Respond immediately (<20ms) so Odoo Automated Action / Webhook caller never times out
+    res.json({
+        ok: true,
+        status: 'queued',
+        syncType: resolvedType,
+        message: `Background ${resolvedType} sync queued successfully.`,
+    });
+    // Execute background cache invalidation and targeted sync
+    void (async () => {
+        try {
+            if (resolvedType === 'mo') {
+                shopFloor_1.shopFloorCache.clearPrefix('shop-floor-dashboard:');
+                await (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(true);
+            }
+            else if (resolvedType === 'picking') {
+                shopFloor_1.shopFloorCache.clearPrefix('shop-floor-dashboard:');
+                shopFloor_1.shopFloorCache.clearPrefix('shop-floor:receipts:');
+                shopFloor_1.shopFloorCache.clearPrefix('shop-floor:deliveries:');
+                await (0, stockMirrorService_1.refreshStockMirror)();
+            }
+            else if (resolvedType === 'stock') {
+                shopFloor_1.shopFloorCache.clearPrefix('shop-floor-dashboard:');
+                await (0, stockMirrorService_1.refreshStockMirror)();
+            }
+            else if (resolvedType === 'po') {
+                const poId = parsePositiveInteger(payload.id) ||
+                    parsePositiveInteger(payload.order_id) ||
+                    parsePositiveInteger(payload.po_id) ||
+                    parsePositiveInteger(req.query.id) ||
+                    parsePositiveInteger(req.query.order_id) ||
+                    parsePositiveInteger(req.query.po_id);
+                if (poId) {
+                    const settings = await (0, repositories_1.getSettings)();
+                    const client = new odooClient_1.OdooClient(settings.odoo);
+                    await (0, poJobSummaryAuditService_1.auditPurchaseOrderAgainstJobSummary)(client, poId);
+                }
+                else {
+                    await (0, schedulerService_1.runPoBillSchedulerCycle)('cron');
+                }
+            }
+            else if (resolvedType === 'so') {
+                const attachmentId = parsePositiveInteger(payload.attachment_id) ||
+                    parsePositiveInteger(req.query.attachment_id) ||
+                    (rawModel === 'ir.attachment'
+                        ? parsePositiveInteger(payload.id) || parsePositiveInteger(req.query.id)
+                        : null);
+                const orderId = parsePositiveInteger(payload.order_id) ||
+                    parsePositiveInteger(payload.res_id) ||
+                    parsePositiveInteger(req.query.order_id) ||
+                    parsePositiveInteger(req.query.res_id) ||
+                    (rawModel === 'sale.order'
+                        ? parsePositiveInteger(payload.id) || parsePositiveInteger(req.query.id)
+                        : null);
+                if (attachmentId && orderId) {
+                    // Fast single-order targeted extraction for this specific Job Summary attachment
+                    const history = await (0, extractionService_1.extractAttachmentForOrder)(orderId, attachmentId);
+                    await (0, extractionService_1.sendExtractedResultToOdoo)(history.id, false);
+                    try {
+                        const settings = await (0, repositories_1.getSettings)();
+                        const client = new odooClient_1.OdooClient(settings.odoo);
+                        await (0, jobSummaryReminderService_1.closeOpenJobSummaryReminderActivities)(client, orderId, `Job Summary PDF was uploaded via webhook sync.`);
+                        // Audit any linked Purchase Orders against the newly extracted Job Summary
+                        const latestExtracted = await (0, repositories_1.getLatestExtractedResultByOrderId)(orderId);
+                        if (latestExtracted?.resultJson) {
+                            await (0, poJobSummaryAuditService_1.auditLinkedPurchaseOrdersForSaleOrder)(client, orderId, latestExtracted.resultJson);
+                        }
+                    }
+                    catch {
+                        // Non-critical reminder close failure
+                    }
+                }
+                else {
+                    // Full Sales Order scheduler cycle run
+                    await (0, schedulerService_1.runSchedulerCycle)('cron');
+                }
+            }
+            else {
+                shopFloor_1.shopFloorCache.clearPrefix('shop-floor-dashboard:');
+                shopFloor_1.shopFloorCache.clearPrefix('shop-floor:receipts:');
+                shopFloor_1.shopFloorCache.clearPrefix('shop-floor:deliveries:');
+                await Promise.allSettled([
+                    (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(true),
+                    (0, stockMirrorService_1.refreshStockMirror)(),
+                    (0, schedulerService_1.runSchedulerCycle)('cron'),
+                ]);
+            }
+            await (0, logService_1.logEvent)('info', 'Odoo sync webhook triggered background sync completed', {
+                syncType: resolvedType,
+                model: rawModel || null,
+                recordId: payload.id ?? payload.res_id ?? req.query.id ?? null,
+            });
+        }
+        catch (bgError) {
+            await (0, logService_1.logEvent)('error', 'Odoo sync webhook background sync execution failed', {
+                syncType: resolvedType,
+                error: bgError instanceof Error ? bgError.message : String(bgError),
+            });
+        }
+    })();
+}
+router.post('/jobs/odoo-sync', handleOdooSyncWebhook);
+router.get('/jobs/odoo-sync', handleOdooSyncWebhook);
+router.post('/api/webhooks/odoo-sync', handleOdooSyncWebhook);
+router.get('/api/webhooks/odoo-sync', handleOdooSyncWebhook);
 exports.default = router;

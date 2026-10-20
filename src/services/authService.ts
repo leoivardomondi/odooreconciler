@@ -981,7 +981,7 @@ export function enforceCsrf(req: Request, res: Response, next: NextFunction) {
     return;
   }
 
-  if (req.path === '/jobs/attachment-uploaded') {
+  if (req.path === '/jobs/attachment-uploaded' || req.path === '/jobs/odoo-sync' || req.path.startsWith('/api/webhooks')) {
     next();
     return;
   }

@@ -160,6 +160,7 @@ const stockValidators = [
     (0, express_validator_1.body)('stockPickingTypeId').optional({ values: 'falsy' }).trim(),
     (0, express_validator_1.body)('stockMissingSoAlertUserLogin').optional({ values: 'falsy' }).trim(),
     (0, express_validator_1.body)('stockMissingComponentAlertUserLogin').optional({ values: 'falsy' }).trim(),
+    (0, express_validator_1.body)('stockBoardLogNotificationEmail').optional({ values: 'falsy' }).trim(),
 ];
 const mailValidators = [
     (0, express_validator_1.body)('mailPreset').optional({ values: 'falsy' }).trim(),
@@ -557,6 +558,7 @@ async function buildFormValues(source, existing, availableFields = []) {
         stockPickingTypeId: source.stockPickingTypeId ?? resolvedExisting.stock.pickingTypeId,
         stockMissingSoAlertUserLogin: source.stockMissingSoAlertUserLogin ?? resolvedExisting.stock.missingSoAlertUserLogin,
         stockMissingComponentAlertUserLogin: source.stockMissingComponentAlertUserLogin ?? resolvedExisting.stock.missingComponentAlertUserLogin,
+        stockBoardLogNotificationEmail: source.stockBoardLogNotificationEmail ?? resolvedExisting.stock.boardLogNotificationEmail ?? 'sharon@urbanvibeinteriordesign.co.ke',
         ...buildMailFormValues(source, resolvedExisting.mail),
         ...buildPayrollBridgeFormValues(source, resolvedExisting.payrollBridge),
     };
@@ -1208,6 +1210,7 @@ router.post('/settings', validators, async (req, res) => {
                 pickingTypeId: req.body.stockPickingTypeId?.trim() || '',
                 missingSoAlertUserLogin: req.body.stockMissingSoAlertUserLogin?.trim() || '',
                 missingComponentAlertUserLogin: req.body.stockMissingComponentAlertUserLogin?.trim() || '',
+                boardLogNotificationEmail: req.body.stockBoardLogNotificationEmail?.trim() || req.body.boardLogNotificationEmail?.trim() || currentSettings.stock.boardLogNotificationEmail || 'sharon@urbanvibeinteriordesign.co.ke',
             },
         });
         await (0, logService_1.logEvent)('info', 'Application settings updated', {

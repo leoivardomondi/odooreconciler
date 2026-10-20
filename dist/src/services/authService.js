@@ -804,7 +804,7 @@ function enforceCsrf(req, res, next) {
         next();
         return;
     }
-    if (req.path === '/jobs/attachment-uploaded') {
+    if (req.path === '/jobs/attachment-uploaded' || req.path === '/jobs/odoo-sync' || req.path.startsWith('/api/webhooks')) {
         next();
         return;
     }

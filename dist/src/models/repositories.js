@@ -170,6 +170,7 @@ exports.getPendingShopFloorProcesses = getPendingShopFloorProcesses;
 exports.getPendingShopFloorProcessesCount = getPendingShopFloorProcessesCount;
 exports.upsertPendingShopFloorProcesses = upsertPendingShopFloorProcesses;
 exports.markPendingShopFloorProcessesLoaded = markPendingShopFloorProcessesLoaded;
+exports.reconcilePendingProcessesWithBoardLogs = reconcilePendingProcessesWithBoardLogs;
 exports.deleteStaleCompletedProcesses = deleteStaleCompletedProcesses;
 exports.pruneStalePendingProcessesForActiveMos = pruneStalePendingProcessesForActiveMos;
 const crypto_1 = require("crypto");
@@ -652,6 +653,7 @@ async function getSettings() {
             pickingTypeId: String(stock.pickingTypeId || ''),
             missingSoAlertUserLogin: String(stock.missingSoAlertUserLogin || ''),
             missingComponentAlertUserLogin: String(stock.missingComponentAlertUserLogin || ''),
+            boardLogNotificationEmail: String(stock.boardLogNotificationEmail || helpers_1.DEFAULT_STOCK_CONFIG.boardLogNotificationEmail || ''),
         },
         mail,
         payrollBridge,
@@ -4069,9 +4071,24 @@ async function upsertPendingShopFloorProcesses(records) {
     }
 }
 async function markPendingShopFloorProcessesLoaded(filters) {
-    const pendingRows = await (0, db_1.queryAll)(`SELECT * FROM shop_floor_pending_processes
+    let pendingRows = await (0, db_1.queryAll)(`SELECT * FROM shop_floor_pending_processes
      WHERE partner_id = ? AND product_id = ? AND status = 'pending' AND qty_missing > 0
      ORDER BY created_at ASC`, [filters.partnerId, filters.productId]);
+    // If no rows matched by exact IDs, fallback to resilient matching by normalized customer name and product name
+    if (!pendingRows.length && (filters.customerName || filters.productName)) {
+        const cleanCustomer = (filters.customerName || '').trim().toLowerCase();
+        const cleanProduct = (filters.productName || '').trim().toLowerCase();
+        const allPending = await (0, db_1.queryAll)(`SELECT * FROM shop_floor_pending_processes WHERE status = 'pending' AND qty_missing > 0 ORDER BY created_at ASC`, []);
+        pendingRows = allPending.filter((row) => {
+            const rowCust = String(row.partner_name || '').trim().toLowerCase();
+            const rowProd = String(row.product_name || '').trim().toLowerCase();
+            const custMatch = Boolean(cleanCustomer && (rowCust.includes(cleanCustomer) || cleanCustomer.includes(rowCust)));
+            const prodMatch = Boolean(cleanProduct && (rowProd.includes(cleanProduct) || cleanProduct.includes(rowProd)));
+            return ((custMatch && prodMatch) ||
+                (filters.productId > 0 && row.product_id === filters.productId && custMatch) ||
+                (filters.partnerId > 0 && row.partner_id === filters.partnerId && prodMatch));
+        });
+    }
     let remaining = filters.quantity;
     const updated = [];
     const now = (0, dateTime_1.appDateTime)();
@@ -4108,6 +4125,34 @@ async function markPendingShopFloorProcessesLoaded(filters) {
         });
     }
     return updated;
+}
+async function reconcilePendingProcessesWithBoardLogs() {
+    try {
+        const activeLogs = await (0, db_1.queryAll)(`SELECT customer_name, partner_id, product_name, product_id, quantity, status, actor_name
+       FROM board_intake_queue
+       WHERE status IN ('synced', 'processing', 'pending')
+       ORDER BY created_at DESC LIMIT 100`, []);
+        if (!activeLogs.length)
+            return 0;
+        let reconciled = 0;
+        for (const log of activeLogs) {
+            if (log.status === 'synced') {
+                const updated = await markPendingShopFloorProcessesLoaded({
+                    partnerId: Number(log.partner_id || 0),
+                    productId: Number(log.product_id || 0),
+                    customerName: log.customer_name,
+                    productName: log.product_name,
+                    loadedBy: log.actor_name || 'System Reconciler',
+                    quantity: Number(log.quantity || 0),
+                }).catch(() => []);
+                reconciled += updated.length;
+            }
+        }
+        return reconciled;
+    }
+    catch (_e) {
+        return 0;
+    }
 }
 async function deleteStaleCompletedProcesses(olderThanDays = 7) {
     const cutoff = (0, dateTime_1.appDateTimeFromNow)(-olderThanDays * 24 * 60 * 60 * 1000);

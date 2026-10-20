@@ -3,13 +3,14 @@
 ## Project Overview
 - **Repository / Corpus**: `leoivardomondi/odooreconciler`
 - **Application**: Odoo Job Summary PDF Extractor & Financial Reconciler
+- **Hosted Production URL**: `https://app.urbanvibeinteriordesign.co.ke/`
 - **Stack**: Node.js (>= 20.20), TypeScript (`tsc` / `tsx`), Express.js, EJS, SQLite / MySQL, PDF Extraction & OCR (`pdf-parse`, `tesseract.js`, `@google-cloud/vision`), Odoo 19 integration.
 
 ## Key Entry Points & Structure
-- **Main Server**: [server.ts](file:///c:/xampp/htdocs/reconciler.flowcode.co.ke/server.ts)
-- **App Configuration**: [app.ts](file:///c:/xampp/htdocs/reconciler.flowcode.co.ke/app.ts)
-- **Services & Logic**: [src/services/](file:///c:/xampp/htdocs/reconciler.flowcode.co.ke/src/services/)
-  - E.g. [schedulerFailureAnalysisService.ts](file:///c:/xampp/htdocs/reconciler.flowcode.co.ke/src/services/schedulerFailureAnalysisService.ts)
+- **Main Server**: [server.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/server.ts)
+- **App Configuration**: [app.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/app.ts)
+- **Services & Logic**: [src/services/](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/)
+  - E.g. [schedulerFailureAnalysisService.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/schedulerFailureAnalysisService.ts)
 
 ## Workflow & Development Rules
 - **Type Checking**: Run `npm run check` (`tsc --noEmit -p tsconfig.json`) to verify type safety.
@@ -65,4 +66,55 @@
     - [scripts/odoo_enforce_mo_stock_rules.py](file:///c:/Users/ADMIN/Desktop/odooreconciler/scripts/odoo_enforce_mo_stock_rules.py) provides production-ready Odoo 19 Automated Actions / Server Actions and Python module overrides for `mrp.production` (`button_mark_done`, `button_plan`) and `mrp.workorder` (`button_start`, `do_finish`) to raise `odoo.exceptions.UserError` if component stock is missing in Odoo.
     - **Native Shop Floor "Close Production" Architecture**: In Odoo's native Shop Floor tablet/web interface, the "Close Production" button triggers `button_mark_done()` on `mrp.production`, NOT on `mrp.workorder`. Therefore, an Automation Rule on `mrp.production` (Trigger: On Update of `state`, Apply on: `[('state', 'in', ['progress', 'to_close', 'done'])]`, Before Update: `[('state', 'not in', ['done', 'cancel'])]`) is mandatory to intercept both "Close Production" and starting with partial stock.
     - **Work Centre Real-Time Display & SWR**: Work orders are grouped by work centre (Table Saw Area, Edge Banding Area, Panel Rack Area) and served in <10ms from MySQL snapshot cache (`shop_floor_shared_cache`). Badge attention counts poll asynchronously via `/shop-floor/api/app-badge-counts` without triggering synchronous Odoo XML-RPC calls during operator browsing.
+
+- **Real-Time Event-Driven Odoo Sync Webhooks (Anti-Rate-Limiting Architecture)**:
+  - **Endpoints**: `/api/webhooks/odoo-sync` and `/jobs/odoo-sync` (supporting both `POST` and `GET`).
+  - **Security & Authorization**: Protected via token check supporting `env.ODOO_WEBHOOK_TOKEN`, `settings.scheduler.cronToken`, or `settings.poBillScheduler.cronToken` via `?token=`, `Authorization: Bearer <token>`, or `X-Odoo-Webhook-Token: <token>`.
+  - **Zero-Block Immediate Response**: The endpoint responds immediately (<20ms) with `HTTP 200 OK` (`status: 'queued'`) so Odoo Automated Actions and webhooks never block, hang, or hit timeouts.
+  - **Targeted Background Invalidation**:
+    - `type=mo` or `model=mrp.production`: Invalidates `shop-floor-dashboard:` cache and triggers `syncPendingProcessesFromOdoo(true)` to update board intake requirements in MySQL.
+    - `type=picking` or `model=stock.picking`: Invalidates `shop-floor-dashboard:`, `shop-floor:receipts:`, `shop-floor:deliveries:` and refreshes local stock product mirror (`refreshStockMirror()`).
+    - `type=stock` or `model=stock.quant`: Invalidates dashboard and refreshes stock mirror.
+    - Default or `type=all`: Executes combined cache invalidation and background syncs safely.
+  - **Strict Company Isolation**: Payloads for company ID 3 or record names starting with `VA/` (URBAN VIBE 2) are automatically intercepted and ignored (`status: 'ignored'`).
+  - **Odoo 19 Automated Action Script**: [scripts/odoo_sync_webhooks_automated_actions.py](file:///c:/Users/ADMIN/Desktop/odooreconciler/scripts/odoo_sync_webhooks_automated_actions.py) provides production-ready Python snippets and XML-RPC automated action configuration for Odoo 19.
+
+- **Quotation Line Population & Discrepancy Verification**:
+  - **Service**: [src/services/quotationSyncService.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/quotationSyncService.ts) automatically invoked whenever a Job Summary PDF is extracted in [extractionService.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/extractionService.ts).
+  - **Template-Only Detection (`isTemplateOnlyQuotation`)**: A quotation is considered newly created if all product lines are strictly template placeholders (`Example Board 18mm` and `Optimised Panels`).
+  - **Auto-Population on Template-Only Quotations**:
+    - Replaces `Example Board 18mm` with the real board product from the Job Summary (e.g. `WHITE MDF 18mm`, sheets quantity). If multiple sheet materials are parsed, additional lines are created. If the board product cannot be uniquely resolved, creates a To-Do activity for the salesperson.
+    - Updates `Optimised Panels` quantity to match `optimizedSheets`.
+    - Automatically creates matching `Edge Banding Service <Color>` line(s) with quantity in meters rounded to nearest whole meter (`Math.round(length_mm / 1000)`).
+  - **Discrepancy Verification on Customized Quotations ("Not less, but can be more")**:
+    - If custom lines already exist, line creation is skipped to prevent duplicate order lines.
+    - Compares board sheets, panel counts, and edging meters against the Job Summary.
+    - If any quotation line quantity is LESS than the Job Summary (shortfall), creates an alert To-Do activity for the salesperson and posts a note in chatter. If quantities are equal or greater (surplus), marks lines as verified with zero modifications.
+  - **Confirmed Orders**: Orders in `sale` or `done` states are never modified.
+
+- **Purchase Order (PO) $\longleftrightarrow$ Job Summary Quantity Procurement Auditing**:
+  - **Service**: [src/services/poJobSummaryAuditService.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/poJobSummaryAuditService.ts) cross-checks Purchase Order lines (`purchase.order.line`) against the sheet material quantities and edge banding specified in the Job Summary PDF of the linked Sales Order (`origin` match, e.g. `S02182` or derived from `WH/MO/...`).
+  - **Execution Scope**: Runs strictly on confirmed Purchase Orders (`state in ('purchase', 'done')`). Draft/sent POs are skipped until confirmed.
+  - **Missing Job Summary on Associated Sales Order**:
+    - If the associated Sales Order does not have a Job Summary PDF attached, automatically creates a To-Do activity for user **Charles** (with fallback to buyer): `"AWAIT JOB SUMMARY ATTACHMENT BEFORE APPROVING PO"`.
+    - Note instructions: await or request Job Summary to be attached ASAP to the associated Sales Order log note area before approving the Purchase Order.
+    - Posts an alert log note on the PO chatter tagging Charles (`@Charles`), and cross-posts an alert on the Sales Order chatter.
+  - **Procurement Comparison Rules**:
+    - **Edge Banding Products ("Not less, but can be more")**: Ordered meters must be $\ge$ required meters in the Job Summary. Extra meters are allowed without warnings.
+    - **Boards (Particle Board, MDF, Plywood, etc. — Exact Match Rule)**: "Not less, but can be more" applies ONLY to edge banding, NOT boards. Board sheets must **EXACTLY MATCH** the Job Summary (`orderedSheets === requiredSheets`). Both under-ordering (shortfall) and over-ordering (excess) are flagged as mismatches.
+  - **Stakeholder Notification Recipients**:
+    - **Charles**
+    - **Leoivard Ongule**
+    - **Responsible Salesperson** (`user_id` on the Sales Order)
+    - **Raphael Onyango**
+  - **Match Reporting**:
+    - If all board quantities match exactly and edge banding $\ge$ required: reports procurement match as log notes on both PO and Sales Order, mentioning and notifying the 4 stakeholders in Odoo.
+  - **Mismatch Remediation**:
+    - If any mismatch is detected: creates an urgent To-Do activity on the PO assigned to the Buyer (`res.users`) seeking written clarification explaining the mismatch or correction to be done.
+    - Posts an itemized breakdown note on the PO Chatter detailing each shortfall or excess (e.g. *"WHITE MDF 18mm: Ordered 8 sheets, Job Summary requires 10 sheets — Short by 2 sheets"*), tagging all 4 stakeholders.
+    - Cross-posts an alert note on the Sales Order Chatter so the salesperson has immediate visibility.
+  - **Trigger Points**:
+    - Webhook: `type=po` or `model=purchase.order` triggers `auditPurchaseOrderAgainstJobSummary`.
+    - Webhook: `type=so` or `model=sale.order` triggers `auditLinkedPurchaseOrdersForSaleOrder` immediately following Job Summary extraction.
+    - Automation: Triggered via 0-LOC Odoo 19 "Send Webhook Notification" action on `purchase.order` confirmation.
 

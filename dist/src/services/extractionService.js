@@ -12,6 +12,7 @@ const logService_1 = require("./logService");
 const odooClient_1 = require("./odooClient");
 const pdfParser_1 = require("./pdfParser");
 const signatureService_1 = require("./signatureService");
+const quotationSyncService_1 = require("./quotationSyncService");
 async function getConfiguredClient() {
     const settings = await (0, repositories_1.getSettings)();
     if (!(0, helpers_1.hasOdooConfiguration)(settings)) {
@@ -305,6 +306,16 @@ async function sendExtractedResultToOdoo(historyId, forceSend = false) {
                 orderName: history.orderName,
             });
             await client.postChatterMessage(history.orderId, chatterMessage);
+        }
+        try {
+            await (0, quotationSyncService_1.syncQuotationWithJobSummary)(client, history.orderId, extracted.resultJson);
+        }
+        catch (quotationSyncErr) {
+            await (0, logService_1.logEvent)('warn', 'Failed to synchronize quotation lines with Job Summary', {
+                historyId,
+                orderId: history.orderId,
+                error: quotationSyncErr instanceof Error ? quotationSyncErr.message : String(quotationSyncErr),
+            }, historyId);
         }
         await (0, repositories_1.updateHistory)(historyId, {
             status: 'sent_to_odoo',
