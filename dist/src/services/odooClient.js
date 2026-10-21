@@ -1391,17 +1391,33 @@ class OdooClient {
         if (!soNames || soNames.length === 0)
             return stateMap;
         const pos = await this.request('purchase.order', 'search_read', {
-            domain: [['origin', 'in', soNames]],
+            domain: [
+                ['origin', 'in', soNames],
+                ['state', '!=', 'cancel'],
+            ],
             fields: ['id', 'state', 'origin'],
             limit: 5000,
         });
+        const rank = (state) => state === 'done' || state === 'purchase' ? 4 :
+            state === 'to approve' ? 3 :
+                state === 'sent' ? 2 :
+                    state === 'draft' ? 1 : 0;
         for (const po of pos) {
-            if (po.origin) {
-                // Prefer the most advanced relevant state when an SO has multiple POs.
-                const existing = stateMap.get(po.origin);
-                const rank = (state) => state === 'purchase' ? 3 : state === 'to approve' ? 2 : state === 'sent' ? 1 : 0;
-                if (!existing || rank(po.state) > rank(existing))
-                    stateMap.set(po.origin, po.state);
+            if (po.origin && po.state !== 'cancel') {
+                const originKeys = [po.origin];
+                if (po.origin.includes(':')) {
+                    po.origin.split(':').forEach(part => {
+                        const p = part.trim();
+                        if (p)
+                            originKeys.push(p);
+                    });
+                }
+                for (const key of originKeys) {
+                    const existing = stateMap.get(key);
+                    if (!existing || rank(po.state) > rank(existing)) {
+                        stateMap.set(key, po.state);
+                    }
+                }
             }
         }
         return stateMap;
@@ -3659,7 +3675,7 @@ class OdooClient {
         await this.populatePickingValidationMetadata(pickingId, actorEmail);
         return result;
     }
-    async advanceManufacturingOrder(moId, action, employeeId) {
+    async advanceManufacturingOrder(moId, action, employeeId, precheckedStock) {
         if (!employeeId || !Number.isSafeInteger(employeeId)) {
             throw new OdooClientError('Your account is not linked to a valid Odoo employee.');
         }
@@ -3684,7 +3700,7 @@ class OdooClient {
             throw new OdooClientError('This manufacturing order is outside the Shop Floor warehouse.');
         }
         // Strictly enforce that 100% of required stock is available before starting or finishing
-        const stockCheck = await this.checkManufacturingOrderStockAvailability(moId);
+        const stockCheck = precheckedStock || (await this.checkManufacturingOrderStockAvailability(moId));
         if (!stockCheck.isFullyAvailable) {
             const missingDetails = stockCheck.missingComponents
                 .map((c) => `${c.productName} (Required: ${c.requiredQty} ${c.uom}, Available: ${c.availableQty} ${c.uom})`)
@@ -3745,6 +3761,17 @@ class OdooClient {
         }
         const activeWorkorder = workorders.find((item) => item.state === 'progress');
         if (!activeWorkorder) {
+            // If there is no operation currently in progress, check if operations are already done or MO is ready to close
+            const remainingUnfinished = workorders.filter((item) => !['done', 'cancel'].includes(item.state));
+            if (remainingUnfinished.length === 0 || production.state === 'to_close' || production.state === 'progress') {
+                try {
+                    await this.callRecordMethod('mrp.production', 'button_mark_done', [moId]);
+                    return { workorderId: 0, state: 'done', operatorLinked: true };
+                }
+                catch (closeErr) {
+                    throw new OdooClientError(`Could not close manufacturing order in Odoo: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`);
+                }
+            }
             throw new OdooClientError('This manufacturing order has no operation in progress.');
         }
         await assertEmployeeMayUseWorkcenter(activeWorkorder);
@@ -3781,6 +3808,20 @@ class OdooClient {
         });
         if (verification[0]?.state !== 'done') {
             throw new OdooClientError('Odoo did not verify that the operation was completed.');
+        }
+        // Check if all workorders on this MO are now done. If so, close the MO in Odoo!
+        try {
+            const remainingWorkorders = await this.searchReadRecords('mrp.workorder', {
+                domain: [['production_id', '=', moId], ['state', 'not in', ['done', 'cancel']]],
+                fields: ['id', 'state'],
+                limit: 1,
+            });
+            if (remainingWorkorders.length === 0) {
+                await this.callRecordMethod('mrp.production', 'button_mark_done', [moId]);
+            }
+        }
+        catch (closeErr) {
+            console.warn(`[OdooClient] Note: button_mark_done on MO ${moId}:`, closeErr);
         }
         return { workorderId: activeWorkorder.id, state: 'done', operatorLinked: true };
     }

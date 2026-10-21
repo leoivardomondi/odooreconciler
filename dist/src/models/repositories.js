@@ -152,6 +152,7 @@ exports.claimBoardIntakeQueueEntry = claimBoardIntakeQueueEntry;
 exports.getDueBoardIntakeQueueEntries = getDueBoardIntakeQueueEntries;
 exports.releaseStaleBoardIntakeQueueEntry = releaseStaleBoardIntakeQueueEntry;
 exports.getBoardIntakeLoggingReport = getBoardIntakeLoggingReport;
+exports.getRecentBoardIntakeForAudit = getRecentBoardIntakeForAudit;
 exports.getShopFloorIncidents = getShopFloorIncidents;
 exports.createShopFloorIncident = createShopFloorIncident;
 exports.resolveShopFloorIncident = resolveShopFloorIncident;
@@ -172,6 +173,8 @@ exports.upsertPendingShopFloorProcesses = upsertPendingShopFloorProcesses;
 exports.markPendingShopFloorProcessesLoaded = markPendingShopFloorProcessesLoaded;
 exports.reconcilePendingProcessesWithBoardLogs = reconcilePendingProcessesWithBoardLogs;
 exports.deleteStaleCompletedProcesses = deleteStaleCompletedProcesses;
+exports.unmarkPendingShopFloorProcessesLoaded = unmarkPendingShopFloorProcessesLoaded;
+exports.getActiveBoardIntakeLogs = getActiveBoardIntakeLogs;
 exports.pruneStalePendingProcessesForActiveMos = pruneStalePendingProcessesForActiveMos;
 const crypto_1 = require("crypto");
 const uuid_1 = require("uuid");
@@ -379,28 +382,39 @@ function readMailConfig(mailConfigJson) {
         socketTimeoutMs: positiveNumberValue(raw.socketTimeoutMs, defaults.socketTimeoutMs),
         testRecipient: stringValue(raw.testRecipient, defaults.testRecipient || '').trim(),
         accounts,
-        automations: (Array.isArray(raw.automations) ? raw.automations : defaults.automations).map((entry, index) => {
-            const item = asRecord(entry);
-            const fallback = defaults.automations[index];
-            const systemKey = stringValue(item.systemKey, fallback?.systemKey || 'custom');
-            const frequency = stringValue(item.frequency, fallback?.frequency || 'daily');
-            return {
-                id: stringValue(item.id, fallback?.id || `custom-${index + 1}`),
-                name: stringValue(item.name, fallback?.name || `Email ${index + 1}`),
-                systemKey: ['shop-floor-reminders', 'weekly-shop-floor-report', 'mpesa-review', 'mo-overtime', 'custom'].includes(systemKey) ? systemKey : 'custom',
-                enabled: booleanValue(item.enabled, fallback?.enabled ?? false),
-                frequency: ['hourly', 'daily', 'weekly'].includes(frequency) ? frequency : 'daily',
-                interval: positiveNumberValue(item.interval, fallback?.interval || 1),
-                dayOfWeek: Math.min(6, Math.max(0, Number(item.dayOfWeek ?? fallback?.dayOfWeek ?? 1))),
-                hour: systemKey === 'weekly-shop-floor-report' && (Number(item.hour) === 8 || item.hour === undefined || item.hour === null)
-                    ? 7
-                    : Math.min(23, Math.max(0, Number(item.hour ?? fallback?.hour ?? 7))),
-                recipients: stringValue(item.recipients, fallback?.recipients || '').trim(),
-                subject: stringValue(item.subject, fallback?.subject || '').trim(),
-                body: stringValue(item.body, fallback?.body || ''),
-                lastSentAt: stringValue(item.lastSentAt, ''),
-            };
-        }),
+        automations: (() => {
+            const rawList = Array.isArray(raw.automations) ? raw.automations : defaults.automations;
+            const knownKeys = new Set(rawList.map((entry) => stringValue(asRecord(entry).systemKey, '')));
+            const mergedRawList = [...rawList];
+            for (const def of defaults.automations) {
+                if (def.systemKey !== 'custom' && !knownKeys.has(def.systemKey)) {
+                    mergedRawList.push(def);
+                    knownKeys.add(def.systemKey);
+                }
+            }
+            return mergedRawList.map((entry, index) => {
+                const item = asRecord(entry);
+                const fallback = defaults.automations.find((d) => d.systemKey === item.systemKey) || defaults.automations[index];
+                const systemKey = stringValue(item.systemKey, fallback?.systemKey || 'custom');
+                const frequency = stringValue(item.frequency, fallback?.frequency || 'daily');
+                return {
+                    id: stringValue(item.id, fallback?.id || `custom-${index + 1}`),
+                    name: stringValue(item.name, fallback?.name || `Email ${index + 1}`),
+                    systemKey: ['shop-floor-reminders', 'weekly-shop-floor-report', 'mpesa-review', 'mo-overtime', 'mo-stock-shortage-report', 'custom'].includes(systemKey) ? systemKey : 'custom',
+                    enabled: booleanValue(item.enabled, fallback?.enabled ?? false),
+                    frequency: ['hourly', 'daily', 'weekly'].includes(frequency) ? frequency : 'daily',
+                    interval: positiveNumberValue(item.interval, fallback?.interval || 1),
+                    dayOfWeek: Math.min(6, Math.max(0, Number(item.dayOfWeek ?? fallback?.dayOfWeek ?? 1))),
+                    hour: systemKey === 'weekly-shop-floor-report' && (Number(item.hour) === 8 || item.hour === undefined || item.hour === null)
+                        ? 7
+                        : Math.min(23, Math.max(0, Number(item.hour ?? fallback?.hour ?? 7))),
+                    recipients: stringValue(item.recipients, fallback?.recipients || '').trim(),
+                    subject: stringValue(item.subject, fallback?.subject || '').trim(),
+                    body: stringValue(item.body, fallback?.body || ''),
+                    lastSentAt: stringValue(item.lastSentAt, ''),
+                };
+            });
+        })(),
         shopFloorReportingStartDate: (0, shopFloorReporting_1.normalizeShopFloorReportingStartDate)(stringValue(raw.shopFloorReportingStartDate, defaults.shopFloorReportingStartDate)),
     };
     const normalizedHost = resolved.host.toLowerCase();
@@ -2445,6 +2459,25 @@ async function getSentReportLogs(limit = 30) {
             });
             continue;
         }
+        if (msg === 'Daily MO stock shortage report sent') {
+            const recipients = Array.isArray(ctx.recipients) ? ctx.recipients.map(String) : [];
+            const totalShort = Number(ctx.totalMosLackingStock || 0);
+            const mismatches = Number(ctx.criticalBoardMismatchesCount || 0);
+            results.push({
+                id: row.id,
+                reportName: 'Daily MO Stock Shortage & Board Audit',
+                reportType: 'mo_stock_shortage',
+                status: 'sent',
+                level: row.level,
+                timestamp: row.created_at,
+                recipients,
+                summary: `Dispatched stock report: ${totalShort} MO(s) lacking stock (${mismatches} board mismatch${mismatches === 1 ? '' : 'es'})`,
+                details: ctx,
+                downloadUrl: '/reports/mo-stock-shortage',
+                rawMessage: msg,
+            });
+            continue;
+        }
         if (msg === 'Large MO overtime suggestion sent') {
             const recipient = String(ctx.recipient || '');
             const moIds = Array.isArray(ctx.moIds) ? ctx.moIds : [];
@@ -2525,6 +2558,8 @@ async function getSentReportLogs(limit = 30) {
                 reportType = 'mpesa_review';
             else if (id === 'mo-overtime')
                 reportType = 'overtime_suggestion';
+            else if (id === 'mo-stock-shortage-report')
+                reportType = 'mo_stock_shortage';
             results.push({
                 id: row.id,
                 reportName: name,
@@ -3723,9 +3758,19 @@ async function claimBoardIntakeRevert(id) {
     return result.affectedRows > 0;
 }
 async function finishBoardIntakeRevert(id, revertedBy, stockQuantity) {
+    const entry = await getBoardIntakeQueueEntry(id);
     await (0, db_1.execute)(`UPDATE board_intake_queue
     SET status = 'reverted', odoo_stock_quantity = ?, reverted_at = CURRENT_TIMESTAMP, reverted_by = ?, updated_at = CURRENT_TIMESTAMP
     WHERE id = ? AND status = 'reverting'`, [stockQuantity, revertedBy, id]);
+    if (entry) {
+        await unmarkPendingShopFloorProcessesLoaded({
+            partnerId: Number(entry.partner_id || 0),
+            productId: Number(entry.product_id || 0),
+            customerName: entry.customer_name,
+            productName: entry.product_name,
+            quantity: Number(entry.quantity || 0),
+        }).catch(() => []);
+    }
 }
 async function releaseBoardIntakeRevert(id, errorMessage) {
     await (0, db_1.execute)(`UPDATE board_intake_queue
@@ -3776,6 +3821,13 @@ async function getBoardIntakeLoggingReport(startDate, endDate, reportingStartDat
         byOperator.set(key, item);
     });
     return [...byOperator.values()].sort((a, b) => b.records - a.records || a.name.localeCompare(b.name));
+}
+async function getRecentBoardIntakeForAudit(limit = 500) {
+    return (0, db_1.queryAll)(`SELECT id, product_id, product_name, partner_id, customer_name, quantity, status, created_at
+     FROM board_intake_queue
+     WHERE status IN ('pending', 'processing', 'synced')
+     ORDER BY created_at DESC
+     LIMIT ?`, [Math.max(1, limit)]);
 }
 // ─── Shop Floor: Incidents & Assigned Items ──────────────────────────
 function ensureShopFloorTables() {
@@ -4159,27 +4211,110 @@ async function deleteStaleCompletedProcesses(olderThanDays = 7) {
     await (0, db_1.execute)(`DELETE FROM shop_floor_pending_processes
      WHERE status IN ('loaded', 'synced') AND updated_at < ?`, [cutoff]);
 }
-async function pruneStalePendingProcessesForActiveMos(activeMoIds, validKeys) {
+async function unmarkPendingShopFloorProcessesLoaded(filters) {
+    let loadedRows = await (0, db_1.queryAll)(`SELECT * FROM shop_floor_pending_processes
+     WHERE partner_id = ? AND product_id = ? AND (status = 'loaded' OR qty_reserved > 0)
+     ORDER BY updated_at DESC`, [filters.partnerId, filters.productId]);
+    if (!loadedRows.length && (filters.customerName || filters.productName)) {
+        const cleanCustomer = (filters.customerName || '').trim().toLowerCase();
+        const cleanProduct = (filters.productName || '').trim().toLowerCase();
+        const allRows = await (0, db_1.queryAll)(`SELECT * FROM shop_floor_pending_processes WHERE (status = 'loaded' OR qty_reserved > 0) ORDER BY updated_at DESC`, []);
+        loadedRows = allRows.filter((row) => {
+            const rowCust = String(row.partner_name || '').trim().toLowerCase();
+            const rowProd = String(row.product_name || '').trim().toLowerCase();
+            const custMatch = Boolean(cleanCustomer && (rowCust.includes(cleanCustomer) || cleanCustomer.includes(rowCust)));
+            const prodMatch = Boolean(cleanProduct && (rowProd.includes(cleanProduct) || cleanProduct.includes(rowProd)));
+            return ((custMatch && prodMatch) ||
+                (filters.productId > 0 && row.product_id === filters.productId && custMatch) ||
+                (filters.partnerId > 0 && row.partner_id === filters.partnerId && prodMatch));
+        });
+    }
+    let remaining = filters.quantity;
+    const updated = [];
+    const now = (0, dateTime_1.appDateTime)();
+    for (const row of loadedRows) {
+        if (remaining <= 0)
+            break;
+        const reserved = Number(row.qty_reserved || 0);
+        const toUnload = Math.min(remaining, reserved);
+        if (toUnload <= 0)
+            continue;
+        remaining -= toUnload;
+        const newReserved = Math.max(0, reserved - toUnload);
+        const newMissing = Number(row.qty_missing || 0) + toUnload;
+        await (0, db_1.execute)(`UPDATE shop_floor_pending_processes
+       SET qty_reserved = ?, qty_missing = ?, status = 'pending',
+           loaded_at = NULL, loaded_by = NULL, updated_at = ?
+       WHERE id = ?`, [newReserved, newMissing, now, row.id]);
+        updated.push({
+            ...row,
+            qty_reserved: newReserved,
+            qty_missing: newMissing,
+            status: 'pending',
+            loaded_at: null,
+            loaded_by: null,
+            updated_at: now,
+        });
+    }
+    return updated;
+}
+async function getActiveBoardIntakeLogs() {
+    return (0, db_1.queryAll)(`SELECT partner_id, customer_name, product_id, product_name, quantity
+     FROM board_intake_queue
+     WHERE status IN ('synced', 'processing', 'pending')`, []);
+}
+async function pruneStalePendingProcessesForActiveMos(activeMoIds, validKeys, poCoveredKeys = []) {
     await (0, db_1.execute)(`DELETE FROM shop_floor_pending_processes WHERE mo_name LIKE 'VA/%' OR partner_name = 'URBAN VIBE 2' OR partner_id = 350`, []);
-    if (!activeMoIds.length)
+    const existingPending = await (0, db_1.queryAll)(`SELECT id, mo_id, product_id, partner_id, partner_name, product_name, qty_needed
+     FROM shop_floor_pending_processes WHERE status = 'pending'`);
+    if (!existingPending.length)
         return;
-    const existingPending = await (0, db_1.queryAll)(`SELECT id, mo_id, product_id FROM shop_floor_pending_processes WHERE status = 'pending'`);
+    // Load all active (non-reverted) board intake history logs
+    const activeLogs = await getActiveBoardIntakeLogs();
+    const poCoveredKeySet = new Set(poCoveredKeys);
     const activeSet = new Set(activeMoIds);
     const validKeySet = new Set(validKeys);
-    const idsToDelete = existingPending
-        .filter((row) => {
-        // If MO is no longer in active MO list (e.g. done or cancelled), remove its pending process
-        if (!activeSet.has(row.mo_id))
-            return true;
-        // If validKeys is provided, prune items whose component requirements were removed or fulfilled
-        if (validKeys.length > 0) {
-            const compositeKey = `${row.mo_id}_${row.product_id}`;
-            if (!validKeySet.has(row.id) && !validKeySet.has(compositeKey))
-                return true;
+    const idsToDelete = [];
+    for (const row of existingPending) {
+        const compositeKey = `${row.mo_id}_${row.product_id}`;
+        // 1. If an active PO covers this MO and product, prune it (stock will come from receipt after PO approval, not manual board log)
+        if (poCoveredKeySet.has(row.id) || poCoveredKeySet.has(compositeKey)) {
+            idsToDelete.push(row.id);
+            continue;
         }
-        return false;
-    })
-        .map((row) => row.id);
+        // 2. Check if a matching history log exists in board_intake_queue
+        const cleanCustomer = String(row.partner_name || '').trim().toLowerCase();
+        const cleanProduct = String(row.product_name || '').trim().toLowerCase();
+        const rowPid = Number(row.partner_id || 0);
+        const rowProdId = Number(row.product_id || 0);
+        const matchingLogs = activeLogs.filter((log) => {
+            const logPid = Number(log.partner_id || 0);
+            const logProdId = Number(log.product_id || 0);
+            const logCust = String(log.customer_name || '').trim().toLowerCase();
+            const logProd = String(log.product_name || '').trim().toLowerCase();
+            const custMatch = Boolean((rowPid > 0 && logPid > 0 && rowPid === logPid) ||
+                (cleanCustomer && (logCust.includes(cleanCustomer) || cleanCustomer.includes(logCust))));
+            const prodMatch = Boolean((rowProdId > 0 && logProdId > 0 && rowProdId === logProdId) ||
+                (cleanProduct && (logProd.includes(cleanProduct) || cleanProduct.includes(logProd))));
+            return custMatch && prodMatch;
+        });
+        const hasMatchingHistoryLog = matchingLogs.length > 0;
+        // RULE: "make sure that a board log request under add stock area only disappears if a history log that matches it appears"
+        // If NO matching history log exists in board_intake_queue, it must NEVER be deleted,
+        // even if the MO closed in Odoo shop floor or used another person's stock!
+        if (!hasMatchingHistoryLog) {
+            continue; // PRESERVE IT! DO NOT DELETE!
+        }
+        // If a matching history log DOES exist:
+        // Check if the total logged quantity fulfills the requirement
+        const totalLogged = matchingLogs.reduce((sum, l) => sum + Number(l.quantity || 0), 0);
+        if (totalLogged >= Number(row.qty_needed || 0)) {
+            // If MO is closed or no longer pending in Odoo, it has been fulfilled by history log
+            if (!activeSet.has(row.mo_id) || (!validKeySet.has(row.id) && !validKeySet.has(compositeKey))) {
+                await (0, db_1.execute)(`UPDATE shop_floor_pending_processes SET status = 'loaded', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [row.id]);
+            }
+        }
+    }
     if (idsToDelete.length > 0) {
         for (const id of idsToDelete) {
             await (0, db_1.execute)('DELETE FROM shop_floor_pending_processes WHERE id = ?', [id]);

@@ -128,7 +128,7 @@ export type EmailAutomationFrequency = 'hourly' | 'daily' | 'weekly';
 export interface EmailAutomation {
   id: string;
   name: string;
-  systemKey: 'shop-floor-reminders' | 'weekly-shop-floor-report' | 'mpesa-review' | 'mo-overtime' | 'custom';
+  systemKey: 'shop-floor-reminders' | 'weekly-shop-floor-report' | 'mpesa-review' | 'mo-overtime' | 'mo-stock-shortage-report' | 'custom';
   enabled: boolean;
   frequency: EmailAutomationFrequency;
   interval: number;
@@ -143,7 +143,7 @@ export interface EmailAutomation {
 export interface SentReportLogEntry {
   id: string;
   reportName: string;
-  reportType: 'weekly_pdf' | 'task_reminders' | 'mpesa_review' | 'overtime_suggestion' | 'campaign_summary' | 'unreadable_doc' | 'custom_email' | 'general';
+  reportType: 'weekly_pdf' | 'task_reminders' | 'mpesa_review' | 'overtime_suggestion' | 'campaign_summary' | 'unreadable_doc' | 'custom_email' | 'mo_stock_shortage' | 'general';
   status: 'sent' | 'completed' | 'failed' | 'warning';
   level: 'info' | 'warn' | 'error';
   timestamp: string;

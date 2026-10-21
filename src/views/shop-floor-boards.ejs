@@ -82,6 +82,14 @@
 <main class="container my-4">
   <%- include('partials/shop-floor-nav', { activeShopFloorTab: 'boards' }) %>
 
+  <!-- Offcuts / Decimals Not Allowed 3-Second Floating Popup -->
+  <div id="offcutsPopup" class="position-fixed top-0 start-50 translate-middle-x p-3 d-none" style="z-index: 99999; max-width: 92vw; pointer-events: none;">
+    <div class="d-flex align-items-center gap-2.5 px-3.5 py-2.5 rounded-pill shadow-lg border" style="background: #0f172a; color: #ffffff; border-color: rgba(255,255,255,0.18) !important; box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45) !important; pointer-events: auto;">
+      <span style="font-size: 1.25rem; line-height: 1;">🪵</span>
+      <span class="fw-semibold" style="font-size: 0.90rem; letter-spacing: -0.01em;">Only full boards can be logged. Offcuts do not need logging.</span>
+    </div>
+  </div>
+
   <!-- Header Title Section -->
   <div class="d-flex flex-column flex-md-row justify-content-between align-items-start align-items-md-center mb-4 gap-3">
     <div>
@@ -359,10 +367,10 @@
             <!-- Quantity -->
             <div class="mb-3">
               <label for="intakeQty" class="form-label fw-semibold" style="font-size: 0.92rem; color: #334155;">
-                Number of Boards <span class="text-danger">*</span>
+                Number of Full Boards <span class="text-danger">*</span>
               </label>
-              <input type="number" name="quantity" id="intakeQty" class="form-control" placeholder="How many boards were brought in..." min="0.01" step="0.01" inputmode="decimal" required style="font-size: 1rem; padding: 0.65rem 0.75rem;">
-              <div class="invalid-feedback" id="qtyFeedback">Please enter a positive quantity, including decimals if needed.</div>
+              <input type="number" name="quantity" id="intakeQty" class="form-control" placeholder="How many full boards were brought in..." min="1" step="1" inputmode="numeric" required style="font-size: 1rem; padding: 0.65rem 0.75rem;">
+              <div class="invalid-feedback" id="qtyFeedback">Only full boards can be logged. Offcuts do not need logging.</div>
               <div class="text-muted mt-1" id="qtyCurrentStock" style="font-size: 0.75rem; display: none;"></div>
             </div>
 
@@ -565,15 +573,15 @@
                   <% } %>
                 </div>
                 <% if (item.status === 'failed') { %>
-                  <form method="post" action="/shop-floor/board-intake/<%= encodeURIComponent(item.id) %>/retry" data-disable-submit="true" data-loading-message="Retrying Odoo synchronization...">
+                  <form method="post" action="/shop-floor/board-intake/<%= encodeURIComponent(item.id) %>/retry" class="board-retry-form" data-intake-id="<%= item.id %>">
                     <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>">
-                    <button type="submit" class="btn btn-sm btn-outline-primary rounded-pill">Retry now</button>
+                    <button type="submit" class="btn btn-sm btn-outline-primary rounded-pill btn-retry">Retry now</button>
                   </form>
                 <% } %>
-                <form method="post" action="/shop-floor/board-intake/<%= encodeURIComponent(item.id) %>/revert" data-disable-submit="true" data-loading-message="Reverting board log in Odoo..." onsubmit="return confirm('Revert this board intake in Odoo? This will remove the logged quantity from stock.');">
+                <form method="post" action="/shop-floor/board-intake/<%= encodeURIComponent(item.id) %>/revert" class="board-revert-form" data-intake-id="<%= item.id %>">
                   <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>">
                   <input type="hidden" name="boardLogPage" value="<%= boardLogPage || 1 %>">
-                  <button type="submit" class="btn btn-sm btn-outline-danger rounded-pill" <%= item.status !== 'synced' || item.reverted_at || item.status === 'reverted' || !canRevert ? 'disabled title="' + (!canRevert ? 'You can only revert board logs that you logged' : 'Only a synced, unreverted log can be reverted') + '"' : '' %>>Revert</button>
+                  <button type="submit" class="btn btn-sm btn-outline-danger rounded-pill btn-revert" <%= item.status !== 'synced' || item.reverted_at || item.status === 'reverted' || !canRevert ? 'disabled title="' + (!canRevert ? 'You can only revert board logs that you logged' : 'Only a synced, unreverted log can be reverted') + '"' : '' %>>Revert</button>
                 </form>
               </div>
             </div>
@@ -602,6 +610,68 @@
       var mm = String(now.getMinutes()).padStart(2, '0');
       arrivalTimeInput.value = hh + ':' + mm;
     }
+
+    // 3-Second Floating Popup: Only full boards can be logged. Offcuts do not need logging.
+    var offcutsPopup = document.getElementById('offcutsPopup');
+    var offcutsTimer = null;
+
+    function showOffcutsPopup() {
+      if (!offcutsPopup) return;
+      if (offcutsTimer) {
+        clearTimeout(offcutsTimer);
+        offcutsTimer = null;
+      }
+      offcutsPopup.classList.remove('d-none');
+      offcutsPopup.style.opacity = '0';
+      offcutsPopup.style.transform = 'translate(-50%, -12px)';
+      offcutsPopup.style.transition = 'all 0.25s cubic-bezier(0.16, 1, 0.3, 1)';
+      void offcutsPopup.offsetHeight; // force reflow
+      offcutsPopup.style.opacity = '1';
+      offcutsPopup.style.transform = 'translate(-50%, 0)';
+
+      if (navigator.vibrate) {
+        try { navigator.vibrate([40, 60, 40]); } catch (_) {}
+      }
+
+      offcutsTimer = setTimeout(function() {
+        offcutsPopup.style.opacity = '0';
+        offcutsPopup.style.transform = 'translate(-50%, -12px)';
+        setTimeout(function() {
+          offcutsPopup.classList.add('d-none');
+        }, 250);
+      }, 3000);
+    }
+
+    var intakeQtyInput = document.getElementById('intakeQty');
+    if (intakeQtyInput) {
+      // Prevent typing decimal characters
+      intakeQtyInput.addEventListener('keydown', function(e) {
+        if (e.key === '.' || e.key === ',' || e.key === 'e' || e.key === 'E' || e.key === '-' || e.key === '+') {
+          e.preventDefault();
+          showOffcutsPopup();
+        }
+      });
+
+      // Strip decimals if entered via software keypad, speech, or autofill
+      intakeQtyInput.addEventListener('input', function() {
+        var val = intakeQtyInput.value;
+        if (val.includes('.') || val.includes(',')) {
+          intakeQtyInput.value = val.replace(/[^0-9]/g, '');
+          showOffcutsPopup();
+        }
+      });
+
+      intakeQtyInput.addEventListener('paste', function(e) {
+        var pastedText = (e.clipboardData || window.clipboardData) ? (e.clipboardData || window.clipboardData).getData('text') : '';
+        if (pastedText && (pastedText.includes('.') || pastedText.includes(',') || parseFloat(pastedText) % 1 !== 0)) {
+          e.preventDefault();
+          var cleanInt = parseInt(pastedText.replace(/[^0-9]/g, ''), 10);
+          intakeQtyInput.value = (cleanInt && cleanInt > 0) ? String(cleanInt) : '';
+          showOffcutsPopup();
+        }
+      });
+    }
+
     // Reusable Custom searchable Combobox setup
     function setupCombobox(containerId, inputId, hiddenId, listId, onSelectCallback) {
       var container = document.getElementById(containerId);
@@ -1256,10 +1326,11 @@
           }
         }
 
-        // 3. Populate Quantity
+        // 3. Populate Quantity (Strictly whole boards only)
         var intakeQty = document.getElementById('intakeQty');
         if (intakeQty) {
-          intakeQty.value = qty;
+          var cleanQty = Math.max(1, Math.round(parseFloat(qty || '1')));
+          intakeQty.value = cleanQty;
           intakeQty.classList.remove('is-invalid');
           var qtyFeedback = document.getElementById('qtyFeedback');
           if (qtyFeedback) qtyFeedback.style.display = 'none';
@@ -1437,6 +1508,8 @@
             if (entry.status === 'synced') {
               badge.className = 'badge rounded-pill bg-success-subtle text-success';
               badge.textContent = 'Synced to Odoo';
+              var retryForm = document.querySelector('.board-retry-form[data-intake-id="' + entry.id + '"]');
+              if (retryForm) retryForm.remove();
               pendingLogIds.delete(String(entry.id));
 
               // Also update any matching locked alert items to indicate completion
@@ -1458,6 +1531,23 @@
               badge.textContent = 'Sync failed';
               badge.title = entry.error_message || '';
               pendingLogIds.delete(String(entry.id));
+            } else if (entry.status === 'reverted') {
+              badge.className = 'badge rounded-pill bg-secondary-subtle text-secondary';
+              badge.textContent = 'Reverted in Odoo';
+              pendingLogIds.delete(String(entry.id));
+
+              // Update the revert button/form to completed state
+              var revertForm = document.querySelector('.board-revert-form[data-intake-id="' + entry.id + '"]');
+              if (revertForm) {
+                revertForm.innerHTML = '<span class="badge rounded-pill bg-secondary-subtle text-secondary border px-2.5 py-1" style="font-size:0.75rem">✓ Reverted</span>';
+              }
+              var card = badge.closest('.border.rounded-4') || badge.closest('.card') || badge.parentElement.parentElement;
+              if (card) {
+                card.style.opacity = '0.65';
+              }
+            } else if (entry.status === 'reverting') {
+              badge.className = 'badge rounded-pill bg-warning-subtle text-warning-emphasis';
+              badge.textContent = 'Reverting in background...';
             }
           }
         });
@@ -1496,16 +1586,129 @@
             if (entry.status === 'synced') {
               badge.className = 'badge rounded-pill bg-success-subtle text-success';
               badge.textContent = 'Synced to Odoo';
+              var retryForm = document.querySelector('.board-retry-form[data-intake-id="' + entry.id + '"]');
+              if (retryForm) retryForm.remove();
             } else if (entry.status === 'failed') {
               badge.className = 'badge rounded-pill bg-danger-subtle text-danger';
               badge.textContent = 'Sync failed';
               badge.title = entry.error_message || '';
+            } else if (entry.status === 'reverted') {
+              badge.className = 'badge rounded-pill bg-secondary-subtle text-secondary';
+              badge.textContent = 'Reverted in Odoo';
+              var revertForm = document.querySelector('.board-revert-form[data-intake-id="' + entry.id + '"]');
+              if (revertForm) {
+                revertForm.innerHTML = '<span class="badge rounded-pill bg-secondary-subtle text-secondary border px-2.5 py-1" style="font-size:0.75rem">✓ Reverted</span>';
+              }
+              var card = badge.closest('.border.rounded-4') || badge.closest('.card') || badge.parentElement.parentElement;
+              if (card) {
+                card.style.opacity = '0.65';
+              }
+            } else if (entry.status === 'reverting') {
+              badge.className = 'badge rounded-pill bg-warning-subtle text-warning-emphasis';
+              badge.textContent = 'Reverting in background...';
             }
           }
         });
       } catch (_e) {}
     }
     hydrateRecentBoardLogsOnLoad();
+
+    // Background Revert Form Handler (Non-blocking)
+    document.addEventListener('submit', async function(e) {
+      var form = e.target.closest('.board-revert-form');
+      if (!form) return;
+      e.preventDefault();
+      if (!confirm('Revert this board intake in Odoo? This will remove the logged quantity from stock.')) return;
+
+      var id = form.getAttribute('data-intake-id');
+      var btn = form.querySelector('.btn-revert') || form.querySelector('button[type="submit"]');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" style="width:0.75rem;height:0.75rem"></span>Reverting...';
+      }
+
+      var badge = document.querySelector('[data-board-log-status="' + id + '"]');
+      if (badge) {
+        badge.className = 'badge rounded-pill bg-warning-subtle text-warning-emphasis';
+        badge.textContent = 'Reverting in background...';
+      }
+      if (id) trackPendingBoardLog(id);
+
+      try {
+        var formData = new FormData(form);
+        formData.append('ajax', 'true');
+        var res = await fetch(form.getAttribute('action'), {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/x-www-form-urlencoded'
+          },
+          body: new URLSearchParams(formData).toString()
+        });
+        var data = await res.json().catch(function() { return {}; });
+        if (!res.ok && !data.ok) {
+          alert(data.error || 'Failed to revert board log.');
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = 'Revert';
+          }
+          if (badge) {
+            badge.className = 'badge rounded-pill bg-danger-subtle text-danger';
+            badge.textContent = 'Sync failed';
+          }
+        }
+      } catch (err) {
+        console.warn('Revert request background error:', err);
+      }
+    });
+
+    // Background Retry Form Handler (Non-blocking)
+    document.addEventListener('submit', async function(e) {
+      var form = e.target.closest('.board-retry-form');
+      if (!form) return;
+      e.preventDefault();
+
+      var id = form.getAttribute('data-intake-id');
+      var btn = form.querySelector('.btn-retry') || form.querySelector('button[type="submit"]');
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" style="width:0.75rem;height:0.75rem"></span>Retrying...';
+      }
+
+      var badge = document.querySelector('[data-board-log-status="' + id + '"]');
+      if (badge) {
+        badge.className = 'badge rounded-pill bg-warning-subtle text-warning-emphasis';
+        badge.textContent = 'Syncing to Odoo';
+      }
+      if (id) trackPendingBoardLog(id);
+
+      try {
+        var formData = new FormData(form);
+        formData.append('ajax', 'true');
+        var res = await fetch(form.getAttribute('action'), {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/x-www-form-urlencoded'
+          },
+          body: new URLSearchParams(formData).toString()
+        });
+        var data = await res.json().catch(function() { return {}; });
+        if (!res.ok && !data.ok) {
+          alert(data.error || 'Failed to retry board log synchronization.');
+          if (btn) {
+            btn.disabled = false;
+            btn.textContent = 'Retry now';
+          }
+          if (badge) {
+            badge.className = 'badge rounded-pill bg-danger-subtle text-danger';
+            badge.textContent = 'Sync failed';
+          }
+        }
+      } catch (err) {
+        console.warn('Retry request background error:', err);
+      }
+    });
 
     // Toggle collapsible optional details (Vehicle, Time, Gate)
     var toggleBtn = document.getElementById('toggleDetailsBtn');
@@ -1578,6 +1781,21 @@
           isValid = false;
         } else {
           document.getElementById('productSearch').classList.remove('is-invalid');
+        }
+
+        var qtyInput = document.getElementById('intakeQty');
+        var rawQtyVal = qtyInput ? qtyInput.value.trim() : '';
+        var numQty = parseFloat(rawQtyVal);
+
+        if (!rawQtyVal || isNaN(numQty) || numQty <= 0 || !Number.isInteger(numQty) || numQty % 1 !== 0 || rawQtyVal.includes('.') || rawQtyVal.includes(',')) {
+          isValid = false;
+          if (qtyInput) qtyInput.classList.add('is-invalid');
+          showOffcutsPopup();
+          if (qtyInput) qtyInput.focus();
+          e.stopPropagation();
+          return;
+        } else {
+          if (qtyInput) qtyInput.classList.remove('is-invalid');
         }
 
         if (!form.checkValidity() || !isValid) {

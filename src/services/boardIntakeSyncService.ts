@@ -102,16 +102,49 @@ export async function syncBoardIntakeEntry(id: string) {
           );
         }
       }
-      const reportDate = new Intl.DateTimeFormat('en-CA', {
+      const reportDate = entry.arrival_date || new Intl.DateTimeFormat('en-CA', {
         timeZone: 'Africa/Nairobi',
         year: 'numeric',
         month: '2-digit',
         day: '2-digit',
       }).format(new Date());
-      const note = `Boards logged in OPERATOR MOBILE APP\nUser: ${entry.actor_name}\nClient: ${entry.customer_name}\nBoard: ${entry.product_name}\nQuantity: ${Number(entry.quantity)}\nDate: ${reportDate}`;
+
+      const safeCustomerName = escapeHtml(entry.customer_name);
+      const safeProductName = escapeHtml(entry.product_name);
+      const safeGate = escapeHtml(entry.gate ? String(entry.gate).trim() : '—');
+      const safeVehicleReg = escapeHtml(entry.vehicle_registration ? String(entry.vehicle_registration).trim() : '—');
+      const safeArrivalTime = escapeHtml(entry.arrival_time ? String(entry.arrival_time).trim() : '—');
+      const safeActor = escapeHtml(entry.actor_name || entry.actor_email || 'Operator');
+      const qtyNum = Number(entry.quantity);
+
+      const buildChatterHtml = (moName?: string) =>
+        `<p>🪵 <strong>Board log completed (Operator Mobile App)</strong></p>` +
+        `<p>` +
+        `<strong>Client:</strong> ${safeCustomerName}<br>` +
+        `<strong>Board:</strong> ${safeProductName}<br>` +
+        `<strong>Quantity:</strong> ${qtyNum}<br>` +
+        (moName ? `<strong>Manufacturing Order:</strong> ${escapeHtml(moName)}<br>` : '') +
+        `<strong>Gate:</strong> ${safeGate}<br>` +
+        `<strong>Vehicle Reg:</strong> ${safeVehicleReg}<br>` +
+        `<strong>Arrival Time:</strong> ${safeArrivalTime}<br>` +
+        `<strong>Date:</strong> ${escapeHtml(reportDate)}<br>` +
+        `<strong>Logged by:</strong> ${safeActor}` +
+        `</p>`;
+
+      // 1. Post to mrp.production chatter for all matching MOs
       await Promise.all(matchingMOs.map((mo) =>
-        client.postModelChatterMessage('mrp.production', mo.moId, note).catch(() => null),
+        client.postModelChatterMessage('mrp.production', mo.moId, buildChatterHtml(mo.moName)).catch(() => null),
       ));
+
+      // 2. Post to related sale.order chatter if matching MO has a linked Sales Order
+      const postedSoIds = new Set<number>();
+      for (const mo of matchingMOs) {
+        if (mo.soId && !postedSoIds.has(mo.soId)) {
+          postedSoIds.add(mo.soId);
+          await client.postModelChatterMessage('sale.order', mo.soId, buildChatterHtml(mo.moName)).catch(() => null);
+        }
+      }
+
       await client.reserveStockOnMOs(matchingMOs.map((mo) => mo.moId));
     }
 

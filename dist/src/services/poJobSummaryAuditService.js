@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.PO_JOB_SUMMARY_MISSING_ACTIVITY_SUMMARY = exports.PO_JOB_SUMMARY_DISCREPANCY_ACTIVITY_SUMMARY = void 0;
 exports.extractSoNameFromOrigin = extractSoNameFromOrigin;
+exports.findOdooUserByTerm = findOdooUserByTerm;
 exports.resolveNotificationStakeholders = resolveNotificationStakeholders;
 exports.comparePoLinesWithSheetMaterials = comparePoLinesWithSheetMaterials;
 exports.auditPurchaseOrderAgainstJobSummary = auditPurchaseOrderAgainstJobSummary;

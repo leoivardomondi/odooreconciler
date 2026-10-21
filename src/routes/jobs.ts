@@ -16,6 +16,7 @@ import {
   auditPurchaseOrderAgainstJobSummary,
   auditLinkedPurchaseOrdersForSaleOrder,
 } from '../services/poJobSummaryAuditService';
+import { reconcileWorkOrderQuantitiesForMo } from '../services/workOrderQuantityReconciliationService';
 import { ParsedJobSummaryResult } from '../models/types';
 import { closeOpenJobSummaryReminderActivities } from '../services/jobSummaryReminderService';
 import { logEvent } from '../services/logService';
@@ -23,6 +24,7 @@ import { sendDailyMpesaReviewNotification } from '../services/mpesaReviewNotific
 import { wakeInvoiceExtractionJobWorker } from '../services/invoiceExtractionJobService';
 import { wakeMpesaExtractionJobWorker } from '../services/mpesaExtractionJobService';
 import { sendHourlyShopFloorTaskReminders } from '../services/shopFloorTaskReminderService';
+import { sendDailyMoStockShortageReport } from '../services/moStockShortageReportService';
 import { OdooClient } from '../services/odooClient';
 import { runPoBillSchedulerCycle, runSchedulerCycle } from '../services/schedulerService';
 import {
@@ -1049,6 +1051,20 @@ async function handleOdooSyncWebhook(req: Request, res: Response) {
       if (resolvedType === 'mo') {
         shopFloorCache.clearPrefix('shop-floor-dashboard:');
         await syncPendingProcessesFromOdoo(true);
+        const moId =
+          parsePositiveInteger(payload.id) ||
+          parsePositiveInteger(payload.mo_id) ||
+          parsePositiveInteger(payload.production_id) ||
+          parsePositiveInteger(req.query.id);
+        if (moId) {
+          try {
+            const settings = await getSettings();
+            const client = new OdooClient(settings.odoo);
+            await reconcileWorkOrderQuantitiesForMo(client, moId);
+          } catch {
+            // Non-critical background sync
+          }
+        }
       } else if (resolvedType === 'picking') {
         shopFloorCache.clearPrefix('shop-floor-dashboard:');
         shopFloorCache.clearPrefix('shop-floor:receipts:');
@@ -1147,5 +1163,22 @@ router.post('/jobs/odoo-sync', handleOdooSyncWebhook);
 router.get('/jobs/odoo-sync', handleOdooSyncWebhook);
 router.post('/api/webhooks/odoo-sync', handleOdooSyncWebhook);
 router.get('/api/webhooks/odoo-sync', handleOdooSyncWebhook);
+
+router.all('/jobs/mo-stock-shortage', async (req: Request, res: Response) => {
+  const token = getWebhookToken(req);
+  const authorized = (await isAuthorizedCronRequest(token)) || (await isAuthorizedPoBillCronRequest(token)) || (Boolean(env.ODOO_WEBHOOK_TOKEN) && token === env.ODOO_WEBHOOK_TOKEN);
+  if (!authorized && req.authUser?.role !== 'admin') {
+    return res.status(401).json({ ok: false, error: 'Unauthorized.' });
+  }
+  try {
+    const recipients = typeof req.query.recipients === 'string'
+      ? req.query.recipients.split(/[;,]+/).map((r) => r.trim()).filter(Boolean)
+      : [];
+    await sendDailyMoStockShortageReport(recipients);
+    return res.json({ ok: true, message: 'Daily MO stock shortage report dispatched successfully.' });
+  } catch (error) {
+    return res.status(500).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+});
 
 export default router;

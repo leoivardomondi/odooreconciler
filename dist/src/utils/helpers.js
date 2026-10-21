@@ -183,6 +183,7 @@ function createDefaultMailConfig() {
             { id: 'weekly-shop-floor-report', name: 'Weekly shop-floor accountability report', systemKey: 'weekly-shop-floor-report', enabled: true, frequency: 'weekly', interval: 1, dayOfWeek: 3, hour: 7, recipients: '', subject: 'Wednesday Shop Floor Accountability Report', body: '', lastSentAt: '' },
             { id: 'mpesa-review', name: 'M-Pesa review pending', systemKey: 'mpesa-review', enabled: true, frequency: 'daily', interval: 1, dayOfWeek: 1, hour: 9, recipients: 'charles@urbanvibeinteriordesign.co.ke', subject: '', body: '', lastSentAt: '' },
             { id: 'mo-overtime', name: 'Large MO overtime suggestion', systemKey: 'mo-overtime', enabled: true, frequency: 'daily', interval: 1, dayOfWeek: 1, hour: 16, recipients: '', subject: '', body: '', lastSentAt: '' },
+            { id: 'mo-stock-shortage-report', name: 'Daily MO stock shortage & board mismatch report', systemKey: 'mo-stock-shortage-report', enabled: true, frequency: 'daily', interval: 1, dayOfWeek: 1, hour: 8, recipients: '', subject: 'Daily Manufacturing Orders Stock Shortage & Board Audit Report', body: '', lastSentAt: '' },
         ],
         shopFloorReportingStartDate: shopFloorReporting_1.SHOP_FLOOR_REPORTING_START_DATE,
     };

@@ -923,7 +923,7 @@ export function canAccessPath(
   if ((requestPath.startsWith('/invoice-parser') || requestPath.startsWith('/api/invoices')) && apps.includes('invoice-parser')) return true;
   if (requestPath.startsWith('/extractions') && apps.includes('extractions')) return true;
   if (requestPath.startsWith('/shop-floor/operators') && apps.includes('shop-floor-admin')) return true;
-  if (requestPath.startsWith('/shop-floor') && apps.includes('shop-floor')) return true;
+  if ((requestPath.startsWith('/shop-floor') || requestPath === '/shopfloor' || requestPath === '/shop_floor' || requestPath === '/shop') && apps.includes('shop-floor')) return true;
   if (requestPath.startsWith('/jobs') && apps.includes('jobs')) return true;
 
   return false;

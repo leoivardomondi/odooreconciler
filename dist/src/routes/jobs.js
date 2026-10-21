@@ -16,6 +16,7 @@ const mpesaReviewNotificationService_1 = require("../services/mpesaReviewNotific
 const invoiceExtractionJobService_1 = require("../services/invoiceExtractionJobService");
 const mpesaExtractionJobService_1 = require("../services/mpesaExtractionJobService");
 const shopFloorTaskReminderService_1 = require("../services/shopFloorTaskReminderService");
+const moStockShortageReportService_1 = require("../services/moStockShortageReportService");
 const odooClient_1 = require("../services/odooClient");
 const schedulerService_1 = require("../services/schedulerService");
 const schedulerFailureAnalysisService_1 = require("../services/schedulerFailureAnalysisService");
@@ -1000,4 +1001,21 @@ router.post('/jobs/odoo-sync', handleOdooSyncWebhook);
 router.get('/jobs/odoo-sync', handleOdooSyncWebhook);
 router.post('/api/webhooks/odoo-sync', handleOdooSyncWebhook);
 router.get('/api/webhooks/odoo-sync', handleOdooSyncWebhook);
+router.all('/jobs/mo-stock-shortage', async (req, res) => {
+    const token = getWebhookToken(req);
+    const authorized = (await isAuthorizedCronRequest(token)) || (await isAuthorizedPoBillCronRequest(token)) || (Boolean(env_1.env.ODOO_WEBHOOK_TOKEN) && token === env_1.env.ODOO_WEBHOOK_TOKEN);
+    if (!authorized && req.authUser?.role !== 'admin') {
+        return res.status(401).json({ ok: false, error: 'Unauthorized.' });
+    }
+    try {
+        const recipients = typeof req.query.recipients === 'string'
+            ? req.query.recipients.split(/[;,]+/).map((r) => r.trim()).filter(Boolean)
+            : [];
+        await (0, moStockShortageReportService_1.sendDailyMoStockShortageReport)(recipients);
+        return res.json({ ok: true, message: 'Daily MO stock shortage report dispatched successfully.' });
+    }
+    catch (error) {
+        return res.status(500).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+});
 exports.default = router;

@@ -6,6 +6,7 @@ exports.stopShopFloorPendingSyncInterval = stopShopFloorPendingSyncInterval;
 const repositories_1 = require("../models/repositories");
 const odooClient_1 = require("./odooClient");
 const boardProductClassifier_1 = require("./boardProductClassifier");
+const poJobSummaryAuditService_1 = require("./poJobSummaryAuditService");
 const logService_1 = require("./logService");
 let syncInProgress = false;
 let lastSyncTimestamp = 0;
@@ -35,7 +36,7 @@ async function syncPendingProcessesFromOdoo(force = false) {
         const rawActiveMOs = await client.searchReadRecords('mrp.production', {
             domain: [
                 ['company_id', '=', targetCompanyId],
-                ['state', 'in', ['confirmed', 'progress']],
+                ['state', 'in', ['confirmed', 'progress', 'to_close']],
             ],
             fields: ['id', 'name', 'state', 'origin'],
             limit: 250,
@@ -48,7 +49,11 @@ async function syncPendingProcessesFromOdoo(force = false) {
             return { ok: true, syncedCount: 0, message: 'No active MOs found in Odoo', durationMs: Date.now() - startTime };
         }
         // 2. Fetch origin SO partners in bulk for target company
-        const originNames = [...new Set(activeMOs.map(mo => mo.origin).filter(Boolean))];
+        const originNames = [...new Set(activeMOs.flatMap(mo => [
+                mo.origin,
+                (0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(mo.origin),
+                mo.name,
+            ]).filter(Boolean))];
         const soPartnerMap = new Map();
         if (originNames.length > 0) {
             const soRecords = await client.searchReadRecords('sale.order', {
@@ -89,45 +94,70 @@ async function syncPendingProcessesFromOdoo(force = false) {
         for (const mo of activeMOs) {
             moMap.set(mo.id, mo);
         }
-        // 5. Exclude components that already have confirmed purchase orders for this SO origin in target company
-        // Only check origins that actually have board component moves to keep query light and prevent timeouts
-        const relevantOriginNames = [...new Set(boardMoves.map(m => {
+        // 5. Exclude components that have active purchase orders (state != 'cancel') in target company
+        // Any active PO in draft, sent, to approve, purchase, or done indicates stock is expected from vendor delivery
+        const relevantOriginNames = [...new Set(boardMoves.flatMap(m => {
                 const rmId = Array.isArray(m.raw_material_production_id) ? m.raw_material_production_id[0] : m.raw_material_production_id;
                 const mo = moMap.get(rmId);
-                return mo?.origin || null;
-            }).filter(Boolean))];
+                if (!mo)
+                    return [];
+                return [mo.origin, (0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(mo.origin), mo.name].filter(Boolean);
+            }))];
         const originProductPOKeys = new Set();
+        const poCoveredKeys = new Set();
         if (relevantOriginNames.length > 0) {
             try {
                 const purchaseOrders = await client.searchReadRecords('purchase.order', {
                     domain: [
                         ['company_id', '=', targetCompanyId],
-                        ['state', 'in', ['purchase', 'done']],
+                        ['state', '!=', 'cancel'],
                         ['origin', 'in', relevantOriginNames],
                     ],
-                    fields: ['id', 'origin'],
-                    limit: 200,
+                    fields: ['id', 'name', 'origin', 'state'],
+                    limit: 300,
                     timeoutMs: 35000,
                 });
                 if (purchaseOrders.length > 0) {
                     const poIds = purchaseOrders.map(po => po.id);
                     const poLines = await client.searchReadRecords('purchase.order.line', {
                         domain: [['order_id', 'in', poIds]],
-                        fields: ['order_id', 'product_id'],
+                        fields: ['order_id', 'product_id', 'name'],
                         limit: 1000,
                         timeoutMs: 35000,
                     });
                     const poOriginMap = new Map();
                     for (const po of purchaseOrders) {
-                        if (po.origin)
-                            poOriginMap.set(po.id, po.origin);
+                        if (po.origin) {
+                            const keys = [po.origin];
+                            const extracted = (0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(po.origin);
+                            if (extracted)
+                                keys.push(extracted);
+                            if (po.origin.includes(':')) {
+                                po.origin.split(':').forEach(part => {
+                                    const p = part.trim();
+                                    if (p)
+                                        keys.push(p);
+                                });
+                            }
+                            poOriginMap.set(po.id, keys);
+                        }
                     }
                     for (const line of poLines) {
                         const poId = Array.isArray(line.order_id) ? line.order_id[0] : 0;
                         const productId = Array.isArray(line.product_id) ? line.product_id[0] : 0;
-                        const origin = poOriginMap.get(poId);
-                        if (origin && productId) {
-                            originProductPOKeys.add(`${origin}_${productId}`);
+                        const productName = line.name || (Array.isArray(line.product_id) ? line.product_id[1] : '');
+                        const normalizedPoProdName = (0, boardProductClassifier_1.normalizeBoardProductName)(productName);
+                        const isBoardLine = (0, boardProductClassifier_1.isBoardProductName)(productName);
+                        if (!isBoardLine && !productId)
+                            continue;
+                        const origins = poOriginMap.get(poId) || [];
+                        for (const orig of origins) {
+                            if (productId) {
+                                originProductPOKeys.add(`${orig}_${productId}`);
+                            }
+                            if (normalizedPoProdName) {
+                                originProductPOKeys.add(`${orig}_${normalizedPoProdName}`);
+                            }
                         }
                     }
                 }
@@ -140,6 +170,7 @@ async function syncPendingProcessesFromOdoo(force = false) {
         }
         // 6. Build requirement records
         const recordsToUpsert = [];
+        const activeLogs = await (0, repositories_1.getActiveBoardIntakeLogs)();
         const aggregatedMoves = new Map();
         for (const move of boardMoves) {
             const moId = Array.isArray(move.raw_material_production_id)
@@ -150,11 +181,18 @@ async function syncPendingProcessesFromOdoo(force = false) {
                 continue;
             const productId = Array.isArray(move.product_id) ? move.product_id[0] : 0;
             const productName = Array.isArray(move.product_id) ? move.product_id[1] : '';
-            // If a PO exists for this origin and product, exclude it (procurement handled via PO)
-            if (mo.origin && originProductPOKeys.has(`${mo.origin}_${productId}`)) {
+            const normalizedMoveProdName = (0, boardProductClassifier_1.normalizeBoardProductName)(productName);
+            // If an active PO exists for this origin/MO and product, exclude it (procured via vendor delivery, not gate log)
+            const soOrigin = mo.origin ? (0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(mo.origin) : null;
+            const poCovered = Boolean((mo.origin && (originProductPOKeys.has(`${mo.origin}_${productId}`) || originProductPOKeys.has(`${mo.origin}_${normalizedMoveProdName}`))) ||
+                (soOrigin && (originProductPOKeys.has(`${soOrigin}_${productId}`) || originProductPOKeys.has(`${soOrigin}_${normalizedMoveProdName}`))) ||
+                originProductPOKeys.has(`${mo.name}_${productId}`) ||
+                originProductPOKeys.has(`${mo.name}_${normalizedMoveProdName}`));
+            if (poCovered) {
+                poCoveredKeys.add(`${moId}_${productId}`);
                 continue;
             }
-            const partnerInfo = mo.origin ? soPartnerMap.get(mo.origin) : null;
+            const partnerInfo = mo.origin ? (soPartnerMap.get(mo.origin) || (soOrigin ? soPartnerMap.get(soOrigin) : null)) : null;
             const partnerId = partnerInfo?.partnerId || 0;
             const partnerName = partnerInfo?.partnerName || 'Unknown Customer';
             if (partnerId === 350 || partnerName.toUpperCase() === 'URBAN VIBE 2') {
@@ -183,7 +221,25 @@ async function syncPendingProcessesFromOdoo(force = false) {
             }
         }
         for (const [key, agg] of aggregatedMoves.entries()) {
-            const qtyMissing = Math.max(0, agg.qtyNeeded - agg.qtyReserved);
+            const cleanCustomer = String(agg.partnerName || '').trim().toLowerCase();
+            const cleanProduct = String(agg.productName || '').trim().toLowerCase();
+            const matchingLogs = activeLogs.filter((log) => {
+                const logPid = Number(log.partner_id || 0);
+                const logProdId = Number(log.product_id || 0);
+                const logCust = String(log.customer_name || '').trim().toLowerCase();
+                const logProd = String(log.product_name || '').trim().toLowerCase();
+                const custMatch = Boolean((agg.partnerId > 0 && logPid > 0 && agg.partnerId === logPid) ||
+                    (cleanCustomer && (logCust.includes(cleanCustomer) || cleanCustomer.includes(logCust))));
+                const prodMatch = Boolean((agg.productId > 0 && logProdId > 0 && agg.productId === logProdId) ||
+                    (cleanProduct && (logProd.includes(cleanProduct) || cleanProduct.includes(logProd))));
+                return custMatch && prodMatch;
+            });
+            const totalLogged = matchingLogs.reduce((sum, l) => sum + Number(l.quantity || 0), 0);
+            const isFulfilledByHistoryLog = totalLogged >= agg.qtyNeeded;
+            // RULE: "make sure that a board log request under add stock area only disappears if a history log that matches it appears"
+            // Even if Odoo shop floor closed the job or reserved someone else's stock (agg.qtyReserved >= agg.qtyNeeded),
+            // if NO history log exists for this customer and product, the customer's boards have NOT been logged at the gate!
+            const qtyMissing = isFulfilledByHistoryLog ? 0 : Math.max(0, agg.qtyNeeded - totalLogged);
             if (qtyMissing > 0) {
                 recordsToUpsert.push({
                     id: key,
@@ -196,7 +252,7 @@ async function syncPendingProcessesFromOdoo(force = false) {
                     product_id: agg.productId,
                     product_name: agg.productName,
                     qty_needed: agg.qtyNeeded,
-                    qty_reserved: agg.qtyReserved,
+                    qty_reserved: totalLogged,
                     qty_missing: qtyMissing,
                     status: 'pending',
                     loaded_at: null,
@@ -208,7 +264,8 @@ async function syncPendingProcessesFromOdoo(force = false) {
         // 7. Upsert into MySQL table (preserves locally loaded items)
         await (0, repositories_1.upsertPendingShopFloorProcesses)(recordsToUpsert);
         // 8. Prune stale pending rows for active MOs if components were removed or corrected in Odoo
-        await (0, repositories_1.pruneStalePendingProcessesForActiveMos)(activeMOs.map((mo) => mo.id), recordsToUpsert.map((r) => r.id));
+        // Any PO-covered keys are explicitly purged so they do not linger in the Add Stock area
+        await (0, repositories_1.pruneStalePendingProcessesForActiveMos)(activeMOs.map((mo) => mo.id), recordsToUpsert.map((r) => r.id), Array.from(poCoveredKeys));
         // 9. Clean up stale completed items older than 7 days
         await (0, repositories_1.deleteStaleCompletedProcesses)(7);
         lastSyncTimestamp = Date.now();

@@ -347,7 +347,7 @@ function buildMailConfigFromSource(source, existing) {
                 return {
                     id: (source[`mailAutomation${number}Id`] || current?.id || `custom-${Date.now()}-${number}`).replace(/[^a-zA-Z0-9_-]/g, ''),
                     name: (source[`mailAutomation${number}Name`] || current?.name || `Email ${number}`).trim(),
-                    systemKey: ['shop-floor-reminders', 'weekly-shop-floor-report', 'mpesa-review', 'mo-overtime'].includes(systemKey) ? systemKey : 'custom',
+                    systemKey: ['shop-floor-reminders', 'weekly-shop-floor-report', 'mpesa-review', 'mo-overtime', 'mo-stock-shortage-report'].includes(systemKey) ? systemKey : 'custom',
                     enabled: source[`mailAutomation${number}Enabled`] === 'on',
                     frequency: ['hourly', 'daily', 'weekly'].includes(frequency) ? frequency : 'daily',
                     interval: Math.min(168, Math.max(1, Number(source[`mailAutomation${number}Interval`]) || 1)),

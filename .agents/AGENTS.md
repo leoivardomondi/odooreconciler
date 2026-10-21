@@ -118,3 +118,108 @@
     - Webhook: `type=so` or `model=sale.order` triggers `auditLinkedPurchaseOrdersForSaleOrder` immediately following Job Summary extraction.
     - Automation: Triggered via 0-LOC Odoo 19 "Send Webhook Notification" action on `purchase.order` confirmation.
 
+- **Cutting Work Order & Manufacturing Order Quantity Reconciliation**:
+  - **Service**: [src/services/workOrderQuantityReconciliationService.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/workOrderQuantityReconciliationService.ts).
+  - **Core Rule**: Whenever a Job Summary is parsed or an approved PO is checked, any Manufacturing Order (`mrp.production`) and Work Order (`mrp.workorder`) for cutting products (e.g. `Cutting White Mdf 18mm 6 panels`) whose quantity differs from the Job Summary/approved PO (e.g. Sales Order line says 6 panels, but Job Summary specifies 4 sheets/panels) has its quantities reconciled to match the Job Summary:
+    1. **`mrp.production`**: `product_qty` updated to target quantity (e.g. 4), and `qty_producing` aligned if greater.
+    2. **`mrp.workorder`**: `qty_production` (quantity to process) updated to target quantity (e.g. 4), and `qty_producing` aligned if greater.
+    3. **`stock.move` (`raw_material_production_id`)**: Component board required quantity (`product_uom_qty`) updated to target quantity (e.g. 4).
+    4. **Stock Reservation Allocation**: Triggers `action_assign` on `mrp.production` so raw stock reservation immediately re-evaluates against the exact required count, eliminating false shortages and enabling the operator to start/close without unreserved errors.
+    5. **Audit Logging & Chatter**: Posts itemized reconciliation notes on `mrp.production` and `sale.order` chatter and records an audit log event.
+    6. **Multi-Tier Cache Invalidation**: Automatically clears RAM and MySQL shop floor dashboard snapshots.
+  - **Automatic Triggers**:
+    - Job Summary extraction in [src/services/extractionService.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/extractionService.ts) (`reconcileWorkOrderQuantitiesForSaleOrder`).
+    - Purchase Order audit in [src/services/poJobSummaryAuditService.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/poJobSummaryAuditService.ts) (`auditPurchaseOrderAgainstJobSummary` and `auditLinkedPurchaseOrdersForSaleOrder`).
+    - Webhooks in [src/routes/jobs.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/routes/jobs.ts) for `type=mo`, `type=po`, and `type=so`.
+
+- **Daily Manufacturing Order (MO) Stock Shortage & Board Audit Pipeline**:
+  - **Service**: [src/services/moStockShortageReportService.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/moStockShortageReportService.ts) and [src/services/boardProductClassifier.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/boardProductClassifier.ts).
+  - **Audit Scope**: All active MOs (`state in ('confirmed', 'progress', 'to_close')`) strictly for company 1 (`URBAN VIBE INTERIOR DESIGN COMPANY LTD`), permanently excluding company 3 and `VA/` prefixes.
+  - **Shortage Categorization & Root Causes**:
+    1. **Critical Board Mismatch (`board_mismatch` - Red Alert)**:
+       - Detects when a board of the **same color family** was logged against the client in Board Intake (`board_intake_queue`), but has an **incompatible substrate** (`mdf` vs `particle`, `plywood` vs `mdf`) or **incompatible thickness** (`18mm` vs `16mm`).
+       - Flagged with top-level executive RED ALERT banners and highlighted in order tables to prevent factory cutting errors before sawing starts.
+    2. **Pending Warehouse Receipt (`pending_receipt` - Amber Alert)**:
+       - Component move has an open incoming vendor transfer in `stock.picking` (`state in ('draft', 'waiting', 'confirmed', 'assigned')`) not yet received/validated in the Receipt App.
+    3. **Awaiting Board Intake (`awaiting_board_intake` - Blue Alert)**:
+       - Board material has not yet been logged in the Board Intake App for the client.
+    4. **Unprocured Hardware (`unprocured_hardware` - Grey Alert)**:
+       - Hardware / component without any incoming vendor transfer or PO covering it.
+  - **Endpoints & Delivery**:
+    - **Interactive Web Preview**: `GET /reports/mo-stock-shortage` (instant SWR cached view, supports `?refresh=true`).
+    - **Manual Dispatch**: `POST /reports/mo-stock-shortage/send`.
+    - **Automated Webhook / Cron Trigger**: `GET /jobs/mo-stock-shortage` (token-protected).
+    - **Scheduled Email**: Daily at 8:00 AM Nairobi time via `emailAutomationService.ts` (`systemKey: 'mo-stock-shortage-report'`).
+
+- **PO Bill Automation Activity Deduplication**:
+  - `createPurchaseOrderActivity()` in [src/services/poBillAutomationService.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/poBillAutomationService.ts) enforces strict anti-duplication both via an in-memory 1-hour cache and pre-flight Odoo queries (`findOpenActivities`).
+  - When `'PO bill automation completed'` is created, it automatically finds and marks any open `'Review PO bill automation'` activities as done (`closeActivities()`), preventing redundant to-do tasks from lingering on purchase orders.
+
+- **Non-Blocking Background Board Reversion**:
+  - `POST /shop-floor/board-intake/:id/revert` in [src/routes/shopFloor.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/routes/shopFloor.ts) atomically claims the revert in MySQL (`claimBoardIntakeRevert`, status `'reverting'`) and returns immediately (<10ms).
+  - Background task dispatches `OdooClient.removeBoardsFromStock` and calls `finishBoardIntakeRevert`.
+  - UI in [src/views/shop-floor-boards.ejs](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/views/shop-floor-boards.ejs) displays `'Reverting in background...'` and tracks completion without freezing the screen.
+
+- **Strict Vendor Receipt Restriction (BITCHER ONYANGO $\longleftrightarrow$ TINT INTERIOR)**:
+  - User **BITCHER ONYANGO** (`isBitcherOnyangoUser`) is strictly barred from receiving or validating any purchase receipt item originating from vendor **TINT INTERIOR** (`isTintInteriorVendor`).
+  - **In-App Receipt View**: [src/views/shop-floor-receipts.ejs](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/views/shop-floor-receipts.ejs) renders a disabled `<button>` (`"Restricted (Tint Interior)"`) and alert badge for Bitcher Onyango when the vendor is Tint Interior.
+  - **Server-Side Enforcement**: `POST /shop-floor/receipts/:id/validate` in [src/routes/shopFloor.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/routes/shopFloor.ts) queries the picking's vendor in Odoo if the user is Bitcher Onyango and blocks execution with `HTTP 403` (`code: 'vendor_restricted'`). All other operators are permitted to receive normally.
+
+- **Instant Manufacturing Order Start and Close**:
+  - While strictly preserving the Zero Unreserved Operations Rule (missing stock blocks with `HTTP 409`), once 100% of required components are verified in stock, `POST /shop-floor/work-order/:id/advance` responds immediately (<100ms) with `{ ok: true, state: targetState, message, employeeName }`.
+  - `OdooClient.advanceManufacturingOrder` (and work order timer logging) executes asynchronously in the background.
+  - [src/views/shop-floor.ejs](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/views/shop-floor.ejs) dismisses the modal immediately, applies 0ms optimistic updates, and uses per-MO tracking (`activeMoSubmissions`) rather than a page-wide lock, giving operators an instant, non-blocking experience.
+
+- **Add Stock / Board Intake Rules (Active PO Exclusion & History Log Persistence)**:
+  - **Active PO Exclusion from Add Stock**:
+    - Any Manufacturing Order (MO) that has an active Purchase Order (PO) in **any state** (`draft`, `sent`, `to approve`, `purchase`, `done` — i.e. `state != 'cancel'`), where the related Sales Order (SO) has board order lines (category `Goods / Boards` or matching board product patterns) and the PO covers the same boards, must **NOT appear in the ADD STOCK area** (`/shop-floor/boards`, `localStockAlerts`, or `/shop-floor/boards/requirements`) as requiring manual board logs.
+    - Stock is expected from vendor delivery via the Receipts app (`/shop-floor/receipts`) upon PO approval and receipt validation.
+    - When `syncPendingProcessesFromOdoo` runs, any existing pending records for PO-covered MOs and board products are purged via `poCoveredKeys`.
+    - In [src/routes/shopFloor.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/routes/shopFloor.ts), `hasActivePo = Boolean(poState && poState !== 'cancel')` marks MO stock status as `'incoming'` ("Incoming / Purchase") and suppresses `localStockAlerts`.
+  - **History Log Persistence Rule ("Only disappears if a history log that matches it appears")**:
+    - When a job is closed in Odoo shop floor (`state in ('to_close', 'done')`) or uses another client's/unreserved stock, the required stock log record in the Add Stock area (`shop_floor_pending_processes`) **ONLY disappears if a matching history log in `board_intake_queue` (`status in ('synced', 'processing', 'pending')`) appears and fulfills the required quantity**.
+    - If no operator physically logged the boards at the gate, the requirement is **NEVER pruned or deleted** by background sync or cleanup jobs; it is permanently preserved as `status = 'pending'` so missing client stock is never lost.
+    - If a matching history log is reverted by an administrator, `unmarkPendingShopFloorProcessesLoaded` automatically restores `qty_missing` and resets status to `'pending'`, causing the requirement to immediately reappear in the Add Stock area.
+
+- **Operator MO Lifecycle Control (Start, Pause, Close) & Zero-404 Architecture**:
+  - **Resolution of "PAGE NOT FOUND, /shop-floor does not exist"**:
+    - Previously, action modals had empty form actions (`action=""`) which defaulted browser form submissions to `POST /shop-floor`. Because only `GET /shop-floor` was registered, submissions produced a 404 error page.
+    - Added dedicated `POST /shop-floor` endpoint in [src/routes/shopFloor.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/routes/shopFloor.ts) that gracefully forwards start, pause, and finish actions to `handleAdvanceMo` and `handlePauseMo`, or redirects to `/shop-floor` without ever 404ing.
+    - Added route aliases and auth permissions for `/shopfloor`, `/shop_floor`, and `/shop` across [src/services/authService.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/authService.ts) and [src/routes/shopFloor.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/routes/shopFloor.ts).
+    - Hardened modal triggers in [src/views/shop-floor.ejs](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/views/shop-floor.ejs) via delegated click listeners (`configureMoModal`) that ensure target MO IDs and form actions are always populated before modals open or submit.
+  - **Starting Manufacturing Orders**:
+    - Operators tap "Start" on confirmed MOs (or "Continue" on paused MOs).
+    - Zero Unreserved Operations rule enforces 100% component availability via `checkManufacturingOrderStockAvailability`.
+    - Responds instantly (<100ms) with optimistic UI progress state while background worker starts the Odoo work order and tracks employee attendance.
+  - **Pausing Manufacturing Orders**:
+    - Operators tap "Pause" on in-progress MOs to open `#pauseMoModal`.
+    - Allows recording units completed so far (`qtyProduced`) and toggling backorders for remaining units (`createBackorder`).
+    - Handled via `POST /shop-floor/work-order/:id/pause` and `OdooClient.pauseManufacturingOrder`: invokes `stop_employee` and `button_pending` on the active work order in Odoo, logs audit note in chatter, records MO in `manuallyPausedMoIds`, and clears shared caches.
+    - UI updates optimistically to show the "Paused" badge and provides "Continue" and "Finish" buttons.
+  - **Closing Manufacturing Orders**:
+    - When finishing the final work order on an MO, `OdooClient.advanceManufacturingOrder` checks if any uncompleted work orders remain. When none remain (or if the MO is already in `to_close` state), it automatically executes `button_mark_done` on `mrp.production` to officially close the Manufacturing Order in Odoo.
+
+- **Board Intake Chatter Cross-Posting to Related Sales Orders & Manufacturing Orders**:
+  - Whenever boards are logged in the Operator Mobile App (`/shop-floor/boards`, `board_intake_queue`), an email notification is always sent to the configured recipient (`boardLogNotificationEmail`, e.g. Sharon).
+  - In [src/services/boardIntakeSyncService.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/boardIntakeSyncService.ts) and [src/services/odooClient.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/odooClient.ts) (`findMOsForBoardIntake`), any matching active MOs for the client and board product are resolved alongside their linked Sales Orders (`soId` and `soName` via `extractSoNameFromOrigin`).
+  - **Cross-Posting Rule**:
+    - If a matching Manufacturing Order exists AND has a linked Sales Order, a formatted HTML chatter message is posted to **BOTH** the Manufacturing Order (`mrp.production`) and the **related Sales Order** (`sale.order`).
+    - The message contains **100% of the details that go to email**:
+      - Client Name
+      - Board Product Name
+      - Quantity
+      - Manufacturing Order reference (`WH/MO/...`)
+      - Gate (`Front Gate` / `Back Gate` / `—`)
+      - Vehicle Registration (`—` if not provided)
+      - Arrival Time (`—` if not provided)
+      - Arrival Date (or today's date)
+      - Logged by (operator display name or email)
+  - **No Matching MO / SO Rule**:
+    - If there is no matching MO or no linked Sales Order for the logged boards, no chatter call is made to non-existent orders; the board intake record **only goes to email** without throwing any errors.
+
+- **Full Boards Only (No Decimals / Offcuts Rule)**:
+  - In [src/views/shop-floor-boards.ejs](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/views/shop-floor-boards.ejs), the intake quantity field (`#intakeQty`) is strictly configured with `min="1" step="1" inputmode="numeric"`.
+  - Typing decimal characters (`.`, `,`, `e`, `-`, `+`), pasting decimals, or submitting non-integers is completely blocked.
+  - A 3-second floating popup/toast (`#offcutsPopup`) dynamically appears: *"Only full boards can be logged. Offcuts do not need logging."* and auto-dismisses after 3000ms.
+  - The backend (`POST /shop-floor/board-intake` in [src/routes/shopFloor.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/routes/shopFloor.ts)) strictly enforces `Number.isInteger(qty) && qty % 1 === 0`, rejecting any decimal submissions with HTTP 400.
+

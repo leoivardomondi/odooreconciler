@@ -13,6 +13,7 @@ import { getPurchaseOrderLines } from './poBillAutomationService';
 import { parseJobSummaryPdf } from './pdfParser';
 import { DEFAULT_PARSER_CONFIG, isJobSummaryAttachment } from '../utils/helpers';
 import { normalizeColor } from './stockProcessingService';
+import { reconcileWorkOrderQuantitiesForSaleOrder } from './workOrderQuantityReconciliationService';
 import { env } from '../utils/env';
 
 export const PO_JOB_SUMMARY_DISCREPANCY_ACTIVITY_SUMMARY = 'PO PROCUREMENT MISMATCH: CLARIFICATION NEEDED';
@@ -75,7 +76,7 @@ export function extractSoNameFromOrigin(origin: string | null | undefined): stri
 /**
  * Searches Odoo for a user by name or login pattern.
  */
-async function findOdooUserByTerm(client: OdooClient, term: string): Promise<OdooUserStakeholder | null> {
+export async function findOdooUserByTerm(client: OdooClient, term: string): Promise<OdooUserStakeholder | null> {
   try {
     const users = await client.searchReadRecords<{
       id: number;
@@ -553,6 +554,19 @@ export async function auditPurchaseOrderAgainstJobSummary(
     }
   } catch {
     // Non-critical activity close failure
+  }
+
+  // Reconcile cutting work order and MO quantities with Job Summary requirements & approved PO
+  try {
+    await reconcileWorkOrderQuantitiesForSaleOrder(client, so.id, {
+      parsedJobSummary: parsed,
+    });
+  } catch (reconcileErr) {
+    await logEvent('warn', 'Failed to reconcile work order quantities during PO audit', {
+      poId: po.id,
+      soId: so.id,
+      error: reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr),
+    });
   }
 
   // Compare PO lines

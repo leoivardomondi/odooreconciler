@@ -35,6 +35,7 @@ import {
   getSignatureComparisonLabel,
 } from './signatureService';
 import { syncQuotationWithJobSummary } from './quotationSyncService';
+import { reconcileWorkOrderQuantitiesForSaleOrder } from './workOrderQuantityReconciliationService';
 
 async function getConfiguredClient() {
   const settings = await getSettings();
@@ -463,6 +464,23 @@ export async function sendExtractedResultToOdoo(historyId: string, forceSend = f
           historyId,
           orderId: history.orderId,
           error: quotationSyncErr instanceof Error ? quotationSyncErr.message : String(quotationSyncErr),
+        },
+        historyId,
+      );
+    }
+
+    try {
+      await reconcileWorkOrderQuantitiesForSaleOrder(client, history.orderId, {
+        parsedJobSummary: extracted.resultJson,
+      });
+    } catch (reconcileErr) {
+      await logEvent(
+        'warn',
+        'Failed to reconcile cutting work order quantities for Sale Order',
+        {
+          historyId,
+          orderId: history.orderId,
+          error: reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr),
         },
         historyId,
       );

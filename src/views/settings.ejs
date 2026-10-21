@@ -494,11 +494,16 @@
               </h3>
               <p class="text-secondary small mb-0">Audit log of automatic reports, hourly reminders, and alerts dispatched by the background worker.</p>
             </div>
-            <% if (typeof sentReports !== 'undefined' && sentReports.some(r => r.downloadUrl)) { %>
-              <a href="/shop-floor/operators/weekly-report.pdf" target="_blank" class="btn btn-sm btn-outline-primary">
-                📄 Download Latest Report PDF
+            <div class="d-flex gap-2">
+              <a href="/reports/mo-stock-shortage" target="_blank" class="btn btn-sm btn-outline-danger">
+                📋 MO Stock Shortage Report
               </a>
-            <% } %>
+              <% if (typeof sentReports !== 'undefined' && sentReports.some(r => r.downloadUrl)) { %>
+                <a href="/shop-floor/operators/weekly-report.pdf" target="_blank" class="btn btn-sm btn-outline-primary">
+                  📄 Download Latest Report PDF
+                </a>
+              <% } %>
+            </div>
           </div>
 
           <% if (typeof sentReports === 'undefined' || !sentReports || sentReports.length === 0) { %>

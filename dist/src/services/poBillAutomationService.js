@@ -33,6 +33,7 @@ const helpers_1 = require("../utils/helpers");
 const paths_1 = require("../utils/paths");
 const unreadableDocumentNotificationService_1 = require("./unreadableDocumentNotificationService");
 const aiCredentialFailureNotificationService_1 = require("./aiCredentialFailureNotificationService");
+const odooActivityService_1 = require("./odooActivityService");
 const TOTAL_TOLERANCE = 1;
 const AUTO_MATCH_THRESHOLD = 90;
 const CORE_MATCH_THRESHOLD = 90;
@@ -2002,7 +2003,42 @@ async function getTodoActivityTypeId(client) {
     }
     return fallbackTypes[0].id;
 }
+const poBillActivityCooldown = new Map();
+const PO_BILL_ACTIVITY_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour
 async function createPurchaseOrderActivity(client, purchaseOrder, summary, noteLines) {
+    const pdfLine = noteLines.find((l) => l.startsWith('Invoice PDF:')) || '';
+    const dedupeKey = `${purchaseOrder.id}:${summary}:${pdfLine}`;
+    // 1. In-memory deduplication check (prevents double activities from rapid scheduler cycles)
+    const lastCreated = poBillActivityCooldown.get(dedupeKey);
+    if (lastCreated && Date.now() - lastCreated < PO_BILL_ACTIVITY_COOLDOWN_MS) {
+        return null;
+    }
+    // 2. Query open activities on this purchase order in Odoo to prevent double activity
+    try {
+        const existingActivities = await (0, odooActivityService_1.findOpenActivities)(client, {
+            modelName: 'purchase.order',
+            recordId: purchaseOrder.id,
+            summary,
+        });
+        if (existingActivities && existingActivities.length > 0) {
+            poBillActivityCooldown.set(dedupeKey, Date.now());
+            return existingActivities[0].id;
+        }
+        // 3. When automation completes, close any pending 'Review PO bill automation' activity on this PO
+        if (summary === 'PO bill automation completed') {
+            const openReviewActivities = await (0, odooActivityService_1.findOpenActivities)(client, {
+                modelName: 'purchase.order',
+                recordId: purchaseOrder.id,
+                summary: 'Review PO bill automation',
+            });
+            if (openReviewActivities.length > 0) {
+                await (0, odooActivityService_1.closeActivities)(client, openReviewActivities.map((a) => a.id), 'Closed automatically because vendor bill has been posted and payment registered.').catch(() => undefined);
+            }
+        }
+    }
+    catch (err) {
+        console.warn('[poBillAutomation] Failed to check existing activities, proceeding safely:', err);
+    }
     const resModelId = await getPurchaseOrderModelId(client);
     const activityTypeId = await getTodoActivityTypeId(client);
     const allowedUser = await client.findUserByNameLoginOrEmail(ALLOWED_NOTIFICATION_USER_NAME);
@@ -2018,7 +2054,9 @@ async function createPurchaseOrderActivity(client, purchaseOrder, summary, noteL
         note: `<p>${noteLines.map(escapeHtml).join('<br/>')}</p>`,
         date_deadline: formatDateOnly(new Date()),
     };
-    return client.createRecord('mail.activity', values);
+    const createdId = await client.createRecord('mail.activity', values);
+    poBillActivityCooldown.set(dedupeKey, Date.now());
+    return createdId;
 }
 async function runPoBillAutomationInternal(client, input) {
     const checks = [];
@@ -2817,8 +2855,14 @@ async function runPoBillAutomationInternal(client, input) {
                     `Vendor bill: ${vendorBill?.name || vendorBill?.id || 'not created'}`,
                     actionsPending.length > 0 ? `Follow-up: ${actionsPending.join(' ')}` : 'No follow-up pending.',
                 ]);
-                actionsTaken.push(`Created PO activity ${activityId} for automation follow-up.`);
-                addCheck(checks, 'Activity', 'pass', `Activity ${activityId} was created on ${purchaseOrder.name}.`);
+                if (activityId) {
+                    actionsTaken.push(`Created PO activity ${activityId} for automation follow-up.`);
+                    addCheck(checks, 'Activity', 'pass', `Activity ${activityId} was created on ${purchaseOrder.name}.`);
+                }
+                else {
+                    actionsTaken.push(`Activity already exists on ${purchaseOrder.name}; skipped duplicate.`);
+                    addCheck(checks, 'Activity', 'pass', `Existing activity on ${purchaseOrder.name} preserved without duplication.`);
+                }
             }
             catch (error) {
                 const message = error instanceof Error ? error.message : 'Unknown activity creation error.';
@@ -2882,7 +2926,12 @@ async function runPoBillAutomationInternal(client, input) {
                         .map((check) => `${check.label}: ${check.detail}`)
                         .join(' | ') || 'No failed checks were recorded.'}`,
                 ]);
-                actionsTaken.push(`Created PO review activity ${activityId}.`);
+                if (activityId) {
+                    actionsTaken.push(`Created PO review activity ${activityId}.`);
+                }
+                else {
+                    actionsTaken.push(`Review activity already exists on ${purchaseOrder.name}; skipped duplicate.`);
+                }
             }
             catch (error) {
                 const message = error instanceof Error ? error.message : 'Unknown activity creation error.';

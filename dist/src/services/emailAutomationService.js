@@ -11,6 +11,7 @@ const mpesaReviewNotificationService_1 = require("./mpesaReviewNotificationServi
 const moOvertimeSuggestionService_1 = require("./moOvertimeSuggestionService");
 const shopFloorTaskReminderService_1 = require("./shopFloorTaskReminderService");
 const weeklyShopFloorReportService_1 = require("./weeklyShopFloorReportService");
+const moStockShortageReportService_1 = require("./moStockShortageReportService");
 let timer = null;
 let running = false;
 let lastSentWeeklyReportDateKey = '';
@@ -94,6 +95,8 @@ async function dispatch(item) {
             return (0, mpesaReviewNotificationService_1.sendDailyMpesaReviewNotification)(to[0] || '');
         case 'mo-overtime':
             return (0, moOvertimeSuggestionService_1.sendMoOvertimeSuggestion)(to[0] || '');
+        case 'mo-stock-shortage-report':
+            return (0, moStockShortageReportService_1.sendDailyMoStockShortageReport)(to);
         default: {
             if (!to.length)
                 throw new Error(`Custom email "${item.name}" needs at least one recipient.`);

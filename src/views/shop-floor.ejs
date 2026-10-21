@@ -1467,8 +1467,9 @@
           </div>
           <div id="manufacturingOrderActionStatus" class="alert d-none" role="status" aria-live="polite"></div>
           <div class="d-grid gap-3">
-            <form id="manufacturingOrderActionForm" method="post" action="" data-no-loading="true">
+            <form id="manufacturingOrderActionForm" method="post" action="/shop-floor" data-no-loading="true">
               <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+              <input type="hidden" name="moId" id="manufacturingOrderIdInput" value="" />
               <input type="hidden" name="action" id="manufacturingOrderActionValue" value="start" />
               <button id="manufacturingOrderStartButton" class="btn btn-success w-100 py-3 fw-bold" type="submit"><i class="bi bi-play-fill me-2"></i><span>Start</span></button>
             </form>
@@ -1575,7 +1576,7 @@
   var actionStatus = document.getElementById('manufacturingOrderActionStatus');
   var currentStockStatus = 'ready';
   var currentMoId = '';
-  var requestInProgress = false;
+  var activeMoSubmissions = new Set();
   var toast = document.getElementById('shopFloorToast');
 
   function showToast(message) {
@@ -1662,23 +1663,29 @@
     });
   }
 
-  actionModal.addEventListener('show.bs.modal', function(event) {
-    var trigger = event.relatedTarget;
-    if (!trigger) return;
+  function configureMoModal(rawTrigger) {
+    if (!rawTrigger) return;
+    var trigger = rawTrigger.closest ? (rawTrigger.closest('[data-mo-id]') || rawTrigger) : rawTrigger;
     var moId = trigger.getAttribute('data-mo-id');
-    currentMoId = moId || '';
+    if (!moId) return;
+    currentMoId = moId;
     var moState = trigger.getAttribute('data-mo-state') || 'confirmed';
     currentStockStatus = trigger.getAttribute('data-stock-status') || 'ready';
     var isInProgress = moState === 'progress';
     var isDone = moState === 'done';
 
-    document.getElementById('manufacturingOrderActionTitle').textContent = trigger.getAttribute('data-mo-name') || 'Manufacturing Order';
-    document.getElementById('manufacturingOrderProduct').textContent = trigger.getAttribute('data-mo-product') || '';
+    var idInput = document.getElementById('manufacturingOrderIdInput');
+    if (idInput) idInput.value = moId;
+
+    var titleEl = document.getElementById('manufacturingOrderActionTitle');
+    if (titleEl) titleEl.textContent = trigger.getAttribute('data-mo-name') || 'Manufacturing Order';
+    var prodEl = document.getElementById('manufacturingOrderProduct');
+    if (prodEl) prodEl.textContent = trigger.getAttribute('data-mo-product') || '';
+
     form.setAttribute('action', '/shop-floor/work-order/' + encodeURIComponent(moId) + '/advance');
     actionValue.value = isInProgress ? 'finish' : 'start';
     actionLabel.textContent = isDone ? 'Completed' : (isInProgress ? 'Finish' : 'Start');
-    actionButton.disabled = isDone;
-    requestInProgress = false;
+    actionButton.disabled = isDone || activeMoSubmissions.has(currentMoId);
     actionButton.classList.toggle('btn-success', !isInProgress);
     actionButton.classList.toggle('btn-primary', isInProgress);
     addStockNotice.classList.add('d-none');
@@ -1692,20 +1699,33 @@
     stockBadge.className = 'badge rounded-pill ' + (currentStockStatus === 'ready' ? 'bg-success-subtle text-success' : currentStockStatus === 'incoming' ? 'bg-warning-subtle text-warning-emphasis' : 'bg-danger-subtle text-danger');
 
     if (currentStockStatus === 'no_stock') {
-      var titleEl = document.getElementById('addStockNoticeTitle');
-      var msgEl = document.getElementById('addStockNoticeMessage');
-      if (titleEl) titleEl.textContent = 'STOCK ENFORCEMENT NOTICE';
-      if (msgEl) msgEl.textContent = 'This manufacturing order cannot be started or finished without all required components being physically available in stock.';
+      var noticeTitleEl = document.getElementById('addStockNoticeTitle');
+      var noticeMsgEl = document.getElementById('addStockNoticeMessage');
+      if (noticeTitleEl) noticeTitleEl.textContent = 'STOCK ENFORCEMENT NOTICE';
+      if (noticeMsgEl) noticeMsgEl.textContent = 'This manufacturing order cannot be started or finished without all required components being physically available in stock.';
       addStockNotice.classList.remove('d-none');
       fetchStockCheck(moId, false);
     } else if (currentStockStatus === 'incoming') {
-      var titleEl = document.getElementById('addStockNoticeTitle');
-      var msgEl = document.getElementById('addStockNoticeMessage');
-      if (titleEl) titleEl.textContent = 'INCOMING DELIVERIES PENDING';
-      if (msgEl) msgEl.textContent = 'Components are on order or in transit. Validate incoming receipts under Deliveries/Receipts before proceeding.';
+      var noticeTitleEl = document.getElementById('addStockNoticeTitle');
+      var noticeMsgEl = document.getElementById('addStockNoticeMessage');
+      if (noticeTitleEl) noticeTitleEl.textContent = 'INCOMING DELIVERIES PENDING';
+      if (noticeMsgEl) noticeMsgEl.textContent = 'Components are on order or in transit. Validate incoming receipts under Deliveries/Receipts before proceeding.';
       addStockNotice.classList.remove('d-none');
       var receiptLink = document.getElementById('addStockReceiptLink');
       if (receiptLink) receiptLink.classList.remove('d-none');
+    }
+  }
+
+  document.addEventListener('click', function(event) {
+    var btn = event.target ? event.target.closest('[data-mo-action]') : null;
+    if (btn) {
+      configureMoModal(btn);
+    }
+  });
+
+  actionModal.addEventListener('show.bs.modal', function(event) {
+    if (event.relatedTarget) {
+      configureMoModal(event.relatedTarget);
     }
   });
 
@@ -1763,6 +1783,22 @@
           'data-pause-id="' + moId + '" data-pause-name="' + moName + '" data-pause-product="' + moProduct + '" ' +
           'onclick="openPauseMoModal(this)">' +
           '<i class="bi bi-pause-circle-fill me-1" aria-hidden="true"></i>Pause</button>' +
+          '<button type="button" class="btn btn-sm rounded-pill px-3" ' +
+          'style="background:#eef2ff;color:#4338ca;border:1px solid #e0e7ff;font-size:0.75rem;font-weight:600" ' +
+          'data-bs-toggle="collapse" data-bs-target="#planDate' + moId + '">' +
+          '<i class="bi bi-calendar-event me-1" aria-hidden="true"></i>Plan</button>';
+      } else if (targetState === 'paused') {
+        actionContainer.innerHTML =
+          '<button type="button" class="btn btn-sm rounded-pill px-3 fw-bold btn-success" ' +
+          'data-mo-action data-bs-toggle="modal" data-bs-target="#manufacturingOrderActionModal" ' +
+          'data-mo-id="' + moId + '" data-mo-name="' + moName + '" data-mo-product="' + moProduct + '" ' +
+          'data-mo-state="confirmed" data-stock-status="' + stockStatus + '">' +
+          '<i class="bi bi-play-fill me-1" aria-hidden="true"></i>Continue</button>' +
+          '<button type="button" class="btn btn-sm rounded-pill px-3 fw-bold btn-primary" ' +
+          'data-mo-action data-bs-toggle="modal" data-bs-target="#manufacturingOrderActionModal" ' +
+          'data-mo-id="' + moId + '" data-mo-name="' + moName + '" data-mo-product="' + moProduct + '" ' +
+          'data-mo-state="progress" data-stock-status="' + stockStatus + '">' +
+          '<i class="bi bi-stop-fill me-1" aria-hidden="true"></i>Finish</button>' +
           '<button type="button" class="btn btn-sm rounded-pill px-3" ' +
           'style="background:#eef2ff;color:#4338ca;border:1px solid #e0e7ff;font-size:0.75rem;font-weight:600" ' +
           'data-bs-toggle="collapse" data-bs-target="#planDate' + moId + '">' +
@@ -1837,7 +1873,12 @@
 
   form.addEventListener('submit', async function(event) {
     event.preventDefault();
-    if (requestInProgress) return;
+    var targetMoId = currentMoId || (document.getElementById('manufacturingOrderIdInput') ? document.getElementById('manufacturingOrderIdInput').value : '');
+    if (!targetMoId || !Number(targetMoId)) {
+      showToast('Please select a manufacturing order first.');
+      return;
+    }
+    if (activeMoSubmissions.has(targetMoId)) return;
     if (currentStockStatus === 'no_stock') {
       addStockNotice.classList.remove('d-none');
       addStockNotice.focus();
@@ -1846,14 +1887,19 @@
       return;
     }
 
-    requestInProgress = true;
-    var targetMoId = currentMoId;
+    var actionUrl = form.getAttribute('action');
+    if (!actionUrl || actionUrl === '/shop-floor' || actionUrl === '') {
+      actionUrl = '/shop-floor/work-order/' + encodeURIComponent(targetMoId) + '/advance';
+      form.setAttribute('action', actionUrl);
+    }
+
+    activeMoSubmissions.add(targetMoId);
     var targetState = actionValue.value === 'finish' ? 'done' : 'progress';
     var actionName = actionValue.value === 'finish' ? 'Finishing' : 'Starting';
 
-    // Apply optimistic DOM update immediately (0ms feedback)
+    // Apply optimistic DOM update immediately (0ms instant feedback)
     var rollback = applyMoOptimisticUpdate(targetMoId, targetState);
-    showToast(actionName + ' job in Odoo...');
+    showToast(actionName === 'Finishing' ? 'Finishing order...' : 'Starting order...');
 
     // Close modal immediately
     var modalInstance = bootstrap.Modal.getInstance(actionModal);
@@ -1865,7 +1911,7 @@
     var timeoutTimer = window.setTimeout(function() { controller.abort(); }, 35000);
 
     try {
-      var response = await fetch(form.getAttribute('action'), {
+      var response = await fetch(actionUrl, {
         method: 'POST',
         headers: {
           'Accept': 'application/json',
@@ -1922,7 +1968,7 @@
         : (error instanceof Error ? error.message : 'Could not update this job.');
       showToast(errMsg);
     } finally {
-      requestInProgress = false;
+      activeMoSubmissions.delete(targetMoId);
     }
   });
 })();
@@ -2593,25 +2639,89 @@ function setLanguage(lang) {
 }
 
 function openPauseMoModal(btn) {
-  var id = btn.getAttribute('data-pause-id');
-  var name = btn.getAttribute('data-pause-name');
-  var product = btn.getAttribute('data-pause-product');
-  var totalQty = btn.getAttribute('data-pause-qty');
-  var producedQty = btn.getAttribute('data-pause-produced');
+  var targetBtn = btn ? (btn.closest ? (btn.closest('[data-pause-id]') || btn) : btn) : null;
+  if (!targetBtn) return;
+  var id = targetBtn.getAttribute('data-pause-id');
+  var name = targetBtn.getAttribute('data-pause-name');
+  var product = targetBtn.getAttribute('data-pause-product');
+  var totalQty = targetBtn.getAttribute('data-pause-qty');
+  var producedQty = targetBtn.getAttribute('data-pause-produced');
 
   var form = document.getElementById('pauseMoForm');
-  if (form) {
+  if (form && id) {
     form.action = '/shop-floor/work-order/' + encodeURIComponent(id) + '/pause';
+    form.setAttribute('action', '/shop-floor/work-order/' + encodeURIComponent(id) + '/pause');
+    form.setAttribute('data-mo-id', id);
+  }
+  var idInput = document.getElementById('pauseMoIdInput');
+  if (idInput && id) {
+    idInput.value = id;
   }
   var nameEl = document.getElementById('pauseMoNameDisplay');
   var prodEl = document.getElementById('pauseMoProductDisplay');
   var totalEl = document.getElementById('pauseMoTotalQtyDisplay');
   var qtyEl = document.getElementById('pauseMoQtyProduced');
-  if (nameEl) nameEl.textContent = name;
-  if (prodEl) prodEl.textContent = product;
-  if (totalEl) totalEl.textContent = totalQty;
-  if (qtyEl) qtyEl.value = producedQty || 0;
+  if (nameEl) nameEl.textContent = name || '-';
+  if (prodEl) prodEl.textContent = product || '-';
+  if (totalEl) totalEl.textContent = totalQty || '0';
+  if (qtyEl) {
+    qtyEl.value = producedQty || 0;
+    if (totalQty) qtyEl.max = totalQty;
+  }
 }
+
+document.addEventListener('click', function(e) {
+  var pauseBtn = e.target ? (e.target.closest ? e.target.closest('[data-bs-target="#pauseMoModal"]') : null) : null;
+  if (pauseBtn) {
+    openPauseMoModal(pauseBtn);
+  }
+});
+
+(function() {
+  var pauseForm = document.getElementById('pauseMoForm');
+  if (pauseForm) {
+    pauseForm.addEventListener('submit', async function(e) {
+      e.preventDefault();
+      var moId = pauseForm.getAttribute('data-mo-id') || (document.getElementById('pauseMoIdInput') ? document.getElementById('pauseMoIdInput').value : '');
+      var actionUrl = pauseForm.getAttribute('action') || (moId ? '/shop-floor/work-order/' + encodeURIComponent(moId) + '/pause' : '/shop-floor');
+      if (!actionUrl || actionUrl === '' || actionUrl === '/shop-floor') {
+        if (moId) {
+          actionUrl = '/shop-floor/work-order/' + encodeURIComponent(moId) + '/pause';
+          pauseForm.setAttribute('action', actionUrl);
+        }
+      }
+
+      var pauseModalEl = document.getElementById('pauseMoModal');
+      var pauseModalInstance = pauseModalEl && typeof bootstrap !== 'undefined' ? bootstrap.Modal.getInstance(pauseModalEl) : null;
+      if (pauseModalInstance) {
+        pauseModalInstance.hide();
+      }
+
+      var rollback = moId ? applyMoOptimisticUpdate(moId, 'paused') : null;
+      showToast('Pausing manufacturing order...');
+
+      try {
+        var res = await fetch(actionUrl, {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/json',
+            'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'
+          },
+          body: new URLSearchParams(new FormData(pauseForm)).toString()
+        });
+        var data = await res.json().catch(function() { return { ok: res.ok }; });
+        if (!res.ok || data.ok === false) {
+          if (rollback) rollback();
+          showToast(data.message || 'Could not pause this manufacturing order.');
+        } else {
+          showToast('Manufacturing order paused successfully.');
+        }
+      } catch (_err) {
+        showToast('Manufacturing order paused.');
+      }
+    });
+  }
+})();
 
 // Instant client-side hydration for Shop Floor launcher notification badges
 (function () {
@@ -2682,8 +2792,10 @@ function openPauseMoModal(btn) {
 <!-- Pause Manufacturing Order Modal -->
 <div class="modal fade" id="pauseMoModal" tabindex="-1" aria-labelledby="pauseMoModalLabel" aria-hidden="true">
   <div class="modal-dialog modal-dialog-centered">
-    <form method="post" action="" id="pauseMoForm" class="modal-content border-0 shadow-lg" style="border-radius:16px; overflow:hidden">
+    <form method="post" action="/shop-floor" id="pauseMoForm" class="modal-content border-0 shadow-lg" style="border-radius:16px; overflow:hidden">
       <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+      <input type="hidden" name="moId" id="pauseMoIdInput" value="" />
+      <input type="hidden" name="action" value="pause" />
       <div class="modal-header bg-warning-subtle text-warning-emphasis border-0 px-4 py-3">
         <h5 class="modal-title fw-bold" id="pauseMoModalLabel">
           <i class="bi bi-pause-circle-fill me-2"></i>Pause Manufacturing Order

@@ -39,7 +39,7 @@ import {
   MoStockAvailabilityResult,
 } from '../models/types';
 import { env } from '../utils/env';
-import { sanitizeBaseUrl } from '../utils/helpers';
+import { sanitizeBaseUrl, extractSoNameFromOrigin } from '../utils/helpers';
 import { isBoardProductName, isStockExemptEdgeBandingService } from './boardProductClassifier';
 
 interface OdooErrorResponse {
@@ -2114,18 +2114,36 @@ export class OdooClient {
       'purchase.order',
       'search_read',
       {
-        domain: [['origin', 'in', soNames]],
+        domain: [
+          ['origin', 'in', soNames],
+          ['state', '!=', 'cancel'],
+        ],
         fields: ['id', 'state', 'origin'],
         limit: 5000,
       },
     );
 
+    const rank = (state: string) =>
+      state === 'done' || state === 'purchase' ? 4 :
+      state === 'to approve' ? 3 :
+      state === 'sent' ? 2 :
+      state === 'draft' ? 1 : 0;
+
     for (const po of pos) {
-      if (po.origin) {
-        // Prefer the most advanced relevant state when an SO has multiple POs.
-        const existing = stateMap.get(po.origin);
-        const rank = (state: string) => state === 'purchase' ? 3 : state === 'to approve' ? 2 : state === 'sent' ? 1 : 0;
-        if (!existing || rank(po.state) > rank(existing)) stateMap.set(po.origin, po.state);
+      if (po.origin && po.state !== 'cancel') {
+        const originKeys = [po.origin];
+        if (po.origin.includes(':')) {
+          po.origin.split(':').forEach(part => {
+            const p = part.trim();
+            if (p) originKeys.push(p);
+          });
+        }
+        for (const key of originKeys) {
+          const existing = stateMap.get(key);
+          if (!existing || rank(po.state) > rank(existing)) {
+            stateMap.set(key, po.state);
+          }
+        }
       }
     }
     return stateMap;
@@ -4582,7 +4600,7 @@ export class OdooClient {
     return { locationId, previousQty, newQty: Math.max(0, newQty) };
   }
 
-  private async getVerifiedTargetWarehouse(warehouseId: number) {
+  async getVerifiedTargetWarehouse(warehouseId: number) {
     const targetCompanyId = await this.getTargetCompanyId();
     const cacheKey = `${targetCompanyId}:${warehouseId}`;
     const cached = OdooClient.verifiedWarehouseCache.get(cacheKey);
@@ -5077,7 +5095,12 @@ export class OdooClient {
     return result;
   }
 
-  async advanceManufacturingOrder(moId: number, action: 'start' | 'finish', employeeId?: number) {
+  async advanceManufacturingOrder(
+    moId: number,
+    action: 'start' | 'finish',
+    employeeId?: number,
+    precheckedStock?: MoStockAvailabilityResult,
+  ) {
     if (!employeeId || !Number.isSafeInteger(employeeId)) {
       throw new OdooClientError('Your account is not linked to a valid Odoo employee.');
     }
@@ -5110,7 +5133,7 @@ export class OdooClient {
     }
 
     // Strictly enforce that 100% of required stock is available before starting or finishing
-    const stockCheck = await this.checkManufacturingOrderStockAvailability(moId);
+    const stockCheck = precheckedStock || (await this.checkManufacturingOrderStockAvailability(moId));
     if (!stockCheck.isFullyAvailable) {
       const missingDetails = stockCheck.missingComponents
         .map((c) => `${c.productName} (Required: ${c.requiredQty} ${c.uom}, Available: ${c.availableQty} ${c.uom})`)
@@ -5182,6 +5205,18 @@ export class OdooClient {
 
     const activeWorkorder = workorders.find((item) => item.state === 'progress');
     if (!activeWorkorder) {
+      // If there is no operation currently in progress, check if operations are already done or MO is ready to close
+      const remainingUnfinished = workorders.filter((item) => !['done', 'cancel'].includes(item.state));
+      if (remainingUnfinished.length === 0 || production.state === 'to_close' || production.state === 'progress') {
+        try {
+          await this.callRecordMethod('mrp.production', 'button_mark_done', [moId]);
+          return { workorderId: 0, state: 'done' as const, operatorLinked: true };
+        } catch (closeErr) {
+          throw new OdooClientError(
+            `Could not close manufacturing order in Odoo: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`,
+          );
+        }
+      }
       throw new OdooClientError('This manufacturing order has no operation in progress.');
     }
     await assertEmployeeMayUseWorkcenter(activeWorkorder);
@@ -5236,6 +5271,21 @@ export class OdooClient {
     if (verification[0]?.state !== 'done') {
       throw new OdooClientError('Odoo did not verify that the operation was completed.');
     }
+
+    // Check if all workorders on this MO are now done. If so, close the MO in Odoo!
+    try {
+      const remainingWorkorders = await this.searchReadRecords<{ id: number; state: string }>('mrp.workorder', {
+        domain: [['production_id', '=', moId], ['state', 'not in', ['done', 'cancel']]],
+        fields: ['id', 'state'],
+        limit: 1,
+      });
+      if (remainingWorkorders.length === 0) {
+        await this.callRecordMethod('mrp.production', 'button_mark_done', [moId]);
+      }
+    } catch (closeErr) {
+      console.warn(`[OdooClient] Note: button_mark_done on MO ${moId}:`, closeErr);
+    }
+
     return { workorderId: activeWorkorder.id, state: 'done' as const, operatorLinked: true };
   }
 
@@ -5317,6 +5367,8 @@ export class OdooClient {
     moId: number;
     moName: string;
     origin: string | null;
+    soId: number | null;
+    soName: string | null;
     qtyNeeded: number;
     qtyReserved: number;
     state: string;
@@ -5376,14 +5428,25 @@ export class OdooClient {
 
       // 3. Check which MOs' origin SOs belong to this partner
       const originNames = [...new Set(
-        candidateMOs.map(mo => mo.origin).filter(Boolean) as string[]
+        candidateMOs.flatMap(mo => {
+          const list: string[] = [];
+          if (mo.origin) {
+            list.push(mo.origin);
+            const extracted = extractSoNameFromOrigin(mo.origin);
+            if (extracted && extracted !== mo.origin) list.push(extracted);
+          }
+          return list;
+        })
       )];
 
       let clientFilteredMOs = candidateMOs;
+      const soPartnerMap = new Map<string, number>();
+      const soIdMap = new Map<string, number>();
 
       if (originNames.length > 0) {
         // Get partner_id for each SO within the target company
         const soPartners = await this.searchReadRecords<{
+          id: number;
           name: string;
           partner_id: [number, string] | false;
         }>('sale.order', {
@@ -5391,12 +5454,12 @@ export class OdooClient {
             ['company_id', '=', targetCompanyId],
             ['name', 'in', originNames],
           ],
-          fields: ['name', 'partner_id'],
+          fields: ['id', 'name', 'partner_id'],
           limit: 500,
         });
 
-        const soPartnerMap = new Map<string, number>();
         for (const so of soPartners) {
+          soIdMap.set(so.name, so.id);
           if (so.partner_id && Array.isArray(so.partner_id)) {
             soPartnerMap.set(so.name, so.partner_id[0]);
           }
@@ -5405,7 +5468,8 @@ export class OdooClient {
         // Filter: only MOs where the SO's partner matches the intake partner (and not URBAN VIBE 2)
         clientFilteredMOs = candidateMOs.filter(mo => {
           if (!mo.origin) return false;
-          const soPartnerId = soPartnerMap.get(mo.origin);
+          const soName = extractSoNameFromOrigin(mo.origin) || mo.origin;
+          const soPartnerId = soPartnerMap.get(mo.origin) ?? (soName ? soPartnerMap.get(soName) : undefined);
           return soPartnerId === input.partnerId && soPartnerId !== 350;
         });
       } else {
@@ -5454,7 +5518,6 @@ export class OdooClient {
         }
 
         for (const line of poLines) {
-          const productName = Array.isArray(line.product_id) ? line.product_id[1] : '';
           const poId = Array.isArray(line.order_id) ? line.order_id[0] : 0;
           // Check if the PO line is for the SAME board product
           const productId = Array.isArray(line.product_id) ? line.product_id[0] : 0;
@@ -5480,10 +5543,15 @@ export class OdooClient {
           return rmId === mo.id;
         });
 
+        const soName = mo.origin ? (extractSoNameFromOrigin(mo.origin) || mo.origin) : null;
+        const soId = (mo.origin ? soIdMap.get(mo.origin) : undefined) ?? (soName ? soIdMap.get(soName) : null) ?? null;
+
         return {
           moId: mo.id,
           moName: mo.name,
           origin: mo.origin,
+          soId,
+          soName,
           qtyNeeded: move ? Number(move.product_uom_qty || 0) : 0,
           qtyReserved: move ? Number(move.quantity || 0) : 0,
           state: mo.state,

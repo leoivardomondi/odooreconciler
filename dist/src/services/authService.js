@@ -753,7 +753,7 @@ function canAccessPath(user, method, requestPath) {
         return true;
     if (requestPath.startsWith('/shop-floor/operators') && apps.includes('shop-floor-admin'))
         return true;
-    if (requestPath.startsWith('/shop-floor') && apps.includes('shop-floor'))
+    if ((requestPath.startsWith('/shop-floor') || requestPath === '/shopfloor' || requestPath === '/shop_floor' || requestPath === '/shop') && apps.includes('shop-floor'))
         return true;
     if (requestPath.startsWith('/jobs') && apps.includes('jobs'))
         return true;

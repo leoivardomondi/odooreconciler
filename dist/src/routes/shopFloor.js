@@ -1,6 +1,9 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.shopFloorCache = exports.manuallyPausedMoIds = void 0;
+exports.isBitcherOnyangoUser = isBitcherOnyangoUser;
+exports.isTintInteriorVendor = isTintInteriorVendor;
+exports.isBitcherOnyangoRestrictedFromReceipt = isBitcherOnyangoRestrictedFromReceipt;
 exports.buildInstantMysqlOperatorDashboard = buildInstantMysqlOperatorDashboard;
 exports.buildOperatorDashboard = buildOperatorDashboard;
 const express_1 = require("express");
@@ -17,11 +20,13 @@ const env_1 = require("../utils/env");
 const weeklyShopFloorReportService_1 = require("../services/weeklyShopFloorReportService");
 const moOverdueService_1 = require("../services/moOverdueService");
 const boardProductClassifier_1 = require("../services/boardProductClassifier");
+const moStockShortageReportService_1 = require("../services/moStockShortageReportService");
 const stockMirrorService_1 = require("../services/stockMirrorService");
 const customerMirrorService_1 = require("../services/customerMirrorService");
 const boardIntakeSyncService_1 = require("../services/boardIntakeSyncService");
 const shopFloorOperatorAccessSyncService_1 = require("../services/shopFloorOperatorAccessSyncService");
 const shopFloorPendingSyncService_1 = require("../services/shopFloorPendingSyncService");
+const poJobSummaryAuditService_1 = require("../services/poJobSummaryAuditService");
 const siteAttendanceAccess_1 = require("../utils/siteAttendanceAccess");
 const router = (0, express_1.Router)();
 // Department names to search for operators (case-insensitive match)
@@ -106,6 +111,34 @@ function detectArea(productName) {
 }
 function isBoardComponentName(productName) {
     return (0, boardProductClassifier_1.isBoardProductName)(productName);
+}
+function isBitcherOnyangoUser(user) {
+    if (!user)
+        return false;
+    const name = String(user.displayName || '').toLowerCase().trim();
+    const email = String(user.email || '').toLowerCase().trim();
+    return name.includes('bitcher') || email.includes('bitcher');
+}
+function isTintInteriorVendor(partner) {
+    if (!partner)
+        return false;
+    let name = '';
+    if (Array.isArray(partner) && partner.length > 1) {
+        name = String(partner[1] || '');
+    }
+    else if (typeof partner === 'object' && partner !== null) {
+        name = String(partner.name || partner.display_name || '');
+    }
+    else if (typeof partner === 'string') {
+        name = partner;
+    }
+    const clean = name.toLowerCase().replace(/[^a-z0-9]/g, '');
+    return clean.includes('tintinterior') || (clean.includes('tint') && clean.includes('interior'));
+}
+function isBitcherOnyangoRestrictedFromReceipt(user, receipt) {
+    if (!user || !receipt)
+        return false;
+    return isBitcherOnyangoUser(user) && isTintInteriorVendor(receipt.partner_id);
 }
 function toEAT(utcStr) {
     if (!utcStr)
@@ -422,7 +455,12 @@ async function buildInstantMysqlOperatorDashboard(userEmail) {
         (0, repositories_1.getShopFloorSharedCache)('shop-floor:deliveries:1').catch(() => null),
     ]);
     const sharedMo = sharedMoEntry?.data;
-    const workOrders = sharedMo?.workOrders || [];
+    const workOrders = (sharedMo?.workOrders || []).map((wo) => {
+        if (exports.manuallyPausedMoIds.has(wo.id) && wo.state !== 'done') {
+            return { ...wo, state: 'paused' };
+        }
+        return wo;
+    });
     // Build stock alerts from MySQL shop_floor_pending_processes and merge with any shared MO rawStockAlerts
     const pendingAlerts = pendingProcesses.map((p) => ({
         moName: p.mo_name,
@@ -643,7 +681,11 @@ async function buildOperatorDashboard(client, userEmail, req, stockScope) {
                         client.getManufacturingPerformanceOrders(),
                     ]);
                     const allOrders = allOrdersRaw.filter(o => o.name.startsWith('WH/MO/'));
-                    const originsToFetch = [...new Set([...allOrders, ...performanceOrders].map(o => o.origin).filter(Boolean))];
+                    const originsToFetch = [...new Set([...allOrders, ...performanceOrders].flatMap(o => [
+                            o.origin,
+                            (0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(o.origin),
+                            o.name,
+                        ]).filter(Boolean))];
                     const moIds = allOrders.map(o => o.id);
                     const [clientMap, saleOrderDateMap, allComponents, poStateMap, workOrderStateMap] = await Promise.all([
                         client.getBulkSaleOrderClients(originsToFetch).catch(() => new Map()),
@@ -693,9 +735,13 @@ async function buildOperatorDashboard(client, userEmail, req, stockScope) {
                             return !c.forecast_availability || c.forecast_availability === 'unavailable';
                         });
                         if (unavailable.length > 0) {
-                            const poState = o.origin ? poStateMap.get(o.origin) || null : null;
-                            const needsAlert = !poState || ['draft', 'sent'].includes(poState);
-                            if (needsAlert) {
+                            const soOrigin = o.origin ? (0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(o.origin) : null;
+                            const poState = (o.origin && poStateMap.get(o.origin)) ||
+                                (soOrigin && poStateMap.get(soOrigin)) ||
+                                poStateMap.get(o.name) ||
+                                null;
+                            const hasActivePo = Boolean(poState && poState !== 'cancel');
+                            if (!hasActivePo) {
                                 moStockStatus.set(o.id, 'no_stock');
                                 moIdsWithStockIssues.add(o.id);
                                 const confirmedAt = o.origin ? saleOrderDateMap.get(o.origin) || null : null;
@@ -2127,7 +2173,7 @@ router.get('/shop-floor/partners/search', async (req, res) => {
         res.status(500).json({ ok: false, results: [] });
     }
 });
-router.post('/shop-floor/work-order/:id/advance', async (req, res) => {
+async function handleAdvanceMo(req, res) {
     const wantsJson = req.get('accept')?.includes('application/json');
     if (!req.authUser) {
         if (wantsJson) {
@@ -2142,7 +2188,7 @@ router.post('/shop-floor/work-order/:id/advance', async (req, res) => {
         res.redirect('/login');
         return;
     }
-    const moId = Number(req.params.id);
+    const moId = Number(req.params.id || req.body.moId || req.body.workOrderId || req.body.id);
     const action = req.body.action === 'finish' ? 'finish' : 'start';
     if (!Number.isFinite(moId) || moId <= 0) {
         if (wantsJson) {
@@ -2204,39 +2250,57 @@ router.post('/shop-floor/work-order/:id/advance', async (req, res) => {
             res.redirect(redirectTo);
             return;
         }
-        const advanceResult = await client.advanceManufacturingOrder(moId, action, employee.id);
+        // Stock check passed - Respond instantly for immediate operator feedback
         exports.manuallyPausedMoIds.delete(moId);
         exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
+        (0, repositories_1.deleteShopFloorSharedCache)('shop-floor:shared-work-orders:v1').catch(() => null);
         const message = action === 'finish'
             ? 'Current operation finished.'
             : `Manufacturing operation started for ${employee.name}.`;
-        const operatorTrackingWarning = action === 'start'
-            && advanceResult
-            && typeof advanceResult === 'object'
-            && 'operatorLinked' in advanceResult
-            && !advanceResult.operatorLinked
-            ? 'The job is In Progress in Odoo, but Odoo did not allow this app to update the employee tracking field.'
-            : null;
-        if (operatorTrackingWarning) {
-            void (0, logService_1.logEvent)('warn', 'Odoo work order started without employee tracking attribution', {
-                moId,
-                employeeId: employee.id,
-                employeeName: employee.name,
-                operatorEmail: viewedEmail,
-            });
-        }
         if (wantsJson) {
             res.setHeader('Cache-Control', 'no-store');
             res.json({
                 ok: true,
                 state: action === 'finish' ? 'done' : 'progress',
                 message,
-                warning: operatorTrackingWarning,
                 employeeName: employee.name,
             });
-            return;
         }
-        res.redirect('/shop-floor?message=' + encodeURIComponent(message) + '#manufacturing-orders');
+        else {
+            res.redirect('/shop-floor?message=' + encodeURIComponent(message) + '#manufacturing-orders');
+        }
+        // Execute Odoo work order transition asynchronously in background
+        void (async () => {
+            try {
+                const advanceResult = await client.advanceManufacturingOrder(moId, action, employee.id, stockCheck);
+                exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
+                (0, repositories_1.deleteShopFloorSharedCache)('shop-floor:shared-work-orders:v1').catch(() => null);
+                const operatorTrackingWarning = action === 'start'
+                    && advanceResult
+                    && typeof advanceResult === 'object'
+                    && 'operatorLinked' in advanceResult
+                    && !advanceResult.operatorLinked
+                    ? 'The job is In Progress in Odoo, but Odoo did not allow this app to update the employee tracking field.'
+                    : null;
+                if (operatorTrackingWarning) {
+                    void (0, logService_1.logEvent)('warn', 'Odoo work order started without employee tracking attribution', {
+                        moId,
+                        employeeId: employee.id,
+                        employeeName: employee.name,
+                        operatorEmail: viewedEmail,
+                    });
+                }
+            }
+            catch (bgErr) {
+                void (0, logService_1.logEvent)('error', 'Background advanceManufacturingOrder failed in Odoo', {
+                    moId,
+                    action,
+                    operatorEmail: viewedEmail,
+                    error: bgErr instanceof Error ? bgErr.message : String(bgErr),
+                });
+            }
+        })();
+        return;
     }
     catch (err) {
         const message = err instanceof Error ? err.message : 'Could not update the manufacturing order.';
@@ -2274,7 +2338,90 @@ router.post('/shop-floor/work-order/:id/advance', async (req, res) => {
         }
         res.redirect('/shop-floor?error=' + encodeURIComponent(message) + '#manufacturing-orders');
     }
+}
+async function handlePauseMo(req, res) {
+    const wantsJson = req.get('accept')?.includes('application/json');
+    if (!req.authUser) {
+        if (wantsJson) {
+            res.status(401).json({ ok: false, code: 'session_expired', message: 'Your session has expired.' });
+            return;
+        }
+        res.redirect('/login');
+        return;
+    }
+    const moId = Number(req.params.id || req.body.moId || req.body.workOrderId || req.body.id);
+    const createBackorder = String(req.body.createBackorder || 'true') === 'true';
+    const qtyProduced = Number(req.body.qtyProduced || 0);
+    if (!Number.isFinite(moId) || moId <= 0) {
+        if (wantsJson) {
+            res.status(400).json({ ok: false, message: 'Invalid manufacturing order.' });
+            return;
+        }
+        res.redirect('/shop-floor?error=' + encodeURIComponent('Invalid manufacturing order.') + '#manufacturing-orders');
+        return;
+    }
+    try {
+        const settings = await (0, repositories_1.getSettings)();
+        const client = new odooClient_1.OdooClient(settings.odoo);
+        const viewedEmail = getViewedUserEmail(req);
+        const employee = await resolveShopFloorEmployeeRecord(viewedEmail, client);
+        if (!employee)
+            throw new Error('Your account is not linked to an Odoo employee.');
+        await client.pauseManufacturingOrder(moId, { createBackorder, qtyProduced }, employee.id);
+        exports.manuallyPausedMoIds.add(moId);
+        exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
+        (0, repositories_1.deleteShopFloorSharedCache)('shop-floor:shared-work-orders:v1').catch(() => null);
+        await (0, logService_1.logEvent)('info', 'Manufacturing order paused', { moId, actor: employee.name, createBackorder });
+        if (wantsJson) {
+            res.json({
+                ok: true,
+                state: 'paused',
+                message: 'Manufacturing order paused successfully.',
+            });
+            return;
+        }
+        res.redirect('/shop-floor?message=' + encodeURIComponent('Manufacturing order paused successfully.') + '#manufacturing-orders');
+    }
+    catch (err) {
+        const message = err instanceof Error ? err.message : 'Could not pause the manufacturing order.';
+        void (0, logService_1.logEvent)('error', 'Shop Floor manufacturing-order pause failed in Odoo', {
+            moId,
+            operatorEmail: getViewedUserEmail(req),
+            error: message,
+        });
+        if (wantsJson) {
+            res.status(500).json({ ok: false, message });
+            return;
+        }
+        res.redirect('/shop-floor?error=' + encodeURIComponent(message) + '#manufacturing-orders');
+    }
+}
+router.post('/shop-floor/work-order/:id/advance', handleAdvanceMo);
+router.post('/shop-floor', async (req, res) => {
+    const moId = Number(req.body.moId || req.body.workOrderId || req.body.id);
+    const action = req.body.action;
+    if (Number.isFinite(moId) && moId > 0) {
+        req.params.id = String(moId);
+        if (action === 'pause') {
+            return handlePauseMo(req, res);
+        }
+        if (action === 'start' || action === 'finish') {
+            return handleAdvanceMo(req, res);
+        }
+    }
+    const wantsJson = req.get('accept')?.includes('application/json');
+    if (wantsJson) {
+        res.json({ ok: true, redirectTo: '/shop-floor' });
+        return;
+    }
+    res.redirect('/shop-floor');
 });
+// Shop Floor path aliases to ensure operators never hit 404
+router.get('/shopfloor', (_req, res) => res.redirect(301, '/shop-floor'));
+router.get('/shop_floor', (_req, res) => res.redirect(301, '/shop-floor'));
+router.get('/shop', (_req, res) => res.redirect(301, '/shop-floor'));
+router.post('/shopfloor', (_req, res) => res.redirect(307, '/shop-floor'));
+router.post('/shop_floor', (_req, res) => res.redirect(307, '/shop-floor'));
 router.get('/shop-floor/work-order/:id/stock-check', async (req, res) => {
     if (!req.authUser) {
         res.status(401).json({ ok: false, code: 'session_expired', message: 'Your session has expired.' });
@@ -2302,32 +2449,7 @@ router.get('/shop-floor/work-order/:id/stock-check', async (req, res) => {
 router.get('/shop-floor/work-order/:id/pause', (req, res) => {
     res.redirect('/shop-floor#manufacturing-orders');
 });
-router.post('/shop-floor/work-order/:id/pause', async (req, res) => {
-    if (!req.authUser) {
-        res.redirect('/login');
-        return;
-    }
-    const moId = Number(req.params.id);
-    const createBackorder = String(req.body.createBackorder || 'true') === 'true';
-    const qtyProduced = Number(req.body.qtyProduced || 0);
-    try {
-        const settings = await (0, repositories_1.getSettings)();
-        const client = new odooClient_1.OdooClient(settings.odoo);
-        const viewedEmail = getViewedUserEmail(req);
-        const employee = await resolveShopFloorEmployeeRecord(viewedEmail, client);
-        if (!employee)
-            throw new Error('Your account is not linked to an Odoo employee.');
-        await client.pauseManufacturingOrder(moId, { createBackorder, qtyProduced }, employee.id);
-        exports.manuallyPausedMoIds.add(moId);
-        exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
-        await (0, logService_1.logEvent)('info', 'Manufacturing order paused', { moId, actor: employee.name, createBackorder });
-        res.redirect('/shop-floor?message=' + encodeURIComponent('Manufacturing order paused successfully.') + '#manufacturing-orders');
-    }
-    catch (err) {
-        const message = err instanceof Error ? err.message : 'Could not pause the manufacturing order.';
-        res.redirect('/shop-floor?error=' + encodeURIComponent(message) + '#manufacturing-orders');
-    }
-});
+router.post('/shop-floor/work-order/:id/pause', handlePauseMo);
 router.get('/shop-floor/operators/weekly-report.pdf', async (req, res) => {
     if (!canManageShopFloor(req)) {
         res.status(403).send('Administrator access required.');
@@ -2597,7 +2719,17 @@ router.get('/shop-floor/receipts', async (req, res) => {
             withMaxPageWait(receiptsPromise, 1200, []),
             (0, repositories_1.getActiveShopFloorValidationJobs)('receipt').catch(() => []),
         ]);
-        res.render('shop-floor-receipts', { pageTitle: 'Board Receipts', appName: env_1.env.APP_NAME, receipts, activeJobs, authUser: req.authUser, csrfToken: req.csrfToken || null, message: req.query.message || null, error: req.query.error || null });
+        res.render('shop-floor-receipts', {
+            pageTitle: 'Board Receipts',
+            appName: env_1.env.APP_NAME,
+            receipts,
+            activeJobs,
+            authUser: req.authUser,
+            csrfToken: req.csrfToken || null,
+            message: req.query.message || null,
+            error: req.query.error || null,
+            isBitcherOnyangoRestrictedFromReceipt,
+        });
     }
     catch (error) {
         res.status(500).render('error', { pageTitle: 'Board Receipts', errorMessage: error instanceof Error ? error.message : 'Could not load receipts.', details: [], csrfToken: req.csrfToken || null });
@@ -2641,13 +2773,25 @@ router.post('/shop-floor/board-intake/:id/retry', async (req, res) => {
     }
 });
 router.post('/shop-floor/board-intake/:id/revert', async (req, res) => {
+    const isAjax = Boolean(req.xhr ||
+        req.headers.accept?.includes('application/json') ||
+        req.body?.ajax === 'true' ||
+        req.query?.ajax === 'true');
     if (!req.authUser) {
+        if (isAjax) {
+            res.status(401).json({ ok: false, error: 'Please sign in first.' });
+            return;
+        }
         res.redirect('/login');
         return;
     }
     const entryId = String(req.params.id || '');
     const entry = await (0, repositories_1.getBoardIntakeQueueEntry)(entryId);
     if (!entry) {
+        if (isAjax) {
+            res.status(404).json({ ok: false, error: 'Board log not found.' });
+            return;
+        }
         res.redirect('/shop-floor/boards?error=' + encodeURIComponent('Board log not found.') + '&boardLogPage=' + encodeURIComponent(String(req.body.boardLogPage || '1')));
         return;
     }
@@ -2658,20 +2802,72 @@ router.post('/shop-floor/board-intake/:id/revert', async (req, res) => {
     const actorName = (entry.actor_name || '').trim().toLowerCase();
     const isOwner = Boolean((userEmail && actorEmail && userEmail === actorEmail) || (userName && actorName && userName === actorName));
     if (!isAdmin && !isOwner) {
+        if (isAjax) {
+            res.status(403).json({ ok: false, error: 'You can only revert board logs that you logged.' });
+            return;
+        }
         res.status(403).redirect('/shop-floor/boards?error=' + encodeURIComponent('You can only revert board logs that you logged.') + '&boardLogPage=' + encodeURIComponent(String(req.body.boardLogPage || '1')));
         return;
     }
-    try {
-        const result = await (0, boardIntakeSyncService_1.revertBoardIntakeEntry)(entryId, req.authUser.displayName || req.authUser.email || 'Operator');
-        const message = result.alreadyReverted
-            ? 'This board log was already reverted.'
-            : 'Board log reverted in Odoo successfully.';
-        exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
-        res.redirect('/shop-floor/boards?message=' + encodeURIComponent(message) + '&boardLogPage=' + encodeURIComponent(String(req.body.boardLogPage || '1')));
+    if (entry.reverted_at || entry.status === 'reverted') {
+        if (isAjax) {
+            res.json({ ok: true, status: 'reverted', message: 'This board log was already reverted.' });
+            return;
+        }
+        res.redirect('/shop-floor/boards?message=' + encodeURIComponent('This board log was already reverted.') + '&boardLogPage=' + encodeURIComponent(String(req.body.boardLogPage || '1')));
+        return;
     }
-    catch (error) {
-        res.redirect('/shop-floor/boards?error=' + encodeURIComponent(error instanceof Error ? error.message : 'Could not revert board log.') + '&boardLogPage=' + encodeURIComponent(String(req.body.boardLogPage || '1')));
+    const revertedBy = req.authUser.displayName || req.authUser.email || 'Operator';
+    // Mark the entry as 'reverting' immediately in MySQL (<5ms)
+    const claimed = await (0, repositories_1.claimBoardIntakeRevert)(entryId);
+    if (!claimed) {
+        if (isAjax) {
+            res.status(409).json({ ok: false, error: 'This board log is already being reverted.' });
+            return;
+        }
+        res.redirect('/shop-floor/boards?error=' + encodeURIComponent('This board log is already being reverted.') + '&boardLogPage=' + encodeURIComponent(String(req.body.boardLogPage || '1')));
+        return;
     }
+    // Clear dashboard cache immediately
+    exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
+    // Launch the Odoo stock removal in the background (NON-BLOCKING)
+    void (async () => {
+        try {
+            const settings = await (0, repositories_1.getSettings)();
+            const result = await new odooClient_1.OdooClient(settings.odoo).removeBoardsFromStock({
+                productId: Number(entry.product_id),
+                quantity: Number(entry.quantity),
+            });
+            await (0, repositories_1.finishBoardIntakeRevert)(entryId, revertedBy, result.newQty);
+            await (0, stockMirrorService_1.recordExactStockQuantity)(Number(entry.product_id), entry.product_name, result.newQty, -Number(entry.quantity));
+            exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
+            void (0, stockMirrorService_1.refreshStockMirror)();
+            await (0, logService_1.logEvent)('warn', 'Board intake reverted in Odoo (background)', {
+                boardIntakeId: entryId,
+                productId: entry.product_id,
+                quantity: entry.quantity,
+                revertedBy,
+            }).catch(() => undefined);
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            await (0, repositories_1.releaseBoardIntakeRevert)(entryId, message).catch(() => undefined);
+            await (0, logService_1.logEvent)('error', 'Board intake revert background failed', {
+                boardIntakeId: entryId,
+                error: message,
+            }).catch(() => undefined);
+        }
+    })();
+    // Instant response to user (<10ms!)
+    if (isAjax) {
+        res.json({
+            ok: true,
+            status: 'reverting',
+            message: 'Board log revert initiated in the background.',
+        });
+        return;
+    }
+    res.redirect('/shop-floor/boards?message=' + encodeURIComponent('Board log revert is processing in the background.') + '&boardLogPage=' + encodeURIComponent(String(req.body.boardLogPage || '1')));
 });
 router.get('/shop-floor/board-intake/status', async (req, res) => {
     if (!req.authUser) {
@@ -2711,6 +2907,25 @@ router.post('/shop-floor/receipts/:id/validate', async (req, res) => {
         const pickingId = Number(req.params.id);
         if (!Number.isInteger(pickingId) || pickingId <= 0) {
             throw new Error('Invalid board receipt ID provided.');
+        }
+        // Strict vendor restriction: User BITCHER ONYANGO cannot receive items from vendor TINT INTERIOR
+        if (isBitcherOnyangoUser(req.authUser)) {
+            const settings = await (0, repositories_1.getSettings)();
+            const client = new odooClient_1.OdooClient(settings.odoo);
+            const pickings = await client.searchReadRecords('stock.picking', {
+                domain: [['id', '=', pickingId]],
+                fields: ['id', 'partner_id'],
+                limit: 1,
+            });
+            if (pickings.length && isTintInteriorVendor(pickings[0].partner_id)) {
+                const errorMsg = 'Access restricted: User Bitcher Onyango is not authorized to receive items from vendor Tint Interior.';
+                if (isAjax) {
+                    res.status(403).json({ ok: false, error: errorMsg, code: 'vendor_restricted' });
+                    return;
+                }
+                res.redirect('/shop-floor/receipts?error=' + encodeURIComponent(errorMsg));
+                return;
+            }
         }
         const actorName = req.authUser.displayName || req.authUser.email;
         const job = await (0, repositories_1.enqueueShopFloorValidationJob)({
@@ -2784,6 +2999,81 @@ router.post('/shop-floor/deliveries/:id/validate', async (req, res) => {
     }
     catch (error) {
         res.redirect('/shop-floor/deliveries?error=' + encodeURIComponent(error instanceof Error ? error.message : 'Delivery validation failed.'));
+    }
+});
+router.get('/reports/mo-stock-shortage', async (req, res) => {
+    if (!req.authUser) {
+        res.redirect('/login');
+        return;
+    }
+    try {
+        const forceRefresh = req.query.refresh === 'true';
+        const summary = await (0, moStockShortageReportService_1.generateMoStockShortageReport)(undefined, { forceRefresh });
+        const html = (0, moStockShortageReportService_1.renderMoStockShortageReportHtml)(summary);
+        res.setHeader('Content-Type', 'text/html; charset=utf-8');
+        res.send(html);
+    }
+    catch (err) {
+        res.status(500).render('error', {
+            pageTitle: 'Error',
+            errorMessage: err instanceof Error ? err.message : 'Could not generate MO stock shortage report.',
+            details: [],
+            csrfToken: req.csrfToken || null,
+        });
+    }
+});
+router.post('/reports/mo-stock-shortage/send', async (req, res) => {
+    if (!canManageShopFloor(req)) {
+        res.status(403).json({ ok: false, error: 'Administrator access required.' });
+        return;
+    }
+    try {
+        const recipientEmail = typeof req.body.recipientEmail === 'string' ? req.body.recipientEmail.trim() : '';
+        const recipients = recipientEmail ? [recipientEmail] : [];
+        await (0, moStockShortageReportService_1.sendDailyMoStockShortageReport)(recipients);
+        if (req.headers.accept?.includes('application/json')) {
+            res.json({ ok: true, message: 'Report sent successfully.' });
+            return;
+        }
+        res.redirect('/reports/mo-stock-shortage?message=' + encodeURIComponent('Report sent successfully.'));
+    }
+    catch (err) {
+        if (req.headers.accept?.includes('application/json')) {
+            res.status(500).json({ ok: false, error: err instanceof Error ? err.message : 'Failed to send report.' });
+            return;
+        }
+        res.redirect('/reports/mo-stock-shortage?error=' + encodeURIComponent(err instanceof Error ? err.message : 'Failed to send report.'));
+    }
+});
+router.post('/reports/mo-stock-shortage/settings', async (req, res) => {
+    if (!canManageShopFloor(req)) {
+        res.status(403).json({ ok: false, error: 'Administrator access required.' });
+        return;
+    }
+    try {
+        const rawFreq = typeof req.body.frequency === 'string' ? req.body.frequency.trim().toLowerCase() : undefined;
+        const frequency = rawFreq === 'daily' || rawFreq === 'weekly' || rawFreq === 'hourly' ? rawFreq : undefined;
+        const hour = req.body.hour !== undefined && req.body.hour !== '' ? parseInt(String(req.body.hour), 10) : undefined;
+        const enabled = req.body.enabled === 'true' ? true : req.body.enabled === 'false' ? false : undefined;
+        const recipients = typeof req.body.recipients === 'string' ? req.body.recipients : undefined;
+        await (0, moStockShortageReportService_1.updateMoStockShortageAutomationSettings)({
+            frequency,
+            hour,
+            enabled,
+            recipients,
+        });
+        if (req.headers.accept?.includes('application/json')) {
+            res.json({ ok: true, message: 'Schedule & recipients updated successfully.' });
+            return;
+        }
+        res.redirect('/reports/mo-stock-shortage?message=' + encodeURIComponent('Schedule & recipients updated successfully.'));
+    }
+    catch (err) {
+        if (req.headers.accept?.includes('application/json')) {
+            res.status(500).json({ ok: false, error: err instanceof Error ? err.message : 'Failed to update settings.' });
+            return;
+        }
+        res.redirect('/reports/mo-stock-shortage?error=' + encodeURIComponent(err instanceof Error ? err.message : 'Failed to update settings.'));
     }
 });
 exports.default = router;

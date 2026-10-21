@@ -6,6 +6,7 @@ import { sendDailyMpesaReviewNotification } from './mpesaReviewNotificationServi
 import { sendMoOvertimeSuggestion } from './moOvertimeSuggestionService';
 import { sendHourlyShopFloorTaskReminders } from './shopFloorTaskReminderService';
 import { sendWeeklyShopFloorReport } from './weeklyShopFloorReportService';
+import { sendDailyMoStockShortageReport } from './moStockShortageReportService';
 
 let timer: NodeJS.Timeout | null = null;
 let running = false;
@@ -97,6 +98,8 @@ async function dispatch(item: EmailAutomation) {
       return sendDailyMpesaReviewNotification(to[0] || '');
     case 'mo-overtime':
       return sendMoOvertimeSuggestion(to[0] || '');
+    case 'mo-stock-shortage-report':
+      return sendDailyMoStockShortageReport(to);
     default: {
       if (!to.length) throw new Error(`Custom email "${item.name}" needs at least one recipient.`);
       if (!item.subject.trim() || !item.body.trim()) throw new Error(`Custom email "${item.name}" needs a subject and message.`);
