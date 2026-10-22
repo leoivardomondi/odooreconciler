@@ -26,6 +26,7 @@ exports.truncate = truncate;
 exports.renderTemplate = renderTemplate;
 exports.buildProcessingLog = buildProcessingLog;
 exports.normalizeMultilineText = normalizeMultilineText;
+exports.extractSoNameFromOrigin = extractSoNameFromOrigin;
 const dayjs_1 = __importDefault(require("dayjs"));
 const timezone_1 = __importDefault(require("dayjs/plugin/timezone"));
 const utc_1 = __importDefault(require("dayjs/plugin/utc"));
@@ -394,4 +395,17 @@ function normalizeMultilineText(value) {
         .replace(/\u00a0/g, ' ')
         .replace(/\r\n/g, '\n')
         .replace(/\r/g, '\n');
+}
+/**
+ * Extracts candidate Sales Order name from an origin field (e.g. "S02182", "S02182:WH/MO/05412").
+ */
+function extractSoNameFromOrigin(origin) {
+    const trimmed = String(origin || '').trim();
+    if (!trimmed)
+        return null;
+    const soMatch = trimmed.match(/\b(S\d{4,}|SO\d{3,})\b/i);
+    if (soMatch) {
+        return soMatch[1].toUpperCase();
+    }
+    return null;
 }

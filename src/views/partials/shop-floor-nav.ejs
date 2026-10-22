@@ -35,9 +35,12 @@
     align-items: center;
     gap: 0.5rem;
     overflow-x: auto;
-    padding: 0.25rem 0.15rem 0.5rem;
+    padding: 0.25rem 0.25rem 0.5rem;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
+    scroll-snap-type: x proximity;
+    scroll-padding: 0.5rem;
+    touch-action: pan-x;
   }
   .shop-floor-subnav-scroll::-webkit-scrollbar {
     display: none;
@@ -45,8 +48,10 @@
   .shop-floor-subnav-pill {
     display: inline-flex;
     align-items: center;
-    gap: 0.5rem;
-    padding: 0.5rem 1rem;
+    justify-content: center;
+    gap: 0.45rem;
+    padding: 0.5rem 0.95rem;
+    min-height: 42px;
     border-radius: 999px;
     background: #ffffff;
     border: 1px solid #e2e8f0;
@@ -58,6 +63,9 @@
     box-shadow: 0 1px 3px rgba(15, 23, 42, 0.05);
     transition: all 0.15s ease;
     flex-shrink: 0;
+    scroll-snap-align: start;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
   }
   .shop-floor-subnav-pill:hover {
     color: #0f172a;
@@ -65,6 +73,9 @@
     border-color: #cbd5e1;
     transform: translateY(-1px);
     box-shadow: 0 4px 10px rgba(15, 23, 42, 0.08);
+  }
+  .shop-floor-subnav-pill:active {
+    transform: scale(0.97);
   }
   .shop-floor-subnav-pill.is-active {
     background: #0f172a;
@@ -74,5 +85,16 @@
   }
   .shop-floor-subnav-pill.is-active svg {
     stroke: #ffffff;
+  }
+  @media (max-width: 575.98px) {
+    .shop-floor-subnav-scroll {
+      gap: 0.4rem;
+      padding-inline: 0.1rem;
+    }
+    .shop-floor-subnav-pill {
+      font-size: 0.82rem;
+      padding: 0.45rem 0.85rem;
+      min-height: 40px;
+    }
   }
 </style>

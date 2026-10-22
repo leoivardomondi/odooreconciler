@@ -1013,12 +1013,21 @@ class OdooClient {
         const normalizedEmail = String(email || '').trim();
         if (!normalizedEmail)
             return null;
-        const employees = await this.request('hr.employee', 'search_read', {
-            domain: [
+        const namePart = normalizedEmail.split('@')[0].replace(/[._-]/g, ' ').trim();
+        const domain = namePart.length >= 3
+            ? [
+                '|', '|',
+                ['work_email', '=ilike', normalizedEmail],
+                ['user_id.login', '=ilike', normalizedEmail],
+                ['name', 'ilike', namePart],
+            ]
+            : [
                 '|',
                 ['work_email', '=ilike', normalizedEmail],
                 ['user_id.login', '=ilike', normalizedEmail],
-            ],
+            ];
+        const employees = await this.request('hr.employee', 'search_read', {
+            domain,
             fields: ['id', 'name', 'job_title', 'department_id', 'work_email', 'mobile_phone', 'parent_id'],
             limit: 1,
         });
@@ -2184,7 +2193,7 @@ class OdooClient {
                     ['state', 'not in', ['cancel']],
                     ['origin', '!=', false],
                 ],
-                fields: ['id', 'name', 'origin', 'product_id', 'product_qty', 'date_start', 'date_finished', 'create_date'],
+                fields: ['id', 'name', 'origin', 'product_id', 'product_qty', 'date_start', 'date_finished', 'create_date', 'state'],
                 limit: 5000,
                 order: 'date_start desc, id desc',
             });
@@ -2293,6 +2302,8 @@ class OdooClient {
                     componentsByMoId.get(moId).push(c);
                 }
             });
+            let totalExpectedBoardSheets = 0;
+            let totalRegisteredBoardSheets = 0;
             const registeredCuttingOrders = dueCuttingOrders.filter((mo) => {
                 const comps = componentsByMoId.get(mo.id) || [];
                 const boardComps = comps.filter((c) => {
@@ -2301,40 +2312,87 @@ class OdooClient {
                 });
                 const soDate = saleOrderMap.get(mo.origin || '')?.date_order || mo.create_date;
                 const soDay = soDate ? soDate.slice(0, 10) : '';
+                const moRequiredSheets = boardComps.length > 0
+                    ? boardComps.reduce((sum, c) => sum + (c.product_uom_qty || 0), 0)
+                    : Math.max(1, Math.round(mo.product_qty || 1));
+                totalExpectedBoardSheets += moRequiredSheets;
+                const moName = String(mo.name || '').trim();
+                const soName = String(mo.origin || '').trim();
+                const moveMatchesMoOrSo = (move) => {
+                    const ref = String(move.reference || '').trim();
+                    const orig = String(move.origin || '').trim();
+                    return Boolean((moName && (ref === moName || orig === moName || ref.includes(moName) || orig.includes(moName))) ||
+                        (soName && (ref === soName || orig === soName || ref.includes(soName) || orig.includes(soName))));
+                };
+                let isRegistered = false;
+                let moRegisteredSheets = 0;
                 if (!boardComps.length) {
-                    return physicalMoves.some((move) => {
-                        const moveDay = move.date ? move.date.slice(0, 10) : '';
-                        const pName = Array.isArray(move.product_id) ? move.product_id[1] : '';
-                        return moveDay >= soDay && (0, boardProductClassifier_1.isBoardProductName)(pName) && isPhysicalInventoryMove(move, locationId);
-                    });
+                    if (['done', 'to_close', 'progress'].includes(mo.state || '')) {
+                        isRegistered = true;
+                    }
+                    else {
+                        isRegistered = physicalMoves.some((move) => {
+                            const moveDay = move.date ? move.date.slice(0, 10) : '';
+                            const pName = Array.isArray(move.product_id) ? move.product_id[1] : '';
+                            return moveMatchesMoOrSo(move) && moveDay >= soDay && (0, boardProductClassifier_1.isBoardProductName)(pName) && isPhysicalInventoryMove(move, locationId);
+                        });
+                    }
+                    moRegisteredSheets = isRegistered ? moRequiredSheets : 0;
                 }
-                return boardComps.every((c) => {
-                    const required = c.product_uom_qty || 0;
-                    const reserved = c.quantity || 0;
-                    if (reserved >= required && required > 0)
-                        return true;
-                    const compName = Array.isArray(c.product_id) ? c.product_id[1] : '';
-                    return physicalMoves.some((move) => {
-                        const moveDay = move.date ? move.date.slice(0, 10) : '';
-                        const pName = Array.isArray(move.product_id) ? move.product_id[1] : '';
-                        return moveDay >= soDay && pName.toLowerCase() === compName.toLowerCase() && isPhysicalInventoryMove(move, locationId);
-                    });
-                });
+                else {
+                    if (['done', 'to_close'].includes(mo.state || '')) {
+                        isRegistered = true;
+                        moRegisteredSheets = moRequiredSheets;
+                    }
+                    else {
+                        const allCompsRegistered = boardComps.every((c) => {
+                            const required = c.product_uom_qty || 0;
+                            const reserved = c.quantity || 0;
+                            if (reserved >= required && required > 0)
+                                return true;
+                            const compName = Array.isArray(c.product_id) ? c.product_id[1] : '';
+                            return physicalMoves.some((move) => {
+                                const moveDay = move.date ? move.date.slice(0, 10) : '';
+                                const pName = Array.isArray(move.product_id) ? move.product_id[1] : '';
+                                return moveMatchesMoOrSo(move) && moveDay >= soDay && pName.toLowerCase() === compName.toLowerCase() && isPhysicalInventoryMove(move, locationId);
+                            });
+                        });
+                        isRegistered = allCompsRegistered;
+                        if (isRegistered) {
+                            moRegisteredSheets = moRequiredSheets;
+                        }
+                        else {
+                            moRegisteredSheets = boardComps.reduce((sum, c) => sum + Math.min(c.product_uom_qty || 0, c.quantity || 0), 0);
+                        }
+                    }
+                }
+                totalRegisteredBoardSheets += moRegisteredSheets;
+                return isRegistered;
             });
-            const expectedBoards = dueCuttingOrders.length;
-            const registeredBoards = registeredCuttingOrders.length;
-            const missingBoards = Math.max(0, expectedBoards - registeredBoards);
+            const expectedMoves = dueCuttingOrders.length;
+            const registeredMoves = registeredCuttingOrders.length;
+            const missingMoves = Math.max(0, expectedMoves - registeredMoves);
+            const expectedBoards = expectedMoves;
+            const registeredBoards = registeredMoves;
+            const missingBoards = missingMoves;
+            const expectedBoardSheets = Math.round(totalExpectedBoardSheets);
+            const registeredBoardSheets = Math.round(totalRegisteredBoardSheets);
+            const missingBoardSheets = Math.max(0, expectedBoardSheets - registeredBoardSheets);
             const coveragePercent = expectedBoards > 0
                 ? Math.min(100, Math.max(0, Math.round((registeredBoards / expectedBoards) * 100)))
                 : 0;
-            const details = `Period ${fromDate} to ${toDate} | Cutting MOs due on SO confirmation day: ${expectedBoards} | MOs with physical inventory logged same day: ${registeredBoards} | Missing same-day MO board entries: ${missingBoards} | Board purchase component found: ${boardPurchasesByOrigin.size} excluded | Edge banding excluded`;
+            const details = `Period ${fromDate} to ${toDate} | Cutting MOs due on SO confirmation day: ${expectedBoards} | MOs with physical inventory logged: ${registeredBoards} | Missing same-day MO board entries: ${missingBoards}${missingBoardSheets > 0 ? ` (${missingBoardSheets} boards needed)` : ''} | Board purchase component found: ${boardPurchasesByOrigin.size} excluded | Edge banding excluded`;
             return {
                 monthLabel,
                 registeredBoards,
                 expectedBoards,
                 missingBoards,
-                registeredMoves: registeredCuttingOrders.length,
-                expectedMoves: dueCuttingOrders.length,
+                registeredMoves,
+                expectedMoves,
+                missingMoves,
+                missingBoardSheets,
+                expectedBoardSheets,
+                registeredBoardSheets,
                 coveragePercent,
                 details,
             };
@@ -3912,8 +3970,19 @@ class OdooClient {
             if (!candidateMOs.length)
                 return [];
             // 3. Check which MOs' origin SOs belong to this partner
-            const originNames = [...new Set(candidateMOs.map(mo => mo.origin).filter(Boolean))];
+            const originNames = [...new Set(candidateMOs.flatMap(mo => {
+                    const list = [];
+                    if (mo.origin) {
+                        list.push(mo.origin);
+                        const extracted = (0, helpers_1.extractSoNameFromOrigin)(mo.origin);
+                        if (extracted && extracted !== mo.origin)
+                            list.push(extracted);
+                    }
+                    return list;
+                }))];
             let clientFilteredMOs = candidateMOs;
+            const soPartnerMap = new Map();
+            const soIdMap = new Map();
             if (originNames.length > 0) {
                 // Get partner_id for each SO within the target company
                 const soPartners = await this.searchReadRecords('sale.order', {
@@ -3921,11 +3990,11 @@ class OdooClient {
                         ['company_id', '=', targetCompanyId],
                         ['name', 'in', originNames],
                     ],
-                    fields: ['name', 'partner_id'],
+                    fields: ['id', 'name', 'partner_id'],
                     limit: 500,
                 });
-                const soPartnerMap = new Map();
                 for (const so of soPartners) {
+                    soIdMap.set(so.name, so.id);
                     if (so.partner_id && Array.isArray(so.partner_id)) {
                         soPartnerMap.set(so.name, so.partner_id[0]);
                     }
@@ -3934,7 +4003,8 @@ class OdooClient {
                 clientFilteredMOs = candidateMOs.filter(mo => {
                     if (!mo.origin)
                         return false;
-                    const soPartnerId = soPartnerMap.get(mo.origin);
+                    const soName = (0, helpers_1.extractSoNameFromOrigin)(mo.origin) || mo.origin;
+                    const soPartnerId = soPartnerMap.get(mo.origin) ?? (soName ? soPartnerMap.get(soName) : undefined);
                     return soPartnerId === input.partnerId && soPartnerId !== 350;
                 });
             }
@@ -3972,7 +4042,6 @@ class OdooClient {
                         poOriginMap.set(po.id, po.origin);
                 }
                 for (const line of poLines) {
-                    const productName = Array.isArray(line.product_id) ? line.product_id[1] : '';
                     const poId = Array.isArray(line.order_id) ? line.order_id[0] : 0;
                     // Check if the PO line is for the SAME board product
                     const productId = Array.isArray(line.product_id) ? line.product_id[0] : 0;
@@ -3997,10 +4066,14 @@ class OdooClient {
                         : m.raw_material_production_id;
                     return rmId === mo.id;
                 });
+                const soName = mo.origin ? ((0, helpers_1.extractSoNameFromOrigin)(mo.origin) || mo.origin) : null;
+                const soId = (mo.origin ? soIdMap.get(mo.origin) : undefined) ?? (soName ? soIdMap.get(soName) : null) ?? null;
                 return {
                     moId: mo.id,
                     moName: mo.name,
                     origin: mo.origin,
+                    soId,
+                    soName,
                     qtyNeeded: move ? Number(move.product_uom_qty || 0) : 0,
                     qtyReserved: move ? Number(move.quantity || 0) : 0,
                     state: mo.state,

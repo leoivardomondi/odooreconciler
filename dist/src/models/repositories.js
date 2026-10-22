@@ -3497,6 +3497,13 @@ async function upsertApprovedAuthUser(email, role = 'user', apps, active = true,
       `, [email.toLowerCase(), role, appsJson, active ? 1 : 0, passwordHash || null]);
     }
 }
+function parseDbActiveFlag(val) {
+    if (val === true || val === 1 || val === '1')
+        return true;
+    if (typeof val === 'string' && val.trim().toLowerCase() === 'true')
+        return true;
+    return false;
+}
 async function getApprovedAuthUserByEmail(email) {
     const row = await (0, db_1.queryOne)(`
       SELECT email, role, apps, active, password_hash, created_at, updated_at
@@ -3510,7 +3517,7 @@ async function getApprovedAuthUserByEmail(email) {
         email: row.email,
         role: row.role || 'user',
         apps: row.apps ? JSON.parse(row.apps) : mapLegacyRoleToApps(row.role),
-        active: Boolean(row.active),
+        active: parseDbActiveFlag(row.active),
         passwordHash: row.password_hash || null,
         hasPassword: Boolean(row.password_hash),
         createdAt: row.created_at,
@@ -3527,7 +3534,7 @@ async function getApprovedAuthUsers() {
         email: row.email,
         role: row.role || 'user',
         apps: row.apps ? JSON.parse(row.apps) : mapLegacyRoleToApps(row.role),
-        active: Boolean(row.active),
+        active: parseDbActiveFlag(row.active),
         passwordHash: null,
         hasPassword: Boolean(row.password_hash),
         createdAt: row.created_at,

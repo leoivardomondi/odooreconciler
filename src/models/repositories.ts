@@ -4746,6 +4746,12 @@ export async function upsertApprovedAuthUser(
   }
 }
 
+function parseDbActiveFlag(val: unknown): boolean {
+  if (val === true || val === 1 || val === '1') return true;
+  if (typeof val === 'string' && val.trim().toLowerCase() === 'true') return true;
+  return false;
+}
+
 export async function getApprovedAuthUserByEmail(email: string): Promise<AuthApprovedUser | null> {
   const row = await queryOne<{
     email: string;
@@ -4772,7 +4778,7 @@ export async function getApprovedAuthUserByEmail(email: string): Promise<AuthApp
     email: row.email,
     role: row.role || 'user',
     apps: row.apps ? JSON.parse(row.apps) : mapLegacyRoleToApps(row.role),
-    active: Boolean(row.active),
+    active: parseDbActiveFlag(row.active),
     passwordHash: row.password_hash || null,
     hasPassword: Boolean(row.password_hash),
     createdAt: row.created_at,
@@ -4801,7 +4807,7 @@ export async function getApprovedAuthUsers(): Promise<AuthApprovedUser[]> {
     email: row.email,
     role: row.role || 'user',
     apps: row.apps ? JSON.parse(row.apps) : mapLegacyRoleToApps(row.role),
-    active: Boolean(row.active),
+    active: parseDbActiveFlag(row.active),
     passwordHash: null,
     hasPassword: Boolean(row.password_hash),
     createdAt: row.created_at,

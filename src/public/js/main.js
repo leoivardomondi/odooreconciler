@@ -148,7 +148,33 @@ function shouldShowLinkLoading(event, anchor) {
   return Boolean(href) && href !== '#';
 }
 
+function closeMobileNavbar() {
+  const navCollapse = document.getElementById('mainNav');
+  if (!navCollapse) return;
+
+  try {
+    if (window.bootstrap && window.bootstrap.Collapse) {
+      const bsCollapse = window.bootstrap.Collapse.getInstance(navCollapse) || window.bootstrap.Collapse.getOrCreateInstance(navCollapse, { toggle: false });
+      if (bsCollapse && (navCollapse.classList.contains('show') || navCollapse.classList.contains('collapsing'))) {
+        bsCollapse.hide();
+      }
+    }
+  } catch (_e) {}
+
+  // Force direct DOM cleanup so it immediately collapses on all mobile browsers
+  navCollapse.classList.remove('show');
+  navCollapse.classList.remove('collapsing');
+  navCollapse.style.height = '';
+  const togglers = document.querySelectorAll('.navbar-toggler[data-bs-target="#mainNav"], [data-bs-target="#mainNav"]');
+  togglers.forEach((toggler) => {
+    toggler.classList.add('collapsed');
+    toggler.setAttribute('aria-expanded', 'false');
+  });
+}
+window.closeMobileNavbar = closeMobileNavbar;
+
 function beginInstantNavigation(anchor) {
+  closeMobileNavbar();
   const nav = anchor.closest('.main-nav');
   if (nav) {
     nav.querySelectorAll('.nav-link.active').forEach((link) => link.classList.remove('active'));
@@ -278,6 +304,7 @@ function prefetchShopFloorPage(urlStr) {
 }
 
 async function renderShopFloorInstantPage(urlStr, pushHistory = true) {
+  closeMobileNavbar();
   const normUrl = new URL(urlStr, window.location.origin).pathname;
   const mainEl = document.querySelector('main');
   if (!mainEl) {
@@ -308,6 +335,7 @@ async function renderShopFloorInstantPage(urlStr, pushHistory = true) {
 }
 
 function applyShopFloorPageData(pageData, urlStr, pushHistory) {
+  closeMobileNavbar();
   const mainEl = document.querySelector('main');
   if (!mainEl) return;
 
@@ -427,6 +455,18 @@ document.addEventListener('click', async (event) => {
     startTopProgress();
     window.location.reload();
     return;
+  }
+
+  // Auto-collapse mobile navbar whenever any link inside #mainNav is clicked (except dropdown toggles)
+  const menuLink = target.closest('#mainNav a');
+  if (menuLink && !menuLink.classList.contains('dropdown-toggle')) {
+    closeMobileNavbar();
+  } else {
+    // If navbar is open and user taps outside the navbar, auto-collapse it
+    const openNavbar = document.querySelector('#mainNav.show');
+    if (openNavbar && !target.closest('#mainNav') && !target.closest('.navbar-toggler')) {
+      closeMobileNavbar();
+    }
   }
 
   // Intercept shop floor internal navigation for instant 0ms transitions

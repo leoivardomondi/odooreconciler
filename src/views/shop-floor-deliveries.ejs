@@ -46,7 +46,7 @@
             <div class="small text-muted"><%= delivery.origin || 'No sales reference' %> &middot; <%= Array.isArray(delivery.partner_id) ? delivery.partner_id[1] : 'Customer' %> &middot; <%= String(delivery.scheduled_date || '').slice(0,10) %></div>
             <div class="small mt-2 <%= isReadyToDeliver ? 'text-success' : 'text-muted' %>"><i class="bi <%= isReadyToDeliver ? 'bi-check-circle-fill' : 'bi-info-circle' %> me-1" aria-hidden="true"></i><%= deliveryStatus.note %></div>
           </div>
-          <form method="post" action="/shop-floor/deliveries/<%= delivery.id %>/validate" data-confirm="Validate this delivery in Odoo?">
+          <form method="post" action="/shop-floor/deliveries/<%= delivery.id %>/validate" class="delivery-action-slot" data-confirm="Validate this delivery in Odoo?">
             <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
             <button class="btn <%= isReadyToDeliver ? 'btn-primary' : 'btn-outline-secondary' %>" type="submit" <%= isReadyToDeliver ? '' : 'disabled' %> title="<%= isReadyToDeliver ? 'Validate this delivery in Odoo' : deliveryStatus.label %>"><%= isReadyToDeliver ? 'Validate Delivery' : 'Not Ready' %></button>
           </form>

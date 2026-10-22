@@ -447,7 +447,7 @@
               <span class="badge rounded-pill bg-success-subtle text-success border border-success-subtle px-2.5 py-1 small fw-semibold">
                 ● Live Event Trigger
               </span>
-              <button type="submit" name="boardLogEmailSave" value="1" class="btn btn-sm btn-primary px-3 rounded-pill">Save Recipients</button>
+              <button type="button" name="boardLogEmailSave" value="1" class="btn btn-sm btn-primary px-3 rounded-pill" id="saveBoardLogRecipientsBtn" onclick="saveBoardLogRecipients(event)">Save Recipients</button>
             </div>
           </div>
           <div class="automation-card__body pt-2">
@@ -471,7 +471,7 @@
                   <div class="col-md-6 col-lg-7">
                     <div class="d-flex align-items-center flex-wrap gap-1">
                       <span class="small text-muted me-1" style="font-size: 0.75rem;">Quick add:</span>
-                      <% approvedUsers.filter(u => u.active && u.email).forEach(u => { %>
+                      <% approvedUsers.filter(u => u && Boolean(u.active) && u.email).forEach(u => { %>
                         <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2 rounded-pill small me-1 mb-1" style="font-size: 0.72rem;" onclick="addBoardLogEmailDirect('<%= u.email %>')">+ <%= u.email %></button>
                       <% }) %>
                     </div>
@@ -493,7 +493,7 @@
                 <div class="automation-card__identity"><div class="automation-card__icon">✉</div><div><div class="automation-card__title"><%= item.name %></div><div class="automation-card__type"><%= item.systemKey === 'custom' ? 'Custom scheduled email' : 'Built-in operational email' %></div></div></div>
                 <div class="automation-card__actions">
                   <div class="form-check form-switch mb-0"><input class="form-check-input" type="checkbox" role="switch" name="mailAutomation<%= n %>Enabled" id="mailAutomation<%= n %>Enabled" <%= item.enabled ? 'checked' : '' %>><label class="form-check-label small fw-semibold" for="mailAutomation<%= n %>Enabled"><%= item.enabled ? 'Active' : 'Paused' %></label></div>
-                  <button type="submit" name="mailAutomationSave" value="<%= item.id %>" class="btn btn-sm btn-primary px-3">Save Changes</button>
+                  <button type="submit" name="mailAutomationSave" value="<%= item.id %>" class="btn btn-sm btn-primary px-3" onclick="if(typeof addEmailFromInput==='function'){addEmailFromInput(<%= n %>);}">Save Changes</button>
                 </div>
               </div>
               <div class="automation-card__body"><div class="row g-3">
@@ -519,7 +519,7 @@
                       <div class="col-md-6 col-lg-7">
                         <div class="d-flex align-items-center flex-wrap gap-1">
                           <span class="small text-muted me-1" style="font-size: 0.75rem;">Quick add:</span>
-                          <% approvedUsers.filter(u => u.active && u.email).forEach(u => { %>
+                          <% approvedUsers.filter(u => u && Boolean(u.active) && u.email).forEach(u => { %>
                             <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2 rounded-pill small me-1 mb-1" style="font-size: 0.72rem;" onclick="addEmailDirect(<%= n %>, '<%= u.email %>')">+ <%= u.email %></button>
                           <% }) %>
                         </div>
@@ -627,6 +627,8 @@
   </form>
 
   <script>
+    const activeApprovedUserEmails = <%- JSON.stringify((typeof approvedUsers !== 'undefined' && approvedUsers ? approvedUsers : []).filter(u => u && Boolean(u.active) && u.email).map(u => u.email.trim())) %>;
+
     function parseEmails(str) {
       return [...new Set((str || '').split(/[\s,\n;]+/).map(e => e.trim().toLowerCase()).filter(Boolean))];
     }
@@ -673,6 +675,19 @@
         emails.push(clean);
         hiddenInput.value = emails.join(', ');
         renderRecipientPills(n);
+      }
+    };
+
+    window.addEmailFromInput = function(n) {
+      const input = document.getElementById(`addEmailInput_${n}`);
+      if (input && input.value) {
+        const entered = parseEmails(input.value);
+        if (entered.length) {
+          entered.forEach(e => addEmailDirect(n, e));
+        } else {
+          addEmailDirect(n, input.value);
+        }
+        input.value = '';
       }
     };
 
@@ -734,6 +749,94 @@
       }
     };
 
+    window.saveBoardLogRecipients = async function(event) {
+      if (event && event.preventDefault) event.preventDefault();
+
+      // Ensure any pending typed email is added immediately
+      if (typeof addBoardLogEmailFromInput === 'function') {
+        addBoardLogEmailFromInput();
+      }
+
+      const hiddenInput = document.getElementById('stockBoardLogNotificationEmail');
+      const btn = document.getElementById('saveBoardLogRecipientsBtn');
+      if (!hiddenInput || !btn) return;
+
+      const emailVal = hiddenInput.value;
+      const originalHtml = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true" style="width:0.85rem;height:0.85rem;border-width:1.5px"></span> Saving...';
+
+      try {
+        const form = document.getElementById('section-outgoing-mail');
+        const csrfToken = form?.querySelector('input[name="_csrf"]')?.value || document.querySelector('input[name="_csrf"]')?.value || '';
+        const params = new URLSearchParams();
+        params.append('_csrf', csrfToken);
+        params.append('stockBoardLogNotificationEmail', emailVal);
+        params.append('boardLogEmailSave', '1');
+        params.append('_ajax', '1');
+
+        const res = await fetch('/settings/mail', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Accept': 'application/json',
+          },
+          body: params.toString(),
+        });
+
+        const data = await res.json().catch(() => null);
+        if (res.ok && data?.ok) {
+          btn.innerHTML = '✓ Saved';
+          btn.classList.remove('btn-primary');
+          btn.classList.add('btn-success');
+          setTimeout(() => {
+            btn.innerHTML = originalHtml;
+            btn.classList.remove('btn-success');
+            btn.classList.add('btn-primary');
+            btn.disabled = false;
+          }, 2500);
+          renderBoardLogRecipientPills();
+          return;
+        }
+        throw new Error(data?.error || 'Could not save recipients.');
+      } catch (err) {
+        console.warn('AJAX save failed, falling back to standard form submission:', err);
+        btn.innerHTML = originalHtml;
+        btn.disabled = false;
+
+        const form = document.getElementById('section-outgoing-mail');
+        if (form) {
+          let flag = form.querySelector('input[name="boardLogEmailSave"]');
+          if (!flag) {
+            flag = document.createElement('input');
+            flag.type = 'hidden';
+            flag.name = 'boardLogEmailSave';
+            flag.value = '1';
+            form.appendChild(flag);
+          }
+          form.submit();
+        }
+      }
+    };
+
+    // Auto-flush any typed recipient inputs on form submission
+    (() => {
+      const mailForm = document.getElementById('section-outgoing-mail');
+      if (mailForm) {
+        mailForm.addEventListener('submit', () => {
+          if (typeof addBoardLogEmailFromInput === 'function') {
+            addBoardLogEmailFromInput();
+          }
+          const total = Number(document.getElementById('mailAutomationCount')?.value || 0);
+          for (let i = 1; i <= total; i++) {
+            if (typeof addEmailFromInput === 'function') {
+              addEmailFromInput(i);
+            }
+          }
+        });
+      }
+    })();
+
     (() => {
       const button = document.getElementById('addEmailAutomation');
       const rows = document.getElementById('emailAutomationRows');
@@ -771,7 +874,7 @@
             <div class="automation-card__identity"><div class="automation-card__icon">✉</div><div><div class="automation-card__title">New email automation</div><div class="automation-card__type">Custom scheduled email</div></div></div>
             <div class="automation-card__actions">
               <div class="form-check form-switch mb-0"><input class="form-check-input" type="checkbox" role="switch" name="mailAutomation${n}Enabled" id="mailAutomation${n}Enabled" checked><label class="form-check-label small fw-semibold" for="mailAutomation${n}Enabled">Active</label></div>
-              <button type="submit" name="mailAutomationSave" value="${automationId}" class="btn btn-sm btn-primary px-3">Save Changes</button>
+              <button type="submit" name="mailAutomationSave" value="${automationId}" class="btn btn-sm btn-primary px-3" onclick="if(typeof addEmailFromInput==='function'){addEmailFromInput(${n});}">Save Changes</button>
             </div>
           </div>
           <div class="automation-card__body"><div class="row g-3">
@@ -786,9 +889,23 @@
                 <span class="small text-muted" style="font-size: 0.75rem;">Click <strong>&times;</strong> on any badge to remove recipient</span>
               </label>
               <div class="automation-pills-wrapper p-2 bg-light rounded border mb-2 d-flex flex-wrap align-items-center gap-1" id="recipientPills_${n}"></div>
-              <div class="input-group input-group-sm" style="max-width: 320px;">
-                <input type="email" class="form-control automation-add-input" id="addEmailInput_${n}" placeholder="Add email address..." onkeydown="if(event.key==='Enter'){event.preventDefault();addEmailFromInput(${n});}">
-                <button type="button" class="btn btn-sm btn-outline-primary" onclick="addEmailFromInput(${n})">+ Add</button>
+              <div class="row g-2 align-items-center">
+                <div class="col-md-6 col-lg-5">
+                  <div class="input-group input-group-sm">
+                    <input type="email" class="form-control automation-add-input" id="addEmailInput_${n}" placeholder="Add email address..." onkeydown="if(event.key==='Enter'){event.preventDefault();addEmailFromInput(${n});}">
+                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="addEmailFromInput(${n})">+ Add</button>
+                  </div>
+                </div>
+                ${activeApprovedUserEmails && activeApprovedUserEmails.length > 0 ? `
+                  <div class="col-md-6 col-lg-7">
+                    <div class="d-flex align-items-center flex-wrap gap-1">
+                      <span class="small text-muted me-1" style="font-size: 0.75rem;">Quick add:</span>
+                      ${activeApprovedUserEmails.map(email => `
+                        <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2 rounded-pill small me-1 mb-1" style="font-size: 0.72rem;" onclick="addEmailDirect(${n}, '${email}')">+ ${email}</button>
+                      `).join('')}
+                    </div>
+                  </div>
+                ` : ''}
               </div>
               <input type="hidden" name="mailAutomation${n}Recipients" id="mailAutomation${n}Recipients" class="automation-recipients-hidden" value="" />
             </div>

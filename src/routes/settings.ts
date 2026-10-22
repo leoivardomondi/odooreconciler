@@ -929,10 +929,13 @@ async function renderSettingsPage(
     existing.fieldMappings,
   );
 
-  const [approvedUsers, sentReports] = await Promise.all([
+  const [allApprovedUsers, sentReports] = await Promise.all([
     getApprovedAuthUsers().catch(() => []),
     getSentReportLogs(30).catch(() => []),
   ]);
+  const approvedUsers = (allApprovedUsers || []).filter(
+    (u) => u && Boolean(u.active) && typeof u.email === 'string' && u.email.trim().length > 0,
+  );
 
   res.render('settings', {
     pageTitle: 'Settings',
@@ -1082,8 +1085,68 @@ router.post(
 router.post('/settings/mail', mailValidators, async (req: Request, res: Response) => {
   const errors = validationResult(req);
   const currentSettings = await getSettings();
+  const isAjax = Boolean(req.xhr || req.headers.accept?.includes('application/json') || req.body._ajax);
+  const isBoardLogSave = Boolean(req.body.boardLogEmailSave);
+  const requestedAutomationId = String(req.body.mailAutomationSave || '').trim();
+
+  // If this submission is specifically for Board Log Notification Recipients
+  if (isBoardLogSave && req.body.stockBoardLogNotificationEmail !== undefined) {
+    try {
+      const cleanEmail = req.body.stockBoardLogNotificationEmail.trim();
+      const stockUpdate = {
+        locationId: currentSettings.stock.locationId,
+        locationName: currentSettings.stock.locationName,
+        warehouseId: currentSettings.stock.warehouseId,
+        pickingTypeId: currentSettings.stock.pickingTypeId,
+        missingSoAlertUserLogin: currentSettings.stock.missingSoAlertUserLogin,
+        missingComponentAlertUserLogin: currentSettings.stock.missingComponentAlertUserLogin,
+        boardLogNotificationEmail: cleanEmail,
+      };
+
+      const saved = await saveSettings({
+        baseUrl: currentSettings.odoo.baseUrl,
+        database: currentSettings.odoo.database,
+        username: currentSettings.odoo.username,
+        apiKey: '',
+        keepExistingApiKey: true,
+        stock: stockUpdate,
+      });
+
+      await logEvent('info', 'Board log notification recipients updated from settings', {
+        boardLogNotificationEmail: cleanEmail,
+      });
+
+      const confirmation = 'Board log notification recipients saved.';
+      if (isAjax) {
+        return res.json({
+          ok: true,
+          message: confirmation,
+          stockBoardLogNotificationEmail: saved.stock.boardLogNotificationEmail,
+        });
+      }
+      return res.redirect(`/settings?message=${encodeURIComponent(confirmation)}#section-email-automation`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Could not save board log notification recipients.';
+      await logEvent('error', 'Board log notification recipients update failed', { error: message }).catch(() => undefined);
+      if (isAjax) {
+        return res.status(500).json({ ok: false, error: message });
+      }
+      return renderSettingsPage(res.status(500), {
+        existing: currentSettings,
+        source: req.body,
+        status: { type: 'danger', message },
+      });
+    }
+  }
 
   if (!errors.isEmpty()) {
+    if (isAjax) {
+      return res.status(422).json({
+        ok: false,
+        error: errors.array().map((e) => e.msg).join(', '),
+        validationErrors: errors.array(),
+      });
+    }
     return renderSettingsPage(res.status(422), {
       existing: currentSettings,
       source: req.body,
@@ -1133,21 +1196,30 @@ router.post('/settings/mail', mailValidators, async (req: Request, res: Response
         })),
     });
 
-    const requestedAutomationId = String(req.body.mailAutomationSave || '').trim();
-    const isBoardLogSave = Boolean(req.body.boardLogEmailSave);
     const savedAutomation = requestedAutomationId
       ? saved.mail.automations.find((automation) => automation.id === requestedAutomationId)
       : null;
-    const confirmation = isBoardLogSave
-      ? 'Board log notification recipients saved.'
-      : savedAutomation
-        ? `Email automation "${savedAutomation.name}" saved.`
-        : 'Outgoing mail settings saved.';
-    const anchor = (requestedAutomationId || isBoardLogSave) ? '#section-email-automation' : '';
+    const confirmation = savedAutomation
+      ? `Email automation "${savedAutomation.name}" saved.`
+      : 'Outgoing mail settings saved.';
+    const anchor = requestedAutomationId ? '#section-email-automation' : '';
+
+    if (isAjax) {
+      return res.json({
+        ok: true,
+        message: confirmation,
+        savedAutomation,
+        stockBoardLogNotificationEmail: saved.stock.boardLogNotificationEmail,
+      });
+    }
+
     return res.redirect(`/settings?message=${encodeURIComponent(confirmation)}${anchor}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Could not save outgoing mail settings.';
     await logEvent('error', 'Outgoing mail settings update failed', { error: message }).catch(() => undefined);
+    if (isAjax) {
+      return res.status(500).json({ ok: false, error: message });
+    }
     return renderSettingsPage(res.status(500), {
       existing: currentSettings,
       source: req.body,

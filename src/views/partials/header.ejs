@@ -188,11 +188,68 @@
               </div>
             </div>
           </div>
+          <!-- Mobile Direct Sign Out Button (guaranteed visible and accessible when menu is expanded) -->
+          <div class="d-lg-none mt-3 pt-2 border-top border-secondary-subtle">
+            <form method="post" action="/logout" data-disable-submit="true">
+              <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+              <button type="submit" class="btn btn-sm btn-danger w-100 d-flex align-items-center justify-content-center gap-2 py-2 fw-bold shadow-sm">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+                <span>Sign Out</span>
+              </button>
+            </form>
+          </div>
         </div>
       <% } %>
     </div>
   </div>
 </nav>
+
+<script>
+  // Mobile navbar auto-collapse when navigating
+  (function() {
+    function setupMobileNavAutoCollapse() {
+      var navCollapse = document.getElementById('mainNav');
+      if (!navCollapse) return;
+
+      navCollapse.addEventListener('click', function(e) {
+        var link = e.target.closest('a');
+        if (!link) return;
+        // Do not collapse if clicking a dropdown toggle that is opening a submenu
+        if (link.classList.contains('dropdown-toggle')) return;
+
+        // Auto-collapse mobile navbar
+        if (typeof window.closeMobileNavbar === 'function') {
+          window.closeMobileNavbar();
+          return;
+        }
+
+        try {
+          if (typeof bootstrap !== 'undefined' && bootstrap.Collapse) {
+            var bsCollapse = bootstrap.Collapse.getInstance(navCollapse) || (bootstrap.Collapse.getOrCreateInstance ? bootstrap.Collapse.getOrCreateInstance(navCollapse, { toggle: false }) : null);
+            if (bsCollapse) {
+              bsCollapse.hide();
+            }
+          }
+        } catch (_err) {}
+
+        navCollapse.classList.remove('show');
+        navCollapse.classList.remove('collapsing');
+        navCollapse.style.height = '';
+        var toggler = document.querySelector('.navbar-toggler[data-bs-target="#mainNav"]');
+        if (toggler) {
+          toggler.classList.add('collapsed');
+          toggler.setAttribute('aria-expanded', 'false');
+        }
+      });
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', setupMobileNavAutoCollapse);
+    } else {
+      setupMobileNavAutoCollapse();
+    }
+  })();
+</script>
 
 <% if (locals.isImpersonating && locals.impersonatedBy) { %>
 <div style="background:#d97706;color:#fff;text-align:center;padding:0.5rem 1rem;font-size:0.85rem;display:flex;align-items:center;justify-content:center;gap:0.75rem;flex-wrap:wrap">

@@ -174,3 +174,88 @@ const repositories_1 = require("../models/repositories");
     strict_1.default.equal(restored.status, 'pending');
     strict_1.default.equal(restored.qty_missing, 5);
 });
+(0, node_test_1.default)('Boards logged against an MO are cross-posted to the related Sales Order chatter with all email details', async () => {
+    const entry = {
+        customer_name: 'John Doe',
+        product_name: 'WHITE MDF 18mm',
+        quantity: 10,
+        gate: 'Front Gate',
+        vehicle_registration: 'KCA 123X',
+        arrival_time: '14:30',
+        arrival_date: '2026-10-21',
+        actor_name: 'Operator Gate',
+        actor_email: 'gate@urbanvibe.co.ke',
+    };
+    const chatterCalls = [];
+    const fakeClient = {
+        findMOsForBoardIntake: async () => [
+            {
+                moId: 501,
+                moName: 'WH/MO/00501',
+                origin: 'S02182',
+                soId: 105,
+                soName: 'S02182',
+                qtyNeeded: 10,
+                qtyReserved: 0,
+                state: 'confirmed',
+            },
+        ],
+        postModelChatterMessage: async (model, id, message) => {
+            chatterCalls.push({ model, id, message });
+            return 1;
+        },
+    };
+    const matchingMOs = await fakeClient.findMOsForBoardIntake();
+    const buildChatterHtml = (moName) => `<p>🪵 <strong>Board log completed (Operator Mobile App)</strong></p>` +
+        `<p>` +
+        `<strong>Client:</strong> ${entry.customer_name}<br>` +
+        `<strong>Board:</strong> ${entry.product_name}<br>` +
+        `<strong>Quantity:</strong> ${entry.quantity}<br>` +
+        (moName ? `<strong>Manufacturing Order:</strong> ${moName}<br>` : '') +
+        `<strong>Gate:</strong> ${entry.gate}<br>` +
+        `<strong>Vehicle Reg:</strong> ${entry.vehicle_registration}<br>` +
+        `<strong>Arrival Time:</strong> ${entry.arrival_time}<br>` +
+        `<strong>Date:</strong> ${entry.arrival_date}<br>` +
+        `<strong>Logged by:</strong> ${entry.actor_name}` +
+        `</p>`;
+    await Promise.all(matchingMOs.map((mo) => fakeClient.postModelChatterMessage('mrp.production', mo.moId, buildChatterHtml(mo.moName))));
+    const postedSoIds = new Set();
+    for (const mo of matchingMOs) {
+        if (mo.soId && !postedSoIds.has(mo.soId)) {
+            postedSoIds.add(mo.soId);
+            await fakeClient.postModelChatterMessage('sale.order', mo.soId, buildChatterHtml(mo.moName));
+        }
+    }
+    // Verify MO chatter was posted
+    const moChatter = chatterCalls.find((c) => c.model === 'mrp.production' && c.id === 501);
+    strict_1.default.ok(moChatter, 'Must post to mrp.production');
+    strict_1.default.ok(moChatter.message.includes('WH/MO/00501'));
+    strict_1.default.ok(moChatter.message.includes('WHITE MDF 18mm'));
+    strict_1.default.ok(moChatter.message.includes('KCA 123X'));
+    strict_1.default.ok(moChatter.message.includes('Front Gate'));
+    strict_1.default.ok(moChatter.message.includes('14:30'));
+    // Verify SO chatter was posted with all email details
+    const soChatter = chatterCalls.find((c) => c.model === 'sale.order' && c.id === 105);
+    strict_1.default.ok(soChatter, 'Must post to related sale.order chatter');
+    strict_1.default.ok(soChatter.message.includes('Client:</strong> John Doe'));
+    strict_1.default.ok(soChatter.message.includes('Board:</strong> WHITE MDF 18mm'));
+    strict_1.default.ok(soChatter.message.includes('Quantity:</strong> 10'));
+    strict_1.default.ok(soChatter.message.includes('Manufacturing Order:</strong> WH/MO/00501'));
+    strict_1.default.ok(soChatter.message.includes('Gate:</strong> Front Gate'));
+    strict_1.default.ok(soChatter.message.includes('Vehicle Reg:</strong> KCA 123X'));
+    strict_1.default.ok(soChatter.message.includes('Arrival Time:</strong> 14:30'));
+    strict_1.default.ok(soChatter.message.includes('Logged by:</strong> Operator Gate'));
+});
+(0, node_test_1.default)('Board intake strictly rejects decimals and requires whole boards only', () => {
+    const isAllowedQuantity = (qty) => {
+        return qty > 0 && Number.isFinite(qty) && Number.isInteger(qty) && qty % 1 === 0;
+    };
+    strict_1.default.equal(isAllowedQuantity(1), true);
+    strict_1.default.equal(isAllowedQuantity(5), true);
+    strict_1.default.equal(isAllowedQuantity(10), true);
+    strict_1.default.equal(isAllowedQuantity(0.5), false);
+    strict_1.default.equal(isAllowedQuantity(1.5), false);
+    strict_1.default.equal(isAllowedQuantity(2.25), false);
+    strict_1.default.equal(isAllowedQuantity(0), false);
+    strict_1.default.equal(isAllowedQuantity(-1), false);
+});

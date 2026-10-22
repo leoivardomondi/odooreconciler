@@ -1528,6 +1528,19 @@ export class OdooClient {
   async findEmployeeForShopFloorEmail(email: string) {
     const normalizedEmail = String(email || '').trim();
     if (!normalizedEmail) return null;
+    const namePart = normalizedEmail.split('@')[0].replace(/[._-]/g, ' ').trim();
+    const domain: any[] = namePart.length >= 3
+      ? [
+          '|', '|',
+          ['work_email', '=ilike', normalizedEmail],
+          ['user_id.login', '=ilike', normalizedEmail],
+          ['name', 'ilike', namePart],
+        ]
+      : [
+          '|',
+          ['work_email', '=ilike', normalizedEmail],
+          ['user_id.login', '=ilike', normalizedEmail],
+        ];
     const employees = await this.request<Array<{
       id: number;
       name: string;
@@ -1540,11 +1553,7 @@ export class OdooClient {
       'hr.employee',
       'search_read',
       {
-        domain: [
-          '|',
-          ['work_email', '=ilike', normalizedEmail],
-          ['user_id.login', '=ilike', normalizedEmail],
-        ],
+        domain,
         fields: ['id', 'name', 'job_title', 'department_id', 'work_email', 'mobile_phone', 'parent_id'],
         limit: 1,
       },

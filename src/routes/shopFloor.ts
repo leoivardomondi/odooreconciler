@@ -60,7 +60,7 @@ import { revertBoardIntakeEntry, syncBoardIntakeEntry } from '../services/boardI
 import { syncShopFloorOperatorAccess } from '../services/shopFloorOperatorAccessSyncService';
 import { syncPendingProcessesFromOdoo } from '../services/shopFloorPendingSyncService';
 import { extractSoNameFromOrigin } from '../services/poJobSummaryAuditService';
-import { isAllowedAttendanceIp } from '../utils/siteAttendanceAccess';
+import { isAllowedAttendanceIp, normalizeIpAddress } from '../utils/siteAttendanceAccess';
 
 const router = Router();
 
@@ -136,7 +136,16 @@ function canManageShopFloor(req: Request): boolean {
 }
 
 function canUseSiteAttendance(req: Request) {
-  return isAllowedAttendanceIp(req.ip || req.socket.remoteAddress, env.ATTENDANCE_ALLOWED_IPS);
+  if (canManageShopFloor(req)) return true;
+  const clientIp = req.ip || req.socket.remoteAddress || '';
+  const normalized = normalizeIpAddress(clientIp);
+  if (['127.0.0.1', '::1', 'localhost'].includes(normalized)) return true;
+  const xForwardedFor = (req.headers['x-forwarded-for'] as string) || '';
+  const allIps = [clientIp, ...xForwardedFor.split(',')].map((s) => s.trim()).filter(Boolean);
+  for (const ip of allIps) {
+    if (isAllowedAttendanceIp(ip, env.ATTENDANCE_ALLOWED_IPS)) return true;
+  }
+  return false;
 }
 
 function getViewedUserEmail(req: Request): string {
@@ -1684,56 +1693,150 @@ async function resolveShopFloorEmployeeRecord(email: string, client: OdooClient)
   if (!norm) return null;
   const cacheKey = `shop-floor-dashboard:v3:${norm}`;
   const cached = shopFloorCache.get<OperatorDashboardData>(cacheKey);
-  if (cached?.employee?.id) {
+  if (cached?.employee?.id && cached.employee.id > 0) {
     return { id: cached.employee.id, name: cached.employee.name };
   }
   try {
     const snapshot = await getShopFloorDashboardSnapshot<OperatorDashboardData>(norm);
-    if (snapshot?.data?.employee?.id) {
+    if (snapshot?.data?.employee?.id && snapshot.data.employee.id > 0) {
       return { id: snapshot.data.employee.id, name: snapshot.data.employee.name };
     }
   } catch (_e) {}
-  return client.findEmployeeForShopFloorEmail(email);
+
+  const found = await client.findEmployeeForShopFloorEmail(email).catch(() => null);
+  if (found && found.id > 0) return { id: found.id, name: found.name };
+
+  const byUser = await client.findEmployeeByUserEmail(email).catch(() => null);
+  if (byUser && byUser.id > 0) return { id: byUser.id, name: byUser.name };
+
+  const byWork = await client.findEmployeeByWorkEmail(email).catch(() => null);
+  if (byWork && byWork.id > 0) return { id: byWork.id, name: byWork.name };
+
+  return null;
 }
 
 async function resolveAttendanceEmployee(req: Request, client: OdooClient) {
-  return resolveShopFloorEmployeeRecord(req.authUser!.email, client);
+  const viewedEmail = getViewedUserEmail(req);
+  return resolveShopFloorEmployeeRecord(viewedEmail || req.authUser!.email, client);
 }
 
 router.post('/shop-floor/attendance/check-in', async (req: Request, res: Response) => {
-  if (!req.authUser) { res.status(401).json({ ok: false, error: 'Please sign in first.' }); return; }
+  const wantsJson = req.xhr || req.headers.accept?.includes('application/json') || req.is('json');
+  if (!req.authUser) {
+    if (wantsJson) { res.status(401).json({ ok: false, error: 'Please sign in first.' }); return; }
+    res.redirect('/login');
+    return;
+  }
   if (!canUseSiteAttendance(req)) {
-    res.status(403).json({ ok: false, error: 'Attendance check-in is available only while connected to the site network.' });
+    const msg = 'Attendance check-in is available only while connected to the site network.';
+    if (wantsJson) { res.status(403).json({ ok: false, error: msg }); return; }
+    res.redirect('/shop-floor?error=' + encodeURIComponent(msg));
     return;
   }
   try {
     const settings = await getSettings();
     const client = new OdooClient(settings.odoo);
     const employee = await resolveAttendanceEmployee(req, client);
-    if (!employee) { res.status(404).json({ ok: false, error: 'No Odoo employee record is linked to this account.' }); return; }
+    if (!employee) {
+      const msg = 'No Odoo employee record is linked to this account.';
+      if (wantsJson) { res.status(404).json({ ok: false, error: msg }); return; }
+      res.redirect('/shop-floor?error=' + encodeURIComponent(msg));
+      return;
+    }
     const result = await client.checkInAttendance(employee.id);
-    res.json({ ok: true, action: result.created ? 'checked_in' : 'already_checked_in', checkIn: result.record.check_in });
+    const checkInTime = result.record?.check_in || new Date().toISOString().slice(0, 19).replace('T', ' ');
+
+    // Instant SWR cache update so any reload or navigation immediately shows Checked In
+    const viewedEmail = getViewedUserEmail(req).toLowerCase();
+    const cacheKey = `shop-floor-dashboard:v3:${viewedEmail}`;
+    const cached = shopFloorCache.get<OperatorDashboardData>(cacheKey);
+    if (cached) {
+      if (!cached.attendance) {
+        cached.attendance = { checkedIn: true, checkedOut: false, todayRecord: { check_in: checkInTime, check_out: null }, recentRecords: [], isLate: false };
+      } else {
+        cached.attendance.checkedIn = true;
+        cached.attendance.checkedOut = false;
+        cached.attendance.todayRecord = { check_in: checkInTime, check_out: null };
+      }
+      shopFloorCache.set(cacheKey, cached, 30 * 60 * 1000);
+      saveShopFloorDashboardSnapshot(viewedEmail, cached).catch(() => {});
+    }
+
+    if (!wantsJson) {
+      res.redirect('/shop-floor?message=' + encodeURIComponent('Checked in successfully.'));
+      return;
+    }
+    res.json({ ok: true, action: result.created ? 'checked_in' : 'already_checked_in', checkIn: checkInTime });
   } catch (error) {
-    res.status(500).json({ ok: false, error: error instanceof Error ? error.message : 'Could not check in to Odoo.' });
+    const errMsg = error instanceof Error ? error.message : 'Could not check in to Odoo.';
+    if (!wantsJson) {
+      res.redirect('/shop-floor?error=' + encodeURIComponent(errMsg));
+      return;
+    }
+    res.status(500).json({ ok: false, error: errMsg });
   }
 });
 
 router.post('/shop-floor/attendance/check-out', async (req: Request, res: Response) => {
-  if (!req.authUser) { res.status(401).json({ ok: false, error: 'Please sign in first.' }); return; }
+  const wantsJson = req.xhr || req.headers.accept?.includes('application/json') || req.is('json');
+  if (!req.authUser) {
+    if (wantsJson) { res.status(401).json({ ok: false, error: 'Please sign in first.' }); return; }
+    res.redirect('/login');
+    return;
+  }
   if (!canUseSiteAttendance(req)) {
-    res.status(403).json({ ok: false, error: 'Attendance check-out is available only while connected to the site network.' });
+    const msg = 'Attendance check-out is available only while connected to the site network.';
+    if (wantsJson) { res.status(403).json({ ok: false, error: msg }); return; }
+    res.redirect('/shop-floor?error=' + encodeURIComponent(msg));
     return;
   }
   try {
     const settings = await getSettings();
     const client = new OdooClient(settings.odoo);
     const employee = await resolveAttendanceEmployee(req, client);
-    if (!employee) { res.status(404).json({ ok: false, error: 'No Odoo employee record is linked to this account.' }); return; }
+    if (!employee) {
+      const msg = 'No Odoo employee record is linked to this account.';
+      if (wantsJson) { res.status(404).json({ ok: false, error: msg }); return; }
+      res.redirect('/shop-floor?error=' + encodeURIComponent(msg));
+      return;
+    }
     const result = await client.checkOutAttendance(employee.id);
-    if (!result.updated) { res.status(409).json({ ok: false, error: 'No open Odoo attendance record was found.' }); return; }
-    res.json({ ok: true, action: 'checked_out', checkIn: result.record?.check_in || null, checkOut: result.record?.check_out || null });
+    if (!result.updated) {
+      const msg = 'No open Odoo attendance record was found.';
+      if (wantsJson) { res.status(409).json({ ok: false, error: msg }); return; }
+      res.redirect('/shop-floor?error=' + encodeURIComponent(msg));
+      return;
+    }
+    const checkOutTime = result.record?.check_out || new Date().toISOString().slice(0, 19).replace('T', ' ');
+
+    // Instant SWR cache update so any reload or navigation immediately shows Checked Out
+    const viewedEmail = getViewedUserEmail(req).toLowerCase();
+    const cacheKey = `shop-floor-dashboard:v3:${viewedEmail}`;
+    const cached = shopFloorCache.get<OperatorDashboardData>(cacheKey);
+    if (cached) {
+      if (cached.attendance) {
+        cached.attendance.checkedIn = false;
+        cached.attendance.checkedOut = true;
+        if (cached.attendance.todayRecord) {
+          cached.attendance.todayRecord.check_out = checkOutTime;
+        }
+      }
+      shopFloorCache.set(cacheKey, cached, 30 * 60 * 1000);
+      saveShopFloorDashboardSnapshot(viewedEmail, cached).catch(() => {});
+    }
+
+    if (!wantsJson) {
+      res.redirect('/shop-floor?message=' + encodeURIComponent('Checked out successfully.'));
+      return;
+    }
+    res.json({ ok: true, action: 'checked_out', checkIn: result.record?.check_in || null, checkOut: checkOutTime });
   } catch (error) {
-    res.status(500).json({ ok: false, error: error instanceof Error ? error.message : 'Could not check out from Odoo.' });
+    const errMsg = error instanceof Error ? error.message : 'Could not check out from Odoo.';
+    if (!wantsJson) {
+      res.redirect('/shop-floor?error=' + encodeURIComponent(errMsg));
+      return;
+    }
+    res.status(500).json({ ok: false, error: errMsg });
   }
 });
 
@@ -3377,7 +3480,8 @@ router.post('/shop-floor/board-intake/:id/revert', async (req: Request, res: Res
   void (async () => {
     try {
       const settings = await getSettings();
-      const result = await new OdooClient(settings.odoo).removeBoardsFromStock({
+      const odooClient = new OdooClient(settings.odoo);
+      const result = await odooClient.removeBoardsFromStock({
         productId: Number(entry.product_id),
         quantity: Number(entry.quantity),
       });
@@ -3385,6 +3489,79 @@ router.post('/shop-floor/board-intake/:id/revert', async (req: Request, res: Res
       await recordExactStockQuantity(Number(entry.product_id), entry.product_name, result.newQty, -Number(entry.quantity));
       shopFloorCache.clearPrefix('shop-floor-dashboard:');
       void refreshStockMirror();
+
+      // Post comprehensive short statement in Odoo chatter on matching MOs and linked Sales Orders
+      const reportDate = new Intl.DateTimeFormat('en-CA', {
+        timeZone: env.APP_TIMEZONE || 'Africa/Nairobi',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(new Date());
+
+      const safeCustomerName = escapeHtml(entry.customer_name);
+      const safeProductName = escapeHtml(entry.product_name);
+      const safeRevertedBy = escapeHtml(revertedBy);
+      const safeOriginalActor = escapeHtml(entry.actor_name || entry.actor_email || 'Operator');
+      const qtyNum = Number(entry.quantity);
+
+      const revertChatterHtml =
+        `<p>⚠️ <strong>BOARD INTAKE REVERTED (Operator Mobile App)</strong></p>` +
+        `<p>` +
+        `<strong>Client:</strong> ${safeCustomerName}<br>` +
+        `<strong>Board:</strong> ${safeProductName}<br>` +
+        `<strong>Quantity Reverted:</strong> -${qtyNum} sheets (New Odoo Stock: ${result.newQty})<br>` +
+        `<strong>Originally Logged By:</strong> ${safeOriginalActor}<br>` +
+        `<strong>Reverted By:</strong> ${safeRevertedBy}<br>` +
+        `<strong>Date:</strong> ${escapeHtml(reportDate)}<br>` +
+        `<em>Summary: Physical board intake was reverted; stock has been automatically deducted back in Odoo.</em>` +
+        `</p>`;
+
+      const matchingMOs = await odooClient.findMOsForBoardIntake({
+        productId: Number(entry.product_id),
+        partnerId: Number(entry.partner_id),
+      }).catch(() => []);
+
+      if (matchingMOs.length > 0) {
+        await Promise.all(matchingMOs.map((mo) =>
+          odooClient.postModelChatterMessage('mrp.production', mo.moId, revertChatterHtml).catch(() => null)
+        ));
+        const postedSoIds = new Set<number>();
+        for (const mo of matchingMOs) {
+          if (mo.soId && !postedSoIds.has(mo.soId)) {
+            postedSoIds.add(mo.soId);
+            await odooClient.postModelChatterMessage('sale.order', mo.soId, revertChatterHtml).catch(() => null);
+          }
+        }
+      }
+
+      // Send immediate email notification to configured recipients
+      const rawRecipients = settings.stock?.boardLogNotificationEmail?.trim() || 'sharon@urbanvibeinteriordesign.co.ke';
+      const recipientList = [...new Set(rawRecipients.split(/[,\s;\n]+/).map((e) => e.trim().toLowerCase()).filter((e) => e.includes('@')))];
+      const toRecipients = recipientList.length > 0 ? recipientList.join(', ') : 'sharon@urbanvibeinteriordesign.co.ke';
+      const subjectCustomerName = (entry.customer_name || 'Client').replace(/[\r\n]+/g, ' ').trim();
+
+      await sendMailWithConfig(settings.mail, {
+        to: toRecipients,
+        subject: `[REVERTED] ${subjectCustomerName} - Board Intake Cancelled - ${reportDate}`,
+        html: `<p style="color:#b91c1c;"><strong>⚠️ Board Intake Cancelled &amp; Reverted in Odoo</strong></p>` +
+              `<p>` +
+              `<strong>Client:</strong> ${safeCustomerName}<br>` +
+              `<strong>Board:</strong> ${safeProductName}<br>` +
+              `<strong>Quantity Reverted:</strong> -${qtyNum} sheets<br>` +
+              `<strong>Remaining Odoo Stock:</strong> ${result.newQty}<br>` +
+              `<strong>Originally Logged By:</strong> ${safeOriginalActor}<br>` +
+              `<strong>Reverted By:</strong> ${safeRevertedBy}<br>` +
+              `<strong>Date:</strong> ${escapeHtml(reportDate)}<br>` +
+              `</p>` +
+              `<p style="font-size:0.9em;color:#475569;"><em>Comprehensive note: The previous board entry was reverted. ${qtyNum} sheets of ${safeProductName} have been deducted from inventory and component reservation released.</em></p>`,
+      }).catch((mailError) => logEvent('error', `Board intake revert email to ${toRecipients} failed`, {
+        customerName: entry.customer_name,
+        productName: entry.product_name,
+        quantity: entry.quantity,
+        revertedBy,
+        error: mailError instanceof Error ? mailError.message : String(mailError),
+      }));
+
       await logEvent('warn', 'Board intake reverted in Odoo (background)', {
         boardIntakeId: entryId,
         productId: entry.product_id,

@@ -77,6 +77,98 @@
   .is-invalid ~ .custom-invalid-feedback {
     display: block;
   }
+
+  /* Responsive Mobile Layout (Samsung Galaxy A16 / 384px - 412px Viewports) */
+  @media (max-width: 575.98px) {
+    main.container {
+      padding-left: 0.65rem !important;
+      padding-right: 0.65rem !important;
+      margin-top: 0.75rem !important;
+      margin-bottom: 1.5rem !important;
+    }
+    .card-body.p-4 {
+      padding: 1rem 0.85rem !important;
+    }
+    .px-4 {
+      padding-left: 0.85rem !important;
+      padding-right: 0.85rem !important;
+    }
+    /* Header action buttons row on mobile */
+    .shop-boards-header-actions {
+      width: 100%;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.45rem !important;
+    }
+    .shop-boards-header-actions .badge {
+      width: 100%;
+      text-align: center;
+      padding: 0.5rem 0.75rem !important;
+      font-size: 0.78rem !important;
+    }
+    .shop-boards-header-actions .btn {
+      flex: 1 1 calc(50% - 0.25rem);
+      min-height: 40px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.82rem;
+      padding: 0.45rem 0.65rem;
+      text-align: center;
+    }
+    /* Stock Needed items stacked arrangement */
+    .stock-alert-item {
+      padding-top: 0.5rem;
+      padding-bottom: 0.5rem;
+    }
+    .stock-alert-item > .d-flex.justify-content-between.align-items-center.gap-2 {
+      flex-direction: column;
+      align-items: flex-start !important;
+      gap: 0.35rem !important;
+    }
+    .stock-alert-item .action-container {
+      width: 100%;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-top: 0.25rem;
+    }
+    .stock-alert-item .auto-fill-stock-btn,
+    .stock-client-group .auto-fill-stock-btn {
+      min-height: 38px;
+      padding: 0.35rem 0.95rem !important;
+      font-size: 0.78rem !important;
+    }
+    /* Mobile-first card rows for Board Logs */
+    [data-board-log-row] {
+      flex-direction: column !important;
+      align-items: stretch !important;
+      gap: 0.65rem !important;
+      padding: 0.85rem !important;
+    }
+    [data-board-log-row] > .d-flex.align-items-center.gap-2 {
+      width: 100% !important;
+      justify-content: space-between !important;
+      border-top: 1px solid #f1f5f9;
+      padding-top: 0.5rem;
+      margin-top: 0.15rem;
+    }
+    [data-board-log-row] .btn-revert,
+    [data-board-log-row] .btn-retry {
+      min-height: 38px;
+      padding: 0.35rem 1rem !important;
+      font-size: 0.82rem !important;
+    }
+    /* Form controls touch sizing */
+    .form-control, .input-group-text {
+      min-height: 46px;
+      font-size: 1rem !important;
+    }
+    #submitBtn {
+      min-height: 52px;
+      font-size: 1rem;
+    }
+  }
 </style>
 
 <main class="container my-4">
@@ -119,7 +211,7 @@
       <h1 class="h3 fw-bold mb-1" style="color: #1e293b;">Board Intake & Auto-Reserve</h1>
       <p class="text-muted small mb-0">Log boards brought in by clients and automatically reserve them on pending manufacturing orders</p>
     </div>
-    <div class="d-flex align-items-center gap-2 flex-wrap">
+    <div class="d-flex align-items-center gap-2 flex-wrap shop-boards-header-actions">
       <span class="badge rounded-pill <%= stockMirror.isFresh ? 'bg-success-subtle text-success' : 'bg-warning-subtle text-warning-emphasis' %> border px-3 py-2">
         <%= stockMirror.isFresh ? 'Stock current' : (stockMirror.isRefreshing ? 'Stock refreshing' : 'Cached stock') %>
         <% if (stockMirror.syncedAt) { %> · <%= formatDateTime(stockMirror.syncedAt) %><% } %>
@@ -529,13 +621,13 @@
               const isOwner = Boolean((userEmail && itemEmail && userEmail === itemEmail) || (userName && itemName && userName === itemName));
               const canRevert = isAdminUser || isOwner;
             %>
-            <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 border rounded-3 px-3 py-2" data-board-log-row="<%= item.id %>">
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 border rounded-3 px-3 py-2 <%= item.reverted_at || item.status === 'reverted' ? 'bg-light' : 'bg-white' %>" data-board-log-row="<%= item.id %>" style="<%= item.reverted_at || item.status === 'reverted' ? 'opacity:0.75;' : '' %>border-color:#cbd5e1!important;">
               <div>
-                <strong><%= item.quantity %> × <%= item.product_name %></strong>
-                <div class="small text-muted">
-                  <%= item.customer_name %> · <%= formatDateTime(item.created_at) %>
+                <strong class="text-dark" style="font-size:0.92rem;"><%= item.quantity %> × <%= item.product_name %></strong>
+                <div class="small mt-0.5" style="color:#334155;font-weight:500;">
+                  <span class="fw-bold" style="color:#0f172a;"><%= item.customer_name %></span> · <span style="color:#475569;"><%= formatDateTime(item.created_at) %></span>
                   <% if (item.gate) { %>
-                    · <strong><%= item.gate %></strong>
+                    · <strong>Gate: <%= item.gate %></strong>
                   <% } %>
                   <% if (item.arrival_date) { %>
                     · Date: <strong><%= item.arrival_date %></strong>
@@ -547,18 +639,18 @@
                     · Vehicle: <strong><%= item.vehicle_registration %></strong>
                   <% } %>
                   <% if (item.actor_name) { %>
-                    · Logged by <strong><%= item.actor_name %></strong>
+                    · Logged by <strong style="color:#0f172a;"><%= item.actor_name %></strong>
                   <% } %>
                   <% if (item.reverted_by) { %>
-                    · Reverted by <strong><%= item.reverted_by %></strong>
+                    · <span class="badge bg-danger-subtle text-danger border border-danger-subtle px-2 py-0.5" style="font-size:0.72rem;">Reverted by <strong><%= item.reverted_by %></strong></span>
                   <% } %>
                 </div>
               </div>
               <div class="d-flex align-items-center gap-2">
                 <div class="text-end">
-                  <span class="badge rounded-pill <%= item.reverted_at || item.status === 'reverted' ? 'bg-secondary-subtle text-secondary' : item.status === 'synced' ? 'bg-success-subtle text-success' : item.status === 'failed' ? 'bg-danger-subtle text-danger' : 'bg-warning-subtle text-warning-emphasis' %>" data-board-log-status="<%= item.id %>" title="<%= item.error_message || '' %>"><%= item.reverted_at || item.status === 'reverted' ? 'Reverted in Odoo' : item.status === 'synced' ? 'Synced to Odoo' : item.status === 'failed' ? 'Sync failed' : item.status === 'reverting' ? 'Reverting' : 'Syncing' %></span>
+                  <span class="badge rounded-pill <%= item.reverted_at || item.status === 'reverted' ? 'bg-secondary text-white' : item.status === 'synced' ? 'bg-success text-white' : item.status === 'failed' ? 'bg-danger text-white' : 'bg-warning text-dark' %> fw-bold px-2.5 py-1" data-board-log-status="<%= item.id %>" title="<%= item.error_message || '' %>" style="font-size:0.74rem;"><%= item.reverted_at || item.status === 'reverted' ? 'Reverted in Odoo' : item.status === 'synced' ? 'Synced to Odoo' : item.status === 'failed' ? 'Sync failed' : item.status === 'reverting' ? 'Reverting' : 'Syncing' %></span>
                   <% if (item.status === 'failed' && item.next_retry_at) { %>
-                    <div class="small text-muted mt-1" data-board-log-retry="<%= item.id %>">Automatic retry scheduled · attempt <%= item.retry_count || 1 %></div>
+                    <div class="small text-danger fw-semibold mt-1" data-board-log-retry="<%= item.id %>">Automatic retry scheduled · attempt <%= item.retry_count || 1 %></div>
                   <% } %>
                 </div>
                 <% if (item.status === 'failed') { %>
@@ -1470,13 +1562,20 @@
               pendingLogIds.delete(String(entry.id));
 
               // Also update any matching locked alert items to indicate completion
+              var syncedPartnerId = String(entry.partner_id || '');
               var syncedPartnerName = (entry.customer_name || '').toLowerCase().trim();
+              var syncedProductId = String(entry.product_id || '');
               var syncedProductName = (entry.product_name || '').toLowerCase().trim();
               document.querySelectorAll('.stock-alert-item.item-syncing-locked').forEach(function(itemEl) {
+                var pId = itemEl.getAttribute('data-partner-id');
                 var client = (itemEl.getAttribute('data-client') || '').toLowerCase().trim();
+                var prodId = itemEl.getAttribute('data-product-id');
                 var comp = (itemEl.getAttribute('data-component') || '').toLowerCase().trim();
-                if (syncedPartnerName && client && (client.includes(syncedPartnerName) || syncedPartnerName.includes(client)) &&
-                    syncedProductName && comp && (comp.includes(syncedProductName) || syncedProductName.includes(comp))) {
+
+                var partnerMatch = (pId && syncedPartnerId && pId === syncedPartnerId) || (client && syncedPartnerName && (client.includes(syncedPartnerName) || syncedPartnerName.includes(client)));
+                var productMatch = (prodId && syncedProductId && prodId === syncedProductId) || (comp && syncedProductName && (comp === syncedProductName || comp.includes(syncedProductName) || syncedProductName.includes(comp)));
+
+                if (partnerMatch && productMatch) {
                   var actionContainer = itemEl.querySelector('.action-container');
                   if (actionContainer) {
                     actionContainer.innerHTML = '<span class="badge rounded-pill bg-success-subtle text-success border border-success-subtle px-2.5 py-1" style="font-size:0.72rem">✓ Synced &amp; Reserved</span>';
@@ -1828,29 +1927,30 @@
             var emptyNotice = document.getElementById('emptyBoardLogsNotice');
             if (emptyNotice) emptyNotice.remove();
             var row = document.createElement('div');
-            row.className = 'd-flex flex-wrap justify-content-between align-items-center gap-2 border rounded-3 px-3 py-2';
+            row.className = 'd-flex flex-wrap justify-content-between align-items-center gap-2 border rounded-3 px-3 py-2 bg-white';
             row.setAttribute('data-board-log-row', result.item.id);
+            row.style.borderColor = '#cbd5e1';
             row.style.background = '#f0fdf4';
             row.style.transition = 'background 1.5s ease';
             row.innerHTML =
               '<div>' +
-                '<strong>' + escapeHtml(result.item.quantity) + ' × ' + escapeHtml(result.item.product_name) + '</strong>' +
-                '<div class="small text-muted">' +
-                  escapeHtml(result.item.customer_name) + ' · Just now' +
-                  (result.item.gate ? ' · <strong>' + escapeHtml(result.item.gate) + '</strong>' : '') +
+                '<strong class="text-dark" style="font-size:0.92rem;">' + escapeHtml(result.item.quantity) + ' × ' + escapeHtml(result.item.product_name) + '</strong>' +
+                '<div class="small mt-0.5" style="color:#334155;font-weight:500;">' +
+                  '<span class="fw-bold" style="color:#0f172a;">' + escapeHtml(result.item.customer_name) + '</span> · <span style="color:#475569;">Just now</span>' +
+                  (result.item.gate ? ' · <strong>Gate: ' + escapeHtml(result.item.gate) + '</strong>' : '') +
                   (result.item.arrival_date ? ' · Date: <strong>' + escapeHtml(result.item.arrival_date) + '</strong>' : '') +
                   (result.item.arrival_time ? ' · Arrived: <strong>' + escapeHtml(result.item.arrival_time) + '</strong>' : '') +
                   (result.item.vehicle_registration ? ' · Vehicle: <strong>' + escapeHtml(result.item.vehicle_registration) + '</strong>' : '') +
-                  (result.item.actor_name ? ' · Logged by <strong>' + escapeHtml(result.item.actor_name) + '</strong>' : '') +
+                  (result.item.actor_name ? ' · Logged by <strong style="color:#0f172a;">' + escapeHtml(result.item.actor_name) + '</strong>' : '') +
                 '</div>' +
               '</div>' +
               '<div class="d-flex align-items-center gap-2">' +
                 '<div class="text-end">' +
-                  '<span class="badge rounded-pill bg-warning-subtle text-warning-emphasis" data-board-log-status="' + escapeHtml(result.item.id) + '">Syncing to Odoo</span>' +
+                  '<span class="badge rounded-pill bg-warning text-dark fw-bold px-2.5 py-1" data-board-log-status="' + escapeHtml(result.item.id) + '" style="font-size:0.74rem;">Syncing to Odoo</span>' +
                 '</div>' +
               '</div>';
             list.prepend(row);
-            window.setTimeout(function() { row.style.background = ''; }, 2000);
+            window.setTimeout(function() { row.style.background = '#ffffff'; }, 2000);
           }
 
           // Start tracking Odoo sync in background
@@ -1950,8 +2050,8 @@
             var prodId = itemEl.getAttribute('data-product-id');
             var comp = (itemEl.getAttribute('data-component') || '').toLowerCase().trim();
 
-            var partnerMatch = (pId && pId === submittedPartnerId) || (client && (client.includes(submittedPartnerName) || submittedPartnerName.includes(client)));
-            var productMatch = (prodId && prodId === submittedProductId) || (comp && (comp.includes(submittedProductName) || submittedProductName.includes(comp)));
+            var partnerMatch = (pId && submittedPartnerId && pId === submittedPartnerId) || (client && submittedPartnerName && (client.includes(submittedPartnerName) || submittedPartnerName.includes(client)));
+            var productMatch = (prodId && submittedProductId && prodId === submittedProductId) || (comp && submittedProductName && (comp === submittedProductName || comp.includes(submittedProductName) || submittedProductName.includes(comp)));
 
             if (partnerMatch && productMatch) {
               itemEl.setAttribute('data-is-syncing', 'true');
@@ -1970,13 +2070,18 @@
 
               var clientGroup = itemEl.closest('.stock-client-group');
               if (clientGroup) {
-                var groupBtn = clientGroup.querySelector('.auto-fill-stock-btn');
-                if (groupBtn) {
-                  groupBtn.outerHTML =
-                    '<span class="badge rounded-pill d-inline-flex align-items-center gap-1.5 px-3 py-1.5 fw-bold syncing-locked-badge" style="background: #fef3c7; color: #92400e; border: 1px solid #fde68a; font-size: 0.78rem;">' +
-                      '<span class="spinner-border spinner-border-sm text-warning" role="status" style="width: 12px; height: 12px; border-width: 2px;"></span>' +
-                      '<span>⏳ Logged · Syncing to Odoo...</span>' +
-                    '</span>';
+                // Only replace group button if ALL items in this group are syncing
+                var groupItems = clientGroup.querySelectorAll('.stock-alert-item');
+                var groupUndone = clientGroup.querySelectorAll('.stock-alert-item.item-undone');
+                if (groupItems.length === 1 || groupUndone.length === 0) {
+                  var groupBtn = clientGroup.querySelector('.auto-fill-stock-btn');
+                  if (groupBtn) {
+                    groupBtn.outerHTML =
+                      '<span class="badge rounded-pill d-inline-flex align-items-center gap-1.5 px-3 py-1.5 fw-bold syncing-locked-badge" style="background: #fef3c7; color: #92400e; border: 1px solid #fde68a; font-size: 0.78rem;">' +
+                        '<span class="spinner-border spinner-border-sm text-warning" role="status" style="width: 12px; height: 12px; border-width: 2px;"></span>' +
+                        '<span>⏳ Logged · Syncing to Odoo...</span>' +
+                      '</span>';
+                  }
                 }
               }
             }

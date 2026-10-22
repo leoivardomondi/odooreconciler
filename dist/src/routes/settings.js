@@ -189,6 +189,7 @@ const mailValidators = [
         .trim()
         .isISO8601({ strict: true, strictSeparator: true })
         .withMessage('Shop-floor reporting start date must be a valid date.'),
+    (0, express_validator_1.body)('stockBoardLogNotificationEmail').optional({ values: 'falsy' }).trim(),
     ...Array.from({ length: 5 }, (_value, index) => {
         const accountNumber = index + 1;
         return [
@@ -733,10 +734,11 @@ async function renderSettingsPage(res, options = {}) {
     };
     const missingMappings = (0, helpers_1.getMissingFieldMappingLabels)(sanitizeFieldMappings(mappingSource, saleOrderFieldState.fields, existing.fieldMappings).sanitized);
     const mappingDiagnostics = buildMappingDiagnostics(mappingSource, saleOrderFieldState.fields, existing.fieldMappings);
-    const [approvedUsers, sentReports] = await Promise.all([
+    const [allApprovedUsers, sentReports] = await Promise.all([
         (0, repositories_1.getApprovedAuthUsers)().catch(() => []),
         (0, repositories_1.getSentReportLogs)(30).catch(() => []),
     ]);
+    const approvedUsers = (allApprovedUsers || []).filter((u) => u && Boolean(u.active) && typeof u.email === 'string' && u.email.trim().length > 0);
     res.render('settings', {
         pageTitle: 'Settings',
         form,
@@ -871,7 +873,64 @@ router.post('/settings/shop-floor-session/verify', (0, express_validator_1.body)
 router.post('/settings/mail', mailValidators, async (req, res) => {
     const errors = (0, express_validator_1.validationResult)(req);
     const currentSettings = await (0, repositories_1.getSettings)();
+    const isAjax = Boolean(req.xhr || req.headers.accept?.includes('application/json') || req.body._ajax);
+    const isBoardLogSave = Boolean(req.body.boardLogEmailSave);
+    const requestedAutomationId = String(req.body.mailAutomationSave || '').trim();
+    // If this submission is specifically for Board Log Notification Recipients
+    if (isBoardLogSave && req.body.stockBoardLogNotificationEmail !== undefined) {
+        try {
+            const cleanEmail = req.body.stockBoardLogNotificationEmail.trim();
+            const stockUpdate = {
+                locationId: currentSettings.stock.locationId,
+                locationName: currentSettings.stock.locationName,
+                warehouseId: currentSettings.stock.warehouseId,
+                pickingTypeId: currentSettings.stock.pickingTypeId,
+                missingSoAlertUserLogin: currentSettings.stock.missingSoAlertUserLogin,
+                missingComponentAlertUserLogin: currentSettings.stock.missingComponentAlertUserLogin,
+                boardLogNotificationEmail: cleanEmail,
+            };
+            const saved = await (0, repositories_1.saveSettings)({
+                baseUrl: currentSettings.odoo.baseUrl,
+                database: currentSettings.odoo.database,
+                username: currentSettings.odoo.username,
+                apiKey: '',
+                keepExistingApiKey: true,
+                stock: stockUpdate,
+            });
+            await (0, logService_1.logEvent)('info', 'Board log notification recipients updated from settings', {
+                boardLogNotificationEmail: cleanEmail,
+            });
+            const confirmation = 'Board log notification recipients saved.';
+            if (isAjax) {
+                return res.json({
+                    ok: true,
+                    message: confirmation,
+                    stockBoardLogNotificationEmail: saved.stock.boardLogNotificationEmail,
+                });
+            }
+            return res.redirect(`/settings?message=${encodeURIComponent(confirmation)}#section-email-automation`);
+        }
+        catch (err) {
+            const message = err instanceof Error ? err.message : 'Could not save board log notification recipients.';
+            await (0, logService_1.logEvent)('error', 'Board log notification recipients update failed', { error: message }).catch(() => undefined);
+            if (isAjax) {
+                return res.status(500).json({ ok: false, error: message });
+            }
+            return renderSettingsPage(res.status(500), {
+                existing: currentSettings,
+                source: req.body,
+                status: { type: 'danger', message },
+            });
+        }
+    }
     if (!errors.isEmpty()) {
+        if (isAjax) {
+            return res.status(422).json({
+                ok: false,
+                error: errors.array().map((e) => e.msg).join(', '),
+                validationErrors: errors.array(),
+            });
+        }
         return renderSettingsPage(res.status(422), {
             existing: currentSettings,
             source: req.body,
@@ -881,6 +940,17 @@ router.post('/settings/mail', mailValidators, async (req, res) => {
     }
     try {
         const mail = buildMailConfigFromSource(req.body, currentSettings.mail);
+        const stockUpdate = req.body.stockBoardLogNotificationEmail !== undefined
+            ? {
+                locationId: currentSettings.stock.locationId,
+                locationName: currentSettings.stock.locationName,
+                warehouseId: currentSettings.stock.warehouseId,
+                pickingTypeId: currentSettings.stock.pickingTypeId,
+                missingSoAlertUserLogin: currentSettings.stock.missingSoAlertUserLogin,
+                missingComponentAlertUserLogin: currentSettings.stock.missingComponentAlertUserLogin,
+                boardLogNotificationEmail: req.body.stockBoardLogNotificationEmail.trim(),
+            }
+            : undefined;
         const saved = await (0, repositories_1.saveSettings)({
             baseUrl: currentSettings.odoo.baseUrl,
             database: currentSettings.odoo.database,
@@ -888,6 +958,7 @@ router.post('/settings/mail', mailValidators, async (req, res) => {
             apiKey: '',
             keepExistingApiKey: true,
             mail,
+            stock: stockUpdate,
         });
         await (0, logService_1.logEvent)('info', 'Outgoing mail settings updated', {
             transport: saved.mail.transport,
@@ -905,7 +976,6 @@ router.post('/settings/mail', mailValidators, async (req, res) => {
                 hasPassword: Boolean(account.password),
             })),
         });
-        const requestedAutomationId = String(req.body.mailAutomationSave || '').trim();
         const savedAutomation = requestedAutomationId
             ? saved.mail.automations.find((automation) => automation.id === requestedAutomationId)
             : null;
@@ -913,11 +983,22 @@ router.post('/settings/mail', mailValidators, async (req, res) => {
             ? `Email automation "${savedAutomation.name}" saved.`
             : 'Outgoing mail settings saved.';
         const anchor = requestedAutomationId ? '#section-email-automation' : '';
+        if (isAjax) {
+            return res.json({
+                ok: true,
+                message: confirmation,
+                savedAutomation,
+                stockBoardLogNotificationEmail: saved.stock.boardLogNotificationEmail,
+            });
+        }
         return res.redirect(`/settings?message=${encodeURIComponent(confirmation)}${anchor}`);
     }
     catch (error) {
         const message = error instanceof Error ? error.message : 'Could not save outgoing mail settings.';
         await (0, logService_1.logEvent)('error', 'Outgoing mail settings update failed', { error: message }).catch(() => undefined);
+        if (isAjax) {
+            return res.status(500).json({ ok: false, error: message });
+        }
         return renderSettingsPage(res.status(500), {
             existing: currentSettings,
             source: req.body,

@@ -10,6 +10,7 @@ const express_1 = require("express");
 const repositories_1 = require("../models/repositories");
 const extractionService_1 = require("../services/extractionService");
 const poJobSummaryAuditService_1 = require("../services/poJobSummaryAuditService");
+const workOrderQuantityReconciliationService_1 = require("../services/workOrderQuantityReconciliationService");
 const jobSummaryReminderService_1 = require("../services/jobSummaryReminderService");
 const logService_1 = require("../services/logService");
 const mpesaReviewNotificationService_1 = require("../services/mpesaReviewNotificationService");
@@ -910,6 +911,20 @@ async function handleOdooSyncWebhook(req, res) {
             if (resolvedType === 'mo') {
                 shopFloor_1.shopFloorCache.clearPrefix('shop-floor-dashboard:');
                 await (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(true);
+                const moId = parsePositiveInteger(payload.id) ||
+                    parsePositiveInteger(payload.mo_id) ||
+                    parsePositiveInteger(payload.production_id) ||
+                    parsePositiveInteger(req.query.id);
+                if (moId) {
+                    try {
+                        const settings = await (0, repositories_1.getSettings)();
+                        const client = new odooClient_1.OdooClient(settings.odoo);
+                        await (0, workOrderQuantityReconciliationService_1.reconcileWorkOrderQuantitiesForMo)(client, moId);
+                    }
+                    catch {
+                        // Non-critical background sync
+                    }
+                }
             }
             else if (resolvedType === 'picking') {
                 shopFloor_1.shopFloorCache.clearPrefix('shop-floor-dashboard:');

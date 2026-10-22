@@ -13,6 +13,7 @@ const odooClient_1 = require("./odooClient");
 const pdfParser_1 = require("./pdfParser");
 const signatureService_1 = require("./signatureService");
 const quotationSyncService_1 = require("./quotationSyncService");
+const workOrderQuantityReconciliationService_1 = require("./workOrderQuantityReconciliationService");
 async function getConfiguredClient() {
     const settings = await (0, repositories_1.getSettings)();
     if (!(0, helpers_1.hasOdooConfiguration)(settings)) {
@@ -315,6 +316,18 @@ async function sendExtractedResultToOdoo(historyId, forceSend = false) {
                 historyId,
                 orderId: history.orderId,
                 error: quotationSyncErr instanceof Error ? quotationSyncErr.message : String(quotationSyncErr),
+            }, historyId);
+        }
+        try {
+            await (0, workOrderQuantityReconciliationService_1.reconcileWorkOrderQuantitiesForSaleOrder)(client, history.orderId, {
+                parsedJobSummary: extracted.resultJson,
+            });
+        }
+        catch (reconcileErr) {
+            await (0, logService_1.logEvent)('warn', 'Failed to reconcile cutting work order quantities for Sale Order', {
+                historyId,
+                orderId: history.orderId,
+                error: reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr),
             }, historyId);
         }
         await (0, repositories_1.updateHistory)(historyId, {

@@ -15,6 +15,7 @@ const poBillAutomationService_1 = require("./poBillAutomationService");
 const pdfParser_1 = require("./pdfParser");
 const helpers_1 = require("../utils/helpers");
 const stockProcessingService_1 = require("./stockProcessingService");
+const workOrderQuantityReconciliationService_1 = require("./workOrderQuantityReconciliationService");
 exports.PO_JOB_SUMMARY_DISCREPANCY_ACTIVITY_SUMMARY = 'PO PROCUREMENT MISMATCH: CLARIFICATION NEEDED';
 exports.PO_JOB_SUMMARY_MISSING_ACTIVITY_SUMMARY = 'AWAIT JOB SUMMARY ATTACHMENT BEFORE APPROVING PO';
 function relationLabel(value) {
@@ -404,6 +405,19 @@ async function auditPurchaseOrderAgainstJobSummary(client, purchaseOrderId, prov
     }
     catch {
         // Non-critical activity close failure
+    }
+    // Reconcile cutting work order and MO quantities with Job Summary requirements & approved PO
+    try {
+        await (0, workOrderQuantityReconciliationService_1.reconcileWorkOrderQuantitiesForSaleOrder)(client, so.id, {
+            parsedJobSummary: parsed,
+        });
+    }
+    catch (reconcileErr) {
+        await (0, logService_1.logEvent)('warn', 'Failed to reconcile work order quantities during PO audit', {
+            poId: po.id,
+            soId: so.id,
+            error: reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr),
+        });
     }
     // Compare PO lines
     const poLines = await (0, poBillAutomationService_1.getPurchaseOrderLines)(client, po.id);
