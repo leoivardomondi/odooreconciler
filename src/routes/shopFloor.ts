@@ -371,6 +371,10 @@ interface OperatorDashboardData {
     missingBoards: number;
     registeredMoves: number;
     expectedMoves: number;
+    missingMoves?: number;
+    missingBoardSheets?: number;
+    expectedBoardSheets?: number;
+    registeredBoardSheets?: number;
     coveragePercent: number;
     details: string;
   } | null;
@@ -619,6 +623,60 @@ function applyOptimisticStockAlerts(alerts: StockAlert[]) {
     return { ...alert, qtyNeeded };
   }).filter((alert) => alert.qtyNeeded > 0);
 }
+
+export function reconcileBoardRegistrationWithStockAlerts(
+  summary: OperatorDashboardData['boardRegistrationSummary'],
+  stockAlerts: StockAlert[],
+): OperatorDashboardData['boardRegistrationSummary'] {
+  if (!summary) return null;
+  const undoneAlerts = (stockAlerts || []).filter((a) => !a.isSyncing);
+  const undoneCount = undoneAlerts.length;
+  const undoneBoards = undoneAlerts.reduce((sum, a) => sum + (a.qtyNeeded || 0), 0);
+
+  if (undoneCount === 0 && undoneBoards === 0) {
+    return summary;
+  }
+
+  // Stock alerts indicate active undone board intake jobs
+  const missingMoves = Math.max(summary.missingMoves ?? summary.missingBoards, undoneCount);
+  const missingBoards = missingMoves;
+  const missingBoardSheets = Math.max(summary.missingBoardSheets || 0, undoneBoards);
+
+  const baseExpectedMoves = Math.max(summary.expectedMoves || summary.expectedBoards || 0, 0);
+  const expectedMoves = Math.max(baseExpectedMoves, missingMoves);
+  const expectedBoards = expectedMoves;
+  const registeredMoves = Math.max(0, expectedMoves - missingMoves);
+  const registeredBoards = registeredMoves;
+
+  const baseExpectedSheets = Math.max(summary.expectedBoardSheets || 0, summary.registeredBoardSheets || 0);
+  const expectedBoardSheets = Math.max(baseExpectedSheets, missingBoardSheets);
+  const registeredBoardSheets = Math.max(0, expectedBoardSheets - missingBoardSheets);
+
+  const coveragePercent = expectedMoves > 0
+    ? Math.min(99, Math.max(0, Math.round((registeredBoards / expectedMoves) * 100)))
+    : 0;
+
+  const baseDetails = summary.details ? summary.details.split(' | Active pending gate stock alerts')[0] : '';
+  const details = baseDetails
+    ? `${baseDetails} | Active pending gate stock alerts: ${undoneCount} ${undoneCount === 1 ? 'item' : 'items'} (${undoneBoards} boards)`
+    : `Active pending gate stock alerts: ${undoneCount} ${undoneCount === 1 ? 'item' : 'items'} (${undoneBoards} boards)`;
+
+  return {
+    ...summary,
+    expectedBoards,
+    registeredBoards,
+    missingBoards,
+    expectedMoves,
+    registeredMoves,
+    missingMoves,
+    missingBoardSheets,
+    expectedBoardSheets,
+    registeredBoardSheets,
+    coveragePercent,
+    details,
+  };
+}
+
 async function withMaxPageWait<T>(promise: Promise<T>, maxWaitMs: number, fallback: T): Promise<T> {
   let timer: NodeJS.Timeout;
   const timeoutPromise = new Promise<T>((resolve) => {
@@ -780,7 +838,10 @@ export async function buildInstantMysqlOperatorDashboard(userEmail: string): Pro
     areaPerformanceRates,
     manufacturingTimingSummary: userSnapshot?.data?.manufacturingTimingSummary || null,
     manufacturingTimelineData: userSnapshot?.data?.manufacturingTimelineData || null,
-    boardRegistrationSummary: userSnapshot?.data?.boardRegistrationSummary || null,
+    boardRegistrationSummary: reconcileBoardRegistrationWithStockAlerts(
+      userSnapshot?.data?.boardRegistrationSummary || null,
+      stockAlerts,
+    ),
     teamPenalties,
     isLimitedDashboard: false,
     machines: userSnapshot?.data?.machines || [],
@@ -1433,7 +1494,10 @@ export async function buildOperatorDashboard(
 
     // Handle board registration summary
     if (boardRegistrationRes.status === 'fulfilled') {
-      result.boardRegistrationSummary = boardRegistrationRes.value;
+      result.boardRegistrationSummary = reconcileBoardRegistrationWithStockAlerts(
+        boardRegistrationRes.value,
+        result.stockAlerts,
+      );
     }
 
     // Handle Team Penalties
@@ -1582,6 +1646,13 @@ router.get('/shop-floor', async (req: Request, res: Response) => {
           }
         }
       } catch (_e) {}
+
+      if (data.boardRegistrationSummary) {
+        data.boardRegistrationSummary = reconcileBoardRegistrationWithStockAlerts(
+          data.boardRegistrationSummary,
+          data.stockAlerts || [],
+        );
+      }
     }
 
     const featureFlags = await featureFlagsPromise;
@@ -3025,7 +3096,9 @@ router.post('/shop-floor/board-intake', async (req: Request, res: Response) => {
         }).catch(() => 0);
 
         const settings = await getSettings();
-        const recipientEmail = settings.stock?.boardLogNotificationEmail?.trim() || 'sharon@urbanvibeinteriordesign.co.ke';
+        const rawRecipients = settings.stock?.boardLogNotificationEmail?.trim() || 'sharon@urbanvibeinteriordesign.co.ke';
+        const recipientList = [...new Set(rawRecipients.split(/[,\s;\n]+/).map((e) => e.trim().toLowerCase()).filter((e) => e.includes('@')))];
+        const toRecipients = recipientList.length > 0 ? recipientList.join(', ') : 'sharon@urbanvibeinteriordesign.co.ke';
         const reportDate = new Intl.DateTimeFormat('en-CA', { timeZone: env.APP_TIMEZONE || 'Africa/Nairobi', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
         const safeCustomerName = escapeHtml(customerName);
         const safeProductName = escapeHtml(productName);
@@ -3035,10 +3108,10 @@ router.post('/shop-floor/board-intake', async (req: Request, res: Response) => {
         const safeActorEmail = escapeHtml(actorName);
         const subjectCustomerName = customerName.replace(/[\r\n]+/g, ' ').trim();
         await sendMailWithConfig(settings.mail, {
-          to: recipientEmail,
+          to: toRecipients,
           subject: `${subjectCustomerName} - Board Log - ${reportDate}`,
           html: `<p><strong>Board log completed</strong></p><p>Client: ${safeCustomerName}<br>Board: ${safeProductName}<br>Quantity: ${qty}<br>Gate: ${safeGate}<br>Vehicle Reg: ${safeVehicleReg}<br>Arrival Time: ${safeArrivalTime}<br>Date: ${reportDate}<br>Logged by: ${safeActorEmail}</p>`,
-        }).catch((mailError) => logEvent('error', `Board log email to ${recipientEmail} failed`, { customerName, productName, quantity: qty, vehicleRegistration, arrivalTime, gate, actor: actorName, actorEmail: req.authUser?.email, error: mailError instanceof Error ? mailError.message : String(mailError) }));
+        }).catch((mailError) => logEvent('error', `Board log email to ${toRecipients} failed`, { customerName, productName, quantity: qty, vehicleRegistration, arrivalTime, gate, actor: actorName, actorEmail: req.authUser?.email, error: mailError instanceof Error ? mailError.message : String(mailError) }));
         const optimisticIndex = optimisticBoardIntakes.findIndex((entry) => entry.id === optimisticId);
         if (optimisticIndex >= 0) optimisticBoardIntakes.splice(optimisticIndex, 1);
         shopFloorCache.clearPrefix('shop-floor-dashboard:');

@@ -430,6 +430,59 @@
           </div>
         </div>
         <div class="operator-note"><strong>Operator matching:</strong><span>Personal performance emails are sent only when the recipient matches an employee in Odoo. Non-operators, including management recipients, do not receive operator board or attendance summaries.</span></div>
+
+        <!-- Event-Driven Real-Time Automation: Board Log Intake Notifications -->
+        <div class="card border rounded-3 p-3 bg-white shadow-sm mb-3" style="border-left: 4px solid #10b981 !important;">
+          <div class="automation-card__header d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+            <div class="automation-card__identity d-flex align-items-center gap-2">
+              <div class="automation-card__icon rounded-circle d-flex align-items-center justify-content-center" style="width: 38px; height: 38px; background: #ecfdf5; color: #059669; font-size: 1.15rem;">
+                🪵
+              </div>
+              <div>
+                <div class="automation-card__title fw-bold" style="font-size: 1rem; color: #1e293b;">Board Log Intake Notifications</div>
+                <div class="automation-card__type text-muted small" style="font-size: 0.78rem;">Trigger: Real-time on board intake entry submission</div>
+              </div>
+            </div>
+            <div class="automation-card__actions d-flex align-items-center gap-2">
+              <span class="badge rounded-pill bg-success-subtle text-success border border-success-subtle px-2.5 py-1 small fw-semibold">
+                ● Live Event Trigger
+              </span>
+              <button type="submit" name="boardLogEmailSave" value="1" class="btn btn-sm btn-primary px-3 rounded-pill">Save Recipients</button>
+            </div>
+          </div>
+          <div class="automation-card__body pt-2">
+            <p class="text-secondary small mb-3">
+              Email alert automatically dispatched whenever factory operators record boards brought in by clients in the Board Intake app. Includes client name, board material, sheet count, gate, vehicle registration, and operator name.
+            </p>
+            <div class="automation-field">
+              <label class="form-label d-flex justify-content-between align-items-center mb-1">
+                <span class="fw-semibold" style="font-size: 0.88rem;">Recipients of Board Log Emails</span>
+                <span class="small text-muted" style="font-size: 0.75rem;">Click <strong>&times;</strong> on any badge to remove recipient</span>
+              </label>
+              <div class="automation-pills-wrapper p-2 bg-light rounded border mb-2 d-flex flex-wrap align-items-center gap-1" id="boardLogRecipientPills"></div>
+              <div class="row g-2 align-items-center">
+                <div class="col-md-6 col-lg-5">
+                  <div class="input-group input-group-sm">
+                    <input type="email" class="form-control" id="addBoardLogEmailInput" placeholder="Add recipient email..." onkeydown="if(event.key==='Enter'){event.preventDefault();addBoardLogEmailFromInput();}">
+                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="addBoardLogEmailFromInput()">+ Add</button>
+                  </div>
+                </div>
+                <% if (typeof approvedUsers !== 'undefined' && approvedUsers && approvedUsers.length > 0) { %>
+                  <div class="col-md-6 col-lg-7">
+                    <div class="d-flex align-items-center flex-wrap gap-1">
+                      <span class="small text-muted me-1" style="font-size: 0.75rem;">Quick add:</span>
+                      <% approvedUsers.filter(u => u.active && u.email).forEach(u => { %>
+                        <button type="button" class="btn btn-xs btn-outline-secondary py-0 px-2 rounded-pill small me-1 mb-1" style="font-size: 0.72rem;" onclick="addBoardLogEmailDirect('<%= u.email %>')">+ <%= u.email %></button>
+                      <% }) %>
+                    </div>
+                  </div>
+                <% } %>
+              </div>
+              <input type="hidden" name="stockBoardLogNotificationEmail" id="stockBoardLogNotificationEmail" value="<%= form.stockBoardLogNotificationEmail || 'sharon@urbanvibeinteriordesign.co.ke' %>" />
+            </div>
+          </div>
+        </div>
+
         <input type="hidden" name="mailAutomationCount" id="mailAutomationCount" value="<%= form.mailAutomations.length %>" />
         <div id="emailAutomationRows" class="vstack gap-3">
           <% form.mailAutomations.forEach((item, itemIndex) => { const n = itemIndex + 1; %>
@@ -623,10 +676,60 @@
       }
     };
 
-    window.addEmailFromInput = function(n) {
-      const input = document.getElementById(`addEmailInput_${n}`);
+    window.renderBoardLogRecipientPills = function() {
+      const hiddenInput = document.getElementById('stockBoardLogNotificationEmail');
+      const container = document.getElementById('boardLogRecipientPills');
+      if (!hiddenInput || !container) return;
+
+      const emails = parseEmails(hiddenInput.value);
+      container.innerHTML = '';
+
+      if (emails.length === 0) {
+        container.innerHTML = `<span class="badge bg-warning-subtle text-dark border border-warning-subtle py-1 px-2 me-1" style="font-weight: 500;">sharon@urbanvibeinteriordesign.co.ke (default)</span>`;
+      } else {
+        emails.forEach(email => {
+          const pill = document.createElement('span');
+          pill.className = 'badge bg-white text-dark border shadow-sm py-1 px-2 d-inline-flex align-items-center gap-1 font-monospace me-1 mb-1';
+          pill.style.fontSize = '0.82rem';
+          pill.innerHTML = `
+            <span>${email}</span>
+            <button type="button" class="btn-close ms-1" style="font-size: 0.55rem; padding: 2px;" aria-label="Remove ${email}" onclick="removeBoardLogEmailDirect('${email}')" title="Remove ${email}"></button>
+          `;
+          container.appendChild(pill);
+        });
+      }
+    };
+
+    window.removeBoardLogEmailDirect = function(emailToRemove) {
+      const hiddenInput = document.getElementById('stockBoardLogNotificationEmail');
+      if (!hiddenInput) return;
+      const emails = parseEmails(hiddenInput.value).filter(e => e !== emailToRemove.toLowerCase());
+      hiddenInput.value = emails.join(', ');
+      renderBoardLogRecipientPills();
+    };
+
+    window.addBoardLogEmailDirect = function(emailToAdd) {
+      const clean = (emailToAdd || '').trim().toLowerCase();
+      if (!clean || !clean.includes('@')) return;
+      const hiddenInput = document.getElementById('stockBoardLogNotificationEmail');
+      if (!hiddenInput) return;
+      const emails = parseEmails(hiddenInput.value);
+      if (!emails.includes(clean)) {
+        emails.push(clean);
+        hiddenInput.value = emails.join(', ');
+        renderBoardLogRecipientPills();
+      }
+    };
+
+    window.addBoardLogEmailFromInput = function() {
+      const input = document.getElementById('addBoardLogEmailInput');
       if (input && input.value) {
-        addEmailDirect(n, input.value);
+        const entered = parseEmails(input.value);
+        if (entered.length) {
+          entered.forEach(e => addBoardLogEmailDirect(e));
+        } else {
+          addBoardLogEmailDirect(input.value);
+        }
         input.value = '';
       }
     };
@@ -703,6 +806,7 @@
       for (let i = 1; i <= totalAutomations; i++) {
         renderRecipientPills(i);
       }
+      renderBoardLogRecipientPills();
     })();
   </script>
 
@@ -1774,16 +1878,12 @@
               </div>
             </div>
             <div class="col-12">
-              <label class="form-label">Board Log Notification Recipient Email</label>
-              <input
-                type="email"
-                class="form-control"
-                name="stockBoardLogNotificationEmail"
-                value="<%= form.stockBoardLogNotificationEmail %>"
-                placeholder="sharon@urbanvibeinteriordesign.co.ke"
-              />
-              <div class="form-text">
-                Email address where board intake completion alerts (board type, quantity, customer, vehicle registration, gate) are automatically dispatched.
+              <div class="p-3 rounded-3 bg-light border d-flex align-items-center justify-content-between flex-wrap gap-2">
+                <div>
+                  <div class="fw-semibold small" style="color: #334155;">Board Log Intake Notification Recipients</div>
+                  <div class="text-secondary small">Recipient emails are managed in the <a href="#section-email-automation" class="text-primary fw-semibold">Email Automations</a> section above.</div>
+                </div>
+                <a href="#section-email-automation" class="btn btn-sm btn-outline-primary rounded-pill px-3">Manage Recipients &rarr;</a>
               </div>
             </div>
           </div>

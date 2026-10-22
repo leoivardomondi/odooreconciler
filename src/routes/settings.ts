@@ -228,6 +228,7 @@ const mailValidators = [
     .trim()
     .isISO8601({ strict: true, strictSeparator: true })
     .withMessage('Shop-floor reporting start date must be a valid date.'),
+  body('stockBoardLogNotificationEmail').optional({ values: 'falsy' }).trim(),
   ...Array.from({ length: 5 }, (_value, index) => {
     const accountNumber = index + 1;
     return [
@@ -1093,6 +1094,18 @@ router.post('/settings/mail', mailValidators, async (req: Request, res: Response
 
   try {
     const mail = buildMailConfigFromSource(req.body, currentSettings.mail);
+    const stockUpdate: Record<string, unknown> | undefined = req.body.stockBoardLogNotificationEmail !== undefined
+      ? {
+          locationId: currentSettings.stock.locationId,
+          locationName: currentSettings.stock.locationName,
+          warehouseId: currentSettings.stock.warehouseId,
+          pickingTypeId: currentSettings.stock.pickingTypeId,
+          missingSoAlertUserLogin: currentSettings.stock.missingSoAlertUserLogin,
+          missingComponentAlertUserLogin: currentSettings.stock.missingComponentAlertUserLogin,
+          boardLogNotificationEmail: req.body.stockBoardLogNotificationEmail.trim(),
+        }
+      : undefined;
+
     const saved = await saveSettings({
       baseUrl: currentSettings.odoo.baseUrl,
       database: currentSettings.odoo.database,
@@ -1100,6 +1113,7 @@ router.post('/settings/mail', mailValidators, async (req: Request, res: Response
       apiKey: '',
       keepExistingApiKey: true,
       mail,
+      stock: stockUpdate,
     });
 
     await logEvent('info', 'Outgoing mail settings updated', {
@@ -1120,13 +1134,16 @@ router.post('/settings/mail', mailValidators, async (req: Request, res: Response
     });
 
     const requestedAutomationId = String(req.body.mailAutomationSave || '').trim();
+    const isBoardLogSave = Boolean(req.body.boardLogEmailSave);
     const savedAutomation = requestedAutomationId
       ? saved.mail.automations.find((automation) => automation.id === requestedAutomationId)
       : null;
-    const confirmation = savedAutomation
-      ? `Email automation "${savedAutomation.name}" saved.`
-      : 'Outgoing mail settings saved.';
-    const anchor = requestedAutomationId ? '#section-email-automation' : '';
+    const confirmation = isBoardLogSave
+      ? 'Board log notification recipients saved.'
+      : savedAutomation
+        ? `Email automation "${savedAutomation.name}" saved.`
+        : 'Outgoing mail settings saved.';
+    const anchor = (requestedAutomationId || isBoardLogSave) ? '#section-email-automation' : '';
     return res.redirect(`/settings?message=${encodeURIComponent(confirmation)}${anchor}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Could not save outgoing mail settings.';

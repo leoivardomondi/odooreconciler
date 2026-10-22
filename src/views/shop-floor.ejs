@@ -385,18 +385,29 @@
           <div class="border rounded-3 px-3 py-2 bg-white flex-fill text-center">
             <div class="text-muted small fw-bold text-uppercase mb-1" data-i18n="physical_inventory_boards">Physical Inventory Boards</div>
             <div class="fs-4 fw-bold"><%= br.registeredBoards %></div>
+            <% if (br.registeredBoardSheets && br.registeredBoardSheets !== br.registeredBoards) { %>
+              <div class="text-muted small"><%= br.registeredBoardSheets %> <%= br.registeredBoardSheets === 1 ? 'board' : 'boards' %></div>
+            <% } %>
           </div>
           <div class="border rounded-3 px-3 py-2 bg-white flex-fill text-center">
             <div class="text-muted small fw-bold text-uppercase mb-1" data-i18n="expected_board_logs">Expected Board Logs</div>
             <div class="fs-4 fw-bold"><%= br.expectedBoards %></div>
+            <% if (br.expectedBoardSheets && br.expectedBoardSheets !== br.expectedBoards) { %>
+              <div class="text-muted small"><%= br.expectedBoardSheets %> <%= br.expectedBoardSheets === 1 ? 'board' : 'boards' %></div>
+            <% } %>
           </div>
           <div class="border rounded-3 px-3 py-2 bg-white flex-fill text-center">
             <div class="text-muted small fw-bold text-uppercase mb-1" data-i18n="unlogged_board_logs">Unlogged Boards</div>
             <div class="fs-4 fw-bold <%= br.missingBoards > 0 ? 'text-danger' : 'text-success' %>"><%= br.missingBoards %></div>
+            <% if (br.missingBoardSheets && br.missingBoardSheets > 0) { %>
+              <div class="small fw-bold text-danger"><%= br.missingBoardSheets %> <%= br.missingBoardSheets === 1 ? 'board' : 'boards' %> needed</div>
+            <% } else if (br.missingMoves && br.missingMoves > 0) { %>
+              <div class="small fw-bold text-danger"><%= br.missingMoves %> undone <%= br.missingMoves === 1 ? 'item' : 'items' %></div>
+            <% } %>
           </div>
           <div class="border rounded-3 px-3 py-2 bg-white flex-fill text-center">
             <div class="text-muted small fw-bold text-uppercase mb-1" data-i18n="board_coverage">Coverage</div>
-            <div class="fs-4 fw-bold"><%= br.coveragePercent %>%</div>
+            <div class="fs-4 fw-bold <%= br.coveragePercent < 100 ? 'text-danger' : 'text-success' %>"><%= br.coveragePercent %>%</div>
           </div>
         </div>
         <div class="mt-3 small" style="opacity:0.85"><%= br.details %></div>

@@ -220,6 +220,15 @@
 - **Full Boards Only (No Decimals / Offcuts Rule)**:
   - In [src/views/shop-floor-boards.ejs](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/views/shop-floor-boards.ejs), the intake quantity field (`#intakeQty`) is strictly configured with `min="1" step="1" inputmode="numeric"`.
   - Typing decimal characters (`.`, `,`, `e`, `-`, `+`), pasting decimals, or submitting non-integers is completely blocked.
-  - A 3-second floating popup/toast (`#offcutsPopup`) dynamically appears: *"Only full boards can be logged. Offcuts do not need logging."* and auto-dismisses after 3000ms.
+  - An inline red error state and a 5-second responsive center popup (`#decimalPopupModal`) dynamically appears: *"Only full boards can be logged. Offcuts do not need logging."* and auto-dismisses.
   - The backend (`POST /shop-floor/board-intake` in [src/routes/shopFloor.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/routes/shopFloor.ts)) strictly enforces `Number.isInteger(qty) && qty % 1 === 0`, rejecting any decimal submissions with HTTP 400.
+
+- **Board Registration vs Expected Logs Truth & Stock Needed Reconciliation Rule**:
+  - The **"Board Registration vs Expected Logs"** summary card (`boardRegistrationSummary`) and **"Stock Needed — No Purchase Orders"** area (`stockAlerts` / `shop_floor_pending_processes`) must NEVER contradict each other.
+  - **Anti-False-Positive Odoo Move Matching**: In `getBoardRegistrationSummary` ([src/services/odooClient.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/odooClient.ts)), physical inventory moves are NEVER matched purely on product name. Unreserved cutting MOs require an inventory adjustment specifically matching the MO or SO origin/reference (`moveMatchesMoOrSo`); warehouse-wide moves for unrelated clients cannot falsely mark an MO as registered.
+  - **Dynamic Stock Alert Reconciliation**: In [src/routes/shopFloor.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/routes/shopFloor.ts), `reconcileBoardRegistrationWithStockAlerts` reconciles `boardRegistrationSummary` against active pending stock alerts (`stockAlerts`). If undone board items exist (e.g. 2 undone items totaling 12 boards):
+    - `missingBoards` / `missingMoves` reflects the active undone items.
+    - `missingBoardSheets` reflects the exact missing board quantity (e.g. 12 boards).
+    - `coveragePercent` is strictly $< 100\%$ (e.g. 98%), and the card displays warning/alert colors (`#fef2f2`, `#fecaca`, `#991b1b`).
+    - The UI in [src/views/shop-floor.ejs](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/views/shop-floor.ejs) displays both the undone items and the missing board sheets (`X boards needed`), ensuring complete truthfulness and parity with the Stock Needed area.
 

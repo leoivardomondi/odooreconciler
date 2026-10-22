@@ -3176,6 +3176,10 @@ export class OdooClient {
     missingBoards: number;
     registeredMoves: number;
     expectedMoves: number;
+    missingMoves?: number;
+    missingBoardSheets?: number;
+    expectedBoardSheets?: number;
+    registeredBoardSheets?: number;
     coveragePercent: number;
     details: string;
   } | null> {
@@ -3211,6 +3215,7 @@ export class OdooClient {
         date_start?: string | null;
         date_finished?: string | null;
         create_date?: string | null;
+        state?: string | null;
       }>>(
         'mrp.production',
         'search_read',
@@ -3220,7 +3225,7 @@ export class OdooClient {
             ['state', 'not in', ['cancel']],
             ['origin', '!=', false],
           ],
-          fields: ['id', 'name', 'origin', 'product_id', 'product_qty', 'date_start', 'date_finished', 'create_date'],
+          fields: ['id', 'name', 'origin', 'product_id', 'product_qty', 'date_start', 'date_finished', 'create_date', 'state'],
           limit: 5000,
           order: 'date_start desc, id desc',
         },
@@ -3381,6 +3386,9 @@ export class OdooClient {
         }
       });
 
+      let totalExpectedBoardSheets = 0;
+      let totalRegisteredBoardSheets = 0;
+
       const registeredCuttingOrders = dueCuttingOrders.filter((mo) => {
         const comps = componentsByMoId.get(mo.id) || [];
         const boardComps = comps.filter((c) => {
@@ -3391,44 +3399,95 @@ export class OdooClient {
         const soDate = saleOrderMap.get(mo.origin || '')?.date_order || mo.create_date;
         const soDay = soDate ? soDate.slice(0, 10) : '';
 
+        const moRequiredSheets = boardComps.length > 0
+          ? boardComps.reduce((sum, c) => sum + (c.product_uom_qty || 0), 0)
+          : Math.max(1, Math.round(mo.product_qty || 1));
+        totalExpectedBoardSheets += moRequiredSheets;
+
+        const moName = String(mo.name || '').trim();
+        const soName = String(mo.origin || '').trim();
+        const moveMatchesMoOrSo = (move: typeof physicalMoves[0]) => {
+          const ref = String(move.reference || '').trim();
+          const orig = String(move.origin || '').trim();
+          return Boolean(
+            (moName && (ref === moName || orig === moName || ref.includes(moName) || orig.includes(moName))) ||
+            (soName && (ref === soName || orig === soName || ref.includes(soName) || orig.includes(soName)))
+          );
+        };
+
+        let isRegistered = false;
+        let moRegisteredSheets = 0;
+
         if (!boardComps.length) {
-          return physicalMoves.some((move) => {
-            const moveDay = move.date ? move.date.slice(0, 10) : '';
-            const pName = Array.isArray(move.product_id) ? move.product_id[1] : '';
-            return moveDay >= soDay && isBoardProductName(pName) && isPhysicalInventoryMove(move, locationId);
-          });
+          if (['done', 'to_close', 'progress'].includes(mo.state || '')) {
+            isRegistered = true;
+          } else {
+            isRegistered = physicalMoves.some((move) => {
+              const moveDay = move.date ? move.date.slice(0, 10) : '';
+              const pName = Array.isArray(move.product_id) ? move.product_id[1] : '';
+              return moveMatchesMoOrSo(move) && moveDay >= soDay && isBoardProductName(pName) && isPhysicalInventoryMove(move, locationId);
+            });
+          }
+          moRegisteredSheets = isRegistered ? moRequiredSheets : 0;
+        } else {
+          if (['done', 'to_close'].includes(mo.state || '')) {
+            isRegistered = true;
+            moRegisteredSheets = moRequiredSheets;
+          } else {
+            const allCompsRegistered = boardComps.every((c) => {
+              const required = c.product_uom_qty || 0;
+              const reserved = c.quantity || 0;
+              if (reserved >= required && required > 0) return true;
+
+              const compName = Array.isArray(c.product_id) ? c.product_id[1] : '';
+              return physicalMoves.some((move) => {
+                const moveDay = move.date ? move.date.slice(0, 10) : '';
+                const pName = Array.isArray(move.product_id) ? move.product_id[1] : '';
+                return moveMatchesMoOrSo(move) && moveDay >= soDay && pName.toLowerCase() === compName.toLowerCase() && isPhysicalInventoryMove(move, locationId);
+              });
+            });
+            isRegistered = allCompsRegistered;
+            if (isRegistered) {
+              moRegisteredSheets = moRequiredSheets;
+            } else {
+              moRegisteredSheets = boardComps.reduce((sum, c) => sum + Math.min(c.product_uom_qty || 0, c.quantity || 0), 0);
+            }
+          }
         }
 
-        return boardComps.every((c) => {
-          const required = c.product_uom_qty || 0;
-          const reserved = c.quantity || 0;
-          if (reserved >= required && required > 0) return true;
-
-          const compName = Array.isArray(c.product_id) ? c.product_id[1] : '';
-          return physicalMoves.some((move) => {
-            const moveDay = move.date ? move.date.slice(0, 10) : '';
-            const pName = Array.isArray(move.product_id) ? move.product_id[1] : '';
-            return moveDay >= soDay && pName.toLowerCase() === compName.toLowerCase() && isPhysicalInventoryMove(move, locationId);
-          });
-        });
+        totalRegisteredBoardSheets += moRegisteredSheets;
+        return isRegistered;
       });
 
-      const expectedBoards = dueCuttingOrders.length;
-      const registeredBoards = registeredCuttingOrders.length;
-      const missingBoards = Math.max(0, expectedBoards - registeredBoards);
+      const expectedMoves = dueCuttingOrders.length;
+      const registeredMoves = registeredCuttingOrders.length;
+      const missingMoves = Math.max(0, expectedMoves - registeredMoves);
+
+      const expectedBoards = expectedMoves;
+      const registeredBoards = registeredMoves;
+      const missingBoards = missingMoves;
+
+      const expectedBoardSheets = Math.round(totalExpectedBoardSheets);
+      const registeredBoardSheets = Math.round(totalRegisteredBoardSheets);
+      const missingBoardSheets = Math.max(0, expectedBoardSheets - registeredBoardSheets);
+
       const coveragePercent = expectedBoards > 0
         ? Math.min(100, Math.max(0, Math.round((registeredBoards / expectedBoards) * 100)))
         : 0;
 
-      const details = `Period ${fromDate} to ${toDate} | Cutting MOs due on SO confirmation day: ${expectedBoards} | MOs with physical inventory logged same day: ${registeredBoards} | Missing same-day MO board entries: ${missingBoards} | Board purchase component found: ${boardPurchasesByOrigin.size} excluded | Edge banding excluded`;
+      const details = `Period ${fromDate} to ${toDate} | Cutting MOs due on SO confirmation day: ${expectedBoards} | MOs with physical inventory logged: ${registeredBoards} | Missing same-day MO board entries: ${missingBoards}${missingBoardSheets > 0 ? ` (${missingBoardSheets} boards needed)` : ''} | Board purchase component found: ${boardPurchasesByOrigin.size} excluded | Edge banding excluded`;
 
       return {
         monthLabel,
         registeredBoards,
         expectedBoards,
         missingBoards,
-        registeredMoves: registeredCuttingOrders.length,
-        expectedMoves: dueCuttingOrders.length,
+        registeredMoves,
+        expectedMoves,
+        missingMoves,
+        missingBoardSheets,
+        expectedBoardSheets,
+        registeredBoardSheets,
         coveragePercent,
         details,
       };

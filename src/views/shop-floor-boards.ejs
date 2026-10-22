@@ -82,11 +82,34 @@
 <main class="container my-4">
   <%- include('partials/shop-floor-nav', { activeShopFloorTab: 'boards' }) %>
 
-  <!-- Offcuts / Decimals Not Allowed 3-Second Floating Popup -->
-  <div id="offcutsPopup" class="position-fixed top-0 start-50 translate-middle-x p-3 d-none" style="z-index: 99999; max-width: 92vw; pointer-events: none;">
-    <div class="d-flex align-items-center gap-2.5 px-3.5 py-2.5 rounded-pill shadow-lg border" style="background: #0f172a; color: #ffffff; border-color: rgba(255,255,255,0.18) !important; box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45) !important; pointer-events: auto;">
-      <span style="font-size: 1.25rem; line-height: 1;">🪵</span>
-      <span class="fw-semibold" style="font-size: 0.90rem; letter-spacing: -0.01em;">Only full boards can be logged. Offcuts do not need logging.</span>
+  <!-- Offcuts / Decimals Not Allowed 5-Second Center Popup with Recommendation -->
+  <div id="offcutsPopupBackdrop" class="position-fixed top-0 start-0 w-100 h-100 d-none" style="z-index: 99998; background: rgba(15, 23, 42, 0.45); backdrop-filter: blur(2px); transition: opacity 0.25s ease;"></div>
+  <div id="offcutsPopup" class="position-fixed top-50 start-50 translate-middle d-none" style="z-index: 99999; width: 92vw; max-width: 440px; pointer-events: none;">
+    <div class="card border-0 rounded-4 shadow-lg p-4 text-center" style="background: #ffffff; border: 1.5px solid #fecaca !important; box-shadow: 0 20px 40px -10px rgba(220, 38, 38, 0.3), 0 12px 24px -10px rgba(0, 0, 0, 0.2) !important; pointer-events: auto;">
+      <div class="d-inline-flex align-items-center justify-content-center mx-auto mb-3 rounded-circle shadow-sm" style="width: 58px; height: 58px; background: #fee2e2; color: #dc2626; font-size: 1.8rem;">
+        🪵
+      </div>
+      <h3 class="h5 fw-bold mb-1" style="color: #991b1b; letter-spacing: -0.02em;">
+        Only Full Boards Allowed
+      </h3>
+      <div class="badge rounded-pill bg-danger-subtle text-danger border border-danger-subtle mx-auto px-3 py-1 mb-3 fw-semibold" style="font-size: 0.78rem;">
+        Decimals Not Accepted (e.g. 0.5)
+      </div>
+      <p class="text-secondary small mb-3" style="font-size: 0.88rem; line-height: 1.5; color: #475569 !important;">
+        <strong>Offcuts do not need logging.</strong> The system strictly accepts whole boards only.
+      </p>
+      <div class="rounded-3 p-3 mb-3 text-start small" style="background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412;">
+        <div class="fw-bold mb-1 d-flex align-items-center gap-1.5" style="font-size: 0.82rem;">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
+          Recommendation
+        </div>
+        <div style="font-size: 0.80rem; line-height: 1.45;">
+          If a client brought in an offcut or partial board, do not record it into warehouse stock. Only record when 1 or more complete, uncut boards are received.
+        </div>
+      </div>
+      <button type="button" id="dismissOffcutsPopupBtn" class="btn btn-danger btn-sm rounded-pill py-2 px-4 fw-semibold w-100 shadow-sm" style="background: #dc2626; border-color: #b91c1c; font-size: 0.88rem;">
+        Understood (Whole Boards Only)
+      </button>
     </div>
   </div>
 
@@ -140,41 +163,7 @@
             <h2 class="h6 mb-0 fw-bold" style="color: #1e293b; font-size: 1.05rem;">Log Board Intake</h2>
             <span class="text-muted small" style="font-size: 0.78rem;">Record boards brought in by a client</span>
           </div>
-          <% const isAdminUser = Boolean(authUser && (authUser.role === 'admin' || authUser.apps?.includes('shop-floor-admin'))); %>
-          <% if (isAdminUser) { %>
-            <!-- Recipient email control widget (Admin only) -->
-            <div class="d-flex align-items-center gap-1.5" id="boardLogEmailWidget">
-              <span class="badge rounded-pill d-inline-flex align-items-center gap-1 px-2.5 py-1.5 border" style="background: #f8fafc; color: #475569; font-size: 0.76rem; border-color: #cbd5e1 !important;" title="Board log completion details are emailed to this address">
-                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
-                <span>Email:</span>
-                <strong id="boardLogEmailDisplay"><%= boardLogEmail || 'sharon@urbanvibeinteriordesign.co.ke' %></strong>
-              </span>
-              <button type="button" class="btn btn-outline-secondary btn-sm rounded-pill px-2 py-0.5" id="editBoardLogEmailBtn" style="font-size: 0.72rem; line-height: 1.4;" title="Change recipient email">
-                Change
-              </button>
-            </div>
-          <% } %>
         </div>
-
-        <% if (isAdminUser) { %>
-          <!-- Inline Email Editor Box (Admin only) -->
-          <div id="boardLogEmailEditBox" class="px-4 py-2.5 border-bottom d-none" style="background: #f1f5f9; border-color: #e2e8f0 !important;">
-            <form id="boardLogEmailForm" class="d-flex align-items-center gap-2 flex-wrap" method="post" action="/shop-floor/boards/notification-email">
-              <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
-              <div class="input-group input-group-sm flex-nowrap" style="max-width: 320px;">
-                <span class="input-group-text bg-white border-end-0">✉</span>
-                <input type="email" id="boardLogEmailInput" name="email" class="form-control border-start-0" value="<%= boardLogEmail || 'sharon@urbanvibeinteriordesign.co.ke' %>" placeholder="recipient@urbanvibe.co.ke" required />
-              </div>
-              <button type="submit" id="saveBoardLogEmailBtn" class="btn btn-primary btn-sm rounded-pill px-3 py-1 fw-semibold" style="font-size: 0.78rem;">
-                Save Email
-              </button>
-              <button type="button" id="cancelBoardLogEmailBtn" class="btn btn-light btn-sm rounded-pill px-2.5 py-1 text-muted" style="font-size: 0.78rem;">
-                Cancel
-              </button>
-              <span id="boardLogEmailFeedback" class="small fw-semibold ms-1 d-none"></span>
-            </form>
-          </div>
-        <% } %>
 
         <% if (stockAlerts && stockAlerts.length) {
           const pendingAlerts = stockAlerts.filter(a => !a.isSyncing);
@@ -369,7 +358,7 @@
               <label for="intakeQty" class="form-label fw-semibold" style="font-size: 0.92rem; color: #334155;">
                 Number of Full Boards <span class="text-danger">*</span>
               </label>
-              <input type="number" name="quantity" id="intakeQty" class="form-control" placeholder="How many full boards were brought in..." min="1" step="1" inputmode="numeric" required style="font-size: 1rem; padding: 0.65rem 0.75rem;">
+              <input type="text" inputmode="numeric" pattern="[0-9]*" name="quantity" id="intakeQty" class="form-control" placeholder="How many full boards were brought in..." autocomplete="off" required style="font-size: 1rem; padding: 0.65rem 0.75rem; transition: border-color 0.15s, box-shadow 0.15s, color 0.15s;">
               <div class="invalid-feedback" id="qtyFeedback">Only full boards can be logged. Offcuts do not need logging.</div>
               <div class="text-muted mt-1" id="qtyCurrentStock" style="font-size: 0.75rem; display: none;"></div>
             </div>
@@ -611,9 +600,28 @@
       arrivalTimeInput.value = hh + ':' + mm;
     }
 
-    // 3-Second Floating Popup: Only full boards can be logged. Offcuts do not need logging.
+    // 5-Second Center Modal Popup: Only full boards can be logged. Offcuts do not need logging.
     var offcutsPopup = document.getElementById('offcutsPopup');
+    var offcutsPopupBackdrop = document.getElementById('offcutsPopupBackdrop');
+    var dismissOffcutsPopupBtn = document.getElementById('dismissOffcutsPopupBtn');
     var offcutsTimer = null;
+
+    function hideOffcutsPopup() {
+      if (!offcutsPopup) return;
+      if (offcutsTimer) {
+        clearTimeout(offcutsTimer);
+        offcutsTimer = null;
+      }
+      offcutsPopup.style.opacity = '0';
+      offcutsPopup.style.transform = 'translate(-50%, -46%) scale(0.95)';
+      if (offcutsPopupBackdrop) {
+        offcutsPopupBackdrop.style.opacity = '0';
+      }
+      setTimeout(function() {
+        offcutsPopup.classList.add('d-none');
+        if (offcutsPopupBackdrop) offcutsPopupBackdrop.classList.add('d-none');
+      }, 250);
+    }
 
     function showOffcutsPopup() {
       if (!offcutsPopup) return;
@@ -621,54 +629,85 @@
         clearTimeout(offcutsTimer);
         offcutsTimer = null;
       }
+      if (offcutsPopupBackdrop) {
+        offcutsPopupBackdrop.classList.remove('d-none');
+        offcutsPopupBackdrop.style.opacity = '0';
+      }
       offcutsPopup.classList.remove('d-none');
       offcutsPopup.style.opacity = '0';
-      offcutsPopup.style.transform = 'translate(-50%, -12px)';
+      offcutsPopup.style.transform = 'translate(-50%, -46%) scale(0.95)';
       offcutsPopup.style.transition = 'all 0.25s cubic-bezier(0.16, 1, 0.3, 1)';
+      if (offcutsPopupBackdrop) {
+        offcutsPopupBackdrop.style.transition = 'opacity 0.25s ease';
+      }
       void offcutsPopup.offsetHeight; // force reflow
       offcutsPopup.style.opacity = '1';
-      offcutsPopup.style.transform = 'translate(-50%, 0)';
-
-      if (navigator.vibrate) {
-        try { navigator.vibrate([40, 60, 40]); } catch (_) {}
+      offcutsPopup.style.transform = 'translate(-50%, -50%) scale(1)';
+      if (offcutsPopupBackdrop) {
+        offcutsPopupBackdrop.style.opacity = '1';
       }
 
+      if (navigator.vibrate) {
+        try { navigator.vibrate([60, 80, 60]); } catch (_) {}
+      }
+
+      // Automatically dismiss after 5 seconds
       offcutsTimer = setTimeout(function() {
-        offcutsPopup.style.opacity = '0';
-        offcutsPopup.style.transform = 'translate(-50%, -12px)';
-        setTimeout(function() {
-          offcutsPopup.classList.add('d-none');
-        }, 250);
-      }, 3000);
+        hideOffcutsPopup();
+      }, 5000);
+    }
+
+    if (dismissOffcutsPopupBtn) {
+      dismissOffcutsPopupBtn.addEventListener('click', hideOffcutsPopup);
+    }
+    if (offcutsPopupBackdrop) {
+      offcutsPopupBackdrop.addEventListener('click', hideOffcutsPopup);
     }
 
     var intakeQtyInput = document.getElementById('intakeQty');
     if (intakeQtyInput) {
-      // Prevent typing decimal characters
-      intakeQtyInput.addEventListener('keydown', function(e) {
-        if (e.key === '.' || e.key === ',' || e.key === 'e' || e.key === 'E' || e.key === '-' || e.key === '+') {
-          e.preventDefault();
-          showOffcutsPopup();
-        }
-      });
+      function evaluateQtyValidity() {
+        var rawVal = intakeQtyInput.value;
+        var trimmed = rawVal.trim();
+        var hasDecimal = trimmed.includes('.') || trimmed.includes(',') || /[^\d]/.test(trimmed);
 
-      // Strip decimals if entered via software keypad, speech, or autofill
+        if (hasDecimal) {
+          intakeQtyInput.classList.add('is-invalid');
+          intakeQtyInput.style.color = '#dc2626';
+          intakeQtyInput.style.borderColor = '#dc2626';
+          intakeQtyInput.style.backgroundColor = '#fef2f2';
+          intakeQtyInput.style.boxShadow = '0 0 0 0.25rem rgba(220, 38, 38, 0.2)';
+          var feedback = document.getElementById('qtyFeedback');
+          if (feedback) feedback.style.display = 'block';
+          showOffcutsPopup();
+        } else if (trimmed && /^[1-9]\d*$/.test(trimmed)) {
+          intakeQtyInput.classList.remove('is-invalid');
+          intakeQtyInput.style.color = '';
+          intakeQtyInput.style.borderColor = '';
+          intakeQtyInput.style.backgroundColor = '';
+          intakeQtyInput.style.boxShadow = '';
+          var feedback = document.getElementById('qtyFeedback');
+          if (feedback) feedback.style.display = 'none';
+        } else if (!trimmed) {
+          intakeQtyInput.classList.remove('is-invalid');
+          intakeQtyInput.style.color = '';
+          intakeQtyInput.style.borderColor = '';
+          intakeQtyInput.style.backgroundColor = '';
+          intakeQtyInput.style.boxShadow = '';
+          var feedback = document.getElementById('qtyFeedback');
+          if (feedback) feedback.style.display = 'none';
+        }
+      }
+
+      // On input, detect decimals without altering what operator typed
       intakeQtyInput.addEventListener('input', function() {
-        var val = intakeQtyInput.value;
-        if (val.includes('.') || val.includes(',')) {
-          intakeQtyInput.value = val.replace(/[^0-9]/g, '');
-          showOffcutsPopup();
-        }
+        evaluateQtyValidity();
       });
 
-      intakeQtyInput.addEventListener('paste', function(e) {
-        var pastedText = (e.clipboardData || window.clipboardData) ? (e.clipboardData || window.clipboardData).getData('text') : '';
-        if (pastedText && (pastedText.includes('.') || pastedText.includes(',') || parseFloat(pastedText) % 1 !== 0)) {
-          e.preventDefault();
-          var cleanInt = parseInt(pastedText.replace(/[^0-9]/g, ''), 10);
-          intakeQtyInput.value = (cleanInt && cleanInt > 0) ? String(cleanInt) : '';
-          showOffcutsPopup();
-        }
+      intakeQtyInput.addEventListener('paste', function() {
+        setTimeout(function() {
+          evaluateQtyValidity();
+        }, 10);
       });
     }
 
@@ -1366,88 +1405,6 @@
       });
     });
 
-    // Inline Email Editor logic
-    var editEmailBtn = document.getElementById('editBoardLogEmailBtn');
-    var emailEditBox = document.getElementById('boardLogEmailEditBox');
-    var emailForm = document.getElementById('boardLogEmailForm');
-    var emailInput = document.getElementById('boardLogEmailInput');
-    var emailDisplay = document.getElementById('boardLogEmailDisplay');
-    var cancelEmailBtn = document.getElementById('cancelBoardLogEmailBtn');
-    var emailFeedback = document.getElementById('boardLogEmailFeedback');
-    var saveEmailBtn = document.getElementById('saveBoardLogEmailBtn');
-
-    if (editEmailBtn && emailEditBox) {
-      editEmailBtn.addEventListener('click', function() {
-        emailEditBox.classList.remove('d-none');
-        if (emailInput) {
-          emailInput.focus();
-          emailInput.select();
-        }
-      });
-    }
-
-    if (cancelEmailBtn && emailEditBox) {
-      cancelEmailBtn.addEventListener('click', function() {
-        emailEditBox.classList.add('d-none');
-        if (emailFeedback) emailFeedback.classList.add('d-none');
-      });
-    }
-
-    if (emailForm) {
-      emailForm.addEventListener('submit', async function(e) {
-        e.preventDefault();
-        var emailVal = (emailInput ? emailInput.value : '').trim();
-        if (!emailVal || !emailVal.includes('@')) {
-          if (emailFeedback) {
-            emailFeedback.className = 'small fw-semibold ms-1 text-danger';
-            emailFeedback.textContent = 'Please enter a valid email.';
-            emailFeedback.classList.remove('d-none');
-          }
-          return;
-        }
-
-        if (saveEmailBtn) {
-          saveEmailBtn.setAttribute('disabled', 'disabled');
-          saveEmailBtn.textContent = 'Saving...';
-        }
-
-        try {
-          var res = await fetch(emailForm.action, {
-            method: 'POST',
-            headers: {
-              'Accept': 'application/json',
-              'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'
-            },
-            body: new URLSearchParams(new FormData(emailForm)).toString()
-          });
-          var data = await res.json().catch(function() { return { ok: false }; });
-          if (!res.ok || !data.ok) {
-            throw new Error(data.error || 'Failed to save email');
-          }
-          if (emailDisplay) emailDisplay.textContent = emailVal;
-          if (emailFeedback) {
-            emailFeedback.className = 'small fw-semibold ms-1 text-success';
-            emailFeedback.textContent = '✓ Saved!';
-            emailFeedback.classList.remove('d-none');
-          }
-          setTimeout(function() {
-            if (emailEditBox) emailEditBox.classList.add('d-none');
-            if (emailFeedback) emailFeedback.classList.add('d-none');
-          }, 1200);
-        } catch (err) {
-          if (emailFeedback) {
-            emailFeedback.className = 'small fw-semibold ms-1 text-danger';
-            emailFeedback.textContent = err.message || 'Save failed';
-            emailFeedback.classList.remove('d-none');
-          }
-        } finally {
-          if (saveEmailBtn) {
-            saveEmailBtn.removeAttribute('disabled');
-            saveEmailBtn.textContent = 'Save Email';
-          }
-        }
-      });
-    }
 
     // Auto-focus smoothly on still undone logs if any exist
     function focusOnStillUndoneLogs() {
@@ -1789,13 +1746,29 @@
 
         if (!rawQtyVal || isNaN(numQty) || numQty <= 0 || !Number.isInteger(numQty) || numQty % 1 !== 0 || rawQtyVal.includes('.') || rawQtyVal.includes(',')) {
           isValid = false;
-          if (qtyInput) qtyInput.classList.add('is-invalid');
+          if (qtyInput) {
+            qtyInput.classList.add('is-invalid');
+            qtyInput.style.color = '#dc2626';
+            qtyInput.style.borderColor = '#dc2626';
+            qtyInput.style.backgroundColor = '#fef2f2';
+            qtyInput.style.boxShadow = '0 0 0 0.25rem rgba(220, 38, 38, 0.2)';
+            var feedback = document.getElementById('qtyFeedback');
+            if (feedback) feedback.style.display = 'block';
+            qtyInput.focus();
+          }
           showOffcutsPopup();
-          if (qtyInput) qtyInput.focus();
           e.stopPropagation();
           return;
         } else {
-          if (qtyInput) qtyInput.classList.remove('is-invalid');
+          if (qtyInput) {
+            qtyInput.classList.remove('is-invalid');
+            qtyInput.style.color = '';
+            qtyInput.style.borderColor = '';
+            qtyInput.style.backgroundColor = '';
+            qtyInput.style.boxShadow = '';
+            var feedback = document.getElementById('qtyFeedback');
+            if (feedback) feedback.style.display = 'none';
+          }
         }
 
         if (!form.checkValidity() || !isValid) {
