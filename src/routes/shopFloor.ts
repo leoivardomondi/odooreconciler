@@ -3186,6 +3186,35 @@ router.post('/shop-floor/board-intake', async (req: Request, res: Response) => {
     }
 
     void (async () => {
+      // 1. Dispatch email alert immediately so recipients are notified in real-time
+      const emailPromise = (async () => {
+        try {
+          const settings = await getSettings();
+          const rawRecipients = settings.stock?.boardLogNotificationEmail?.trim() || 'sharon@urbanvibeinteriordesign.co.ke';
+          const recipientList = [...new Set(rawRecipients.split(/[,\s;\n]+/).map((e) => e.trim().toLowerCase()).filter((e) => e.includes('@')))];
+          const toRecipients = recipientList.length > 0 ? recipientList.join(', ') : 'sharon@urbanvibeinteriordesign.co.ke';
+          const reportDate = new Intl.DateTimeFormat('en-CA', { timeZone: env.APP_TIMEZONE || 'Africa/Nairobi', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+          const safeCustomerName = escapeHtml(customerName);
+          const safeProductName = escapeHtml(productName);
+          const safeVehicleReg = escapeHtml(vehicleRegistration || '—');
+          const safeArrivalTime = escapeHtml(arrivalTime || '—');
+          const safeGate = escapeHtml(gate || '—');
+          const safeActorEmail = escapeHtml(actorName);
+          const subjectCustomerName = customerName.replace(/[\r\n]+/g, ' ').trim();
+          await sendMailWithConfig(settings.mail, {
+            to: toRecipients,
+            subject: `${subjectCustomerName} - Board Log - ${reportDate}`,
+            html: `<p><strong>Board log completed</strong></p><p>Client: ${safeCustomerName}<br>Board: ${safeProductName}<br>Quantity: ${qty}<br>Gate: ${safeGate}<br>Vehicle Reg: ${safeVehicleReg}<br>Arrival Time: ${safeArrivalTime}<br>Date: ${reportDate}<br>Logged by: ${safeActorEmail}</p>`,
+          });
+        } catch (mailError) {
+          await logEvent('error', `Board log email failed`, {
+            customerName, productName, quantity: qty, vehicleRegistration, arrivalTime, gate, actor: actorName, actorEmail: req.authUser?.email,
+            error: mailError instanceof Error ? mailError.message : String(mailError),
+          });
+        }
+      })();
+
+      // 2. Synchronize board inventory and reservations in Odoo concurrently
       try {
         const syncResult = await syncBoardIntakeEntry(optimisticId);
         // Ensure pending processes are re-marked loaded in MySQL even if background Odoo sync ran
@@ -3198,23 +3227,6 @@ router.post('/shop-floor/board-intake', async (req: Request, res: Response) => {
           quantity: qty,
         }).catch(() => 0);
 
-        const settings = await getSettings();
-        const rawRecipients = settings.stock?.boardLogNotificationEmail?.trim() || 'sharon@urbanvibeinteriordesign.co.ke';
-        const recipientList = [...new Set(rawRecipients.split(/[,\s;\n]+/).map((e) => e.trim().toLowerCase()).filter((e) => e.includes('@')))];
-        const toRecipients = recipientList.length > 0 ? recipientList.join(', ') : 'sharon@urbanvibeinteriordesign.co.ke';
-        const reportDate = new Intl.DateTimeFormat('en-CA', { timeZone: env.APP_TIMEZONE || 'Africa/Nairobi', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
-        const safeCustomerName = escapeHtml(customerName);
-        const safeProductName = escapeHtml(productName);
-        const safeVehicleReg = escapeHtml(vehicleRegistration || '—');
-        const safeArrivalTime = escapeHtml(arrivalTime || '—');
-        const safeGate = escapeHtml(gate || '—');
-        const safeActorEmail = escapeHtml(actorName);
-        const subjectCustomerName = customerName.replace(/[\r\n]+/g, ' ').trim();
-        await sendMailWithConfig(settings.mail, {
-          to: toRecipients,
-          subject: `${subjectCustomerName} - Board Log - ${reportDate}`,
-          html: `<p><strong>Board log completed</strong></p><p>Client: ${safeCustomerName}<br>Board: ${safeProductName}<br>Quantity: ${qty}<br>Gate: ${safeGate}<br>Vehicle Reg: ${safeVehicleReg}<br>Arrival Time: ${safeArrivalTime}<br>Date: ${reportDate}<br>Logged by: ${safeActorEmail}</p>`,
-        }).catch((mailError) => logEvent('error', `Board log email to ${toRecipients} failed`, { customerName, productName, quantity: qty, vehicleRegistration, arrivalTime, gate, actor: actorName, actorEmail: req.authUser?.email, error: mailError instanceof Error ? mailError.message : String(mailError) }));
         const optimisticIndex = optimisticBoardIntakes.findIndex((entry) => entry.id === optimisticId);
         if (optimisticIndex >= 0) optimisticBoardIntakes.splice(optimisticIndex, 1);
         shopFloorCache.clearPrefix('shop-floor-dashboard:');
@@ -3229,6 +3241,8 @@ router.post('/shop-floor/board-intake', async (req: Request, res: Response) => {
           error: message,
         });
       }
+
+      await emailPromise.catch(() => null);
     })();
     return;
   } catch (err) {

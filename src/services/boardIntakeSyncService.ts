@@ -158,7 +158,8 @@ export async function syncBoardIntakeEntry(id: string) {
 
     const warehouseId = Number(settings.stock.warehouseId || 0);
     if (warehouseId) {
-      await client.autoReserveConfirmedMOs(warehouseId).catch(() => null);
+      // Fire-and-forget warehouse-wide auto-reservation in background so it never blocks intake completion
+      void client.autoReserveConfirmedMOs(warehouseId).catch(() => null);
     }
 
     await updateBoardIntakeQueueEntry(id, { status: 'synced', stockQuantity });

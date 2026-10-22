@@ -5104,9 +5104,6 @@ export class OdooClient {
         limit: 500,
       });
       if (!openMOs.length) return { reserved: [], failed: [] };
-      for (const mo of openMOs) {
-        await this.reconcileMOComponentQuantitiesWithRelatedPO(mo.id).catch(() => null);
-      }
       return this.reserveStockOnMOs(openMOs.map((mo) => mo.id));
     } catch (err) {
       console.warn('[OdooClient] autoReserveConfirmedMOs error:', err);
