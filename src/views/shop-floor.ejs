@@ -511,10 +511,10 @@
             <h2 class="h6 mb-0 fw-bold" data-i18n="payslips">Payslips</h2>
           </div>
           <div>
-            <% if (!data.payslips.length) { %>
+            <% if (!data.payslips || !data.payslips.length) { %>
               <div class="p-4 text-muted small" data-i18n="no_payslips">No payslips available.</div>
             <% } %>
-            <% data.payslips.forEach((ps) => { %>
+            <% (data.payslips || []).forEach((ps) => { %>
               <div class="d-flex justify-content-between align-items-center px-4 py-3 border-bottom">
                 <div>
                   <div class="fw-semibold" style="font-size:0.88rem"><%= ps.name %></div>
@@ -1414,10 +1414,10 @@
             <h2 class="h6 mb-0 fw-bold" data-i18n="payslips">Payslips</h2>
           </div>
           <div>
-            <% if (!data.payslips.length) { %>
+            <% if (!data.payslips || !data.payslips.length) { %>
               <div class="p-4 text-muted small" data-i18n="no_payslips">No payslips available.</div>
             <% } %>
-            <% data.payslips.forEach((ps) => { %>
+            <% (data.payslips || []).forEach((ps) => { %>
               <div class="d-flex justify-content-between align-items-center px-4 py-3 border-bottom">
                 <div>
                   <div class="fw-semibold" style="font-size:0.88rem"><%= ps.name %></div>
@@ -1433,7 +1433,7 @@
         </div>
 
         <!-- Salary Advances -->
-        <% if (data.salaryAdvances.length) { %>
+        <% if (data.salaryAdvances && data.salaryAdvances.length) { %>
         <div class="rounded-4 border bg-white mb-4 overflow-hidden" style="box-shadow:0 1px 3px rgba(0,0,0,0.04)">
           <div class="px-4 py-3 border-bottom">
             <h2 class="h6 mb-0 fw-bold" data-i18n="salary_advances">Salary Advances</h2>
@@ -1531,13 +1531,6 @@
       </div>
       <% } %>
     </div>
-  <% } else if (!data.error) { %>
-    <div class="text-center py-5">
-      <div class="spinner-border text-muted mb-3" style="width: 3rem; height: 3rem;" role="status"></div>
-      <h2 data-i18n="loading_dashboard">Loading your dashboard...</h2>
-      <p class="text-muted" data-i18n="fetching_data">Fetching your work orders, attendance, and payslips.</p>
-    </div>
-  <% } %>
   <div class="modal fade" id="manufacturingOrderActionModal" tabindex="-1" aria-labelledby="manufacturingOrderActionTitle" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered">
       <div class="modal-content border-0 rounded-4 overflow-hidden shadow">

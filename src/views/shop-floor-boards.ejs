@@ -1597,9 +1597,11 @@
               if (revertForm) {
                 revertForm.innerHTML = '<span class="badge rounded-pill bg-secondary-subtle text-secondary border px-2.5 py-1" style="font-size:0.75rem">✓ Reverted</span>';
               }
-              var card = badge.closest('.border.rounded-4') || badge.closest('.card') || badge.parentElement.parentElement;
-              if (card) {
-                card.style.opacity = '0.65';
+              var row = badge.closest('[data-board-log-row]') || badge.closest('.border.rounded-3');
+              if (row) {
+                row.style.opacity = '0.75';
+                row.classList.remove('bg-white');
+                row.classList.add('bg-light');
               }
             } else if (entry.status === 'reverting') {
               badge.className = 'badge rounded-pill bg-warning-subtle text-warning-emphasis';
@@ -1655,9 +1657,11 @@
               if (revertForm) {
                 revertForm.innerHTML = '<span class="badge rounded-pill bg-secondary-subtle text-secondary border px-2.5 py-1" style="font-size:0.75rem">✓ Reverted</span>';
               }
-              var card = badge.closest('.border.rounded-4') || badge.closest('.card') || badge.parentElement.parentElement;
-              if (card) {
-                card.style.opacity = '0.65';
+              var row = badge.closest('[data-board-log-row]') || badge.closest('.border.rounded-3');
+              if (row) {
+                row.style.opacity = '0.75';
+                row.classList.remove('bg-white');
+                row.classList.add('bg-light');
               }
             } else if (entry.status === 'reverting') {
               badge.className = 'badge rounded-pill bg-warning-subtle text-warning-emphasis';
