@@ -2885,6 +2885,12 @@ document.addEventListener('click', function(e) {
   document.addEventListener('visibilitychange', function () {
     if (document.visibilityState === 'visible') refreshAppBadges();
   });
+  // Auto-refresh badge counts every 6s so background webhook updates appear live without manual page refresh
+  window.setInterval(function () {
+    if (document.visibilityState === 'visible') {
+      refreshAppBadges();
+    }
+  }, 6000);
 })();
 </script>
 
