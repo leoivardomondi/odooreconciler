@@ -92,23 +92,33 @@ async function syncBoardIntakeEntry(id) {
             }).format(new Date());
             const safeCustomerName = escapeHtml(entry.customer_name);
             const safeProductName = escapeHtml(entry.product_name);
-            const safeGate = escapeHtml(entry.gate ? String(entry.gate).trim() : '—');
-            const safeVehicleReg = escapeHtml(entry.vehicle_registration ? String(entry.vehicle_registration).trim() : '—');
-            const safeArrivalTime = escapeHtml(entry.arrival_time ? String(entry.arrival_time).trim() : '—');
+            const safeGate = entry.gate ? escapeHtml(String(entry.gate).trim()) : '';
+            const safeVehicleReg = entry.vehicle_registration ? escapeHtml(String(entry.vehicle_registration).trim()) : '';
+            const safeArrivalTime = entry.arrival_time ? escapeHtml(String(entry.arrival_time).trim()) : '';
             const safeActor = escapeHtml(entry.actor_name || entry.actor_email || 'Operator');
             const qtyNum = Number(entry.quantity);
-            const buildChatterHtml = (moName) => `<p>🪵 <strong>Board log completed (Operator Mobile App)</strong></p>` +
-                `<p>` +
-                `<strong>Client:</strong> ${safeCustomerName}<br>` +
-                `<strong>Board:</strong> ${safeProductName}<br>` +
-                `<strong>Quantity:</strong> ${qtyNum}<br>` +
-                (moName ? `<strong>Manufacturing Order:</strong> ${escapeHtml(moName)}<br>` : '') +
-                `<strong>Gate:</strong> ${safeGate}<br>` +
-                `<strong>Vehicle Reg:</strong> ${safeVehicleReg}<br>` +
-                `<strong>Arrival Time:</strong> ${safeArrivalTime}<br>` +
-                `<strong>Date:</strong> ${escapeHtml(reportDate)}<br>` +
-                `<strong>Logged by:</strong> ${safeActor}` +
-                `</p>`;
+            const buildChatterHtml = (moName) => {
+                const lines = [
+                    `🪵 <strong>Board log completed (Operator Mobile App)</strong>`,
+                    `• <strong>Client:</strong> ${safeCustomerName}`,
+                    `• <strong>Board:</strong> ${safeProductName}`,
+                    `• <strong>Quantity:</strong> ${qtyNum} sheet${qtyNum === 1 ? '' : 's'}`,
+                ];
+                if (moName)
+                    lines.push(`• <strong>Manufacturing Order:</strong> ${escapeHtml(moName)}`);
+                if (safeGate && safeGate !== '—') {
+                    lines.push(`• <strong>Gate:</strong> ${safeGate}`);
+                }
+                if (safeVehicleReg && safeVehicleReg !== '—') {
+                    lines.push(`• <strong>Vehicle Reg:</strong> ${safeVehicleReg}`);
+                }
+                if (safeArrivalTime && safeArrivalTime !== '—') {
+                    lines.push(`• <strong>Arrival Time:</strong> ${safeArrivalTime}`);
+                }
+                lines.push(`• <strong>Date:</strong> ${escapeHtml(reportDate)}`);
+                lines.push(`• <strong>Logged by:</strong> ${safeActor}`);
+                return lines.join('<br/>\n');
+            };
             // 1. Post to mrp.production chatter for all matching MOs
             await Promise.all(matchingMOs.map((mo) => client.postModelChatterMessage('mrp.production', mo.moId, buildChatterHtml(mo.moName)).catch(() => null)));
             // 2. Post to related sale.order chatter if matching MO has a linked Sales Order

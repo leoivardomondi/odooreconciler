@@ -241,19 +241,21 @@ test('Boards logged against an MO are cross-posted to the related Sales Order ch
   };
 
   const matchingMOs = await fakeClient.findMOsForBoardIntake();
-  const buildChatterHtml = (moName?: string) =>
-    `<p>🪵 <strong>Board log completed (Operator Mobile App)</strong></p>` +
-    `<p>` +
-    `<strong>Client:</strong> ${entry.customer_name}<br>` +
-    `<strong>Board:</strong> ${entry.product_name}<br>` +
-    `<strong>Quantity:</strong> ${entry.quantity}<br>` +
-    (moName ? `<strong>Manufacturing Order:</strong> ${moName}<br>` : '') +
-    `<strong>Gate:</strong> ${entry.gate}<br>` +
-    `<strong>Vehicle Reg:</strong> ${entry.vehicle_registration}<br>` +
-    `<strong>Arrival Time:</strong> ${entry.arrival_time}<br>` +
-    `<strong>Date:</strong> ${entry.arrival_date}<br>` +
-    `<strong>Logged by:</strong> ${entry.actor_name}` +
-    `</p>`;
+  const buildChatterHtml = (moName?: string) => {
+    const lines: string[] = [
+      `🪵 <strong>Board log completed (Operator Mobile App)</strong>`,
+      `• <strong>Client:</strong> ${entry.customer_name}`,
+      `• <strong>Board:</strong> ${entry.product_name}`,
+      `• <strong>Quantity:</strong> ${entry.quantity} sheets`,
+    ];
+    if (moName) lines.push(`• <strong>Manufacturing Order:</strong> ${moName}`);
+    if (entry.gate) lines.push(`• <strong>Gate:</strong> ${entry.gate}`);
+    if (entry.vehicle_registration) lines.push(`• <strong>Vehicle Reg:</strong> ${entry.vehicle_registration}`);
+    if (entry.arrival_time) lines.push(`• <strong>Arrival Time:</strong> ${entry.arrival_time}`);
+    lines.push(`• <strong>Date:</strong> ${entry.arrival_date}`);
+    lines.push(`• <strong>Logged by:</strong> ${entry.actor_name}`);
+    return lines.join('<br/>\n');
+  };
 
   await Promise.all(matchingMOs.map((mo) => fakeClient.postModelChatterMessage('mrp.production', mo.moId, buildChatterHtml(mo.moName))));
   const postedSoIds = new Set<number>();

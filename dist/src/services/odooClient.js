@@ -785,6 +785,7 @@ class OdooClient {
         return this.request('sale.order', 'message_post', {
             ids: [orderId],
             body: message,
+            body_is_html: true,
             message_type: 'comment',
             subtype_xmlid: 'mail.mt_note',
         });
@@ -793,6 +794,7 @@ class OdooClient {
         return this.request('sale.order', 'message_post', {
             ids: [orderId],
             body: message,
+            body_is_html: true,
             message_type: 'comment',
             subtype_xmlid: 'mail.mt_comment',
             partner_ids: partnerIds,
@@ -937,6 +939,7 @@ class OdooClient {
         const kwargs = {
             ids: [recordId],
             body: message,
+            body_is_html: true,
             message_type: 'comment',
             subtype_xmlid: 'mail.mt_note',
         };

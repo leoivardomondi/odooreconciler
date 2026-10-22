@@ -3504,17 +3504,16 @@ router.post('/shop-floor/board-intake/:id/revert', async (req: Request, res: Res
       const safeOriginalActor = escapeHtml(entry.actor_name || entry.actor_email || 'Operator');
       const qtyNum = Number(entry.quantity);
 
-      const revertChatterHtml =
-        `<p>⚠️ <strong>BOARD INTAKE REVERTED (Operator Mobile App)</strong></p>` +
-        `<p>` +
-        `<strong>Client:</strong> ${safeCustomerName}<br>` +
-        `<strong>Board:</strong> ${safeProductName}<br>` +
-        `<strong>Quantity Reverted:</strong> -${qtyNum} sheets (New Odoo Stock: ${result.newQty})<br>` +
-        `<strong>Originally Logged By:</strong> ${safeOriginalActor}<br>` +
-        `<strong>Reverted By:</strong> ${safeRevertedBy}<br>` +
-        `<strong>Date:</strong> ${escapeHtml(reportDate)}<br>` +
-        `<em>Summary: Physical board intake was reverted; stock has been automatically deducted back in Odoo.</em>` +
-        `</p>`;
+      const revertChatterHtml = [
+        `⚠️ <strong>BOARD INTAKE REVERTED (Operator Mobile App)</strong>`,
+        `• <strong>Client:</strong> ${safeCustomerName}`,
+        `• <strong>Board:</strong> ${safeProductName}`,
+        `• <strong>Quantity Reverted:</strong> -${qtyNum} sheet${qtyNum === 1 ? '' : 's'} (Remaining Odoo Stock: ${result.newQty})`,
+        `• <strong>Originally Logged By:</strong> ${safeOriginalActor}`,
+        `• <strong>Reverted By:</strong> ${safeRevertedBy}`,
+        `• <strong>Date:</strong> ${escapeHtml(reportDate)}`,
+        `<em>Summary: Physical board intake was reverted; stock has been automatically deducted back in Odoo.</em>`,
+      ].join('<br/>\n');
 
       const matchingMOs = await odooClient.findMOsForBoardIntake({
         productId: Number(entry.product_id),
