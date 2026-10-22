@@ -3689,8 +3689,8 @@ class OdooClient {
         await this.callRecordMethod('stock.picking', 'action_assign', [pickingId]).catch(() => null);
         await this.populatePickingValidationMetadata(pickingId, actorEmail);
         const result = await this.callRecordMethod('stock.picking', 'button_validate', [pickingId]);
-        await this.populatePickingValidationMetadata(pickingId, actorEmail);
-        await this.autoReserveConfirmedMOs(warehouseId).catch(() => null);
+        // Run factory-wide stock reservation detached in the background so receipt validation completes instantly
+        void this.autoReserveConfirmedMOs(warehouseId).catch(() => null);
         return result;
     }
     async getOpenDeliveries(warehouseId) {

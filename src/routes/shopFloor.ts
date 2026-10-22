@@ -2777,13 +2777,16 @@ async function handleAdvanceMo(req: Request, res: Response) {
     const stockCheck = await client.checkManufacturingOrderStockAvailability(moId);
     if (!stockCheck.isFullyAvailable) {
       if (stockCheck.hasMissingBoards) {
-        try {
-          const procurement = await client.getManufacturingOrderBoardProcurement(moId);
-          const pendingPurchaseOrders = procurement.purchaseOrders.filter((po) => ['draft', 'sent', 'to approve'].includes(po.state));
-          if (pendingPurchaseOrders.length) {
-            await client.approvePurchaseOrdersForShopFloor(pendingPurchaseOrders);
-          }
-        } catch (_) {}
+        // Run pending PO auto-approval asynchronously in the background so operator gets instant feedback
+        void (async () => {
+          try {
+            const procurement = await client.getManufacturingOrderBoardProcurement(moId);
+            const pendingPurchaseOrders = procurement.purchaseOrders.filter((po) => ['draft', 'sent', 'to approve'].includes(po.state));
+            if (pendingPurchaseOrders.length) {
+              await client.approvePurchaseOrdersForShopFloor(pendingPurchaseOrders);
+            }
+          } catch (_) {}
+        })();
       }
 
       const missingSummary = stockCheck.missingComponents
