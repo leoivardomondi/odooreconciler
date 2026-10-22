@@ -58,4 +58,8 @@ router.get('/dashboard', async (req, res) => {
   });
 });
 
+router.get(['/logs', '/audit-logs'], (req, res) => {
+  res.redirect('/dashboard#recent-logs');
+});
+
 export default router;
