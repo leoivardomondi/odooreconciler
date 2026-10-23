@@ -254,7 +254,12 @@ window.shopFloorPageCache = shopFloorPageCache;
 function isBypassedShopFloorCacheUrl(urlStr) {
   try {
     const p = new URL(urlStr, window.location.origin).pathname;
-    return p === '/shop-floor/boards' || p.startsWith('/shop-floor/boards/');
+    return (
+      p === '/shop-floor' ||
+      p === '/shop-floor/' ||
+      p === '/shop-floor/boards' ||
+      p.startsWith('/shop-floor/boards/')
+    );
   } catch (_e) {
     return false;
   }

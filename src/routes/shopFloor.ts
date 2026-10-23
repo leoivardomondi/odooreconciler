@@ -428,6 +428,14 @@ class MemoryCache {
     void deleteShopFloorSharedCache(key).catch(() => {});
   }
 
+  keys(): IterableIterator<string> {
+    return this.cache.keys();
+  }
+
+  getEntry<T>(key: string): CacheEntry<T> | null {
+    return this.cache.get(key) || null;
+  }
+
   clearPrefix(prefix: string): void {
     for (const key of this.cache.keys()) {
       if (key.startsWith(prefix)) {
@@ -603,6 +611,128 @@ class MemoryCache {
 }
 
 export const shopFloorCache = new MemoryCache();
+
+export async function optimisticallyUpdateSharedWorkOrderState(
+  moId: number,
+  newState: 'progress' | 'done' | 'paused' | 'confirmed',
+  operatorName?: string,
+  operatorEmail?: string,
+): Promise<void> {
+  if (!Number.isFinite(moId) || moId <= 0) return;
+
+  if (newState === 'paused') {
+    manuallyPausedMoIds.add(moId);
+  } else {
+    manuallyPausedMoIds.delete(moId);
+  }
+
+  const mutateOrder = (wo: any) => {
+    if (wo && wo.id === moId) {
+      wo.state = newState;
+      if (operatorName && (!wo.assignedTo || wo.assignedTo === 'Unassigned')) {
+        wo.assignedTo = operatorName;
+      }
+      if (newState === 'progress' && !wo.dateStarted) {
+        wo.dateStarted = new Date().toISOString();
+      }
+      if (newState === 'done') {
+        wo.produced = wo.qty || 1;
+        wo.progress = 100;
+        wo.dateFinished = new Date().toISOString();
+      }
+      return true;
+    }
+    return false;
+  };
+
+  const sortOrders = (orders: any[]) => {
+    orders.sort((a, b) => {
+      if (a.state === 'progress' && b.state !== 'progress') return -1;
+      if (a.state !== 'progress' && b.state === 'progress') return 1;
+      if (a.state === 'paused' && b.state !== 'paused') return -1;
+      if (a.state !== 'paused' && b.state === 'paused') return 1;
+      if (a.stockStatus === 'ready' && b.stockStatus !== 'ready') return -1;
+      if (a.stockStatus !== 'ready' && b.stockStatus === 'ready') return 1;
+      return 0;
+    });
+  };
+
+  // 1. Mutate in RAM shared work orders
+  const ramSharedMo = shopFloorCache.get<{
+    workOrders: any[];
+    rawStockAlerts: StockAlert[];
+    areaPerformanceRates: any[];
+    reservedBoardsCount: number;
+  }>('shop-floor:shared-work-orders:v1');
+  if (ramSharedMo?.workOrders) {
+    let touched = false;
+    for (const wo of ramSharedMo.workOrders) {
+      if (mutateOrder(wo)) touched = true;
+    }
+    if (touched) {
+      sortOrders(ramSharedMo.workOrders);
+    }
+  }
+
+  // 2. Mutate in all active RAM operator dashboard snapshots
+  for (const key of shopFloorCache.keys()) {
+    if (key.startsWith('shop-floor-dashboard:')) {
+      const dash = shopFloorCache.get<OperatorDashboardData>(key);
+      if (dash?.workOrders) {
+        let touched = false;
+        for (const wo of dash.workOrders) {
+          if (mutateOrder(wo)) touched = true;
+        }
+        if (touched) {
+          sortOrders(dash.workOrders);
+        }
+      }
+    }
+  }
+
+  // 3. Mutate persistent shared cache in MySQL
+  try {
+    const dbSharedEntry = await getShopFloorSharedCache<{
+      workOrders: any[];
+      rawStockAlerts: StockAlert[];
+      areaPerformanceRates: any[];
+      reservedBoardsCount: number;
+    }>('shop-floor:shared-work-orders:v1');
+    if (dbSharedEntry?.data?.workOrders) {
+      let touched = false;
+      for (const wo of dbSharedEntry.data.workOrders) {
+        if (mutateOrder(wo)) touched = true;
+      }
+      if (touched) {
+        sortOrders(dbSharedEntry.data.workOrders);
+        await saveShopFloorSharedCache('shop-floor:shared-work-orders:v1', dbSharedEntry.data);
+      }
+    }
+  } catch (err) {
+    console.warn('[optimisticallyUpdateSharedWorkOrderState] MySQL shared cache update failed:', err);
+  }
+
+  // 4. Mutate persistent operator dashboard snapshot in MySQL
+  if (operatorEmail) {
+    try {
+      const normEmail = operatorEmail.trim().toLowerCase();
+      const userSnap = await getShopFloorDashboardSnapshot<OperatorDashboardData>(normEmail);
+      if (userSnap?.data?.workOrders) {
+        let touched = false;
+        for (const wo of userSnap.data.workOrders) {
+          if (mutateOrder(wo)) touched = true;
+        }
+        if (touched) {
+          sortOrders(userSnap.data.workOrders);
+          await saveShopFloorDashboardSnapshot(normEmail, userSnap.data);
+        }
+      }
+    } catch (err) {
+      console.warn('[optimisticallyUpdateSharedWorkOrderState] MySQL user snapshot update failed:', err);
+    }
+  }
+}
+
 type OptimisticBoardIntake = { id: string; partnerId: number; productId: number; productName: string; customerName: string; quantity: number; expiresAt: number };
 const optimisticBoardIntakes: OptimisticBoardIntake[] = [];
 function activeOptimisticBoardIntakes() {
@@ -1536,6 +1666,10 @@ router.get('/shop-floor', async (req: Request, res: Response) => {
     const isExplicitRefresh = req.query.refresh === 'true';
     if (isExplicitRefresh) {
       dailyManufacturingAnalytics.clear();
+      const sharedMoEntry = shopFloorCache.getEntry('shop-floor:shared-work-orders:v1');
+      if (sharedMoEntry) {
+        sharedMoEntry.freshUntil = 0;
+      }
     }
 
   try {
@@ -1551,7 +1685,8 @@ router.get('/shop-floor', async (req: Request, res: Response) => {
         const snapshot = await getShopFloorDashboardSnapshot<OperatorDashboardData>(normalizedEmail);
         if (snapshot && snapshot.data && ((snapshot.data.workOrders && snapshot.data.workOrders.length > 0) || (snapshot.data.stockAlerts && snapshot.data.stockAlerts.length > 0))) {
           data = snapshot.data;
-          shopFloorCache.set(cacheKey, data, 60 * 60 * 1000, 3 * 60 * 1000);
+          // Set with 10s fresh TTL so SWR background revalidation triggers quickly to sync with live Odoo state
+          shopFloorCache.set(cacheKey, data, 60 * 60 * 1000, 10 * 1000);
         }
       } catch (dbErr) {
         console.warn('[shopFloor] Failed to read snapshot from MySQL for', normalizedEmail, dbErr);
@@ -1565,7 +1700,7 @@ router.get('/shop-floor', async (req: Request, res: Response) => {
         const instantData = await buildInstantMysqlOperatorDashboard(viewedEmail);
         if (instantData.workOrders.length > 0 || instantData.stockAlerts.length > 0) {
           data = instantData;
-          shopFloorCache.set(cacheKey, data, 60 * 60 * 1000, 3 * 60 * 1000);
+          shopFloorCache.set(cacheKey, data, 60 * 60 * 1000, 10 * 1000);
         }
       } catch (mysqlErr) {
         console.warn('[shopFloor] Failed to build instant MySQL dashboard for', normalizedEmail, mysqlErr);
@@ -2836,7 +2971,8 @@ async function handleAdvanceMo(req: Request, res: Response) {
     }
 
     // Stock check passed - Respond instantly for immediate operator feedback
-    manuallyPausedMoIds.delete(moId);
+    const targetState = action === 'finish' ? 'done' : 'progress';
+    await optimisticallyUpdateSharedWorkOrderState(moId, targetState, employee.name, viewedEmail);
     shopFloorCache.clearPrefix('shop-floor-dashboard:');
     const message = action === 'finish'
       ? 'Current operation finished.'
@@ -2846,7 +2982,7 @@ async function handleAdvanceMo(req: Request, res: Response) {
       res.setHeader('Cache-Control', 'no-store');
       res.json({
         ok: true,
-        state: action === 'finish' ? 'done' : 'progress',
+        state: targetState,
         message,
         employeeName: employee.name,
       });
@@ -2858,6 +2994,11 @@ async function handleAdvanceMo(req: Request, res: Response) {
     void (async () => {
       try {
         const advanceResult = await client.advanceManufacturingOrder(moId, action, employee.id, stockCheck);
+        await optimisticallyUpdateSharedWorkOrderState(moId, targetState, employee.name, viewedEmail);
+        const sharedMoEntry = shopFloorCache.getEntry('shop-floor:shared-work-orders:v1');
+        if (sharedMoEntry) {
+          sharedMoEntry.freshUntil = 0;
+        }
         shopFloorCache.clearPrefix('shop-floor-dashboard:');
         const operatorTrackingWarning = action === 'start'
           && advanceResult
@@ -2952,7 +3093,7 @@ async function handlePauseMo(req: Request, res: Response) {
     const employee = await resolveShopFloorEmployeeRecord(viewedEmail, client);
     if (!employee) throw new Error('Your account is not linked to an Odoo employee.');
 
-    manuallyPausedMoIds.add(moId);
+    await optimisticallyUpdateSharedWorkOrderState(moId, 'paused', employee.name, viewedEmail);
     shopFloorCache.clearPrefix('shop-floor-dashboard:');
 
     if (wantsJson) {
@@ -2969,6 +3110,11 @@ async function handlePauseMo(req: Request, res: Response) {
     void (async () => {
       try {
         await client.pauseManufacturingOrder(moId, { createBackorder, qtyProduced }, employee.id);
+        await optimisticallyUpdateSharedWorkOrderState(moId, 'paused', employee.name, viewedEmail);
+        const sharedMoEntry = shopFloorCache.getEntry('shop-floor:shared-work-orders:v1');
+        if (sharedMoEntry) {
+          sharedMoEntry.freshUntil = 0;
+        }
         shopFloorCache.clearPrefix('shop-floor-dashboard:');
         await logEvent('info', 'Manufacturing order paused', { moId, actor: employee.name, createBackorder });
       } catch (bgErr) {

@@ -910,6 +910,10 @@ async function handleOdooSyncWebhook(req, res) {
         try {
             if (resolvedType === 'mo') {
                 shopFloor_1.shopFloorCache.clearPrefix('shop-floor-dashboard:');
+                const sharedMoEntry = shopFloor_1.shopFloorCache.getEntry('shop-floor:shared-work-orders:v1');
+                if (sharedMoEntry) {
+                    sharedMoEntry.freshUntil = 0;
+                }
                 await (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(true);
                 const moId = parsePositiveInteger(payload.id) ||
                     parsePositiveInteger(payload.mo_id) ||

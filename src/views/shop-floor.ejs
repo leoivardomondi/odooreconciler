@@ -739,7 +739,8 @@
                 </div>
               </div>
 
-              <div class="d-flex flex-wrap align-items-center gap-2">
+              <div class="d-flex flex-wrap align-items-center gap-2" data-mo-action-container="<%= wo.id %>">
+                <div class="d-inline-flex align-items-center gap-2" data-mo-action-buttons>
                 <% if (wo.state === 'paused') { %>
                   <button
                     type="button"
@@ -807,6 +808,7 @@
                     Pause
                   </button>
                 <% } %>
+                </div>
                 <button
                   type="button"
                   class="btn btn-sm rounded-pill px-3"
@@ -1840,8 +1842,9 @@
 
     var previousState = stateBadge ? (stateBadge.textContent || '').trim() : 'confirmed';
     var previousBadgeStyle = stateBadge ? stateBadge.getAttribute('style') : '';
-    var actionContainer = row.querySelector('.d-flex.flex-wrap.align-items-center.gap-2');
-    var previousButtonsHtml = actionContainer ? actionContainer.innerHTML : '';
+    var actionButtons = row.querySelector('[data-mo-action-buttons]');
+    var actionContainer = row.querySelector('[data-mo-action-container]') || row.querySelector('.d-flex.flex-wrap.align-items-center.gap-2');
+    var previousButtonsHtml = actionButtons ? actionButtons.innerHTML : (actionContainer ? actionContainer.innerHTML : '');
     var previousProgressWidth = progressBar ? progressBar.style.width : '';
     var previousProgressBarClass = progressBar ? progressBar.className : '';
     var previousProgressText = progressText ? progressText.textContent : '';
@@ -1863,14 +1866,15 @@
       }
     }
 
-    if (actionContainer) {
+    var targetTargetEl = actionButtons || actionContainer;
+    if (targetTargetEl) {
       var titleBtn = row.querySelector('.btn-link[data-mo-action]');
       var moName = titleBtn ? (titleBtn.getAttribute('data-mo-name') || '') : '';
       var moProduct = titleBtn ? (titleBtn.getAttribute('data-mo-product') || '') : '';
       var stockStatus = titleBtn ? (titleBtn.getAttribute('data-stock-status') || 'ready') : 'ready';
 
       if (targetState === 'progress') {
-        actionContainer.innerHTML =
+        targetTargetEl.innerHTML =
           '<button type="button" class="btn btn-sm rounded-pill px-3 fw-bold btn-primary" ' +
           'data-mo-action data-bs-toggle="modal" data-bs-target="#manufacturingOrderActionModal" ' +
           'data-mo-id="' + moId + '" data-mo-name="' + moName + '" data-mo-product="' + moProduct + '" ' +
@@ -1881,13 +1885,9 @@
           'data-bs-toggle="modal" data-bs-target="#pauseMoModal" ' +
           'data-pause-id="' + moId + '" data-pause-name="' + moName + '" data-pause-product="' + moProduct + '" ' +
           'onclick="openPauseMoModal(this)">' +
-          '<i class="bi bi-pause-circle-fill me-1" aria-hidden="true"></i>Pause</button>' +
-          '<button type="button" class="btn btn-sm rounded-pill px-3" ' +
-          'style="background:#eef2ff;color:#4338ca;border:1px solid #e0e7ff;font-size:0.75rem;font-weight:600" ' +
-          'data-bs-toggle="collapse" data-bs-target="#planDate' + moId + '">' +
-          '<i class="bi bi-calendar-event me-1" aria-hidden="true"></i>Plan</button>';
+          '<i class="bi bi-pause-circle-fill me-1" aria-hidden="true"></i>Pause</button>';
       } else if (targetState === 'paused') {
-        actionContainer.innerHTML =
+        targetTargetEl.innerHTML =
           '<button type="button" class="btn btn-sm rounded-pill px-3 fw-bold btn-success" ' +
           'data-mo-action data-bs-toggle="modal" data-bs-target="#manufacturingOrderActionModal" ' +
           'data-mo-id="' + moId + '" data-mo-name="' + moName + '" data-mo-product="' + moProduct + '" ' +
@@ -1897,20 +1897,12 @@
           'data-mo-action data-bs-toggle="modal" data-bs-target="#manufacturingOrderActionModal" ' +
           'data-mo-id="' + moId + '" data-mo-name="' + moName + '" data-mo-product="' + moProduct + '" ' +
           'data-mo-state="progress" data-stock-status="' + stockStatus + '">' +
-          '<i class="bi bi-stop-fill me-1" aria-hidden="true"></i>Finish</button>' +
-          '<button type="button" class="btn btn-sm rounded-pill px-3" ' +
-          'style="background:#eef2ff;color:#4338ca;border:1px solid #e0e7ff;font-size:0.75rem;font-weight:600" ' +
-          'data-bs-toggle="collapse" data-bs-target="#planDate' + moId + '">' +
-          '<i class="bi bi-calendar-event me-1" aria-hidden="true"></i>Plan</button>';
+          '<i class="bi bi-stop-fill me-1" aria-hidden="true"></i>Finish</button>';
       } else if (targetState === 'done') {
-        actionContainer.innerHTML =
+        targetTargetEl.innerHTML =
           '<button type="button" class="btn btn-sm rounded-pill px-3 fw-bold btn-outline-secondary" disabled ' +
           'data-mo-action data-mo-id="' + moId + '" data-mo-state="done">' +
-          '<i class="bi bi-check-circle-fill me-1" aria-hidden="true"></i>Completed</button>' +
-          '<button type="button" class="btn btn-sm rounded-pill px-3" ' +
-          'style="background:#eef2ff;color:#4338ca;border:1px solid #e0e7ff;font-size:0.75rem;font-weight:600" ' +
-          'data-bs-toggle="collapse" data-bs-target="#planDate' + moId + '">' +
-          '<i class="bi bi-calendar-event me-1" aria-hidden="true"></i>Plan</button>';
+          '<i class="bi bi-check-circle-fill me-1" aria-hidden="true"></i>Completed</button>';
 
         if (progressBar) {
           progressBar.style.width = '100%';
@@ -1944,8 +1936,8 @@
       actionTriggers.forEach(function(trig) {
         trig.setAttribute('data-mo-state', previousState);
       });
-      if (actionContainer && previousButtonsHtml) {
-        actionContainer.innerHTML = previousButtonsHtml;
+      if (targetTargetEl && previousButtonsHtml) {
+        targetTargetEl.innerHTML = previousButtonsHtml;
       }
       if (progressBar) {
         progressBar.style.width = previousProgressWidth;
