@@ -469,7 +469,7 @@ function defaultModelForProvider(provider) {
         case 'nvidia':
             return 'google/gemma-4-31b-it';
         case 'gemini':
-            return 'gemini-2.0-flash';
+            return 'gemini-3.8-flash';
         case 'anthropic':
             return 'claude-3-7-sonnet-latest';
         case 'openrouter':
@@ -648,7 +648,10 @@ async function callOpenAiCompatibleInvoiceAi(input) {
     return input.provider === 'nvidia' ? stripNvidiaControlTokens(outputText) : outputText;
 }
 async function callGeminiInvoiceAi(input) {
-    const model = /^gemini-3\./i.test(input.model.trim()) ? 'gemini-2.0-flash' : input.model.trim();
+    let model = input.model.trim();
+    if (!model || model === 'gemini-2.0-flash' || model === 'models/gemini-2.0-flash' || model === 'gemini-2.0-flash-lite') {
+        model = 'gemini-3.8-flash';
+    }
     const baseUrl = input.baseUrl.replace(/\/+$/, '') || GEMINI_BASE_URL;
     const endpoint = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent`;
     let attempt = 0;

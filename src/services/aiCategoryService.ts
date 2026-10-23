@@ -1154,7 +1154,7 @@ function isTextOnlyNvidiaModel(model: string): boolean {
 function defaultModelForProvider(provider: AiExtractionConfig['provider']): string {
   switch (provider) {
     case 'nvidia': return 'openai/gpt-oss-20b';
-    case 'gemini': return 'gemini-2.0-flash';
+    case 'gemini': return 'gemini-3.8-flash';
     case 'anthropic': return 'claude-3-7-sonnet-latest';
     case 'openrouter': return 'deepseek/deepseek-r1';
     case 'openai':
@@ -1236,7 +1236,10 @@ async function callGeminiCategoryApi(input: {
   baseUrl: string;
   prompt: string;
 }): Promise<string> {
-  const model = /^gemini-3\./i.test(input.model.trim()) ? 'gemini-2.0-flash' : input.model.trim();
+  let model = input.model.trim();
+  if (!model || model === 'gemini-2.0-flash' || model === 'models/gemini-2.0-flash' || model === 'gemini-2.0-flash-lite') {
+    model = 'gemini-3.8-flash';
+  }
   const baseUrl = input.baseUrl.replace(/\/+$/, '') || GEMINI_BASE_URL;
   const endpoint = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent`;
 

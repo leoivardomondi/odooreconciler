@@ -41,7 +41,7 @@ import {
 } from '../services/geminiOAuthService';
 
 const router = Router();
-const DEFAULT_GEMINI_MODEL = 'gemini-2.0-flash';
+const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
 
 const NVIDIA_AI_MODELS = [
   'google/gemma-4-31b-it',
@@ -53,12 +53,11 @@ const NVIDIA_AI_MODELS = [
   'meta/llama-3.2-11b-vision-instruct',
 ];
 const GEMINI_AI_MODELS = [
-  'gemini-2.0-flash',
-  'gemini-2.0-flash-lite',
+  'gemini-3.8-flash',
+  'gemini-3.8-flash-lite',
   'gemini-2.5-flash',
   'gemini-2.5-flash-lite',
   'gemini-2.5-pro',
-  'gemini-2.0-pro-exp-02-05',
   'gemini-1.5-flash',
   'gemini-1.5-pro',
   'gemini-flash-latest',
@@ -90,9 +89,15 @@ function nvidiaModelFieldName(model: string) {
 }
 
 function normalizeAiModelForProvider(provider: string, model: string) {
-  const trimmed = model.trim();
-  if (provider === 'gemini' && (!trimmed || /^gemini-3\./i.test(trimmed) || NVIDIA_AI_MODELS.includes(trimmed) || OPENAI_AI_MODELS.includes(trimmed))) {
-    return DEFAULT_GEMINI_MODEL;
+  let trimmed = model.trim();
+  if (provider === 'gemini') {
+    if (trimmed === 'gemini-2.0-flash' || trimmed === 'gemini-2.0-flash-lite' || trimmed === 'models/gemini-2.0-flash') {
+      trimmed = DEFAULT_GEMINI_MODEL;
+    }
+    if (!trimmed || NVIDIA_AI_MODELS.includes(trimmed) || OPENAI_AI_MODELS.includes(trimmed)) {
+      return DEFAULT_GEMINI_MODEL;
+    }
+    return trimmed;
   }
   if (provider === 'nvidia' && (!trimmed || GEMINI_AI_MODELS.includes(trimmed) || OPENAI_AI_MODELS.includes(trimmed))) {
     return 'google/gemma-4-31b-it';
@@ -597,9 +602,9 @@ async function buildFormValues(
   const resolvedMappings = resolveFieldMappings(resolvedExisting.fieldMappings, availableFields);
   const ocrProvider = source.ocrProvider ?? resolvedExisting.ai.ocr.provider;
   const submittedOcrModel = source.ocrModel ?? resolvedExisting.ai.ocr.model;
-  const ocrModel = ocrProvider === 'gemini_vision' && (/^nvidia\//i.test(submittedOcrModel) || /^gemini-3\./i.test(submittedOcrModel) || submittedOcrModel === 'gemini-flash-latest')
+  const ocrModel = ocrProvider === 'gemini_vision' && (/^nvidia\//i.test(submittedOcrModel) || submittedOcrModel === 'gemini-2.0-flash' || submittedOcrModel === 'gemini-2.0-flash-lite' || submittedOcrModel === 'gemini-flash-latest')
     ? DEFAULT_GEMINI_MODEL
-    : submittedOcrModel;
+    : (submittedOcrModel === 'gemini-2.0-flash' ? DEFAULT_GEMINI_MODEL : submittedOcrModel);
 
   return {
     baseUrl: source.baseUrl ?? resolvedExisting.odoo.baseUrl,
@@ -1446,9 +1451,9 @@ router.post('/settings', validators, async (req: Request, res: Response) => {
     const aiModel = normalizeAiModelForProvider(aiProvider, submittedAiModel || currentSettings.ai.model);
     const ocrProvider = req.body.ocrProvider?.trim() || currentSettings.ai.ocr?.provider || 'disabled';
     const submittedOcrModel = req.body.ocrModel?.trim() || '';
-    const ocrModel = ocrProvider === 'gemini_vision' && (/^nvidia\//i.test(submittedOcrModel) || /^gemini-3\./i.test(submittedOcrModel) || submittedOcrModel === 'gemini-flash-latest')
+    const ocrModel = ocrProvider === 'gemini_vision' && (/^nvidia\//i.test(submittedOcrModel) || submittedOcrModel === 'gemini-2.0-flash' || submittedOcrModel === 'gemini-2.0-flash-lite' || submittedOcrModel === 'gemini-flash-latest')
       ? DEFAULT_GEMINI_MODEL
-      : submittedOcrModel || currentSettings.ai.ocr?.model || (ocrProvider === 'gemini_vision' ? DEFAULT_GEMINI_MODEL : 'nvidia/nemotron-ocr-v2');
+      : (submittedOcrModel === 'gemini-2.0-flash' ? DEFAULT_GEMINI_MODEL : submittedOcrModel) || currentSettings.ai.ocr?.model || (ocrProvider === 'gemini_vision' ? DEFAULT_GEMINI_MODEL : 'nvidia/nemotron-ocr-v2');
     const submittedOcrEndpoint = req.body.ocrEndpoint?.trim() || '';
     const ocrEndpoint = ocrProvider === 'gemini_vision' && /ai\.api\.nvidia\.com|\/cv\/nvidia\//i.test(submittedOcrEndpoint)
       ? 'https://generativelanguage.googleapis.com/v1beta'
@@ -1663,7 +1668,8 @@ router.post(
       let body: Record<string, unknown>;
 
       if (provider === 'gemini') {
-        endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
+        const testModel = (model === 'gemini-2.0-flash' || model === 'gemini-2.0-flash-lite' || model === 'models/gemini-2.0-flash') ? DEFAULT_GEMINI_MODEL : model;
+        endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${testModel}:generateContent`;
         if (geminiOAuth) {
           headers.Authorization = `Bearer ${geminiOAuth.accessToken}`;
           headers['x-goog-user-project'] = geminiOAuth.projectId;
