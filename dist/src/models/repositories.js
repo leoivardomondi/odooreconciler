@@ -145,6 +145,7 @@ exports.createBoardIntakeQueueEntry = createBoardIntakeQueueEntry;
 exports.updateBoardIntakeQueueEntry = updateBoardIntakeQueueEntry;
 exports.getRecentBoardIntakeQueueEntries = getRecentBoardIntakeQueueEntries;
 exports.getBoardIntakeQueueEntry = getBoardIntakeQueueEntry;
+exports.findActiveBoardIntakeLogsByPartnerOrProduct = findActiveBoardIntakeLogsByPartnerOrProduct;
 exports.claimBoardIntakeRevert = claimBoardIntakeRevert;
 exports.finishBoardIntakeRevert = finishBoardIntakeRevert;
 exports.releaseBoardIntakeRevert = releaseBoardIntakeRevert;
@@ -3757,6 +3758,16 @@ async function getRecentBoardIntakeQueueEntries(limit = 12, offset = 0) {
 }
 async function getBoardIntakeQueueEntry(id) {
     return (0, db_1.queryOne)('SELECT * FROM board_intake_queue WHERE id = ?', [id]);
+}
+async function findActiveBoardIntakeLogsByPartnerOrProduct(partnerId, productId) {
+    if (productId) {
+        return (0, db_1.queryAll)(`SELECT * FROM board_intake_queue
+      WHERE partner_id = ? AND product_id = ? AND status IN ('pending', 'processing', 'synced') AND reverted_at IS NULL
+      ORDER BY created_at DESC LIMIT 10`, [partnerId, productId]);
+    }
+    return (0, db_1.queryAll)(`SELECT * FROM board_intake_queue
+    WHERE partner_id = ? AND status IN ('pending', 'processing', 'synced') AND reverted_at IS NULL
+    ORDER BY created_at DESC LIMIT 10`, [partnerId]);
 }
 async function claimBoardIntakeRevert(id) {
     const result = await (0, db_1.execute)(`UPDATE board_intake_queue

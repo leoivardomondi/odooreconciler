@@ -214,10 +214,20 @@
 
 - **Board Intake Chatter Cross-Posting to Related Sales Orders & Manufacturing Orders**:
   - Whenever boards are logged in the Operator Mobile App (`/shop-floor/boards`, `board_intake_queue`), an email notification is always sent to the configured recipient (`boardLogNotificationEmail`, e.g. Sharon).
-  - In [src/services/boardIntakeSyncService.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/boardIntakeSyncService.ts) and [src/services/odooClient.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/odooClient.ts) (`findMOsForBoardIntake`), any matching active MOs for the client and board product are resolved alongside their linked Sales Orders (`soId` and `soName` via `extractSoNameFromOrigin`).
+  - In [src/services/boardIntakeSyncService.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/boardIntakeSyncService.ts) and [src/services/odooClient.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/odooClient.ts) (`findMOsForBoardIntake`), matching active MOs for the client and board product are resolved alongside their linked Sales Orders (`soId`, `soName`, `soUserId`, `soUserName`).
+  - **Tagging Rule (Responsible Salesperson or Candy & Sharon Always)**:
+    - The chatter message strictly **starts with tagging the responsible salesperson** (`<a href="#" data-oe-model="res.partner" data-oe-id="${partnerId}">@${name}</a>`).
+    - If the related Sales Order does not have an assigned salesperson (or is assigned to admin / unassigned), it **always tags both Candy and Sharon** (`@Candy @Sharon`).
+    - In both cases, the resolved partner IDs are passed to `client.postModelChatterMessage(model, id, message, partnerIds)` so Odoo dispatches notifications directly to them.
+  - **Tree Log Emoji Removal Rule**:
+    - The tree log emoji (`🪵 `) is strictly removed from the chatter title line; it starts cleanly as `<strong>Board log completed (Operator Mobile App)</strong>`.
+  - **PO Board Exclusion in findMOsForBoardIntake**:
+    - In `findMOsForBoardIntake`, MOs whose related Sales Order (or MO) has an active Purchase Order for that board product are strictly **excluded** from intake matching, as vendor-purchased boards are expected through Receipts.
+    - If any board PO notice is required on orders, it prompts the team to communicate with operators on whether it is a purchase or client-supplied.
   - **Cross-Posting Rule**:
-    - If a matching Manufacturing Order exists AND has a linked Sales Order, a formatted HTML chatter message is posted to **BOTH** the Manufacturing Order (`mrp.production`) and the **related Sales Order** (`sale.order`).
+    - If a matching Manufacturing Order exists AND has a linked Sales Order, the formatted HTML chatter message is posted to **BOTH** the Manufacturing Order (`mrp.production`) and the **related Sales Order** (`sale.order`).
     - The message contains **100% of the details that go to email**:
+      - Stakeholder Tags (`@Salesperson` or `@Candy @Sharon`)
       - Client Name
       - Board Product Name
       - Quantity
@@ -227,6 +237,7 @@
       - Arrival Time (`—` if not provided)
       - Arrival Date (or today's date)
       - Logged by (operator display name or email)
+      - Purchase Order communication notice (when PO exists for this board)
   - **No Matching MO / SO Rule**:
     - If there is no matching MO or no linked Sales Order for the logged boards, no chatter call is made to non-existent orders; the board intake record **only goes to email** without throwing any errors.
 

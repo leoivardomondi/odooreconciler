@@ -174,7 +174,8 @@ const repositories_1 = require("../models/repositories");
     strict_1.default.equal(restored.status, 'pending');
     strict_1.default.equal(restored.qty_missing, 5);
 });
-(0, node_test_1.default)('Boards logged against an MO are cross-posted to the related Sales Order chatter with all email details', async () => {
+const boardIntakeSyncService_1 = require("./boardIntakeSyncService");
+(0, node_test_1.default)('Boards logged against an MO are cross-posted to the related Sales Order chatter with tags, no emoji, and all details', async () => {
     const entry = {
         customer_name: 'John Doe',
         product_name: 'WHITE MDF 18mm',
@@ -195,55 +196,88 @@ const repositories_1 = require("../models/repositories");
                 origin: 'S02182',
                 soId: 105,
                 soName: 'S02182',
+                soUserId: 22,
+                soUserName: 'Sharon',
+                hasBoardPo: true,
+                boardPoNames: ['P00123'],
                 qtyNeeded: 10,
                 qtyReserved: 0,
                 state: 'confirmed',
             },
         ],
-        postModelChatterMessage: async (model, id, message) => {
-            chatterCalls.push({ model, id, message });
+        readRecords: async (_model, _ids, _fields) => [
+            { id: 22, name: 'Sharon', login: 'sharon@urbanvibe.co.ke', partner_id: [45, 'Sharon Partner'] },
+        ],
+        searchReadRecords: async () => [],
+        postModelChatterMessage: async (model, id, message, partnerIds) => {
+            chatterCalls.push({ model, id, message, partnerIds });
             return 1;
         },
     };
     const matchingMOs = await fakeClient.findMOsForBoardIntake();
-    const buildChatterHtml = (moName) => {
-        const lines = [
-            `🪵 <strong>Board log completed (Operator Mobile App)</strong>`,
-            `• <strong>Client:</strong> ${entry.customer_name}`,
-            `• <strong>Board:</strong> ${entry.product_name}`,
-            `• <strong>Quantity:</strong> ${entry.quantity} sheets`,
-        ];
-        if (moName)
-            lines.push(`• <strong>Manufacturing Order:</strong> ${moName}`);
-        if (entry.gate)
-            lines.push(`• <strong>Gate:</strong> ${entry.gate}`);
-        if (entry.vehicle_registration)
-            lines.push(`• <strong>Vehicle Reg:</strong> ${entry.vehicle_registration}`);
-        if (entry.arrival_time)
-            lines.push(`• <strong>Arrival Time:</strong> ${entry.arrival_time}`);
-        lines.push(`• <strong>Date:</strong> ${entry.arrival_date}`);
-        lines.push(`• <strong>Logged by:</strong> ${entry.actor_name}`);
-        return lines.join('<br/>\n');
-    };
-    await Promise.all(matchingMOs.map((mo) => fakeClient.postModelChatterMessage('mrp.production', mo.moId, buildChatterHtml(mo.moName))));
+    await Promise.all(matchingMOs.map(async (mo) => {
+        const { mentionHtml, partnerIds } = await (0, boardIntakeSyncService_1.resolveBoardIntakeStakeholders)(fakeClient, mo.soUserId);
+        const html = (0, boardIntakeSyncService_1.buildBoardIntakeChatterHtml)({
+            customerName: entry.customer_name,
+            productName: entry.product_name,
+            quantity: entry.quantity,
+            moName: mo.moName,
+            gate: entry.gate,
+            vehicleRegistration: entry.vehicle_registration,
+            arrivalTime: entry.arrival_time,
+            reportDate: entry.arrival_date,
+            actorName: entry.actor_name,
+            mentionHtml,
+            hasBoardPo: mo.hasBoardPo,
+            boardPoNames: mo.boardPoNames,
+        });
+        return fakeClient.postModelChatterMessage('mrp.production', mo.moId, html, partnerIds);
+    }));
     const postedSoIds = new Set();
     for (const mo of matchingMOs) {
         if (mo.soId && !postedSoIds.has(mo.soId)) {
             postedSoIds.add(mo.soId);
-            await fakeClient.postModelChatterMessage('sale.order', mo.soId, buildChatterHtml(mo.moName));
+            const { mentionHtml, partnerIds } = await (0, boardIntakeSyncService_1.resolveBoardIntakeStakeholders)(fakeClient, mo.soUserId);
+            const html = (0, boardIntakeSyncService_1.buildBoardIntakeChatterHtml)({
+                customerName: entry.customer_name,
+                productName: entry.product_name,
+                quantity: entry.quantity,
+                moName: mo.moName,
+                gate: entry.gate,
+                vehicleRegistration: entry.vehicle_registration,
+                arrivalTime: entry.arrival_time,
+                reportDate: entry.arrival_date,
+                actorName: entry.actor_name,
+                mentionHtml,
+                hasBoardPo: mo.hasBoardPo,
+                boardPoNames: mo.boardPoNames,
+            });
+            await fakeClient.postModelChatterMessage('sale.order', mo.soId, html, partnerIds);
         }
     }
     // Verify MO chatter was posted
     const moChatter = chatterCalls.find((c) => c.model === 'mrp.production' && c.id === 501);
     strict_1.default.ok(moChatter, 'Must post to mrp.production');
+    // Starts with tag of responsible salesperson
+    strict_1.default.ok(moChatter.message.startsWith('<a href="#" data-oe-model="res.partner" data-oe-id="45">@Sharon</a>'));
+    // Tree log emoji 🪵 is removed
+    strict_1.default.ok(!moChatter.message.includes('🪵'));
+    strict_1.default.ok(moChatter.message.includes('<strong>Board log completed (Operator Mobile App)</strong>'));
     strict_1.default.ok(moChatter.message.includes('WH/MO/00501'));
     strict_1.default.ok(moChatter.message.includes('WHITE MDF 18mm'));
     strict_1.default.ok(moChatter.message.includes('KCA 123X'));
     strict_1.default.ok(moChatter.message.includes('Front Gate'));
     strict_1.default.ok(moChatter.message.includes('14:30'));
-    // Verify SO chatter was posted with all email details
+    // Partner IDs notified
+    strict_1.default.deepEqual(moChatter.partnerIds, [45]);
+    // PO communication prompt is present
+    strict_1.default.ok(moChatter.message.includes('Purchase Order Notice (P00123)'));
+    strict_1.default.ok(moChatter.message.includes('communicate with the operators on whether this is a purchase or not'));
+    // Verify SO chatter was posted with all details
     const soChatter = chatterCalls.find((c) => c.model === 'sale.order' && c.id === 105);
     strict_1.default.ok(soChatter, 'Must post to related sale.order chatter');
+    strict_1.default.ok(soChatter.message.startsWith('<a href="#" data-oe-model="res.partner" data-oe-id="45">@Sharon</a>'));
+    strict_1.default.ok(!soChatter.message.includes('🪵'));
     strict_1.default.ok(soChatter.message.includes('Client:</strong> John Doe'));
     strict_1.default.ok(soChatter.message.includes('Board:</strong> WHITE MDF 18mm'));
     strict_1.default.ok(soChatter.message.includes('Quantity:</strong> 10'));
@@ -252,6 +286,42 @@ const repositories_1 = require("../models/repositories");
     strict_1.default.ok(soChatter.message.includes('Vehicle Reg:</strong> KCA 123X'));
     strict_1.default.ok(soChatter.message.includes('Arrival Time:</strong> 14:30'));
     strict_1.default.ok(soChatter.message.includes('Logged by:</strong> Operator Gate'));
+    strict_1.default.ok(soChatter.message.includes('communicate with the operators on whether this is a purchase or not'));
+    strict_1.default.deepEqual(soChatter.partnerIds, [45]);
+});
+(0, node_test_1.default)('Board intake chatter tags both Candy and Sharon when SO has no salesperson', async () => {
+    const fakeClient = {
+        readRecords: async () => [],
+        searchReadRecords: async (_model, options) => {
+            const term = JSON.stringify(options.domain);
+            if (term.includes('Candy')) {
+                return [{ id: 11, name: 'Candy', login: 'candy@urbanvibe.co.ke', partner_id: [88, 'Candy Partner'] }];
+            }
+            if (term.includes('Sharon')) {
+                return [{ id: 22, name: 'Sharon', login: 'sharon@urbanvibe.co.ke', partner_id: [45, 'Sharon Partner'] }];
+            }
+            return [];
+        },
+    };
+    const { mentionHtml, partnerIds } = await (0, boardIntakeSyncService_1.resolveBoardIntakeStakeholders)(fakeClient, null);
+    strict_1.default.ok(mentionHtml.includes('@Candy'));
+    strict_1.default.ok(mentionHtml.includes('@Sharon'));
+    strict_1.default.ok(mentionHtml.includes('data-oe-id="88"'));
+    strict_1.default.ok(mentionHtml.includes('data-oe-id="45"'));
+    strict_1.default.deepEqual(partnerIds, [88, 45]);
+    const html = (0, boardIntakeSyncService_1.buildBoardIntakeChatterHtml)({
+        customerName: 'GEORGE ODHIAMBO',
+        productName: 'Versasca Particle 18mm',
+        quantity: 5,
+        moName: 'WH/MO/05471',
+        mentionHtml,
+        hasBoardPo: false,
+    });
+    strict_1.default.ok(html.startsWith('<a href="#" data-oe-model="res.partner" data-oe-id="88">@Candy</a> <a href="#" data-oe-model="res.partner" data-oe-id="45">@Sharon</a>'));
+    strict_1.default.ok(!html.includes('🪵'));
+    strict_1.default.ok(html.includes('<strong>Board log completed (Operator Mobile App)</strong>'));
+    // No PO notice when hasBoardPo is false
+    strict_1.default.ok(!html.includes('Purchase Order Notice'));
 });
 (0, node_test_1.default)('Board intake strictly rejects decimals and requires whole boards only', () => {
     const isAllowedQuantity = (qty) => {
@@ -265,4 +335,79 @@ const repositories_1 = require("../models/repositories");
     strict_1.default.equal(isAllowedQuantity(2.25), false);
     strict_1.default.equal(isAllowedQuantity(0), false);
     strict_1.default.equal(isAllowedQuantity(-1), false);
+});
+(0, node_test_1.default)('checkAndWarnPurchaseOrdersForManualBoardIntake warns salesperson to communicate with operator when PO matches', async () => {
+    const chatterCalls = [];
+    const fakeClient = {
+        getTargetCompanyIdValue: async () => 1,
+        searchReadRecords: async (model, options) => {
+            if (model === 'sale.order') {
+                return [{ id: 105, name: 'S02182', partner_id: [201, 'GEORGE ODHIAMBO'], user_id: [22, 'Sharon'] }];
+            }
+            if (model === 'mrp.production') {
+                return [{ id: 501, name: 'WH/MO/05471', origin: 'S02182' }];
+            }
+            if (model === 'purchase.order') {
+                return [
+                    {
+                        id: 801,
+                        name: 'P00450',
+                        state: 'draft', // Yet to be approved
+                        origin: 'S02182',
+                        partner_id: [301, 'Timber Supplier Ltd'],
+                    },
+                ];
+            }
+            if (model === 'purchase.order.line') {
+                return [
+                    {
+                        id: 901,
+                        order_id: [801, 'P00450'],
+                        product_id: [123, 'Versasca Particle 18mm'],
+                        product_qty: 5,
+                    },
+                ];
+            }
+            if (model === 'res.users') {
+                return [{ id: 22, name: 'Sharon', login: 'sharon@urbanvibe.co.ke', partner_id: [45, 'Sharon Partner'] }];
+            }
+            return [];
+        },
+        readRecords: async (_model, ids) => {
+            if (ids.includes(22)) {
+                return [{ id: 22, name: 'Sharon', login: 'sharon@urbanvibe.co.ke', partner_id: [45, 'Sharon Partner'] }];
+            }
+            return [];
+        },
+        postModelChatterMessage: async (model, id, message, partnerIds) => {
+            chatterCalls.push({ model, id, message, partnerIds });
+            return 1;
+        },
+    };
+    const warnings = await (0, boardIntakeSyncService_1.checkAndWarnPurchaseOrdersForManualBoardIntake)(fakeClient, {
+        partner_id: 201,
+        product_id: 123,
+        product_name: 'Versasca Particle 18mm',
+        quantity: 5,
+        customer_name: 'GEORGE ODHIAMBO',
+        actor_name: 'Leoivard Ongule',
+    });
+    strict_1.default.equal(warnings.length, 1);
+    strict_1.default.equal(warnings[0].poName, 'P00450');
+    strict_1.default.equal(warnings[0].poStateLabel, 'Yet to be approved');
+    strict_1.default.equal(warnings[0].actorName, 'Leoivard Ongule');
+    // Verify chatter was posted to SO and PO
+    const soPost = chatterCalls.find((c) => c.model === 'sale.order' && c.id === 105);
+    const poPost = chatterCalls.find((c) => c.model === 'purchase.order' && c.id === 801);
+    strict_1.default.ok(soPost, 'Must post warning to sale.order');
+    strict_1.default.ok(poPost, 'Must post warning to purchase.order');
+    // Must tag the salesperson
+    strict_1.default.ok(soPost.message.includes('@Sharon'));
+    strict_1.default.deepEqual(soPost.partnerIds, [45]);
+    // Must state the responsible operator by name
+    strict_1.default.ok(soPost.message.includes('Leoivard Ongule'));
+    // Must instruct salesperson to communicate with the operator on whether boards were purchased
+    strict_1.default.ok(soPost.message.includes('communicate with operator <strong>Leoivard Ongule</strong> to confirm whether these boards were purchased'));
+    strict_1.default.ok(soPost.message.includes('Yet to be approved'));
+    strict_1.default.ok(soPost.message.includes('P00450'));
 });

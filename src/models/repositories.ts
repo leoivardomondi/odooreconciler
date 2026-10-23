@@ -5132,6 +5132,17 @@ export async function getBoardIntakeQueueEntry(id: string) {
   return queryOne<BoardIntakeQueueEntry>('SELECT * FROM board_intake_queue WHERE id = ?', [id]);
 }
 
+export async function findActiveBoardIntakeLogsByPartnerOrProduct(partnerId: number, productId?: number | null) {
+  if (productId) {
+    return queryAll<BoardIntakeQueueEntry>(`SELECT * FROM board_intake_queue
+      WHERE partner_id = ? AND product_id = ? AND status IN ('pending', 'processing', 'synced') AND reverted_at IS NULL
+      ORDER BY created_at DESC LIMIT 10`, [partnerId, productId]);
+  }
+  return queryAll<BoardIntakeQueueEntry>(`SELECT * FROM board_intake_queue
+    WHERE partner_id = ? AND status IN ('pending', 'processing', 'synced') AND reverted_at IS NULL
+    ORDER BY created_at DESC LIMIT 10`, [partnerId]);
+}
+
 export async function claimBoardIntakeRevert(id: string) {
   const result = await execute(`UPDATE board_intake_queue
     SET status = 'reverting', updated_at = CURRENT_TIMESTAMP

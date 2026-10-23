@@ -5437,6 +5437,10 @@ export class OdooClient {
     origin: string | null;
     soId: number | null;
     soName: string | null;
+    soUserId?: number | null;
+    soUserName?: string | null;
+    hasBoardPo?: boolean;
+    boardPoNames?: string[];
     qtyNeeded: number;
     qtyReserved: number;
     state: string;
@@ -5510,19 +5514,21 @@ export class OdooClient {
       let clientFilteredMOs = candidateMOs;
       const soPartnerMap = new Map<string, number>();
       const soIdMap = new Map<string, number>();
+      const soUserMap = new Map<string, { id: number; name: string }>();
 
       if (originNames.length > 0) {
-        // Get partner_id for each SO within the target company
+        // Get partner_id and user_id (salesperson) for each SO within the target company
         const soPartners = await this.searchReadRecords<{
           id: number;
           name: string;
           partner_id: [number, string] | false;
+          user_id: [number, string] | false;
         }>('sale.order', {
           domain: [
             ['company_id', '=', targetCompanyId],
             ['name', 'in', originNames],
           ],
-          fields: ['id', 'name', 'partner_id'],
+          fields: ['id', 'name', 'partner_id', 'user_id'],
           limit: 500,
         });
 
@@ -5530,6 +5536,9 @@ export class OdooClient {
           soIdMap.set(so.name, so.id);
           if (so.partner_id && Array.isArray(so.partner_id)) {
             soPartnerMap.set(so.name, so.partner_id[0]);
+          }
+          if (so.user_id && Array.isArray(so.user_id)) {
+            soUserMap.set(so.name, { id: so.user_id[0], name: String(so.user_id[1]) });
           }
         }
 
@@ -5547,27 +5556,38 @@ export class OdooClient {
 
       if (!clientFilteredMOs.length) return [];
 
-      // 4. Exclude MOs whose origin SO has a PO with a board product line
-      const filteredOrigins = [...new Set(
-        clientFilteredMOs.map(mo => mo.origin).filter(Boolean) as string[]
+      // 4. Check if the related SO or MO has a Purchase Order with this board product line
+      const candidateOrigins = [...new Set(
+        clientFilteredMOs.flatMap(mo => {
+          const list: string[] = [];
+          if (mo.origin) {
+            list.push(mo.origin);
+            const extracted = extractSoNameFromOrigin(mo.origin);
+            if (extracted) list.push(extracted);
+          }
+          if (mo.name) list.push(mo.name);
+          return list;
+        }).filter(Boolean) as string[]
       )];
 
-      const purchaseOrders = filteredOrigins.length > 0
+      const purchaseOrders = candidateOrigins.length > 0
         ? await this.searchReadRecords<{
           id: number;
+          name: string;
           origin: string | false;
         }>('purchase.order', {
           domain: [
             ['company_id', '=', targetCompanyId],
-            ['origin', 'in', filteredOrigins],
+            ['origin', 'in', candidateOrigins],
+            ['state', 'not in', ['cancel']],
           ],
-          fields: ['id', 'origin'],
+          fields: ['id', 'name', 'origin'],
           limit: 500,
         })
         : [];
 
-      // Check PO lines for board products
-      const soOriginsWithBoardPO = new Set<string>();
+      // Check PO lines for matching board products (origin -> Set of PO names)
+      const soOriginsWithBoardPO = new Map<string, Set<string>>();
       if (purchaseOrders.length > 0) {
         const poIds = purchaseOrders.map(po => po.id);
         const poLines = await this.searchReadRecords<{
@@ -5579,10 +5599,10 @@ export class OdooClient {
           limit: 2000,
         });
 
-        // Map PO ID to origin
-        const poOriginMap = new Map<number, string>();
+        // Map PO ID to origin and PO name
+        const poInfoMap = new Map<number, { origin: string; name: string }>();
         for (const po of purchaseOrders) {
-          if (po.origin) poOriginMap.set(po.id, po.origin);
+          if (po.origin) poInfoMap.set(po.id, { origin: po.origin, name: po.name });
         }
 
         for (const line of poLines) {
@@ -5590,8 +5610,17 @@ export class OdooClient {
           // Check if the PO line is for the SAME board product
           const productId = Array.isArray(line.product_id) ? line.product_id[0] : 0;
           if (productId === input.productId) {
-            const origin = poOriginMap.get(poId);
-            if (origin) soOriginsWithBoardPO.add(origin);
+            const info = poInfoMap.get(poId);
+            if (info && info.origin) {
+              const orig = info.origin;
+              const extracted = extractSoNameFromOrigin(orig);
+              if (!soOriginsWithBoardPO.has(orig)) soOriginsWithBoardPO.set(orig, new Set());
+              soOriginsWithBoardPO.get(orig)!.add(info.name);
+              if (extracted) {
+                if (!soOriginsWithBoardPO.has(extracted)) soOriginsWithBoardPO.set(extracted, new Set());
+                soOriginsWithBoardPO.get(extracted)!.add(info.name);
+              }
+            }
           }
         }
       }
@@ -5599,10 +5628,14 @@ export class OdooClient {
       // Exclude MOs whose SO has a PO covering this board
       const finalMOs = clientFilteredMOs.filter(mo => {
         if (!mo.origin) return false;
-        return !soOriginsWithBoardPO.has(mo.origin);
+        const soName = extractSoNameFromOrigin(mo.origin) || mo.origin;
+        const hasPo = (mo.origin && soOriginsWithBoardPO.has(mo.origin)) ||
+                      (soName && soOriginsWithBoardPO.has(soName)) ||
+                      (mo.name && soOriginsWithBoardPO.has(mo.name));
+        return !hasPo;
       });
 
-      // 5. Build result with quantity info from the matching moves
+      // 5. Build result with quantity info from the matching moves and PO flags
       return finalMOs.map(mo => {
         const move = matchingMoves.find(m => {
           const rmId = Array.isArray(m.raw_material_production_id)
@@ -5613,6 +5646,20 @@ export class OdooClient {
 
         const soName = mo.origin ? (extractSoNameFromOrigin(mo.origin) || mo.origin) : null;
         const soId = (mo.origin ? soIdMap.get(mo.origin) : undefined) ?? (soName ? soIdMap.get(soName) : null) ?? null;
+        const soUser = (mo.origin ? soUserMap.get(mo.origin) : undefined) ?? (soName ? soUserMap.get(soName) : null) ?? null;
+
+        const poNamesSet = new Set<string>();
+        if (mo.origin && soOriginsWithBoardPO.has(mo.origin)) {
+          for (const name of soOriginsWithBoardPO.get(mo.origin)!) poNamesSet.add(name);
+        }
+        if (soName && soOriginsWithBoardPO.has(soName)) {
+          for (const name of soOriginsWithBoardPO.get(soName)!) poNamesSet.add(name);
+        }
+        if (mo.name && soOriginsWithBoardPO.has(mo.name)) {
+          for (const name of soOriginsWithBoardPO.get(mo.name)!) poNamesSet.add(name);
+        }
+        const boardPoNames = Array.from(poNamesSet);
+        const hasBoardPo = boardPoNames.length > 0;
 
         return {
           moId: mo.id,
@@ -5620,6 +5667,10 @@ export class OdooClient {
           origin: mo.origin,
           soId,
           soName,
+          soUserId: soUser?.id ?? null,
+          soUserName: soUser?.name ?? null,
+          hasBoardPo,
+          boardPoNames,
           qtyNeeded: move ? Number(move.product_uom_qty || 0) : 0,
           qtyReserved: move ? Number(move.quantity || 0) : 0,
           state: mo.state,

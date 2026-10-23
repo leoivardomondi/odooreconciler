@@ -300,7 +300,7 @@ async function auditPurchaseOrderAgainstJobSummary(client, purchaseOrderId, prov
     // Find Sales Order by name
     const saleOrders = await client.searchReadRecords('sale.order', {
         domain: [['name', '=', soNameCandidate]],
-        fields: ['id', 'name', 'user_id'],
+        fields: ['id', 'name', 'user_id', 'partner_id'],
         limit: 1,
     });
     const so = saleOrders[0];
@@ -448,16 +448,38 @@ async function auditPurchaseOrderAgainstJobSummary(client, purchaseOrderId, prov
                 });
             }
         }
+        const soPartnerId = relationId(so.partner_id);
+        let manualBoardLogWarningHtml = '';
+        if (soPartnerId) {
+            try {
+                const activeLogs = await (0, repositories_1.findActiveBoardIntakeLogsByPartnerOrProduct)(soPartnerId);
+                if (activeLogs.length > 0) {
+                    const logItems = activeLogs.slice(0, 3).map((l) => `• <strong>${String(l.product_name || 'Board')}</strong>: ${Number(l.quantity)} sheets manually logged by operator <strong>${String(l.actor_name || 'Operator')}</strong>`).join('<br/>\n');
+                    const primaryOperator = activeLogs[0].actor_name || 'the responsible operator';
+                    manualBoardLogWarningHtml =
+                        `<div style="margin-top:8px;padding:10px 14px;background:#fff7ed;border-left:5px solid #ea580c;color:#9a3412;border-radius:4px;line-height:1.5;">` +
+                            `<strong>⚠️ Notice: Matching Manual Board Intake Detected:</strong><br/>` +
+                            `${logItems}<br/>` +
+                            `Please communicate with operator <strong>${primaryOperator}</strong> to confirm whether these boards were purchased with this Purchase Order (<strong>${po.name}</strong>) or client-supplied.` +
+                            `</div>`;
+                }
+            }
+            catch {
+                // Non-blocking
+            }
+        }
         // Post breakdown note in the PO Chatter
         await client.postModelChatterMessage('purchase.order', po.id, `<p><strong>⚠️ Job Summary Procurement Mismatch Alert:</strong></p>` +
             `<p><strong>Stakeholders Alerted:</strong> ${mentionHtml}</p>` +
             `<p>Discrepancies found between Purchase Order <strong>${po.name}</strong> and Job Summary for <strong>${so.name}</strong>:</p>` +
             `<ul>${comparison.shortfalls.map((s) => `<li>${s}</li>`).join('')}</ul>` +
-            `<p><em>An activity has been created seeking written clarification or correction before approving this Purchase Order.</em></p>`, partnerIds);
+            `<p><em>An activity has been created seeking written clarification or correction before approving this Purchase Order.</em></p>` +
+            manualBoardLogWarningHtml, partnerIds);
         // Cross-alert note on Sales Order chatter
         await client.postModelChatterMessage('sale.order', so.id, `<p><strong>⚠️ PO Procurement Discrepancy on ${po.name}:</strong></p>` +
             `<p>The following mismatch was flagged on confirmed Purchase Order <strong>${po.name}</strong>:</p>` +
-            `<ul>${comparison.shortfalls.map((s) => `<li>${s}</li>`).join('')}</ul>`);
+            `<ul>${comparison.shortfalls.map((s) => `<li>${s}</li>`).join('')}</ul>` +
+            manualBoardLogWarningHtml);
         await (0, logService_1.logEvent)('warn', 'PO procurement mismatch detected against Job Summary', {
             poId: po.id,
             poName: po.name,
@@ -480,12 +502,34 @@ async function auditPurchaseOrderAgainstJobSummary(client, purchaseOrderId, prov
     }
     // CASE 3: ALL ITEMS MATCH
     // User Rule: "If PO Sheets == Required Sheets: It marks procurement verified, report as a match between job summary and Purchase order for user Charles and Leoivard Ongule and the responsible sales person, and Raphael Onyango in odoo, as log notes"
+    const soPartnerId = relationId(so.partner_id);
+    let manualBoardLogWarningHtml = '';
+    if (soPartnerId) {
+        try {
+            const activeLogs = await (0, repositories_1.findActiveBoardIntakeLogsByPartnerOrProduct)(soPartnerId);
+            if (activeLogs.length > 0) {
+                const logItems = activeLogs.slice(0, 3).map((l) => `• <strong>${String(l.product_name || 'Board')}</strong>: ${Number(l.quantity)} sheets manually logged by operator <strong>${String(l.actor_name || 'Operator')}</strong>`).join('<br/>\n');
+                const primaryOperator = activeLogs[0].actor_name || 'the responsible operator';
+                manualBoardLogWarningHtml =
+                    `<div style="margin-top:8px;padding:10px 14px;background:#fff7ed;border-left:5px solid #ea580c;color:#9a3412;border-radius:4px;line-height:1.5;">` +
+                        `<strong>⚠️ Notice: Matching Manual Board Intake Detected:</strong><br/>` +
+                        `${logItems}<br/>` +
+                        `Please communicate with operator <strong>${primaryOperator}</strong> to confirm whether these boards were purchased with this Purchase Order (<strong>${po.name}</strong>) or client-supplied.` +
+                        `</div>`;
+            }
+        }
+        catch {
+            // Non-blocking
+        }
+    }
     await client.postModelChatterMessage('purchase.order', po.id, `<p><strong>✅ Procurement Match Confirmed</strong></p>` +
         `<p>Procurement quantities on Purchase Order <strong>${po.name}</strong> match the Job Summary of Sales Order <strong>${so.name}</strong>.</p>` +
         `<p><strong>Stakeholders Notified:</strong> ${mentionHtml}</p>` +
-        `<ul>${comparison.verified.map((v) => `<li>${v}</li>`).join('')}</ul>`, partnerIds);
+        `<ul>${comparison.verified.map((v) => `<li>${v}</li>`).join('')}</ul>` +
+        manualBoardLogWarningHtml, partnerIds);
     // Confirmation on Sales Order chatter
-    await client.postModelChatterMessage('sale.order', so.id, `<p><strong>✅ Procurement Match Confirmed:</strong> Purchase Order <strong>${po.name}</strong> sheet and edging quantities match the Job Summary.</p>`);
+    await client.postModelChatterMessage('sale.order', so.id, `<p><strong>✅ Procurement Match Confirmed:</strong> Purchase Order <strong>${po.name}</strong> sheet and edging quantities match the Job Summary.</p>` +
+        manualBoardLogWarningHtml);
     await (0, logService_1.logEvent)('info', 'PO procurement quantities verified against Job Summary', {
         poId: po.id,
         poName: po.name,
