@@ -70,15 +70,39 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
       (mo) => !String(mo.name || '').toUpperCase().startsWith('VA/')
     );
 
-    if (!activeMOs.length) {
+    // 1b. Fetch recently completed MOs (last 7 days) to detect any work orders closed without stock logged
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const rawRecentlyClosedMOs = await client.searchReadRecords<{
+      id: number;
+      name: string;
+      state: string;
+      origin: string | null;
+    }>('mrp.production', {
+      domain: [
+        ['company_id', '=', targetCompanyId],
+        ['state', '=', 'done'],
+        ['write_date', '>=', sevenDaysAgo],
+      ],
+      fields: ['id', 'name', 'state', 'origin'],
+      limit: 100,
+      order: 'write_date desc, id desc',
+    }).catch(() => []);
+
+    const recentlyClosedMOs = rawRecentlyClosedMOs.filter(
+      (mo) => !String(mo.name || '').toUpperCase().startsWith('VA/')
+    );
+
+    const allMOs = [...activeMOs, ...recentlyClosedMOs];
+
+    if (!allMOs.length) {
       await deleteStaleCompletedProcesses(7);
       lastSyncTimestamp = Date.now();
-      return { ok: true, syncedCount: 0, message: 'No active MOs found in Odoo', durationMs: Date.now() - startTime };
+      return { ok: true, syncedCount: 0, message: 'No active or recently closed MOs found in Odoo', durationMs: Date.now() - startTime };
     }
 
     // 2. Fetch origin SO partners in bulk for target company
     const originNames = [...new Set(
-      activeMOs.flatMap(mo => [
+      allMOs.flatMap(mo => [
         mo.origin,
         extractSoNameFromOrigin(mo.origin),
         mo.name,
@@ -113,8 +137,8 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
       }
     }
 
-    // 3. Fetch raw component moves for all active MOs
-    const moIds = activeMOs.map(mo => mo.id);
+    // 3. Fetch raw component moves for all active and recently closed MOs
+    const moIds = allMOs.map(mo => mo.id);
     const rawMoves = await client.getBulkManufacturingOrderComponents(moIds);
 
     // 4. Filter to board components
@@ -129,8 +153,8 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
       return { ok: true, syncedCount: 0, message: 'No board components needed', durationMs: Date.now() - startTime };
     }
 
-    const moMap = new Map<number, typeof activeMOs[0]>();
-    for (const mo of activeMOs) {
+    const moMap = new Map<number, (typeof allMOs)[0]>();
+    for (const mo of allMOs) {
       moMap.set(mo.id, mo);
     }
 
@@ -322,6 +346,8 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
       const qtyMissing = isFulfilledByHistoryLog ? 0 : Math.max(0, agg.qtyNeeded - totalLogged);
 
       if (qtyMissing > 0) {
+        const mo = moMap.get(agg.moId);
+        const isMoClosed = mo ? (mo.state === 'done' || mo.state === 'to_close') : false;
         recordsToUpsert.push({
           id: key,
           process_type: 'board_intake',
@@ -338,6 +364,7 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
           status: 'pending',
           loaded_at: null,
           loaded_by: null,
+          is_mo_closed: isMoClosed,
           last_synced_at: new Date().toISOString(),
         });
       }

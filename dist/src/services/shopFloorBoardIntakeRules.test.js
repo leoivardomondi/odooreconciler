@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -73,6 +106,7 @@ const repositories_1 = require("../models/repositories");
     strict_1.default.ok(preserved, 'Requirement must be preserved even if MO is closed in Odoo, because no matching history log appeared');
     strict_1.default.equal(preserved.status, 'pending');
     strict_1.default.equal(preserved.qty_missing, 6);
+    strict_1.default.equal(preserved.is_mo_closed, true, 'is_mo_closed must be set to true when MO is closed without matching history log');
 });
 (0, node_test_1.default)('pruneStalePendingProcessesForActiveMos: requirement is fulfilled and marked loaded when matching history log appears', async () => {
     const testMoId = 99303;
@@ -410,4 +444,227 @@ const boardIntakeSyncService_1 = require("./boardIntakeSyncService");
     strict_1.default.ok(soPost.message.includes('communicate with operator <strong>Leoivard Ongule</strong> to confirm whether these boards were purchased'));
     strict_1.default.ok(soPost.message.includes('Yet to be approved'));
     strict_1.default.ok(soPost.message.includes('P00450'));
+});
+(0, node_test_1.default)('Board Log Notifications: urbanvibeinteriordesign@gmail.com is hardcoded and cannot be deleted or omitted', async () => {
+    const { HARDCODED_BOARD_LOG_NOTIFICATION_EMAIL, normalizeBoardLogRecipients, DEFAULT_STOCK_CONFIG, } = await Promise.resolve().then(() => __importStar(require('../utils/helpers')));
+    strict_1.default.equal(HARDCODED_BOARD_LOG_NOTIFICATION_EMAIL, 'urbanvibeinteriordesign@gmail.com');
+    // Verify DEFAULT_STOCK_CONFIG includes urbanvibeinteriordesign@gmail.com
+    strict_1.default.ok(DEFAULT_STOCK_CONFIG.boardLogNotificationEmail?.includes('urbanvibeinteriordesign@gmail.com'));
+    // When empty or undefined, hardcoded email is returned
+    strict_1.default.equal(normalizeBoardLogRecipients(''), 'urbanvibeinteriordesign@gmail.com');
+    strict_1.default.equal(normalizeBoardLogRecipients(undefined), 'urbanvibeinteriordesign@gmail.com');
+    strict_1.default.equal(normalizeBoardLogRecipients(null), 'urbanvibeinteriordesign@gmail.com');
+    // When only another email is configured, urbanvibeinteriordesign@gmail.com is automatically prepended
+    const normalizedSharon = normalizeBoardLogRecipients('sharon@urbanvibeinteriordesign.co.ke');
+    strict_1.default.ok(normalizedSharon.includes('urbanvibeinteriordesign@gmail.com'));
+    strict_1.default.ok(normalizedSharon.includes('sharon@urbanvibeinteriordesign.co.ke'));
+    // When someone tries to save a single custom recipient, urbanvibeinteriordesign@gmail.com is preserved
+    const custom = normalizeBoardLogRecipients('admin@example.com');
+    strict_1.default.equal(custom, 'urbanvibeinteriordesign@gmail.com, admin@example.com');
+    // When urbanvibeinteriordesign@gmail.com is already present, no duplicate is added
+    const withExisting = normalizeBoardLogRecipients('urbanvibeinteriordesign@gmail.com, admin@example.com');
+    strict_1.default.equal(withExisting, 'urbanvibeinteriordesign@gmail.com, admin@example.com');
+    // Case insensitivity & whitespace trimming
+    const mixed = normalizeBoardLogRecipients('  URBANVIBEINTERIORDESIGN@GMAIL.COM ;  other@vibe.co.ke \n ');
+    strict_1.default.equal(mixed, 'urbanvibeinteriordesign@gmail.com, other@vibe.co.ke');
+});
+(0, node_test_1.default)('When an MO needs 10 boards and operator logs 5: stock requirement of 5 is preserved, balance 5 is tracked, and chatter states 5 logged balance 5', async () => {
+    const testMoId = 99505;
+    const testProdId = 88505;
+    const key = `${testMoId}_${testProdId}`;
+    const clientName = 'Partial Intake Client 505';
+    const prodName = 'WHITE MDF 18mm';
+    await (0, db_1.execute)('DELETE FROM shop_floor_pending_processes WHERE mo_id = ?', [testMoId]);
+    // Seed pending process: MO needs 10 boards, none received yet
+    const process = {
+        id: key,
+        process_type: 'board_intake',
+        mo_id: testMoId,
+        mo_name: 'WH/MO/99505',
+        origin: 'S99505',
+        partner_id: 505,
+        partner_name: clientName,
+        product_id: testProdId,
+        product_name: prodName,
+        qty_needed: 10,
+        qty_reserved: 0,
+        qty_missing: 10,
+        status: 'pending',
+        loaded_at: null,
+        loaded_by: null,
+        last_synced_at: new Date().toISOString(),
+    };
+    await (0, repositories_1.upsertPendingShopFloorProcesses)([process]);
+    // Operator logs 5 boards out of 10 required
+    const updatedReqs = await (0, repositories_1.markPendingShopFloorProcessesLoaded)({
+        partnerId: 505,
+        productId: testProdId,
+        customerName: clientName,
+        productName: prodName,
+        loadedBy: 'Gate Operator',
+        quantity: 5,
+    });
+    // Verify the updated requirement returned:
+    strict_1.default.equal(updatedReqs.length, 1);
+    const updated = updatedReqs[0];
+    strict_1.default.equal(updated.qty_needed, 10, 'Total requirement must stay 10 boards');
+    strict_1.default.equal(updated.qty_reserved, 5, '5 boards must be reserved in stock');
+    strict_1.default.equal(updated.qty_missing, 5, 'Stock requirement balance of 5 boards must remain active');
+    strict_1.default.equal(updated.status, 'pending', 'Process status must remain pending (not loaded/closed)');
+    // Verify DB state: still in pending processes list with qty_missing = 5
+    const pendingProcesses = await (0, repositories_1.getPendingShopFloorProcesses)({ status: 'pending' });
+    const pendingMo = pendingProcesses.find((p) => p.id === key);
+    strict_1.default.ok(pendingMo, 'Requirement must still be present in pending list');
+    strict_1.default.equal(pendingMo.qty_missing, 5);
+    strict_1.default.equal(pendingMo.status, 'pending');
+    // Verify Chatter Note HTML generation:
+    const chatterHtml = (0, boardIntakeSyncService_1.buildBoardIntakeChatterHtml)({
+        customerName: clientName,
+        productName: prodName,
+        quantity: 5,
+        qtyNeeded: 10,
+        balanceRemaining: 5,
+        moName: 'WH/MO/99505',
+        gate: 'Gate 1',
+        actorName: 'Gate Operator',
+    });
+    // 1. Must show logged quantity
+    strict_1.default.ok(chatterHtml.includes('<strong>Quantity:</strong> 5 sheets'));
+    // 2. Must show total required
+    strict_1.default.ok(chatterHtml.includes('<strong>Total Required:</strong> 10 sheets'));
+    // 3. Must show balance remaining
+    strict_1.default.ok(chatterHtml.includes('<strong>Balance Remaining:</strong> <span style="color:#b91c1c;font-weight:bold;">5 sheets needed</span>'));
+    // 4. Must include partial intake callout note with logged & balance
+    strict_1.default.ok(chatterHtml.includes('PARTIAL INTAKE:</strong> 5 sheets logged, balance <strong>5 sheets</strong> still required for WH/MO/99505'));
+    strict_1.default.ok(chatterHtml.includes('Stock requirement of 5 boards remains active before cutting/completion can start'));
+    // When second batch of 5 boards arrives (completing the 10):
+    const completeChatterHtml = (0, boardIntakeSyncService_1.buildBoardIntakeChatterHtml)({
+        customerName: clientName,
+        productName: prodName,
+        quantity: 5,
+        qtyNeeded: 10,
+        balanceRemaining: 0,
+        moName: 'WH/MO/99505',
+    });
+    strict_1.default.ok(completeChatterHtml.includes('<strong>Balance Remaining:</strong> <span style="color:#15803d;font-weight:bold;">0 sheets (Fully supplied)</span>'));
+    strict_1.default.ok(completeChatterHtml.includes('COMPLETE INTAKE:</strong> All 10 sheets received and allocated in stock'));
+});
+(0, node_test_1.default)('When an MO needs 10 boards and 5 are logged: operator still sees the unlogged card for the balance of 5 with isSyncing=false', async () => {
+    const testMoId = 99606;
+    const testProdId = 88606;
+    const key = `${testMoId}_${testProdId}`;
+    const clientName = 'Card Balance Test Client 606';
+    const prodName = 'BLACK MDF 18mm';
+    await (0, db_1.execute)('DELETE FROM shop_floor_pending_processes WHERE mo_id = ?', [testMoId]);
+    // Seed pending process: MO needs 10 boards
+    const process = {
+        id: key,
+        process_type: 'board_intake',
+        mo_id: testMoId,
+        mo_name: 'WH/MO/99606',
+        origin: 'S99606',
+        partner_id: 606,
+        partner_name: clientName,
+        product_id: testProdId,
+        product_name: prodName,
+        qty_needed: 10,
+        qty_reserved: 0,
+        qty_missing: 10,
+        status: 'pending',
+        loaded_at: null,
+        loaded_by: null,
+        last_synced_at: new Date().toISOString(),
+    };
+    await (0, repositories_1.upsertPendingShopFloorProcesses)([process]);
+    // Operator logs 5 boards
+    await (0, repositories_1.markPendingShopFloorProcessesLoaded)({
+        partnerId: 606,
+        productId: testProdId,
+        customerName: clientName,
+        productName: prodName,
+        loadedBy: 'Gate Operator',
+        quantity: 5,
+    });
+    // Query pending rows from MySQL (as done in GET /shop-floor/boards)
+    const pendingRows = await (0, repositories_1.getPendingShopFloorProcesses)({ status: 'pending' });
+    const row = pendingRows.find((p) => p.id === key);
+    strict_1.default.ok(row, 'Row must still exist in pending processes');
+    strict_1.default.equal(row.qty_needed, 10, 'Total needed is 10');
+    strict_1.default.equal(row.qty_reserved, 5, 'Reserved is 5');
+    strict_1.default.equal(row.qty_missing, 5, 'Unlogged balance is 5');
+    // Verify stock alert card construction rules:
+    // The unlogged balance of 5 boards is NOT syncing - it is an active unlogged card waiting to be logged!
+    const hasUnloggedBalance = Number(row.qty_missing || 0) > 0;
+    const isSyncing = !hasUnloggedBalance; // Must be false!
+    strict_1.default.equal(isSyncing, false, 'Card must NOT be locked as syncing; it must be an active undone card');
+    // Verify that an undone item filter counts this card
+    const cardAlert = {
+        moName: row.mo_name,
+        product: row.product_name,
+        component: row.product_name,
+        qtyNeeded: row.qty_missing, // 5 boards
+        totalNeeded: row.qty_needed, // 10 boards
+        qtyReserved: row.qty_reserved, // 5 boards
+        client: row.partner_name,
+        isSyncing,
+    };
+    strict_1.default.equal(cardAlert.qtyNeeded, 5);
+    strict_1.default.equal(cardAlert.isSyncing, false);
+    // Operator sees undone item with 5 boards balance
+    const isUndone = !cardAlert.isSyncing && cardAlert.qtyNeeded > 0;
+    strict_1.default.equal(isUndone, true, 'Operator must see unlogged card of the balance');
+});
+(0, node_test_1.default)('Work order or MO closed without stock logged: flagged with is_mo_closed = true and prominent alert state', async () => {
+    const testMoId = 99505;
+    const testProdId = 88505;
+    const key = `${testMoId}_${testProdId}`;
+    await (0, db_1.execute)('DELETE FROM shop_floor_pending_processes WHERE mo_id = ?', [testMoId]);
+    await (0, db_1.execute)('DELETE FROM board_intake_queue WHERE partner_id = ?', [505]);
+    // 1. Initial pending process created when MO was confirmed in Odoo
+    const process = {
+        id: key,
+        process_type: 'board_intake',
+        mo_id: testMoId,
+        mo_name: 'WH/MO/99505',
+        origin: 'S99505',
+        partner_id: 505,
+        partner_name: 'Closed Job Client',
+        product_id: testProdId,
+        product_name: 'WHITE GLOSS MDF 18mm',
+        qty_needed: 8,
+        qty_reserved: 0,
+        qty_missing: 8,
+        status: 'pending',
+        loaded_at: null,
+        loaded_by: null,
+        is_mo_closed: false,
+        last_synced_at: new Date().toISOString(),
+    };
+    await (0, repositories_1.upsertPendingShopFloorProcesses)([process]);
+    // 2. Someone in Odoo closes the work order / marks MO done without logging stock!
+    // When sync/prune runs, activeMoIds does NOT contain 99505
+    await (0, repositories_1.pruneStalePendingProcessesForActiveMos)([], []);
+    // 3. Verify it is preserved in MySQL and is_mo_closed is updated to true
+    const pendingRows = await (0, repositories_1.getPendingShopFloorProcesses)({ status: 'pending' });
+    const row = pendingRows.find((p) => p.id === key);
+    strict_1.default.ok(row, 'Process must be preserved in MySQL because boards were never logged');
+    strict_1.default.equal(row.is_mo_closed, true, 'is_mo_closed must be true');
+    strict_1.default.equal(row.qty_missing, 8, '8 boards are still missing');
+    // 4. Construct the stock alert item for UI as done in /shop-floor/boards
+    const alertItem = {
+        moName: row.mo_name,
+        product: row.product_name,
+        component: row.product_name,
+        qtyNeeded: row.qty_missing,
+        totalNeeded: row.qty_needed,
+        qtyReserved: row.qty_reserved,
+        client: row.partner_name,
+        moId: row.mo_id,
+        isSyncing: false,
+        isMoClosed: Boolean(row.is_mo_closed),
+    };
+    strict_1.default.equal(alertItem.isMoClosed, true, 'Card alert must carry isMoClosed = true');
+    // Check the alert condition that triggers the prominent red banner
+    const shouldShowClosedWarning = alertItem.isMoClosed === true;
+    strict_1.default.equal(shouldShowClosedWarning, true, 'Alert must display: WORK ORDER CLOSED BUT STOCK NOT YET LOGGED');
 });

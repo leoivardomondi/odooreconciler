@@ -227,6 +227,84 @@ test('compareQuotationLinesWithJobSummary correctly flags shortfalls and verifie
   assert.ok(resultBoardSurplus.shortfalls[0].includes('Excess: 2 sheet(s)'));
 });
 
+test('compareQuotationLinesWithJobSummary correctly distinguishes multiple boards of same color (WHITE MDF vs WHITE WATERPROOF)', () => {
+  const parsedJobSummary: ParsedJobSummaryResult = {
+    items: [
+      {
+        color: 'White',
+        thickness_mm: 1,
+        length_mm: 138733,
+        roll_length_mm: 15000,
+      },
+    ],
+    sectionFound: true,
+    sectionText: '',
+    rawText: '',
+    logs: [],
+    clientName: 'HARRY INTERIOR',
+    optimizedSheets: 12,
+    totalPanels: 150,
+    sheetMaterials: [
+      {
+        name: 'WHITE MDF',
+        thickness_mm: 18,
+        sheets: 8,
+        panels: 84,
+        length_mm: 2440,
+        width_mm: 1220,
+      },
+      {
+        name: 'WHITE WATERPROOF',
+        thickness_mm: 18,
+        sheets: 4,
+        panels: 66,
+        length_mm: 2440,
+        width_mm: 1220,
+      },
+    ],
+  };
+
+  const quotationLines: SaleOrderLine[] = [
+    {
+      id: 1,
+      name: 'Optimised Panels',
+      product_id: [102, 'Optimised Panels'],
+      product_uom_qty: 153,
+      display_type: false,
+    },
+    {
+      id: 2,
+      name: 'Cutting White MDF 18mm',
+      product_id: [201, 'Cutting White MDF 18mm'],
+      product_uom_qty: 8,
+      display_type: false,
+    },
+    {
+      id: 3,
+      name: 'Cutting White Waterproof 18mm',
+      product_id: [202, 'Cutting White Waterproof 18mm'],
+      product_uom_qty: 4,
+      display_type: false,
+    },
+    {
+      id: 4,
+      name: 'Edge Banding Service White',
+      product_id: [301, 'Edge Banding Service White'],
+      product_uom_qty: 171,
+      display_type: false,
+    },
+  ];
+
+  const result = compareQuotationLinesWithJobSummary(quotationLines, parsedJobSummary);
+  assert.equal(result.hasShortfall, false);
+  assert.equal(result.shortfalls.length, 0);
+  assert.equal(result.boardDetails.length, 2);
+  assert.equal(result.boardDetails[0].quotedSheets, 8);
+  assert.equal(result.boardDetails[0].requiredSheets, 8);
+  assert.equal(result.boardDetails[1].quotedSheets, 4);
+  assert.equal(result.boardDetails[1].requiredSheets, 4);
+});
+
 test('parseJobSummaryPdf extracts sheet materials and header metrics from user PDF', async () => {
   const samplePdfPath = 'C:/Users/ADMIN/.gemini/antigravity-ide/brain/4bbdfaaa-f3d6-4738-b235-1c89d579bcb5/.user_uploaded/media_1792362774320.pdf';
   if (!fs.existsSync(samplePdfPath)) {

@@ -5,7 +5,7 @@ import {
   PurchaseOrderSummary,
 } from '../models/types';
 import { getLatestExtractedResultByOrderId, findActiveBoardIntakeLogsByPartnerOrProduct } from '../models/repositories';
-import { isBoardProductName } from './boardProductClassifier';
+import { isBoardProductName, assignBoardLinesToSheetMaterials } from './boardProductClassifier';
 import { logEvent } from './logService';
 import { createTodoActivity, findOpenActivities, closeActivities } from './odooActivityService';
 import { OdooClient } from './odooClient';
@@ -215,30 +215,15 @@ export function comparePoLinesWithSheetMaterials(
   }> = [];
 
   // 1. Boards: MUST BE EXACT MATCH (not less, and NOT more)
+  const assignedPoLines = assignBoardLinesToSheetMaterials(
+    poLines,
+    sheetMaterials,
+    (l) => relationLabel(l.product_id as [number, string] | false | null | undefined) || l.name || '',
+  );
+
   for (const material of sheetMaterials) {
     const requiredSheets = material.sheets || 0;
-    const materialNameLower = material.name.toLowerCase().trim();
-
-    // Find PO lines matching this sheet material
-    const matchingLines = poLines.filter((line) => {
-      const lineName = (relationLabel(line.product_id) || line.name || '').toLowerCase();
-      if (!isBoardProductName(lineName)) return false;
-      if (/optimis?ed\s+panels?/i.test(lineName)) return false;
-
-      // Match thickness if specified
-      if (material.thickness_mm) {
-        const t1 = `${material.thickness_mm}mm`;
-        const t2 = `${material.thickness_mm} mm`;
-        if (!lineName.includes(t1) && !lineName.includes(t2)) {
-          return false;
-        }
-      }
-
-      // Match keywords from material name
-      const words = materialNameLower.split(/\s+/).filter((w) => w.length > 2);
-      const matchesKeyword = words.some((w) => lineName.includes(w));
-      return matchesKeyword || (sheetMaterials.length === 1 && isBoardProductName(lineName));
-    });
+    const matchingLines = assignedPoLines.get(material) || [];
 
     const orderedSheets = matchingLines.reduce((sum, l) => sum + (Number(l.product_qty) || 0), 0);
     const isMatch = orderedSheets === requiredSheets;

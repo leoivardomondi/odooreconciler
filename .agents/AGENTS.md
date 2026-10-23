@@ -24,6 +24,8 @@
     - If PIN status is `NO PIN`, registers payment from the **MPESA** journal.
     - If PIN status is `ETR`, registers payment from the **001215001007459** journal.
     - The payment date strictly matches the vendor bill / invoice date (`invoice_date` from vendor).
+    - **Odoo Studio Mandatory Field `x_paid_by` ('Have you filled the name of the person who paid ?')**: Odoo model `account.payment.register` enforces a required Studio boolean checkbox `x_paid_by` ("Have you filled the name of the person who paid ?"). `registerPaymentForVendorBill` explicitly sets `wizardPayload.x_paid_by = true` and dynamically inspects `ir.model.fields` to also populate any companion payer name/user fields with `ALLOWED_NOTIFICATION_USER_NAME` (`'Leoivard Ongule'`), ensuring payment registration never fails on this requirement.
+    - **Payment Retry & Activity Resolution Pipeline**: `retryFailedPoBillPayment` in [src/services/poBillAutomationService.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/poBillAutomationService.ts) and route `POST /po-bill-automation/retry-payment` allow 1-click or scripted retries of failed payment registrations on posted bills. Upon registering payment, it automatically closes all matching open `'PO bill automation completed'` and `'Review PO bill automation'` activities across linked Purchase Orders, clearing any overdue alerts.
   - Skips creating redundant "Review PO bill automation" activities on POs that already have a matched vendor bill attached.
   - **PO Bill Scheduler Rate-Limiting Protections**:
     - **Bulk PO Line Queries (Anti-N+1)**: Candidate PO lines are loaded via `getBulkPurchaseOrderLines` (`['order_id', 'in', candidateIds]`) in a single Odoo RPC query rather than making individual per-order network calls.
@@ -89,6 +91,7 @@
   - **Discrepancy Verification on Customized Quotations ("Not less, but can be more")**:
     - If custom lines already exist, line creation is skipped to prevent duplicate order lines.
     - Compares board sheets, panel counts, and edging meters against the Job Summary.
+    - **Multi-Board Material Disambiguation Rule**: When a Job Summary contains multiple sheet materials sharing a common color or keyword (e.g. `WHITE MDF` and `WHITE WATERPROOF`), board product lines (e.g. `Cutting White MDF 18mm` and `Cutting White Waterproof 18mm`) are partitioned and matched strictly using `assignBoardLinesToSheetMaterials` based on substrate affinity (`mdf`, `waterproof`, `particle`, `plywood`), thickness, and distinctive keywords. Substrate mismatches carry a hard negative penalty, preventing cross-matching on common color words like "white" and eliminating false-positive excess/shortfall alerts.
     - If any quotation line quantity is LESS than the Job Summary (shortfall), creates an alert To-Do activity for the salesperson and posts a note in chatter. If quantities are equal or greater (surplus), marks lines as verified with zero modifications.
   - **Confirmed Orders**: Orders in `sale` or `done` states are never modified.
 
@@ -136,6 +139,11 @@
   - Inactive user accounts (`active = 0` / `active = false`) in `auth_approved_users` must **NEVER** appear as recipient choices, suggestions, or Quick Add buttons in any area where emails can be added (such as Board Log notification recipients, Email Automations recipients, and dynamic custom automations in [src/views/settings.ejs](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/views/settings.ejs)).
   - **Database Active Flag Parsing**: Database drivers (MySQL / SQLite) can return `active` as numeric `0`, string `'0'`, or boolean `false`. In JavaScript, `Boolean('0')` evaluates to `true`. Therefore, `parseDbActiveFlag(row.active)` in [src/models/repositories.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/models/repositories.ts) and `isAccountDeactivated` in [src/utils/accountStatus.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/utils/accountStatus.ts) explicitly treat `0`, `'0'`, `false`, and `'false'` as inactive.
   - The Settings controller ([src/routes/settings.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/routes/settings.ts)) strictly filters `approvedUsers` with `(allApprovedUsers || []).filter(u => u && Boolean(u.active) && typeof u.email === 'string' && u.email.trim().length > 0)` before passing it to views, and the client-side template enforces `active` checks across both static and dynamically generated automation cards.
+
+- **Built-in Email Automations Strict Deduplication Rule**:
+  - The application provides 5 built-in operational email automations: `'shop-floor-reminders'`, `'weekly-shop-floor-report'`, `'mpesa-review'`, `'mo-overtime'`, and `'mo-stock-shortage-report'`.
+  - Built-in operational emails must **NEVER** duplicate or appear more than once in the Admin Settings section (`#section-email-automation`), database, or cron dispatch loops.
+  - `readMailConfig` in [src/models/repositories.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/models/repositories.ts), `buildMailConfigFromSource` in [src/routes/settings.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/routes/settings.ts), and `updateMoStockShortageAutomationSettings` in [src/services/moStockShortageReportService.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/moStockShortageReportService.ts) enforce strict single-instance uniqueness keyed by `systemKey`. Positional index fallbacks (`defaults.automations[index]`) are forbidden as they incorrectly converted custom automations at index 4 into duplicate `mo-stock-shortage-report` cards.
 
 - **Instant Operator Profile Attendance Check-In & Check-Out Architecture**:
   - The Shop Floor Profile Banner in [src/views/shop-floor.ejs](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/views/shop-floor.ejs) displays the Operator Avatar, Operator Name, Department/Job Title, attendance badge (`#headerAttendanceBadge`), and the Check In / Check Out button (`#headerAttendanceBtn`) side-by-side.
@@ -255,4 +263,55 @@
     - `missingBoardSheets` reflects the exact missing board quantity (e.g. 12 boards).
     - `coveragePercent` is strictly $< 100\%$ (e.g. 98%), and the card displays warning/alert colors (`#fef2f2`, `#fecaca`, `#991b1b`).
     - The UI in [src/views/shop-floor.ejs](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/views/shop-floor.ejs) displays both the undone items and the missing board sheets (`X boards needed`), ensuring complete truthfulness and parity with the Stock Needed area.
+
+- **Board Log Intake Notification Hardcoded Recipient Rule**:
+  - Email address `urbanvibeinteriordesign@gmail.com` (`HARDCODED_BOARD_LOG_NOTIFICATION_EMAIL` in [src/utils/helpers.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/utils/helpers.ts)) is permanently hardcoded to receive all factory board log intake notifications (both new entries and cancellations/reverts).
+  - **Normalization & Retention**: `normalizeBoardLogRecipients()` in [src/utils/helpers.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/utils/helpers.ts) guarantees that `urbanvibeinteriordesign@gmail.com` is always prepended to the recipient list under all conditions (empty input, default fallback, or custom user edits). It can never be stripped or deleted.
+  - **Zero-Loss Admin Settings Synchronization**:
+    - The Settings view ([src/views/settings.ejs](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/views/settings.ejs)) keeps `urbanvibeinteriordesign@gmail.com` locked as a permanent primary recipient badge without a delete button.
+    - Synchronized hidden inputs (`#stockBoardLogNotificationEmail` and `#mainFormStockBoardLogNotificationEmail`) exist across both the Outgoing Mail form and the main Settings form, guaranteeing that saving Odoo credentials, Stock settings, or "Save All Settings" never clears board log recipients.
+    - In [src/routes/settings.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/routes/settings.ts) and [src/models/repositories.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/models/repositories.ts), all settings loads (`getSettings`, `buildFormValues`) and saves (`saveSettings`, `POST /settings/mail`, `POST /settings`) run through `normalizeBoardLogRecipients()`.
+    - Both board log creation and board log revert handlers in [src/routes/shopFloor.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/routes/shopFloor.ts) use `normalizeBoardLogRecipients()` to guarantee dispatch to `urbanvibeinteriordesign@gmail.com`.
+
+- **Partial Board Intake Requirement & Balance Retention Rule**:
+  - **Zero Destructive Reduction**: When a Manufacturing Order (MO) requires 10 boards and the operator logs a partial intake (e.g. 5 boards), the system must **NEVER** reduce or alter the MO's raw component requirement (`product_uom_qty` on `stock.move` remains 10).
+  - **Preserving Stock Shortage**: The intake adds the 5 logged boards into physical inventory and reserves them via `action_assign` (`client.reserveStockOnMOs`). The remaining balance (5 boards) stays active as an unreserved stock shortage in Odoo, preventing the MO from starting or closing with partial stock.
+  - **Shop Floor Process Tracking (`shop_floor_pending_processes`)**: `markPendingShopFloorProcessesLoaded` calculates `qty_reserved = 5`, `qty_missing = 5`, and leaves `status = 'pending'`, ensuring the remaining balance of 5 boards continues to appear in the "Add Stock" / pending requirements area.
+  - **Itemized Balance Chatter & Email Reporting**:
+    - Chatter notes posted to `mrp.production` and `sale.order` explicitly state:
+      - `• Quantity: 5 sheets`
+      - `• Total Required: 10 sheets`
+      - `• Balance Remaining: 5 sheets needed`
+      - Partial intake alert callout: `⚠️ PARTIAL INTAKE: 5 sheets logged, balance 5 sheets still required for WH/MO/xxxx. Stock requirement of 5 boards remains active before cutting/completion can start.`
+    - Complete intake badge: When all required boards are supplied, notes display `✅ COMPLETE INTAKE: All 10 sheets received and allocated in stock.`
+    - Real-time board log emails and UI success banners explicitly include the balance needed (e.g. `(Partial: 5 logged, balance 5 of 10 needed for WH/MO/xxxx)`).
+  - **Unlogged Balance Card Visibility (Zero Premature Locking)**:
+    - When an operator logs 5 boards for a 10-board requirement, the remaining balance of 5 boards is **UNLOGGED** and must remain active in the "Stock Needed — No Purchase Orders" section (`/shop-floor/boards`) and main dashboard (`/shop-floor`).
+    - **No Double Deduction**: Alerts and requirements originating from MySQL `shop_floor_pending_processes` already have the logged quantity deducted; they must never be passed to `applyOptimisticStockAlerts` or `applyOptimisticBoardIntakes` which would subtract the 5 a second time and erase the card.
+    - **`isSyncing: false` for Balance**: The card represents the unlogged balance of 5 boards. Because it has not been logged, it is strictly `isSyncing: false` (not locked as syncing).
+    - **Active Card & Fill Form Button**: The card dynamically displays `Balance: 5 needed` and `5 of 10 logged`, and its "Fill Form" button remains fully active with `data-qty="5"` so the operator can click it to immediately log the remaining balance when it arrives.
+    - **Client-Side SWR Parity**: Upon submitting a partial intake, client-side JavaScript decrements the card's needed quantity to the remaining balance instead of removing it or locking it into `item-syncing-locked`.
+
+- **Work Order / MO Closed Without Stock Logged Detection & Visibility Rule**:
+  - **Purpose**: Solves the critical factory vulnerability where a work order (`mrp.workorder`) or manufacturing order (`mrp.production`) is marked complete or closed in Odoo (either by an operator bypassing stock validation or using someone else's unassigned boards), but the required raw boards were **NEVER logged at the factory gate** (`board_intake_queue`).
+  - **Database Persistence (`is_mo_closed`)**:
+    - Column `is_mo_closed` (`INTEGER` / `TINYINT(1)` DEFAULT 0) in `shop_floor_pending_processes` records whether the parent Manufacturing Order or Work Order was closed in Odoo without matching board intake history logs.
+    - Added dynamically in `ensureSqliteDatabase` and `ensureMysqlDatabase`.
+  - **Zero-Drop Pruning Retention**:
+    - In `pruneStalePendingProcessesForActiveMos` ([src/models/repositories.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/models/repositories.ts)), if an MO is closed or marked done in Odoo (`!activeSet.has(row.mo_id)`), the row is **STRICTLY PRESERVED** in MySQL as long as no matching history log exists (or total logged < qty needed).
+    - It sets `is_mo_closed = 1`, turning the unlogged requirement into an active discrepancy alert.
+  - **Recently Closed MO Discovery**:
+    - In `syncPendingProcessesFromOdoo` ([src/services/shopFloorPendingSyncService.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/shopFloorPendingSyncService.ts)), background sync inspects both active MOs and recently closed/done MOs (`state = 'done'`, past 7 days). Any closed MO whose board moves lack matching history logs is ingested into `shop_floor_pending_processes` with `is_mo_closed = 1`.
+  - **Prominent UI Visibility**:
+    - **Board Intake / Add Stock Page (`/shop-floor/boards`)**:
+      - Top summary header displays a prominent badge: `🚨 X WORK ORDER CLOSED WITHOUT STOCK LOGGED`.
+      - The client group container turns into an alert block with red accent borders (`border-color: #fca5a5; background: #fff1f2;`) and an `ALERT` badge.
+      - Each affected card prominently renders:
+        `🚨 WORK ORDER CLOSED BUT STOCK NOT YET LOGGED` (with `Action Required` badge).
+      - Subtitle explains: `🚨 Work Order / MO marked complete in Odoo · stock NOT logged!`.
+      - The 1-click **"Fill Form"** button remains fully functional and accessible, allowing the gate operator or supervisor to immediately record the intake.
+    - **Main Shop Floor Dashboard (`/shop-floor`)**:
+      - Displays a top high-priority alert banner: `🚨 X Work Order(s) Closed But Stock Not Yet Logged!` with direct action link: *"Review & Log Stock in Add Stock →"*.
+      - Under **Penalty Signals**, a dedicated KPI card `Closed Without Stock: X` highlights the count in bold red.
+
 

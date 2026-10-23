@@ -24,7 +24,7 @@ export interface BoardAttributes {
   rawName: string;
   thickness: string | null;
   thicknessMm: number | null;
-  substrate: 'mdf' | 'particle' | 'plywood' | 'block_board' | 'eco_board' | 'hardboard' | 'other';
+  substrate: 'mdf' | 'particle' | 'plywood' | 'block_board' | 'eco_board' | 'hardboard' | 'waterproof' | 'other';
   colorFamily: string;
 }
 
@@ -52,6 +52,8 @@ export function extractBoardAttributes(value: string | null | undefined): BoardA
   let substrate: BoardAttributes['substrate'] = 'other';
   if (/\b(mdf|medium density fiberboard|hdf)\b/.test(normalized)) {
     substrate = 'mdf';
+  } else if (/\b(waterproof|water-proof|wpc|pvc)\b/.test(normalized)) {
+    substrate = 'waterproof';
   } else if (/\b(particle|chipboard|pb|mfc)\b/.test(normalized)) {
     substrate = 'particle';
   } else if (/\b(ply|plywood|marine)\b/.test(normalized)) {
@@ -67,8 +69,8 @@ export function extractBoardAttributes(value: string | null | undefined): BoardA
   const color = normalized
     .replace(/\b\d+(?:\.\d+)?\s*mm\b/g, ' ')
     .replace(/\b\d+\s*[xX]\s*\d+\b/g, ' ')
-    .replace(/\b(mdf|medium density fiberboard|hdf|particle board|particle|chipboard|pb|mfc|plywood|ply|marine|block board|blockboard|eco board|fixo board|hardboard|backer)\b/g, ' ')
-    .replace(/\b(board|boards|sheet|sheets|panel|panels|wood|timber|finish|standard|waterproof|gloss|matt|embossed|textured|egger|kronospan|alvic)\b/g, ' ')
+    .replace(/\b(mdf|medium density fiberboard|hdf|particle board|particle|chipboard|pb|mfc|plywood|ply|marine|block board|blockboard|eco board|fixo board|hardboard|backer|waterproof|water-proof|wpc|pvc)\b/g, ' ')
+    .replace(/\b(board|boards|sheet|sheets|panel|panels|wood|timber|finish|standard|gloss|matt|embossed|textured|egger|kronospan|alvic)\b/g, ' ')
     .replace(/[^a-zA-Z0-9\s-]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
@@ -139,6 +141,7 @@ export function detectBoardMismatch(
     block_board: 'Block Board',
     eco_board: 'Eco Board',
     hardboard: 'Hardboard',
+    waterproof: 'Waterproof Board',
     other: 'Other Substrate',
   };
 
@@ -161,4 +164,116 @@ export function detectBoardMismatch(
     loggedAttributes: logAttr,
     description: reasons.join('; '),
   };
+}
+
+export interface SheetMaterialTarget {
+  name: string;
+  thickness_mm?: number | null;
+  sheets?: number | null;
+  panels?: number | null;
+}
+
+export function scoreBoardLineAgainstMaterial(
+  lineName: string,
+  material: SheetMaterialTarget,
+): number {
+  const normLine = normalizeBoardProductName(lineName);
+  const normMat = normalizeBoardProductName(material.name);
+
+  const lineAttr = extractBoardAttributes(lineName);
+  const matAttr = extractBoardAttributes(material.name);
+
+  let score = 0;
+
+  // 1. Thickness check
+  const targetThickness = material.thickness_mm ?? matAttr.thicknessMm;
+  if (targetThickness && lineAttr.thicknessMm) {
+    if (Math.abs(targetThickness - lineAttr.thicknessMm) <= 0.1) {
+      score += 30;
+    } else {
+      score -= 80;
+    }
+  }
+
+  // 2. Substrate check
+  if (matAttr.substrate !== 'other' && lineAttr.substrate !== 'other') {
+    if (matAttr.substrate === lineAttr.substrate) {
+      score += 50;
+    } else {
+      score -= 100;
+    }
+  }
+
+  // 3. Keyword / Material term checks
+  const matWords = normMat
+    .split(/[\s_\-/]+/)
+    .filter(
+      (w) =>
+        w.length > 2 &&
+        !['board', 'boards', 'sheet', 'sheets', 'panel', 'panels', 'cutting'].includes(w),
+    );
+
+  for (const word of matWords) {
+    if (normLine.includes(word)) {
+      score += 15;
+    }
+  }
+
+  // 4. Color family check
+  if (matAttr.colorFamily && lineAttr.colorFamily) {
+    if (areSameColorFamily(matAttr.colorFamily, lineAttr.colorFamily)) {
+      score += 20;
+    }
+  }
+
+  return score;
+}
+
+export function assignBoardLinesToSheetMaterials<
+  T extends { name?: string | null; product_id?: unknown; product_uom_qty?: number | null; product_qty?: number | null }
+>(
+  lines: T[],
+  sheetMaterials: SheetMaterialTarget[],
+  getLineDisplayName: (line: T) => string,
+): Map<SheetMaterialTarget, T[]> {
+  const result = new Map<SheetMaterialTarget, T[]>();
+  for (const mat of sheetMaterials) {
+    result.set(mat, []);
+  }
+
+  if (sheetMaterials.length === 0) return result;
+
+  const boardLines = lines.filter((l) => {
+    const displayName = getLineDisplayName(l);
+    if (!isBoardProductName(displayName)) return false;
+    if (/example\s+board/i.test(displayName)) return false;
+    if (/optimis?ed\s+panels?/i.test(displayName)) return false;
+    return true;
+  });
+
+  if (sheetMaterials.length === 1) {
+    const mat = sheetMaterials[0];
+    result.set(mat, boardLines);
+    return result;
+  }
+
+  for (const line of boardLines) {
+    const displayName = getLineDisplayName(line);
+    let bestMat: SheetMaterialTarget | null = null;
+    let bestScore = 0;
+
+    for (const mat of sheetMaterials) {
+      const score = scoreBoardLineAgainstMaterial(displayName, mat);
+      if (score > bestScore) {
+        bestScore = score;
+        bestMat = mat;
+      }
+    }
+
+    if (bestMat && bestScore > 0) {
+      result.get(bestMat)?.push(line);
+    }
+  }
+
+  return result;
 }

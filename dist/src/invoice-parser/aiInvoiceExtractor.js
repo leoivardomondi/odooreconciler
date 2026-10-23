@@ -469,14 +469,14 @@ function defaultModelForProvider(provider) {
         case 'nvidia':
             return 'google/gemma-4-31b-it';
         case 'gemini':
-            return 'gemini-3.6-flash';
+            return 'gemini-2.0-flash';
         case 'anthropic':
-            return 'claude-sonnet-4-5-20250929';
+            return 'claude-3-7-sonnet-latest';
         case 'openrouter':
-            return 'openai/gpt-4.1';
+            return 'deepseek/deepseek-r1';
         case 'openai':
         default:
-            return 'gpt-4.1';
+            return 'gpt-4o';
     }
 }
 function resolveConfiguredApiKey(config, provider, model) {
@@ -648,8 +648,9 @@ async function callOpenAiCompatibleInvoiceAi(input) {
     return input.provider === 'nvidia' ? stripNvidiaControlTokens(outputText) : outputText;
 }
 async function callGeminiInvoiceAi(input) {
+    const model = /^gemini-3\./i.test(input.model.trim()) ? 'gemini-2.0-flash' : input.model.trim();
     const baseUrl = input.baseUrl.replace(/\/+$/, '') || GEMINI_BASE_URL;
-    const endpoint = `${baseUrl}/models/${encodeURIComponent(input.model)}:generateContent`;
+    const endpoint = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent`;
     let attempt = 0;
     let response = null;
     let responseJson = null;

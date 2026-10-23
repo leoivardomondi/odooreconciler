@@ -50,6 +50,7 @@ import {
   DEFAULT_PO_BILL_SCHEDULER_CONFIG,
   DEFAULT_SCHEDULER_CONFIG,
   DEFAULT_STOCK_CONFIG,
+  normalizeBoardLogRecipients,
   safeJsonParse,
 } from '../utils/helpers';
 import { appDateTimeFromNow, appDateTime } from '../utils/dateTime';
@@ -274,7 +275,7 @@ function decryptMailPassword(encrypted: string, accountLabel: string) {
   }
 }
 
-function readMailConfig(mailConfigJson: string | null): MailConfig {
+export function readMailConfig(mailConfigJson: string | null): MailConfig {
   const defaults = createDefaultMailConfig();
   const raw = safeJsonParse<Record<string, unknown>>(mailConfigJson, {});
   const rawAccounts = Array.isArray(raw.accounts) ? raw.accounts : [];
@@ -318,24 +319,67 @@ function readMailConfig(mailConfigJson: string | null): MailConfig {
     testRecipient: stringValue(raw.testRecipient, defaults.testRecipient || '').trim(),
     accounts,
     automations: (() => {
+      const BUILT_IN_SYSTEM_KEYS = [
+        'shop-floor-reminders',
+        'weekly-shop-floor-report',
+        'mpesa-review',
+        'mo-overtime',
+        'mo-stock-shortage-report',
+      ] as const;
+
       const rawList = Array.isArray(raw.automations) ? raw.automations : defaults.automations;
-      const knownKeys = new Set(rawList.map((entry) => stringValue(asRecord(entry).systemKey, '')));
-      const mergedRawList = [...rawList];
-      for (const def of defaults.automations) {
-        if (def.systemKey !== 'custom' && !knownKeys.has(def.systemKey)) {
-          mergedRawList.push(def);
-          knownKeys.add(def.systemKey);
+      const result: EmailAutomation[] = [];
+      const seenSystemKeys = new Set<string>();
+      const seenIds = new Set<string>();
+
+      for (let index = 0; index < rawList.length; index++) {
+        const item = asRecord(rawList[index]);
+        const rawSystemKey = stringValue(item.systemKey, '').trim();
+        const rawId = stringValue(item.id, '').trim();
+        const rawName = stringValue(item.name, '').trim();
+
+        // Infer systemKey if missing from item.id or item.name
+        let systemKey: EmailAutomation['systemKey'] = 'custom';
+        if (BUILT_IN_SYSTEM_KEYS.includes(rawSystemKey as any)) {
+          systemKey = rawSystemKey as EmailAutomation['systemKey'];
+        } else if (BUILT_IN_SYSTEM_KEYS.includes(rawId as any)) {
+          systemKey = rawId as EmailAutomation['systemKey'];
+        } else if (/mo.*shortage|stock.*shortage/i.test(rawName) || /mo-stock-shortage/i.test(rawId)) {
+          systemKey = 'mo-stock-shortage-report';
+        } else if (/weekly.*report|shop.*floor.*report/i.test(rawName) || /weekly-shop-floor-report/i.test(rawId)) {
+          systemKey = 'weekly-shop-floor-report';
+        } else if (/task.*reminder|shop.*floor.*reminder/i.test(rawName) || /shop-floor-reminders/i.test(rawId)) {
+          systemKey = 'shop-floor-reminders';
+        } else if (/mpesa|m-pesa/i.test(rawName) || /mpesa-review/i.test(rawId)) {
+          systemKey = 'mpesa-review';
+        } else if (/overtime/i.test(rawName) || /mo-overtime/i.test(rawId)) {
+          systemKey = 'mo-overtime';
         }
-      }
-      return mergedRawList.map((entry, index): EmailAutomation => {
-        const item = asRecord(entry);
-        const fallback = defaults.automations.find((d) => d.systemKey === item.systemKey) || defaults.automations[index];
-        const systemKey = stringValue(item.systemKey, fallback?.systemKey || 'custom') as EmailAutomation['systemKey'];
+
+        // Deduplication: Built-in system automations can only exist ONCE
+        if (systemKey !== 'custom') {
+          if (seenSystemKeys.has(systemKey)) {
+            // Already have this built-in automation; skip duplicate card
+            continue;
+          }
+          seenSystemKeys.add(systemKey);
+        }
+
+        const fallback = defaults.automations.find((d) => d.systemKey === systemKey);
+        const id = stringValue(rawId, fallback?.id || `custom-${index + 1}`);
+
+        // Custom automations must have unique IDs
+        if (systemKey === 'custom' && seenIds.has(id)) {
+          continue;
+        }
+        seenIds.add(id);
+
         const frequency = stringValue(item.frequency, fallback?.frequency || 'daily') as EmailAutomation['frequency'];
-        return {
-          id: stringValue(item.id, fallback?.id || `custom-${index + 1}`),
+
+        result.push({
+          id,
           name: stringValue(item.name, fallback?.name || `Email ${index + 1}`),
-          systemKey: ['shop-floor-reminders', 'weekly-shop-floor-report', 'mpesa-review', 'mo-overtime', 'mo-stock-shortage-report', 'custom'].includes(systemKey) ? systemKey : 'custom',
+          systemKey,
           enabled: booleanValue(item.enabled, fallback?.enabled ?? false),
           frequency: ['hourly', 'daily', 'weekly'].includes(frequency) ? frequency : 'daily',
           interval: positiveNumberValue(item.interval, fallback?.interval || 1),
@@ -347,8 +391,18 @@ function readMailConfig(mailConfigJson: string | null): MailConfig {
           subject: stringValue(item.subject, fallback?.subject || '').trim(),
           body: stringValue(item.body, fallback?.body || ''),
           lastSentAt: stringValue(item.lastSentAt, ''),
-        };
-      });
+        });
+      }
+
+      // Ensure any missing built-in system automations are appended once
+      for (const def of defaults.automations) {
+        if (def.systemKey !== 'custom' && !seenSystemKeys.has(def.systemKey)) {
+          result.push(def);
+          seenSystemKeys.add(def.systemKey);
+        }
+      }
+
+      return result;
     })(),
     shopFloorReportingStartDate: normalizeShopFloorReportingStartDate(
       stringValue(raw.shopFloorReportingStartDate, defaults.shopFloorReportingStartDate),
@@ -648,7 +702,9 @@ export async function getSettings(): Promise<AppSettings> {
       pickingTypeId: String(stock.pickingTypeId || ''),
       missingSoAlertUserLogin: String(stock.missingSoAlertUserLogin || ''),
       missingComponentAlertUserLogin: String(stock.missingComponentAlertUserLogin || ''),
-      boardLogNotificationEmail: String(stock.boardLogNotificationEmail || DEFAULT_STOCK_CONFIG.boardLogNotificationEmail || ''),
+      boardLogNotificationEmail: normalizeBoardLogRecipients(
+        String(stock.boardLogNotificationEmail || DEFAULT_STOCK_CONFIG.boardLogNotificationEmail || ''),
+      ),
     },
     mail,
     payrollBridge,
@@ -817,6 +873,9 @@ export async function saveSettings(input: {
   const stock = {
     ...existing.stock,
     ...input.stock,
+    boardLogNotificationEmail: normalizeBoardLogRecipients(
+      String((input.stock as Record<string, unknown> | undefined)?.boardLogNotificationEmail ?? existing.stock.boardLogNotificationEmail ?? ''),
+    ),
   };
   const mail = input.mail
     ? {
@@ -5557,6 +5616,7 @@ export async function getPendingShopFloorProcesses(filters?: {
     qty_needed: Number(r.qty_needed || 0),
     qty_reserved: Number(r.qty_reserved || 0),
     qty_missing: Number(r.qty_missing || 0),
+    is_mo_closed: Boolean(r.is_mo_closed),
   }));
 }
 
@@ -5590,6 +5650,7 @@ export async function upsertPendingShopFloorProcesses(
         `UPDATE shop_floor_pending_processes
          SET mo_name = ?, origin = ?, partner_id = ?, partner_name = ?,
              product_name = ?, qty_needed = ?, qty_reserved = ?, qty_missing = ?,
+             is_mo_closed = ?,
              last_synced_at = ?, updated_at = ?
          WHERE id = ?`,
         [
@@ -5601,6 +5662,7 @@ export async function upsertPendingShopFloorProcesses(
           rec.qty_needed,
           rec.qty_reserved,
           rec.qty_missing,
+          rec.is_mo_closed ? 1 : 0,
           now,
           now,
           existing.id,
@@ -5612,8 +5674,8 @@ export async function upsertPendingShopFloorProcesses(
         `INSERT INTO shop_floor_pending_processes (
            id, process_type, mo_id, mo_name, origin, partner_id, partner_name,
            product_id, product_name, qty_needed, qty_reserved, qty_missing,
-           status, loaded_at, loaded_by, last_synced_at, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           status, loaded_at, loaded_by, is_mo_closed, last_synced_at, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           rec.process_type || 'board_intake',
@@ -5630,6 +5692,7 @@ export async function upsertPendingShopFloorProcesses(
           rec.status || 'pending',
           rec.loaded_at || null,
           rec.loaded_by || null,
+          rec.is_mo_closed ? 1 : 0,
           now,
           now,
           now,
@@ -5876,8 +5939,9 @@ export async function pruneStalePendingProcessesForActiveMos(
     partner_name: string;
     product_name: string;
     qty_needed: number;
+    is_mo_closed?: number | boolean;
   }>(
-    `SELECT id, mo_id, product_id, partner_id, partner_name, product_name, qty_needed
+    `SELECT id, mo_id, product_id, partner_id, partner_name, product_name, qty_needed, is_mo_closed
      FROM shop_floor_pending_processes WHERE status = 'pending'`,
   );
   if (!existingPending.length) return;
@@ -5924,11 +5988,23 @@ export async function pruneStalePendingProcessesForActiveMos(
     });
 
     const hasMatchingHistoryLog = matchingLogs.length > 0;
+    const isMoClosed = !activeSet.has(row.mo_id);
 
     // RULE: "make sure that a board log request under add stock area only disappears if a history log that matches it appears"
     // If NO matching history log exists in board_intake_queue, it must NEVER be deleted,
     // even if the MO closed in Odoo shop floor or used another person's stock!
     if (!hasMatchingHistoryLog) {
+      if (isMoClosed && !row.is_mo_closed) {
+        await execute(
+          `UPDATE shop_floor_pending_processes SET is_mo_closed = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+          [row.id],
+        );
+      } else if (!isMoClosed && row.is_mo_closed) {
+        await execute(
+          `UPDATE shop_floor_pending_processes SET is_mo_closed = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+          [row.id],
+        );
+      }
       continue; // PRESERVE IT! DO NOT DELETE!
     }
 
@@ -5937,9 +6013,23 @@ export async function pruneStalePendingProcessesForActiveMos(
     const totalLogged = matchingLogs.reduce((sum, l) => sum + Number(l.quantity || 0), 0);
     if (totalLogged >= Number(row.qty_needed || 0)) {
       // If MO is closed or no longer pending in Odoo, it has been fulfilled by history log
-      if (!activeSet.has(row.mo_id) || (!validKeySet.has(row.id) && !validKeySet.has(compositeKey))) {
+      if (isMoClosed || (!validKeySet.has(row.id) && !validKeySet.has(compositeKey))) {
         await execute(
           `UPDATE shop_floor_pending_processes SET status = 'loaded', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+          [row.id],
+        );
+      }
+    } else {
+      // Partial history log exists, but requirement is still unfulfilled!
+      // If the MO was closed in Odoo, mark is_mo_closed = 1 so operators know work order closed without full stock logged
+      if (isMoClosed && !row.is_mo_closed) {
+        await execute(
+          `UPDATE shop_floor_pending_processes SET is_mo_closed = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+          [row.id],
+        );
+      } else if (!isMoClosed && row.is_mo_closed) {
+        await execute(
+          `UPDATE shop_floor_pending_processes SET is_mo_closed = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
           [row.id],
         );
       }

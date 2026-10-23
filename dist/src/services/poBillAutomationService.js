@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -23,6 +56,7 @@ exports.vendorBillMatchesParsedInvoice = vendorBillMatchesParsedInvoice;
 exports.isCompletedPoBillActivityNote = isCompletedPoBillActivityNote;
 exports.verifyPoBillProcessedEvidence = verifyPoBillProcessedEvidence;
 exports.selectExistingVendorBillForMatchedPurchaseOrders = selectExistingVendorBillForMatchedPurchaseOrders;
+exports.retryFailedPoBillPayment = retryFailedPoBillPayment;
 exports.runPoBillAutomation = runPoBillAutomation;
 const promises_1 = __importDefault(require("fs/promises"));
 const path_1 = __importDefault(require("path"));
@@ -1900,6 +1934,64 @@ async function registerPaymentForVendorBill(client, vendorBill, pinNote, parsedI
         if (wizardContextData.default_payment_method_line_id) {
             wizardPayload.payment_method_line_id = wizardContextData.default_payment_method_line_id;
         }
+        // Support mandatory custom Odoo payment fields such as x_paid_by ("Have you filled the name of the person who paid ?")
+        // Note: "Have you filled the name of the person who paid ?" (x_paid_by) is a Studio boolean checkbox (must be true).
+        wizardPayload.x_paid_by = true;
+        try {
+            const customPaymentFields = await client
+                .searchReadRecords('ir.model.fields', {
+                domain: [
+                    ['model', '=', 'account.payment.register'],
+                    '|',
+                    ['name', '=like', 'x_%'],
+                    ['name', 'in', ['paid_by', 'payer']],
+                ],
+                fields: ['name', 'field_description', 'ttype', 'relation'],
+                limit: 20,
+            })
+                .catch(() => []);
+            for (const field of customPaymentFields) {
+                if (field.ttype === 'boolean') {
+                    wizardPayload[field.name] = true;
+                }
+                else if (field.ttype === 'char' || field.ttype === 'text') {
+                    if (/name|person|paid|payer|who/i.test(field.name) ||
+                        /name|person|paid|payer|who/i.test(field.field_description)) {
+                        wizardPayload[field.name] = ALLOWED_NOTIFICATION_USER_NAME;
+                    }
+                }
+                else if (field.ttype === 'many2one') {
+                    if (/name|person|paid|payer|who/i.test(field.name) ||
+                        /name|person|paid|payer|who/i.test(field.field_description)) {
+                        if (field.relation === 'res.users') {
+                            const user = await client
+                                .findUserByNameLoginOrEmail(ALLOWED_NOTIFICATION_USER_NAME)
+                                .catch(() => null);
+                            if (user)
+                                wizardPayload[field.name] = user.id;
+                        }
+                        else if (field.relation === 'res.partner') {
+                            const partners = await client
+                                .searchReadRecords('res.partner', {
+                                domain: [
+                                    '|',
+                                    ['name', 'ilike', ALLOWED_NOTIFICATION_USER_NAME],
+                                    ['email', 'ilike', ALLOWED_NOTIFICATION_USER_NAME],
+                                ],
+                                fields: ['id'],
+                                limit: 1,
+                            })
+                                .catch(() => []);
+                            if (partners[0])
+                                wizardPayload[field.name] = partners[0].id;
+                        }
+                    }
+                }
+            }
+        }
+        catch (_fieldErr) {
+            wizardPayload.x_paid_by = true;
+        }
         const wizardId = await client.createRecord('account.payment.register', wizardPayload, {
             active_model: 'account.move',
             active_ids: [vendorBill.id],
@@ -1926,6 +2018,146 @@ async function registerPaymentForVendorBill(client, vendorBill, pinNote, parsedI
     return {
         success: false,
         message: `Failed to create payment for vendor bill ${vendorBill.name || vendorBill.id} using the Odoo Pay dialog fields: ${wizardErrorMessage || 'Unknown payment wizard error.'}`,
+    };
+}
+async function retryFailedPoBillPayment(client, input) {
+    const domain = [['move_type', '=', 'in_invoice']];
+    if (input.billId) {
+        domain.push(['id', '=', input.billId]);
+    }
+    else if (input.billName) {
+        domain.push(['name', '=', input.billName]);
+    }
+    else {
+        throw new Error('Either billId or billName must be provided.');
+    }
+    const bills = await client.searchReadRecords('account.move', {
+        domain,
+        fields: [
+            'id',
+            'name',
+            'ref',
+            'state',
+            'payment_state',
+            'amount_total',
+            'amount_residual',
+            'invoice_date',
+            'partner_id',
+            'invoice_line_ids',
+        ],
+        limit: 1,
+    });
+    const vendorBill = bills[0];
+    if (!vendorBill) {
+        return {
+            success: false,
+            message: `Vendor bill ${input.billName || input.billId} was not found in Odoo.`,
+        };
+    }
+    // 1. Check if bill needs to be posted
+    if (vendorBill.state === 'draft') {
+        try {
+            await client.callRecordMethod('account.move', 'action_post', [vendorBill.id]);
+        }
+        catch (postErr) {
+            return {
+                success: false,
+                message: `Vendor bill ${vendorBill.name || vendorBill.id} is in draft and could not be posted: ${postErr instanceof Error ? postErr.message : String(postErr)}`,
+                billId: vendorBill.id,
+                billName: vendorBill.name || String(vendorBill.id),
+            };
+        }
+    }
+    const isAlreadyPaid = vendorBill.payment_state === 'paid' ||
+        vendorBill.payment_state === 'in_payment' ||
+        (typeof vendorBill.amount_residual === 'number' &&
+            vendorBill.amount_residual <= 0.01 &&
+            vendorBill.state === 'posted');
+    let paymentMessage = '';
+    if (isAlreadyPaid) {
+        paymentMessage = `Vendor bill ${vendorBill.name || vendorBill.id} is already in state '${vendorBill.payment_state || 'paid'}'.`;
+    }
+    else {
+        const pinNote = input.pinNote || 'NO PIN';
+        const paymentResult = await registerPaymentForVendorBill(client, vendorBill, pinNote, input.paymentDate || vendorBill.invoice_date);
+        if (!paymentResult.success) {
+            return {
+                success: false,
+                message: paymentResult.message,
+                billId: vendorBill.id,
+                billName: vendorBill.name || String(vendorBill.id),
+                paymentState: vendorBill.payment_state,
+            };
+        }
+        paymentMessage = paymentResult.message;
+    }
+    // 2. Resolve purchase order IDs to close activities
+    const poNames = input.purchaseOrderNames && input.purchaseOrderNames.length > 0
+        ? input.purchaseOrderNames
+        : [];
+    const poIds = [];
+    if (poNames.length > 0) {
+        const foundOrders = await client
+            .searchReadRecords('purchase.order', {
+            domain: [['name', 'in', poNames]],
+            fields: ['id', 'name'],
+        })
+            .catch(() => []);
+        poIds.push(...foundOrders.map((o) => o.id));
+    }
+    // If no PO names matched or provided, inspect invoice line purchase order links
+    if (poIds.length === 0 &&
+        Array.isArray(vendorBill.invoice_line_ids) &&
+        vendorBill.invoice_line_ids.length > 0) {
+        const lines = await client
+            .readRecords('account.move.line', vendorBill.invoice_line_ids, ['id', 'purchase_order_id'])
+            .catch(() => []);
+        for (const line of lines) {
+            if (Array.isArray(line.purchase_order_id) &&
+                line.purchase_order_id[0] &&
+                !poIds.includes(line.purchase_order_id[0])) {
+                poIds.push(line.purchase_order_id[0]);
+            }
+        }
+    }
+    // 3. Close open activities for PO bill automation on these purchase orders
+    let totalClosedActivities = 0;
+    for (const poId of poIds) {
+        try {
+            const openActivities = await (0, odooActivityService_1.findOpenActivities)(client, {
+                modelName: 'purchase.order',
+                recordId: poId,
+            });
+            const matchingActivities = openActivities.filter((a) => a.summary === 'PO bill automation completed' ||
+                a.summary === 'Review PO bill automation');
+            if (matchingActivities.length > 0) {
+                const closeResult = await (0, odooActivityService_1.closeActivities)(client, matchingActivities.map((a) => a.id), `Closed automatically: Payment registered successfully for vendor bill ${vendorBill.name || vendorBill.id}.`);
+                totalClosedActivities += closeResult.closedCount;
+            }
+        }
+        catch (actErr) {
+            console.warn(`[poBillAutomation] Failed to close activities on PO ${poId}:`, actErr);
+        }
+    }
+    // 4. Update local database record if present
+    try {
+        const { execute } = await Promise.resolve().then(() => __importStar(require('../models/db')));
+        await execute(`UPDATE po_bill_processed_documents
+       SET status = 'processed',
+           summary = 'Vendor bill created and payment registered successfully.',
+           updated_at = CURRENT_TIMESTAMP
+       WHERE vendor_bill_name = ? OR vendor_bill_id = ?`, [vendorBill.name || '', vendorBill.id]);
+    }
+    catch (_dbErr) {
+        // Non-fatal if local db is not connected
+    }
+    return {
+        success: true,
+        message: `${paymentMessage} Closed ${totalClosedActivities} follow-up activity/activities on linked Purchase Order(s).`,
+        billId: vendorBill.id,
+        billName: vendorBill.name || String(vendorBill.id),
+        paymentState: isAlreadyPaid ? vendorBill.payment_state : 'in_payment',
+        activitiesClosed: totalClosedActivities,
     };
 }
 async function validatePurchaseOrderReceipts(client, purchaseOrder) {

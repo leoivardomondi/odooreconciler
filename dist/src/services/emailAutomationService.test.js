@@ -107,3 +107,39 @@ const emailAutomationService_1 = require("./emailAutomationService");
         strict_1.default.equal((0, emailAutomationService_1.isDue)(hourlyRemindersAutomation, wednesday8am), true);
     });
 });
+(0, node_test_1.default)('readMailConfig - Automations Deduplication Rule', () => {
+    const { readMailConfig } = require('../models/repositories');
+    // Simulate a corrupted or duplicated automations list from DB
+    const rawDuplicatedJson = JSON.stringify({
+        automations: [
+            { id: 'shop-floor-reminders', name: 'Shop-floor task reminders', systemKey: 'shop-floor-reminders', enabled: true },
+            { id: 'weekly-shop-floor-report', name: 'Weekly shop-floor accountability report', systemKey: 'weekly-shop-floor-report', enabled: true },
+            { id: 'mpesa-review', name: 'M-Pesa review pending', systemKey: 'mpesa-review', enabled: true },
+            { id: 'mo-overtime', name: 'Large MO overtime suggestion', systemKey: 'mo-overtime', enabled: true },
+            // Duplicate 1 of mo-stock-shortage-report
+            { id: 'mo-stock-shortage-report', name: 'Daily MO stock shortage & board mismatch report', systemKey: 'mo-stock-shortage-report', enabled: true },
+            // Duplicate 2 of mo-stock-shortage-report (different ID or name variation)
+            { id: 'mo-stock-shortage-report-dup', name: 'Daily MO stock shortage & board mismatch report', systemKey: 'mo-stock-shortage-report', enabled: false },
+            // Duplicate 3 with missing systemKey but matching name
+            { id: 'custom-12345', name: 'Daily MO stock shortage & board mismatch report', enabled: true },
+            // Legitimate custom automation
+            { id: 'custom-real-alert', name: 'Custom Warehouse Alert', systemKey: 'custom', enabled: true }
+        ]
+    });
+    const parsed = readMailConfig(rawDuplicatedJson);
+    const moShortageReports = parsed.automations.filter((a) => a.systemKey === 'mo-stock-shortage-report');
+    strict_1.default.equal(moShortageReports.length, 1, 'Should have exactly ONE Daily MO stock shortage report automation');
+    strict_1.default.equal(moShortageReports[0].id, 'mo-stock-shortage-report');
+    // Verify all 5 system automations are present exactly once
+    const systemKeys = parsed.automations.filter((a) => a.systemKey !== 'custom').map((a) => a.systemKey);
+    const uniqueSystemKeys = new Set(systemKeys);
+    strict_1.default.equal(systemKeys.length, uniqueSystemKeys.size, 'All built-in system automations must be unique');
+    strict_1.default.equal(uniqueSystemKeys.has('mo-stock-shortage-report'), true);
+    strict_1.default.equal(uniqueSystemKeys.has('shop-floor-reminders'), true);
+    strict_1.default.equal(uniqueSystemKeys.has('weekly-shop-floor-report'), true);
+    strict_1.default.equal(uniqueSystemKeys.has('mpesa-review'), true);
+    strict_1.default.equal(uniqueSystemKeys.has('mo-overtime'), true);
+    // Custom automation is preserved
+    const customAlerts = parsed.automations.filter((a) => a.id === 'custom-real-alert');
+    strict_1.default.equal(customAlerts.length, 1);
+});

@@ -319,6 +319,7 @@
           <div class="d-flex flex-wrap gap-3">
             <%
               const expectedBoardsCount = data.stockAlerts ? data.stockAlerts.reduce((sum, item) => sum + (item.qtyNeeded || 0), 0) : 0;
+              const closedWithoutStockInPenalty = (data.stockAlerts || []).filter(a => a.isMoClosed).length;
             %>
             <div class="border rounded-3 px-3 py-2 bg-white flex-fill text-center">
               <div class="text-muted small fw-bold text-uppercase mb-1" data-i18n="expected_boards">Expected Boards</div>
@@ -326,6 +327,14 @@
                 <%= expectedBoardsCount %>
               </div>
             </div>
+            <% if (closedWithoutStockInPenalty > 0) { %>
+              <div class="border rounded-3 px-3 py-2 flex-fill text-center" style="background:#fff1f2;border-color:#fca5a5 !important;">
+                <div class="small fw-bold text-uppercase mb-1 text-danger">Closed Without Stock</div>
+                <div class="fs-4 fw-bold text-danger">
+                  <%= closedWithoutStockInPenalty %>
+                </div>
+              </div>
+            <% } %>
             <div class="border rounded-3 px-3 py-2 bg-white flex-fill text-center">
               <div class="text-muted small fw-bold text-uppercase mb-1" data-i18n="unmarked_deliveries">Outgoing Deliveries Still Open</div>
               <div class="fs-4 fw-bold <%= data.teamPenalties.unmarkedDeliveries > 0 ? 'text-warning' : 'text-success' %>">
@@ -533,6 +542,31 @@
     <% } %>
 
     <% if (!data.isLimitedDashboard) { %>
+    <% 
+      const closedWithoutStockAlerts = (data.stockAlerts || []).filter(a => a.isMoClosed);
+    %>
+    <% if (closedWithoutStockAlerts.length > 0) { %>
+      <div class="rounded-4 border mb-4 p-3 d-flex align-items-center justify-content-between flex-wrap gap-3 shadow-sm" style="background:#fff1f2;border-color:#fecdd3 !important;border-left:5px solid #ef4444 !important;">
+        <div class="d-flex align-items-center gap-3">
+          <div class="rounded-circle d-flex align-items-center justify-content-center flex-shrink-0" style="width:42px;height:42px;background:#fee2e2;color:#dc2626;font-size:1.3rem;">
+            🚨
+          </div>
+          <div>
+            <div class="fw-bold text-danger" style="font-size:0.95rem;">
+              <%= closedWithoutStockAlerts.length %> Work Order<%= closedWithoutStockAlerts.length === 1 ? '' : 's' %> Closed But Stock Not Yet Logged!
+            </div>
+            <div class="text-muted" style="font-size:0.78rem;">
+              Manufacturing orders were completed or closed in Odoo while required raw boards have not yet been registered at the factory gate.
+            </div>
+          </div>
+        </div>
+        <a href="/shop-floor/boards" class="btn btn-sm btn-danger rounded-pill fw-bold px-3 py-1.5 shadow-sm d-inline-flex align-items-center gap-1.5" style="box-shadow:0 2px 6px rgba(220,38,38,0.3)">
+          <span>Review & Log Stock in Add Stock</span>
+          <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+        </a>
+      </div>
+    <% } %>
+
     <!-- Stats Row -->
     <div class="row g-3 mb-4">
       <div class="col-6 col-md-3 col-lg-2">

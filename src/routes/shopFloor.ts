@@ -61,6 +61,7 @@ import { syncShopFloorOperatorAccess } from '../services/shopFloorOperatorAccess
 import { syncPendingProcessesFromOdoo } from '../services/shopFloorPendingSyncService';
 import { extractSoNameFromOrigin } from '../services/poJobSummaryAuditService';
 import { isAllowedAttendanceIp, normalizeIpAddress } from '../utils/siteAttendanceAccess';
+import { normalizeBoardLogRecipients } from '../utils/helpers';
 
 const router = Router();
 
@@ -206,6 +207,8 @@ interface StockAlert {
   product: string;
   component: string;
   qtyNeeded: number;
+  totalNeeded?: number;
+  qtyReserved?: number;
   client: string | null;
   moId: number;
   confirmedAt: string | null;
@@ -214,6 +217,7 @@ interface StockAlert {
   productId?: number | null;
   isSyncing?: boolean;
   syncingQty?: number;
+  isMoClosed?: boolean;
 }
 
 function toEAT(utcStr: string | null): string | null {
@@ -902,25 +906,38 @@ export async function buildInstantMysqlOperatorDashboard(userEmail: string): Pro
     product: p.product_name,
     component: p.product_name,
     qtyNeeded: p.qty_missing,
+    totalNeeded: p.qty_needed,
+    qtyReserved: p.qty_reserved,
     client: p.partner_name,
     moId: p.mo_id,
     confirmedAt: null,
     overdueDays: 0,
+    partnerId: p.partner_id || null,
+    productId: p.product_id || null,
+    isSyncing: false,
+    isMoClosed: Boolean(p.is_mo_closed),
   }));
 
   const stockAlertsMap = new Map<string, StockAlert>();
   for (const alert of pendingAlerts) {
-    stockAlertsMap.set(`${alert.moName}:${alert.product}`, alert);
+    if (alert.qtyNeeded > 0) {
+      stockAlertsMap.set(`${alert.moName}:${alert.product}`, alert);
+    }
   }
   if (sharedMo?.rawStockAlerts && sharedMo.rawStockAlerts.length > 0) {
-    for (const alert of sharedMo.rawStockAlerts) {
+    // Only rawStockAlerts from external Odoo cache that are NOT in MySQL need optimistic deduction
+    const externalOdooAlerts = sharedMo.rawStockAlerts.filter(
+      (alert) => !stockAlertsMap.has(`${alert.moName}:${alert.product}`)
+    );
+    const adjustedExternal = applyOptimisticStockAlerts(externalOdooAlerts);
+    for (const alert of adjustedExternal) {
       const key = `${alert.moName}:${alert.product}`;
-      if (!stockAlertsMap.has(key)) {
+      if (!stockAlertsMap.has(key) && alert.qtyNeeded > 0) {
         stockAlertsMap.set(key, alert);
       }
     }
   }
-  const stockAlerts = applyOptimisticStockAlerts(Array.from(stockAlertsMap.values()));
+  const stockAlerts = Array.from(stockAlertsMap.values());
 
   const incidents = (sharedIncidentsEntry?.data || []).map((r: any) => {
     let machineName = r.name || 'Unknown Machine';
@@ -2709,19 +2726,29 @@ router.get('/shop-floor/boards', async (req: Request, res: Response) => {
               pProduct.includes(String(q.product_name || '').toLowerCase())),
         );
 
+      // If p.qty_missing > 0, this row represents an active UNLOGGED balance requirement.
+      // Any logged quantity was already applied in MySQL, leaving p.qty_missing as the remaining needed count.
+      // Therefore, the unlogged balance of p.qty_missing boards is NOT syncing - it is an active unlogged card!
+      // An alert item is only "isSyncing" (locked) if there is NO remaining unlogged quantity (qty_missing <= 0).
+      const hasUnloggedBalance = Number(p.qty_missing || 0) > 0;
+      const isSyncing = !hasUnloggedBalance && Boolean(matchingSync);
+
       return {
         moName: p.mo_name,
         product: p.product_name,
         component: p.product_name,
         qtyNeeded: p.qty_missing,
+        totalNeeded: p.qty_needed,
+        qtyReserved: p.qty_reserved,
         client: p.partner_name,
         moId: p.mo_id,
         confirmedAt: null,
         overdueDays: 0,
         partnerId: p.partner_id || null,
         productId: p.product_id || null,
-        isSyncing: Boolean(matchingSync),
+        isSyncing,
         syncingQty: matchingSync ? Number((matchingSync as any).quantity || (matchingSync as any).qty || 0) : undefined,
+        isMoClosed: Boolean(p.is_mo_closed),
       };
     });
 
@@ -2739,7 +2766,7 @@ router.get('/shop-floor/boards', async (req: Request, res: Response) => {
       boardLogPage,
       hasNextBoardLogPage,
       stockAlerts: localStockAlerts.length > 0 ? localStockAlerts : (dashboardData.isLimitedDashboard ? [] : dashboardData.stockAlerts),
-      boardLogEmail: settings.stock?.boardLogNotificationEmail || 'sharon@urbanvibeinteriordesign.co.ke',
+      boardLogEmail: normalizeBoardLogRecipients(settings.stock?.boardLogNotificationEmail),
       customers,
       authUser: req.authUser,
       csrfToken: req.csrfToken || null,
@@ -2819,7 +2846,7 @@ router.get('/shop-floor/boards/requirements', async (req: Request, res: Response
       }
 
       const requirements = Array.from(reqMap.values()).filter((r) => r.qtyMissing > 0 && !String(r.moName || '').toUpperCase().startsWith('VA/'));
-      res.json(applyOptimisticBoardIntakes(partnerId, requirements));
+      res.json(requirements);
       return;
     }
 
@@ -3316,7 +3343,21 @@ router.post('/shop-floor/board-intake', async (req: Request, res: Response) => {
     optimisticBoardIntakes.push({ id: optimisticId, partnerId, productId, productName, customerName, quantity: qty, expiresAt: Date.now() + 10 * 60 * 1000 });
     shopFloorCache.clearPrefix('shop-floor-dashboard:');
 
-    const successMessage = `Boards saved immediately: ${qty} x ${productName} for ${customerName}${vehicleRegistration ? ` (${vehicleRegistration})` : ''}. Odoo synchronization and MO reservation are continuing in the background.`;
+    const hasMoReq = updatedRequirements && updatedRequirements.length > 0;
+    const totalNeeded = hasMoReq ? updatedRequirements.reduce((sum, r) => sum + Number(r.qty_needed || 0), 0) : null;
+    const totalMissing = hasMoReq ? updatedRequirements.reduce((sum, r) => sum + Number(r.qty_missing || 0), 0) : null;
+    const moNames = hasMoReq ? [...new Set(updatedRequirements.map((r) => r.mo_name).filter(Boolean))].join(', ') : '';
+
+    let partialSuffix = '';
+    if (hasMoReq && totalNeeded != null && totalMissing != null) {
+      if (totalMissing > 0) {
+        partialSuffix = ` (Partial: ${qty} logged, balance ${totalMissing} of ${totalNeeded} needed for ${moNames || 'MO'})`;
+      } else {
+        partialSuffix = ` (Complete: all ${totalNeeded} supplied for ${moNames || 'MO'})`;
+      }
+    }
+
+    const successMessage = `Boards saved immediately: ${qty} x ${productName} for ${customerName}${partialSuffix}${vehicleRegistration ? ` (${vehicleRegistration})` : ''}. Odoo synchronization and MO reservation are continuing in the background.`;
 
     if (wantsJson) {
       res.json({
@@ -3338,6 +3379,9 @@ router.post('/shop-floor/board-intake', async (req: Request, res: Response) => {
           status: 'pending',
           created_at: new Date().toISOString(),
         },
+        updatedRequirements: updatedRequirements || [],
+        balanceRemaining: totalMissing,
+        totalNeeded,
       });
     } else {
       res.redirect('/shop-floor/boards?message=' + encodeURIComponent(successMessage));
@@ -3348,9 +3392,9 @@ router.post('/shop-floor/board-intake', async (req: Request, res: Response) => {
       const emailPromise = (async () => {
         try {
           const settings = await getSettings();
-          const rawRecipients = settings.stock?.boardLogNotificationEmail?.trim() || 'sharon@urbanvibeinteriordesign.co.ke';
+          const rawRecipients = normalizeBoardLogRecipients(settings.stock?.boardLogNotificationEmail);
           const recipientList = [...new Set(rawRecipients.split(/[,\s;\n]+/).map((e) => e.trim().toLowerCase()).filter((e) => e.includes('@')))];
-          const toRecipients = recipientList.length > 0 ? recipientList.join(', ') : 'sharon@urbanvibeinteriordesign.co.ke';
+          const toRecipients = recipientList.join(', ');
           const reportDate = new Intl.DateTimeFormat('en-CA', { timeZone: env.APP_TIMEZONE || 'Africa/Nairobi', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
           const safeCustomerName = escapeHtml(customerName);
           const safeProductName = escapeHtml(productName);
@@ -3359,10 +3403,43 @@ router.post('/shop-floor/board-intake', async (req: Request, res: Response) => {
           const safeGate = escapeHtml(gate || '—');
           const safeActorEmail = escapeHtml(actorName);
           const subjectCustomerName = customerName.replace(/[\r\n]+/g, ' ').trim();
+
+          const partialSubjectTag = (hasMoReq && totalMissing != null && totalMissing > 0)
+            ? ` (Partial: ${qty} Logged, Balance ${totalMissing} Needed)`
+            : '';
+
+          let reqDetailsHtml = '';
+          if (hasMoReq && totalNeeded != null) {
+            reqDetailsHtml += `<br>Total Required: ${totalNeeded} sheets`;
+            if (totalMissing != null) {
+              if (totalMissing > 0) {
+                reqDetailsHtml += `<br>Balance Remaining: <strong style="color:#b91c1c;">${totalMissing} sheet${totalMissing === 1 ? '' : 's'} needed</strong>`;
+              } else {
+                reqDetailsHtml += `<br>Balance Remaining: <strong style="color:#15803d;">0 sheets (Fully supplied)</strong>`;
+              }
+            }
+          }
+          if (moNames) {
+            reqDetailsHtml += `<br>Manufacturing Order: ${escapeHtml(moNames)}`;
+          }
+
+          let calloutHtml = '';
+          if (hasMoReq && totalNeeded != null && totalMissing != null) {
+            if (totalMissing > 0) {
+              calloutHtml = `<p style="margin-top:12px;padding:8px 12px;background:#fef2f2;border-left:4px solid #ef4444;color:#991b1b;border-radius:4px;">` +
+                `⚠️ <strong>PARTIAL INTAKE:</strong> ${qty} sheet${qty === 1 ? '' : 's'} logged, balance <strong>${totalMissing} sheet${totalMissing === 1 ? '' : 's'}</strong> still required for ${escapeHtml(moNames || 'MO')}. Stock requirement of ${totalMissing} board${totalMissing === 1 ? '' : 's'} remains active before cutting/completion can start.` +
+                `</p>`;
+            } else {
+              calloutHtml = `<p style="margin-top:12px;padding:8px 12px;background:#f0fdf4;border-left:4px solid #22c55e;color:#166534;border-radius:4px;">` +
+                `✅ <strong>COMPLETE INTAKE:</strong> All ${totalNeeded} sheets received and allocated in stock.` +
+                `</p>`;
+            }
+          }
+
           await sendMailWithConfig(settings.mail, {
             to: toRecipients,
-            subject: `${subjectCustomerName} - Board Log - ${reportDate}`,
-            html: `<p><strong>Board log completed</strong></p><p>Client: ${safeCustomerName}<br>Board: ${safeProductName}<br>Quantity: ${qty}<br>Gate: ${safeGate}<br>Vehicle Reg: ${safeVehicleReg}<br>Arrival Time: ${safeArrivalTime}<br>Date: ${reportDate}<br>Logged by: ${safeActorEmail}</p>`,
+            subject: `${subjectCustomerName} - Board Log${partialSubjectTag} - ${reportDate}`,
+            html: `<p><strong>Board log completed</strong></p><p>Client: ${safeCustomerName}<br>Board: ${safeProductName}<br>Quantity: ${qty} sheet${qty === 1 ? '' : 's'}${reqDetailsHtml}<br>Gate: ${safeGate}<br>Vehicle Reg: ${safeVehicleReg}<br>Arrival Time: ${safeArrivalTime}<br>Date: ${reportDate}<br>Logged by: ${safeActorEmail}</p>${calloutHtml}`,
           });
         } catch (mailError) {
           await logEvent('error', `Board log email failed`, {
@@ -3432,7 +3509,7 @@ router.post('/shop-floor/boards/notification-email', async (req: Request, res: R
     return;
   }
 
-  const rawEmail = String(req.body.email || req.body.stockBoardLogNotificationEmail || '').trim();
+  const rawEmail = normalizeBoardLogRecipients(String(req.body.email || req.body.stockBoardLogNotificationEmail || ''));
   if (!rawEmail || !rawEmail.includes('@')) {
     const errorMsg = 'Please provide a valid email address.';
     if (wantsJson) {
@@ -3706,9 +3783,9 @@ router.post('/shop-floor/board-intake/:id/revert', async (req: Request, res: Res
       }
 
       // Send immediate email notification to configured recipients
-      const rawRecipients = settings.stock?.boardLogNotificationEmail?.trim() || 'sharon@urbanvibeinteriordesign.co.ke';
+      const rawRecipients = normalizeBoardLogRecipients(settings.stock?.boardLogNotificationEmail);
       const recipientList = [...new Set(rawRecipients.split(/[,\s;\n]+/).map((e) => e.trim().toLowerCase()).filter((e) => e.includes('@')))];
-      const toRecipients = recipientList.length > 0 ? recipientList.join(', ') : 'sharon@urbanvibeinteriordesign.co.ke';
+      const toRecipients = recipientList.join(', ');
       const subjectCustomerName = (entry.customer_name || 'Client').replace(/[\r\n]+/g, ' ').trim();
 
       await sendMailWithConfig(settings.mail, {

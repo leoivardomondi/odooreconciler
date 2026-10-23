@@ -1,5 +1,5 @@
 import { ParsedJobSummaryResult, SaleOrderLine, SalesOrderDetails } from '../models/types';
-import { isBoardProductName } from './boardProductClassifier';
+import { isBoardProductName, assignBoardLinesToSheetMaterials } from './boardProductClassifier';
 import { logEvent } from './logService';
 import { createTodoActivity, findOpenActivities } from './odooActivityService';
 import { OdooClient } from './odooClient';
@@ -94,21 +94,15 @@ export function compareQuotationLinesWithJobSummary(
   const sheetMaterials = parsed.sheetMaterials || [];
   const boardDetails: QuotationComparisonResult['boardDetails'] = [];
 
+  const assignedBoardLines = assignBoardLinesToSheetMaterials(
+    productLines,
+    sheetMaterials,
+    lineDisplayName,
+  );
+
   for (const material of sheetMaterials) {
     const requiredSheets = material.sheets || 0;
-    const materialNameLower = material.name.toLowerCase().trim();
-
-    // Match board lines by name or thickness
-    const matchingBoardLines = productLines.filter((line) => {
-      const name = lineDisplayName(line).toLowerCase();
-      if (!isBoardProductName(name)) return false;
-      if (/example\s+board/i.test(name)) return false;
-      if (/optimis?ed\s+panels?/i.test(name)) return false;
-      // Match material name keywords (e.g. "mdf", "white", "chipboard", etc.)
-      const nameWords = materialNameLower.split(/\s+/).filter((w) => w.length > 2);
-      const matchesWord = nameWords.some((word) => name.includes(word));
-      return matchesWord || (sheetMaterials.length === 1 && isBoardProductName(name));
-    });
+    const matchingBoardLines = assignedBoardLines.get(material) || [];
 
     const quotedSheets = matchingBoardLines.reduce(
       (sum, l) => sum + (Number(l.product_uom_qty) || 0),

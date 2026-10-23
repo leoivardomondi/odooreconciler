@@ -38,6 +38,8 @@ export interface BuildBoardIntakeChatterOptions {
   productName?: string | null;
   quantity?: number | string | null;
   moName?: string | null;
+  qtyNeeded?: number | null;
+  balanceRemaining?: number | null;
   gate?: string | null;
   vehicleRegistration?: string | null;
   arrivalTime?: string | null;
@@ -56,6 +58,10 @@ export function buildBoardIntakeChatterHtml(options: BuildBoardIntakeChatterOpti
   const safeArrivalTime = options.arrivalTime ? escapeHtml(String(options.arrivalTime).trim()) : '';
   const safeActor = escapeHtml(options.actorName || 'Operator');
   const qtyNum = Number(options.quantity || 0);
+  const neededNum = options.qtyNeeded != null && Number.isFinite(Number(options.qtyNeeded)) ? Number(options.qtyNeeded) : null;
+  const balanceNum = options.balanceRemaining != null && Number.isFinite(Number(options.balanceRemaining))
+    ? Math.max(0, Number(options.balanceRemaining))
+    : (neededNum != null ? Math.max(0, neededNum - qtyNum) : null);
 
   const lines: string[] = [];
 
@@ -71,6 +77,25 @@ export function buildBoardIntakeChatterHtml(options: BuildBoardIntakeChatterOpti
     `• <strong>Board:</strong> ${safeProductName}`,
     `• <strong>Quantity:</strong> ${qtyNum} sheet${qtyNum === 1 ? '' : 's'}`,
   );
+
+  if (neededNum != null && neededNum > 0) {
+    lines.push(`• <strong>Total Required:</strong> ${neededNum} sheet${neededNum === 1 ? '' : 's'}`);
+    if (balanceNum != null && balanceNum > 0) {
+      lines.push(
+        `• <strong>Balance Remaining:</strong> <span style="color:#b91c1c;font-weight:bold;">${balanceNum} sheet${balanceNum === 1 ? '' : 's'} needed</span>`,
+        `<p style="margin-top:8px;padding:8px 12px;background:#fef2f2;border-left:4px solid #ef4444;color:#991b1b;border-radius:4px;">` +
+        `⚠️ <strong>PARTIAL INTAKE:</strong> ${qtyNum} sheet${qtyNum === 1 ? '' : 's'} logged, balance <strong>${balanceNum} sheet${balanceNum === 1 ? '' : 's'}</strong> still required for ${options.moName ? escapeHtml(options.moName) : 'this MO'}. Stock requirement of ${balanceNum} board${balanceNum === 1 ? '' : 's'} remains active before cutting/completion can start.` +
+        `</p>`
+      );
+    } else {
+      lines.push(
+        `• <strong>Balance Remaining:</strong> <span style="color:#15803d;font-weight:bold;">0 sheets (Fully supplied)</span>`,
+        `<p style="margin-top:8px;padding:8px 12px;background:#f0fdf4;border-left:4px solid #22c55e;color:#166534;border-radius:4px;">` +
+        `✅ <strong>COMPLETE INTAKE:</strong> All ${neededNum} sheets received and allocated in stock.` +
+        `</p>`
+      );
+    }
+  }
 
   if (options.moName) lines.push(`• <strong>Manufacturing Order:</strong> ${escapeHtml(options.moName)}`);
   if (safeGate && safeGate !== '—') {
@@ -482,17 +507,11 @@ export async function syncBoardIntakeEntry(id: string) {
     });
 
     if (matchingMOs.length) {
-      for (const mo of matchingMOs) {
-        if (Math.abs(mo.qtyNeeded - Number(entry.quantity)) > 0.001 && Number(entry.quantity) > 0) {
-          await client.adjustMOComponentQuantity(
-            mo.moId,
-            Number(entry.product_id),
-            Number(entry.quantity),
-            `logged board intake (${Number(entry.quantity)} boards) difference`,
-            entry.actor_name,
-          );
-        }
-      }
+      // NOTE: We do NOT reduce the MO's required component quantity (product_uom_qty).
+      // When an MO needs 10 boards and operator logs 5, the MO still requires 10 boards total,
+      // 5 are added to stock and reserved via action_assign, and the remaining 5 boards
+      // remain an active stock shortage / requirement (balance of 5).
+
       const reportDate = entry.arrival_date || new Intl.DateTimeFormat('en-CA', {
         timeZone: 'Africa/Nairobi',
         year: 'numeric',
@@ -502,43 +521,24 @@ export async function syncBoardIntakeEntry(id: string) {
 
       // 1. Post to mrp.production chatter for all matching MOs
       await Promise.all(matchingMOs.map(async (mo) => {
-      const { mentionHtml, partnerIds } = await resolveBoardIntakeStakeholders(
-        client,
-        mo.soUserId,
-        candySharonPromise,
-      );
-      const chatterHtml = buildBoardIntakeChatterHtml({
-        customerName: activeEntry.customer_name,
-        productName: activeEntry.product_name,
-        quantity: activeEntry.quantity,
-        moName: mo.moName,
-        gate: activeEntry.gate,
-        vehicleRegistration: activeEntry.vehicle_registration,
-        arrivalTime: activeEntry.arrival_time,
-        reportDate,
-        actorName: activeEntry.actor_name || activeEntry.actor_email,
-        mentionHtml,
-        hasBoardPo: mo.hasBoardPo,
-        boardPoNames: mo.boardPoNames,
-      });
-      return client.postModelChatterMessage('mrp.production', mo.moId, chatterHtml, partnerIds).catch(() => null);
-    }));
-
-    // 2. Post to related sale.order chatter if matching MO has a linked Sales Order
-    const postedSoIds = new Set<number>();
-    for (const mo of matchingMOs) {
-      if (mo.soId && !postedSoIds.has(mo.soId)) {
-        postedSoIds.add(mo.soId);
         const { mentionHtml, partnerIds } = await resolveBoardIntakeStakeholders(
           client,
           mo.soUserId,
           candySharonPromise,
         );
+        const qtyNeeded = Number(mo.qtyNeeded || 0);
+        const qtyLogged = Number(activeEntry.quantity || 0);
+        const previousReserved = Number(mo.qtyReserved || 0);
+        const totalSupplied = previousReserved + qtyLogged;
+        const balanceRemaining = Math.max(0, qtyNeeded - totalSupplied);
+
         const chatterHtml = buildBoardIntakeChatterHtml({
           customerName: activeEntry.customer_name,
           productName: activeEntry.product_name,
           quantity: activeEntry.quantity,
           moName: mo.moName,
+          qtyNeeded: qtyNeeded > 0 ? qtyNeeded : null,
+          balanceRemaining: qtyNeeded > 0 ? balanceRemaining : null,
           gate: activeEntry.gate,
           vehicleRegistration: activeEntry.vehicle_registration,
           arrivalTime: activeEntry.arrival_time,
@@ -548,9 +548,44 @@ export async function syncBoardIntakeEntry(id: string) {
           hasBoardPo: mo.hasBoardPo,
           boardPoNames: mo.boardPoNames,
         });
-        await client.postModelChatterMessage('sale.order', mo.soId, chatterHtml, partnerIds).catch(() => null);
+        return client.postModelChatterMessage('mrp.production', mo.moId, chatterHtml, partnerIds).catch(() => null);
+      }));
+
+      // 2. Post to related sale.order chatter if matching MO has a linked Sales Order
+      const postedSoIds = new Set<number>();
+      for (const mo of matchingMOs) {
+        if (mo.soId && !postedSoIds.has(mo.soId)) {
+          postedSoIds.add(mo.soId);
+          const { mentionHtml, partnerIds } = await resolveBoardIntakeStakeholders(
+            client,
+            mo.soUserId,
+            candySharonPromise,
+          );
+          const qtyNeeded = Number(mo.qtyNeeded || 0);
+          const qtyLogged = Number(activeEntry.quantity || 0);
+          const previousReserved = Number(mo.qtyReserved || 0);
+          const totalSupplied = previousReserved + qtyLogged;
+          const balanceRemaining = Math.max(0, qtyNeeded - totalSupplied);
+
+          const chatterHtml = buildBoardIntakeChatterHtml({
+            customerName: activeEntry.customer_name,
+            productName: activeEntry.product_name,
+            quantity: activeEntry.quantity,
+            moName: mo.moName,
+            qtyNeeded: qtyNeeded > 0 ? qtyNeeded : null,
+            balanceRemaining: qtyNeeded > 0 ? balanceRemaining : null,
+            gate: activeEntry.gate,
+            vehicleRegistration: activeEntry.vehicle_registration,
+            arrivalTime: activeEntry.arrival_time,
+            reportDate,
+            actorName: activeEntry.actor_name || activeEntry.actor_email,
+            mentionHtml,
+            hasBoardPo: mo.hasBoardPo,
+            boardPoNames: mo.boardPoNames,
+          });
+          await client.postModelChatterMessage('sale.order', mo.soId, chatterHtml, partnerIds).catch(() => null);
+        }
       }
-    }
 
       await client.reserveStockOnMOs(matchingMOs.map((mo) => mo.moId));
     }

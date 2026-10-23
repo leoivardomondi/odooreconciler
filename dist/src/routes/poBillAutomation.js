@@ -268,4 +268,43 @@ router.post('/po-bill-automation/reset-exhausted', async (req, res) => {
         res.redirect(`/po-bill-automation?${query.toString()}`);
     }
 });
+router.post('/po-bill-automation/retry-payment', async (req, res) => {
+    const billName = typeof req.body.billName === 'string' ? req.body.billName.trim() : undefined;
+    const billId = req.body.billId ? Number(req.body.billId) : undefined;
+    const pinNote = req.body.pinNote === 'ETR' ? 'ETR' : 'NO PIN';
+    const paymentDate = typeof req.body.paymentDate === 'string' ? req.body.paymentDate.trim() : undefined;
+    const purchaseOrderNames = Array.isArray(req.body.purchaseOrderNames)
+        ? req.body.purchaseOrderNames
+        : typeof req.body.purchaseOrderNames === 'string'
+            ? req.body.purchaseOrderNames
+                .split(',')
+                .map((s) => s.trim())
+                .filter(Boolean)
+            : undefined;
+    try {
+        const { client } = await buildClient();
+        const result = await (0, poBillAutomationService_1.retryFailedPoBillPayment)(client, {
+            billName,
+            billId,
+            pinNote,
+            paymentDate,
+            purchaseOrderNames,
+        });
+        if (req.xhr || req.headers.accept?.includes('application/json')) {
+            return res.json(result);
+        }
+        const query = new URLSearchParams({
+            message: result.message,
+        });
+        res.redirect(`/po-bill-automation?${query.toString()}`);
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to retry bill payment.';
+        if (req.xhr || req.headers.accept?.includes('application/json')) {
+            return res.status(500).json({ success: false, message });
+        }
+        const query = new URLSearchParams({ error: message });
+        res.redirect(`/po-bill-automation?${query.toString()}`);
+    }
+});
 exports.default = router;

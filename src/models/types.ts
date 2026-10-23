@@ -945,6 +945,7 @@ export interface PendingShopFloorProcess {
   loaded_at: string | null;
   loaded_by: string | null;
   last_synced_at: string | null;
+  is_mo_closed?: boolean | number;
   created_at?: string;
   updated_at?: string;
 }

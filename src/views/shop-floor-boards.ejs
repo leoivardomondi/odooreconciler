@@ -268,12 +268,18 @@
           });
         %>
           <section id="stockNeededSection" class="border-bottom overflow-hidden" style="background:#fff7ed;border-color:#fed7aa !important" aria-labelledby="stockNeededHeading">
-            <div class="px-4 py-3 d-flex justify-content-between align-items-center gap-2" style="background:#ffedd5;border-bottom:1px solid #fed7aa">
+            <div class="px-4 py-3 d-flex justify-content-between align-items-center gap-2 flex-wrap" style="background:#ffedd5;border-bottom:1px solid #fed7aa">
               <h3 id="stockNeededHeading" class="h6 mb-0 fw-bold d-flex align-items-center gap-2 flex-wrap" style="color:#9a3412">
                 <span>Stock Needed — No Purchase Orders</span>
                 <span id="undoneCountBadge" class="badge rounded-pill flex-shrink-0" style="<%= pendingAlerts.length === 0 ? 'background:#f0fdf4;color:#15803d;border:1px solid #bbf7d0;' : 'background:#fff7ed;color:#c2410c;border:1px solid #fed7aa;' %>font-weight:700">
                   <span id="undoneCountNumber"><%= pendingAlerts.length %></span> <%= pendingAlerts.length === 1 ? 'undone item' : 'undone items' %>
                 </span>
+                <% const closedWithoutStock = stockAlerts.filter(a => a.isMoClosed); %>
+                <% if (closedWithoutStock.length > 0) { %>
+                  <span id="closedWithoutStockBadge" class="badge rounded-pill flex-shrink-0 bg-danger text-white border border-danger-subtle shadow-sm px-2.5 py-1" style="font-weight:700;font-size:0.75rem;">
+                    🚨 <span id="closedWithoutStockNumber"><%= closedWithoutStock.length %></span> WORK ORDER CLOSED WITHOUT STOCK LOGGED
+                  </span>
+                <% } %>
                 <% if (syncingAlerts.length > 0) { %>
                   <span id="syncingCountBadge" class="badge rounded-pill flex-shrink-0 bg-warning-subtle text-warning-emphasis border border-warning-subtle" style="font-weight:600">
                     <span id="syncingCountNumber"><%= syncingAlerts.length %></span> syncing
@@ -281,10 +287,17 @@
                 <% } %>
               </h3>
             </div>
-            <% Object.entries(alertsByClient).forEach(([client, items]) => { %>
-              <div class="px-4 py-3 border-bottom stock-client-group" data-client-group="<%= client.toLowerCase() %>" style="border-color:#fed7aa !important">
+            <% Object.entries(alertsByClient).forEach(([client, items]) => { 
+              const hasClosedMo = items.some(i => i.isMoClosed);
+            %>
+              <div class="px-4 py-3 border-bottom stock-client-group" data-client-group="<%= client.toLowerCase() %>" style="<%= hasClosedMo ? 'border-color:#fca5a5 !important; background:#fff1f2;' : 'border-color:#fed7aa !important;' %>">
                 <div class="d-flex justify-content-between align-items-center mb-2 gap-2 flex-wrap">
-                  <div class="fw-bold d-flex align-items-center gap-2" style="font-size:.85rem;color:#431407">Client: <%= client %></div>
+                  <div class="fw-bold d-flex align-items-center gap-2" style="font-size:.85rem;color:<%= hasClosedMo ? '#991b1b' : '#431407' %>">
+                    <% if (hasClosedMo) { %>
+                      <span class="badge bg-danger text-white rounded-pill px-2 py-0.5" style="font-size:0.68rem;letter-spacing:0.04em;">ALERT</span>
+                    <% } %>
+                    Client: <%= client %>
+                  </div>
                   <% if (items.length === 1) { 
                     const item = items[0];
                   %>
@@ -301,25 +314,41 @@
                         data-component="<%= item.component %>"
                         data-product-id="<%= item.productId || '' %>"
                         data-qty="<%= item.qtyNeeded %>"
-                        title="Fill form with <%= client %> and <%= item.component %>">
+                        data-total-needed="<%= item.totalNeeded || '' %>"
+                        data-qty-reserved="<%= item.qtyReserved || '' %>"
+                        title="Fill form with <%= client %> and <%= item.component %> (<%= item.qtyNeeded %> boards)">
                         <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-                        <span>Fill Form</span>
+                        <span>Fill Form<%= (item.qtyReserved && item.qtyReserved > 0) ? ' (' + item.qtyNeeded + ' balance)' : '' %></span>
                       </button>
                     <% } %>
                   <% } %>
                 </div>
                 <% items.forEach((item, index) => { %>
-                  <div class="stock-alert-item mb-2 pb-2 <%= item.isSyncing ? 'item-syncing-locked' : 'item-undone' %>"
+                  <div class="stock-alert-item mb-2 pb-2 <%= item.isSyncing ? 'item-syncing-locked' : 'item-undone' %> <%= item.isMoClosed ? 'item-mo-closed' : '' %>"
                     data-client="<%= client.toLowerCase() %>"
                     data-partner-id="<%= item.partnerId || '' %>"
                     data-component="<%= (item.component || '').toLowerCase() %>"
                     data-product-id="<%= item.productId || '' %>"
                     data-qty="<%= item.qtyNeeded %>"
+                    data-total-needed="<%= item.totalNeeded || '' %>"
+                    data-qty-reserved="<%= item.qtyReserved || '' %>"
                     data-is-syncing="<%= item.isSyncing ? 'true' : 'false' %>"
-                    style="<%= index < items.length - 1 ? 'border-bottom:1px dashed rgba(194,65,12,.15);' : '' %>font-size:.82rem; <%= item.isSyncing ? 'opacity: 0.78;' : '' %>">
+                    data-is-closed="<%= item.isMoClosed ? 'true' : 'false' %>"
+                    style="<%= index < items.length - 1 ? 'border-bottom:1px dashed ' + (item.isMoClosed ? 'rgba(239,68,68,0.3)' : 'rgba(194,65,12,.15)') + ';' : '' %>font-size:.82rem; <%= item.isSyncing ? 'opacity: 0.78;' : '' %>">
+                    
+                    <% if (item.isMoClosed) { %>
+                      <div class="alert alert-danger py-1.5 px-2.5 mb-2 rounded-3 d-flex align-items-center justify-content-between gap-2 border-danger shadow-sm" style="background:#fee2e2;border:1px solid #f87171;font-size:0.78rem;">
+                        <div class="d-flex align-items-center gap-1.5 fw-bold text-danger">
+                          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                          <span>🚨 WORK ORDER CLOSED BUT STOCK NOT YET LOGGED</span>
+                        </div>
+                        <span class="badge bg-danger text-white px-2 py-0.5 rounded-pill fw-bold" style="font-size:0.68rem;">Action Required</span>
+                      </div>
+                    <% } %>
+
                     <div class="d-flex justify-content-between align-items-center gap-2">
                       <div class="d-flex align-items-center gap-2">
-                        <span class="fw-bold" style="color:#c2410c"><%= item.component %></span>
+                        <span class="fw-bold" style="color:<%= item.isMoClosed ? '#b91c1c' : '#c2410c' %>"><%= item.component %></span>
                         <% if (item.isSyncing) { %>
                           <span class="badge rounded-pill bg-warning-subtle text-warning-emphasis border border-warning-subtle px-2 py-0.5" style="font-size: 0.68rem;">
                             Syncing <%= item.syncingQty ? '(' + item.syncingQty + ')' : '' %>
@@ -333,7 +362,12 @@
                             🔒 Locked · In Odoo Queue
                           </span>
                         <% } else { %>
-                          <span class="badge bg-danger-subtle text-danger border border-danger-subtle rounded-pill">Need: <%= item.qtyNeeded %></span>
+                          <% if (item.qtyReserved && item.qtyReserved > 0) { %>
+                            <span class="badge bg-danger-subtle text-danger border border-danger-subtle rounded-pill fw-bold">Balance: <%= item.qtyNeeded %> needed</span>
+                            <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle rounded-pill" style="font-size:0.68rem;"><%= item.qtyReserved %> of <%= item.totalNeeded || (item.qtyNeeded + item.qtyReserved) %> logged</span>
+                          <% } else { %>
+                            <span class="badge bg-danger-subtle text-danger border border-danger-subtle rounded-pill <%= item.isMoClosed ? 'border-danger text-danger fw-bold' : '' %>">Need: <%= item.qtyNeeded %></span>
+                          <% } %>
                           <% if (items.length > 1) { %>
                             <button type="button" class="btn btn-sm text-white fw-bold px-2.5 py-0.5 rounded-pill auto-fill-stock-btn d-inline-flex align-items-center gap-1 shadow-sm"
                               style="background:#16a34a;border:1px solid #15803d;font-size:0.72rem;box-shadow:0 2px 6px rgba(22,163,74,0.3);cursor:pointer;"
@@ -342,7 +376,9 @@
                               data-component="<%= item.component %>"
                               data-product-id="<%= item.productId || '' %>"
                               data-qty="<%= item.qtyNeeded %>"
-                              title="Fill form with <%= item.component %>">
+                              data-total-needed="<%= item.totalNeeded || '' %>"
+                              data-qty-reserved="<%= item.qtyReserved || '' %>"
+                              title="Fill form with <%= item.component %> (<%= item.qtyNeeded %> boards)">
                               <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
                               <span>Fill Form</span>
                             </button>
@@ -351,13 +387,17 @@
                       </div>
                     </div>
                     <div class="text-muted mt-1" style="font-size:.72rem">
-                      <%= item.moName %> · <%= item.product %> · 
-                      <% if (item.isSyncing) { %>
-                        <span class="text-warning-emphasis fw-bold">⏳ Intake recorded · background reservation active</span>
+                      <%= item.moName %> · <%= item.product %>
+                      <% if (item.isMoClosed) { %>
+                        · <span class="text-danger fw-bold">🚨 Work Order / MO marked complete in Odoo · stock NOT logged!</span>
+                      <% } else if (item.qtyReserved && item.qtyReserved > 0) { %>
+                        · <span class="fw-semibold text-danger-emphasis">⚠️ Partial: <%= item.qtyReserved %> logged, balance <%= item.qtyNeeded %> unlogged</span>
+                      <% } else if (item.isSyncing) { %>
+                        · <span class="text-warning-emphasis fw-bold">⏳ Intake recorded · background reservation active</span>
                       <% } else if ((item.overdueDays || 0) > 0) { %>
-                        <span class="text-danger fw-semibold">Overdue: <%= item.overdueDays %> day<%= item.overdueDays === 1 ? '' : 's' %></span>
+                        · <span class="text-danger fw-semibold">Overdue: <%= item.overdueDays %> day<%= item.overdueDays === 1 ? '' : 's' %></span>
                       <% } else { %>
-                        <span class="text-warning fw-semibold">Due today</span>
+                        · <span class="text-warning fw-semibold">Due today</span>
                       <% } %>
                     </div>
                   </div>
@@ -1369,11 +1409,12 @@
         });
     }
 
-    // Auto-fill form from Stock Needed records
-    document.querySelectorAll('.auto-fill-stock-btn').forEach(function(btn) {
-      btn.addEventListener('click', function(e) {
-        e.preventDefault();
-        e.stopPropagation();
+    // Auto-fill form from Stock Needed records (delegated to support dynamically updated balance buttons)
+    document.addEventListener('click', function(e) {
+      var btn = e.target.closest('.auto-fill-stock-btn');
+      if (!btn) return;
+      e.preventDefault();
+      e.stopPropagation();
 
         var client = btn.getAttribute('data-client') || '';
         var partnerId = btn.getAttribute('data-partner-id') || '';
@@ -1494,7 +1535,6 @@
         if (intakeForm) {
           intakeForm.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         }
-      });
     });
 
 
@@ -2042,11 +2082,14 @@
 
           form.classList.remove('was-validated');
 
-          // Transition the submitted item immediately to locked syncing feedback
+          // Transition the submitted item immediately:
+          // If all required boards logged -> lock syncing feedback
+          // If partial boards logged -> keep card active as unlogged balance requirement!
           var submittedPartnerId = String(result.item.partner_id || '');
           var submittedPartnerName = (result.item.customer_name || '').toLowerCase().trim();
           var submittedProductId = String(result.item.product_id || '');
           var submittedProductName = (result.item.product_name || '').toLowerCase().trim();
+          var submittedQty = Number(result.item.quantity || 0);
 
           document.querySelectorAll('.stock-alert-item').forEach(function(itemEl) {
             var pId = itemEl.getAttribute('data-partner-id');
@@ -2058,33 +2101,99 @@
             var productMatch = (prodId && submittedProductId && prodId === submittedProductId) || (comp && submittedProductName && (comp === submittedProductName || comp.includes(submittedProductName) || submittedProductName.includes(comp)));
 
             if (partnerMatch && productMatch) {
-              itemEl.setAttribute('data-is-syncing', 'true');
-              itemEl.classList.remove('item-undone');
-              itemEl.classList.add('item-syncing-locked');
-              itemEl.style.opacity = '0.78';
+              var currentQtyNeeded = Number(itemEl.getAttribute('data-qty') || 0);
+              var totalNeeded = Number(itemEl.getAttribute('data-total-needed') || currentQtyNeeded);
+              var prevReserved = Number(itemEl.getAttribute('data-qty-reserved') || 0);
 
-              var actionContainer = itemEl.querySelector('.action-container');
-              if (actionContainer) {
-                actionContainer.innerHTML =
-                  '<span class="badge rounded-pill d-inline-flex align-items-center gap-1.5 px-2.5 py-1 fw-semibold text-warning-emphasis border border-warning-subtle bg-white" style="font-size: 0.72rem;">' +
-                    '<span class="spinner-border spinner-border-sm text-warning" role="status" style="width: 10px; height: 10px; border-width: 1.5px;"></span>' +
-                    '🔒 Locked · In Odoo Queue' +
-                  '</span>';
-              }
+              // Check if server returned updated requirement metrics
+              var matchingReq = (Array.isArray(result.updatedRequirements) && result.updatedRequirements.length > 0)
+                ? result.updatedRequirements.find(function(r) {
+                    return (String(r.partner_id) === pId || (r.partner_name && client.includes(r.partner_name.toLowerCase()))) &&
+                           (String(r.product_id) === prodId || (r.product_name && comp.includes(r.product_name.toLowerCase())));
+                  })
+                : null;
 
-              var clientGroup = itemEl.closest('.stock-client-group');
-              if (clientGroup) {
-                // Only replace group button if ALL items in this group are syncing
-                var groupItems = clientGroup.querySelectorAll('.stock-alert-item');
-                var groupUndone = clientGroup.querySelectorAll('.stock-alert-item.item-undone');
-                if (groupItems.length === 1 || groupUndone.length === 0) {
+              var newBalance = matchingReq
+                ? Number(matchingReq.qty_missing || 0)
+                : ((result.balanceRemaining != null && Number.isFinite(Number(result.balanceRemaining)))
+                    ? Number(result.balanceRemaining)
+                    : Math.max(0, currentQtyNeeded - submittedQty));
+
+              var newReserved = matchingReq
+                ? Number(matchingReq.qty_reserved || 0)
+                : (prevReserved + submittedQty);
+
+              if (newBalance > 0) {
+                // PARTIAL INTAKE: The operator logged less than the required amount.
+                // The remaining balance MUST remain active, visible, and unlogged!
+                itemEl.setAttribute('data-qty', String(newBalance));
+                itemEl.setAttribute('data-total-needed', String(totalNeeded));
+                itemEl.setAttribute('data-qty-reserved', String(newReserved));
+                itemEl.setAttribute('data-is-syncing', 'false');
+                itemEl.classList.add('item-undone');
+                itemEl.classList.remove('item-syncing-locked');
+                itemEl.style.opacity = '1';
+
+                var actionContainer = itemEl.querySelector('.action-container');
+                if (actionContainer) {
+                  actionContainer.innerHTML =
+                    '<span class="badge bg-danger-subtle text-danger border border-danger-subtle rounded-pill fw-bold">Balance: ' + newBalance + ' needed</span> ' +
+                    '<span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle rounded-pill" style="font-size:0.68rem;">' + newReserved + ' of ' + totalNeeded + ' logged</span> ' +
+                    '<button type="button" class="btn btn-sm text-white fw-bold px-2.5 py-0.5 rounded-pill auto-fill-stock-btn d-inline-flex align-items-center gap-1 shadow-sm" ' +
+                      'style="background:#16a34a;border:1px solid #15803d;font-size:0.72rem;box-shadow:0 2px 6px rgba(22,163,74,0.3);cursor:pointer;" ' +
+                      'data-client="' + (itemEl.getAttribute('data-client') || '') + '" ' +
+                      'data-partner-id="' + pId + '" ' +
+                      'data-component="' + (itemEl.getAttribute('data-component') || '') + '" ' +
+                      'data-product-id="' + prodId + '" ' +
+                      'data-qty="' + newBalance + '" ' +
+                      'data-total-needed="' + totalNeeded + '" ' +
+                      'data-qty-reserved="' + newReserved + '" ' +
+                      'title="Fill form with remaining balance of ' + newBalance + ' boards">' +
+                      '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>' +
+                      '<span>Fill Form (' + newBalance + ')</span>' +
+                    '</button>';
+                }
+
+                var clientGroup = itemEl.closest('.stock-client-group');
+                if (clientGroup) {
                   var groupBtn = clientGroup.querySelector('.auto-fill-stock-btn');
                   if (groupBtn) {
-                    groupBtn.outerHTML =
-                      '<span class="badge rounded-pill d-inline-flex align-items-center gap-1.5 px-3 py-1.5 fw-bold syncing-locked-badge" style="background: #fef3c7; color: #92400e; border: 1px solid #fde68a; font-size: 0.78rem;">' +
-                        '<span class="spinner-border spinner-border-sm text-warning" role="status" style="width: 12px; height: 12px; border-width: 2px;"></span>' +
-                        '<span>⏳ Logged · Syncing to Odoo...</span>' +
-                      '</span>';
+                    groupBtn.setAttribute('data-qty', String(newBalance));
+                    groupBtn.setAttribute('data-qty-reserved', String(newReserved));
+                    groupBtn.setAttribute('data-total-needed', String(totalNeeded));
+                    var btnSpan = groupBtn.querySelector('span');
+                    if (btnSpan) btnSpan.textContent = 'Fill Form (' + newBalance + ' balance)';
+                  }
+                }
+              } else {
+                // COMPLETE INTAKE: All required boards logged. Lock card as syncing to Odoo.
+                itemEl.setAttribute('data-is-syncing', 'true');
+                itemEl.classList.remove('item-undone');
+                itemEl.classList.add('item-syncing-locked');
+                itemEl.style.opacity = '0.78';
+
+                var actionContainer = itemEl.querySelector('.action-container');
+                if (actionContainer) {
+                  actionContainer.innerHTML =
+                    '<span class="badge rounded-pill d-inline-flex align-items-center gap-1.5 px-2.5 py-1 fw-semibold text-warning-emphasis border border-warning-subtle bg-white" style="font-size: 0.72rem;">' +
+                      '<span class="spinner-border spinner-border-sm text-warning" role="status" style="width: 10px; height: 10px; border-width: 1.5px;"></span>' +
+                      '🔒 Locked · In Odoo Queue' +
+                    '</span>';
+                }
+
+                var clientGroup = itemEl.closest('.stock-client-group');
+                if (clientGroup) {
+                  var groupItems = clientGroup.querySelectorAll('.stock-alert-item');
+                  var groupUndone = clientGroup.querySelectorAll('.stock-alert-item.item-undone');
+                  if (groupItems.length === 1 || groupUndone.length === 0) {
+                    var groupBtn = clientGroup.querySelector('.auto-fill-stock-btn');
+                    if (groupBtn) {
+                      groupBtn.outerHTML =
+                        '<span class="badge rounded-pill d-inline-flex align-items-center gap-1.5 px-3 py-1.5 fw-bold syncing-locked-badge" style="background: #fef3c7; color: #92400e; border: 1px solid #fde68a; font-size: 0.78rem;">' +
+                          '<span class="spinner-border spinner-border-sm text-warning" role="status" style="width: 12px; height: 12px; border-width: 2px;"></span>' +
+                          '<span>⏳ Logged · Syncing to Odoo...</span>' +
+                        '</span>';
+                    }
                   }
                 }
               }

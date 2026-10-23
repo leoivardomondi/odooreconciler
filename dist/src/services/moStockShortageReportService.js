@@ -500,22 +500,32 @@ async function generateMoStockShortageReport(client, options = {}) {
 async function updateMoStockShortageAutomationSettings(input) {
     const settings = await (0, repositories_1.getSettings)();
     let found = false;
-    settings.mail.automations = settings.mail.automations.map((a) => {
+    const updatedList = [];
+    for (const a of settings.mail.automations) {
         if (a.systemKey === 'mo-stock-shortage-report' || a.id === 'mo-stock-shortage-report') {
+            if (found) {
+                // Skip duplicate
+                continue;
+            }
             found = true;
-            return {
+            updatedList.push({
                 ...a,
+                id: 'mo-stock-shortage-report',
+                name: 'Daily MO stock shortage & board mismatch report',
+                systemKey: 'mo-stock-shortage-report',
                 enabled: input.enabled !== undefined ? input.enabled : a.enabled,
                 frequency: input.frequency || a.frequency,
                 hour: input.hour !== undefined ? Math.min(23, Math.max(0, input.hour)) : a.hour,
                 interval: input.interval !== undefined ? Math.max(1, input.interval) : a.interval,
                 recipients: input.recipients !== undefined ? input.recipients.trim() : a.recipients,
-            };
+            });
         }
-        return a;
-    });
+        else {
+            updatedList.push(a);
+        }
+    }
     if (!found) {
-        settings.mail.automations.push({
+        updatedList.push({
             id: 'mo-stock-shortage-report',
             name: 'Daily MO stock shortage & board mismatch report',
             systemKey: 'mo-stock-shortage-report',
@@ -530,6 +540,7 @@ async function updateMoStockShortageAutomationSettings(input) {
             lastSentAt: '',
         });
     }
+    settings.mail.automations = updatedList;
     await (0, repositories_1.saveSettings)({
         baseUrl: settings.odoo.baseUrl,
         database: settings.odoo.database,

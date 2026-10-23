@@ -6,7 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.geminiVisionOcr = geminiVisionOcr;
 const promises_1 = __importDefault(require("fs/promises"));
 const geminiOAuthService_1 = require("../../services/geminiOAuthService");
-const DEFAULT_GEMINI_OCR_MODEL = 'gemini-3.6-flash';
+const DEFAULT_GEMINI_OCR_MODEL = 'gemini-2.0-flash';
 async function geminiVisionOcr(imagePaths, ocrConfig, geminiApiKey, geminiOAuthConnected) {
     const warnings = [];
     let oauth = null;
@@ -42,7 +42,8 @@ async function geminiVisionOcr(imagePaths, ocrConfig, geminiApiKey, geminiOAuthC
     const configuredModel = ocrConfig?.model?.trim();
     const model = configuredModel &&
         configuredModel !== 'nvidia/nemotron-ocr-v2' &&
-        configuredModel !== 'gemini-flash-latest'
+        configuredModel !== 'gemini-flash-latest' &&
+        !/^gemini-3\./i.test(configuredModel)
         ? configuredModel
         : DEFAULT_GEMINI_OCR_MODEL;
     const configuredBaseUrl = ocrConfig?.endpoint?.trim().replace(/\/+$/, '');

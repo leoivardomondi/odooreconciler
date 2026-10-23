@@ -15,6 +15,7 @@ import {
   getRecentDocumentPdfs,
   isSupportedPoBillMimetype,
   RecentDocumentPdfsPage,
+  retryFailedPoBillPayment,
 } from '../services/poBillAutomationService';
 import { buildPoBillSchedulerDiagnostics } from '../services/poBillSchedulerDiagnosticsService';
 import { getSchedulerStatus, runPoBillSchedulerCycle } from '../services/schedulerService';
@@ -314,6 +315,49 @@ router.post('/po-bill-automation/reset-exhausted', async (req, res) => {
       pdfPage,
     });
     if (loadRecentPdfs) query.set('loadPdfs', '1');
+    res.redirect(`/po-bill-automation?${query.toString()}`);
+  }
+});
+
+router.post('/po-bill-automation/retry-payment', async (req, res) => {
+  const billName = typeof req.body.billName === 'string' ? req.body.billName.trim() : undefined;
+  const billId = req.body.billId ? Number(req.body.billId) : undefined;
+  const pinNote = req.body.pinNote === 'ETR' ? 'ETR' : 'NO PIN';
+  const paymentDate =
+    typeof req.body.paymentDate === 'string' ? req.body.paymentDate.trim() : undefined;
+  const purchaseOrderNames = Array.isArray(req.body.purchaseOrderNames)
+    ? req.body.purchaseOrderNames
+    : typeof req.body.purchaseOrderNames === 'string'
+      ? req.body.purchaseOrderNames
+          .split(',')
+          .map((s: string) => s.trim())
+          .filter(Boolean)
+      : undefined;
+
+  try {
+    const { client } = await buildClient();
+    const result = await retryFailedPoBillPayment(client, {
+      billName,
+      billId,
+      pinNote,
+      paymentDate,
+      purchaseOrderNames,
+    });
+
+    if (req.xhr || req.headers.accept?.includes('application/json')) {
+      return res.json(result);
+    }
+
+    const query = new URLSearchParams({
+      message: result.message,
+    });
+    res.redirect(`/po-bill-automation?${query.toString()}`);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to retry bill payment.';
+    if (req.xhr || req.headers.accept?.includes('application/json')) {
+      return res.status(500).json({ success: false, message });
+    }
+    const query = new URLSearchParams({ error: message });
     res.redirect(`/po-bill-automation?${query.toString()}`);
   }
 });

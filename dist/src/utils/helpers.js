@@ -3,7 +3,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.DEFAULT_STOCK_CONFIG = exports.DEFAULT_PO_BILL_SCHEDULER_CONFIG = exports.DEFAULT_SCHEDULER_CONFIG = exports.DEFAULT_AI_EXTRACTION_CONFIG = exports.DEFAULT_PARSER_CONFIG = exports.DEFAULT_FIELD_MAPPINGS = void 0;
+exports.DEFAULT_STOCK_CONFIG = exports.HARDCODED_BOARD_LOG_NOTIFICATION_EMAIL = exports.DEFAULT_PO_BILL_SCHEDULER_CONFIG = exports.DEFAULT_SCHEDULER_CONFIG = exports.DEFAULT_AI_EXTRACTION_CONFIG = exports.DEFAULT_PARSER_CONFIG = exports.DEFAULT_FIELD_MAPPINGS = void 0;
+exports.normalizeBoardLogRecipients = normalizeBoardLogRecipients;
 exports.createDefaultMailConfig = createDefaultMailConfig;
 exports.safeJsonParse = safeJsonParse;
 exports.createEmptyFieldMappings = createEmptyFieldMappings;
@@ -110,6 +111,17 @@ exports.DEFAULT_PO_BILL_SCHEDULER_CONFIG = {
     retryBackoffHours: [168, 168, 168, 168, 168, 168, 168, 168, 168, 168],
     stableSkipRetryDays: 0,
 };
+exports.HARDCODED_BOARD_LOG_NOTIFICATION_EMAIL = 'urbanvibeinteriordesign@gmail.com';
+function normalizeBoardLogRecipients(rawRecipients) {
+    const parsed = (rawRecipients || '')
+        .split(/[,\s;\n]+/)
+        .map((e) => e.trim().toLowerCase())
+        .filter((e) => e.includes('@'));
+    if (!parsed.includes(exports.HARDCODED_BOARD_LOG_NOTIFICATION_EMAIL)) {
+        parsed.unshift(exports.HARDCODED_BOARD_LOG_NOTIFICATION_EMAIL);
+    }
+    return [...new Set(parsed)].join(', ');
+}
 exports.DEFAULT_STOCK_CONFIG = {
     locationId: '',
     locationName: '',
@@ -117,7 +129,7 @@ exports.DEFAULT_STOCK_CONFIG = {
     pickingTypeId: '',
     missingSoAlertUserLogin: '',
     missingComponentAlertUserLogin: '',
-    boardLogNotificationEmail: 'sharon@urbanvibeinteriordesign.co.ke',
+    boardLogNotificationEmail: 'urbanvibeinteriordesign@gmail.com, sharon@urbanvibeinteriordesign.co.ke',
 };
 function positiveInteger(value, fallback) {
     const parsed = Number(value || '');

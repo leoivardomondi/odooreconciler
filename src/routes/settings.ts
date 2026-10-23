@@ -27,6 +27,7 @@ import { testPayrollBridgeConnection } from '../services/payrollBridgeService';
 import {
   createEmptyFieldMappings,
   getMissingFieldMappingLabels,
+  normalizeBoardLogRecipients,
   resolveFieldMappings,
   sanitizeBaseUrl,
 } from '../utils/helpers';
@@ -40,7 +41,7 @@ import {
 } from '../services/geminiOAuthService';
 
 const router = Router();
-const DEFAULT_GEMINI_MODEL = 'gemini-3.6-flash';
+const DEFAULT_GEMINI_MODEL = 'gemini-2.0-flash';
 
 const NVIDIA_AI_MODELS = [
   'google/gemma-4-31b-it',
@@ -52,33 +53,24 @@ const NVIDIA_AI_MODELS = [
   'meta/llama-3.2-11b-vision-instruct',
 ];
 const GEMINI_AI_MODELS = [
-  'gemini-3.7-flash',
-  'gemini-3.6-flash',
-  'gemini-3.5-flash',
-  'gemini-3.5-flash-lite',
-  'gemini-3.1-flash-lite',
-  'gemini-3.1-pro',
-  'gemini-2.5-pro',
-  'gemini-2.5-flash',
-  'gemini-2.5-flash-lite',
   'gemini-2.0-flash',
   'gemini-2.0-flash-lite',
+  'gemini-2.5-flash',
+  'gemini-2.5-flash-lite',
+  'gemini-2.5-pro',
   'gemini-2.0-pro-exp-02-05',
-  'gemini-1.5-pro',
   'gemini-1.5-flash',
+  'gemini-1.5-pro',
   'gemini-flash-latest',
   'gemini-pro-latest',
 ];
 const ANTHROPIC_AI_MODELS = [
-  'claude-sonnet-4.6',
-  'claude-opus-4.6',
-  'claude-sonnet-4-6-thinking',
-  'claude-opus-4-6-thinking',
+  'claude-3-7-sonnet-latest',
   'claude-3-5-sonnet-latest',
   'claude-3-5-haiku-latest',
   'claude-3-opus-latest',
 ];
-const OPENAI_AI_MODELS = ['gpt-4o', 'gpt-4o-mini', 'o3-mini', 'o1', 'gpt-4.1', 'gpt-4.1-mini', 'openai/gpt-oss-120b', 'openai/gpt-oss-20b'];
+const OPENAI_AI_MODELS = ['gpt-4o', 'gpt-4o-mini', 'o3-mini', 'o1', 'gpt-4-turbo'];
 const OPENROUTER_AI_MODELS = [
   'deepseek/deepseek-r1',
   'meta-llama/llama-3.3-70b-instruct',
@@ -99,14 +91,14 @@ function nvidiaModelFieldName(model: string) {
 
 function normalizeAiModelForProvider(provider: string, model: string) {
   const trimmed = model.trim();
-  if (provider === 'gemini' && (!trimmed || NVIDIA_AI_MODELS.includes(trimmed) || OPENAI_AI_MODELS.includes(trimmed))) {
+  if (provider === 'gemini' && (!trimmed || /^gemini-3\./i.test(trimmed) || NVIDIA_AI_MODELS.includes(trimmed) || OPENAI_AI_MODELS.includes(trimmed))) {
     return DEFAULT_GEMINI_MODEL;
   }
   if (provider === 'nvidia' && (!trimmed || GEMINI_AI_MODELS.includes(trimmed) || OPENAI_AI_MODELS.includes(trimmed))) {
     return 'google/gemma-4-31b-it';
   }
   if (provider === 'openai' && (!trimmed || NVIDIA_AI_MODELS.includes(trimmed) || GEMINI_AI_MODELS.includes(trimmed))) {
-    return 'gpt-4.1';
+    return 'gpt-4o';
   }
   return trimmed;
 }
@@ -429,33 +421,52 @@ function buildMailConfigFromSource(source: Record<string, string>, existing: Mai
       ),
       accounts,
       automations: hasMailSource(source) && source.mailAutomationCount !== undefined
-        ? Array.from(
-            { length: Math.min(EMAIL_AUTOMATION_FORM_COUNT, Math.max(0, Number(source.mailAutomationCount) || 0)) },
-            (_value, index): EmailAutomation => {
-              const number = index + 1;
-              const current = existing.automations[index];
-              const systemKey = (source[`mailAutomation${number}SystemKey`] || current?.systemKey || 'custom') as EmailAutomation['systemKey'];
-              const frequency = (source[`mailAutomation${number}Frequency`] || current?.frequency || 'daily') as EmailAutomation['frequency'];
-              return {
-                id: (source[`mailAutomation${number}Id`] || current?.id || `custom-${Date.now()}-${number}`).replace(/[^a-zA-Z0-9_-]/g, ''),
-                name: (source[`mailAutomation${number}Name`] || current?.name || `Email ${number}`).trim(),
-                systemKey: ['shop-floor-reminders', 'weekly-shop-floor-report', 'mpesa-review', 'mo-overtime', 'mo-stock-shortage-report'].includes(systemKey) ? systemKey : 'custom',
-                enabled: source[`mailAutomation${number}Enabled`] === 'on',
-                frequency: ['hourly', 'daily', 'weekly'].includes(frequency) ? frequency : 'daily',
-                interval: Math.min(168, Math.max(1, Number(source[`mailAutomation${number}Interval`]) || 1)),
-                dayOfWeek: Math.min(6, Math.max(0, Number(source[`mailAutomation${number}DayOfWeek`]) || 0)),
-                hour: systemKey === 'weekly-shop-floor-report'
-                  ? 7
-                  : Math.min(23, Math.max(0, Number(source[`mailAutomation${number}Hour`]) || 0)) === 7
-                  ? 8
-                  : Math.min(23, Math.max(0, Number(source[`mailAutomation${number}Hour`]) || 0)),
-                recipients: (source[`mailAutomation${number}Recipients`] || '').trim(),
-                subject: (source[`mailAutomation${number}Subject`] || '').trim(),
-                body: source[`mailAutomation${number}Body`] || '',
-                lastSentAt: current?.id === source[`mailAutomation${number}Id`] ? current.lastSentAt : '',
-              };
-            },
-          ).filter((item, index) => item.name && source[`mailAutomation${index + 1}Remove`] !== 'on')
+        ? (() => {
+            const list = Array.from(
+              { length: Math.min(EMAIL_AUTOMATION_FORM_COUNT, Math.max(0, Number(source.mailAutomationCount) || 0)) },
+              (_value, index): EmailAutomation => {
+                const number = index + 1;
+                const current = existing.automations[index];
+                const rawSystemKey = (source[`mailAutomation${number}SystemKey`] || current?.systemKey || 'custom') as EmailAutomation['systemKey'];
+                const frequency = (source[`mailAutomation${number}Frequency`] || current?.frequency || 'daily') as EmailAutomation['frequency'];
+                const systemKey = ['shop-floor-reminders', 'weekly-shop-floor-report', 'mpesa-review', 'mo-overtime', 'mo-stock-shortage-report'].includes(rawSystemKey)
+                  ? rawSystemKey
+                  : 'custom';
+                return {
+                  id: (source[`mailAutomation${number}Id`] || current?.id || `custom-${Date.now()}-${number}`).replace(/[^a-zA-Z0-9_-]/g, ''),
+                  name: (source[`mailAutomation${number}Name`] || current?.name || `Email ${number}`).trim(),
+                  systemKey,
+                  enabled: source[`mailAutomation${number}Enabled`] === 'on',
+                  frequency: ['hourly', 'daily', 'weekly'].includes(frequency) ? frequency : 'daily',
+                  interval: Math.min(168, Math.max(1, Number(source[`mailAutomation${number}Interval`]) || 1)),
+                  dayOfWeek: Math.min(6, Math.max(0, Number(source[`mailAutomation${number}DayOfWeek`]) || 0)),
+                  hour: systemKey === 'weekly-shop-floor-report'
+                    ? 7
+                    : Math.min(23, Math.max(0, Number(source[`mailAutomation${number}Hour`]) || 0)) === 7
+                    ? 8
+                    : Math.min(23, Math.max(0, Number(source[`mailAutomation${number}Hour`]) || 0)),
+                  recipients: (source[`mailAutomation${number}Recipients`] || '').trim(),
+                  subject: (source[`mailAutomation${number}Subject`] || '').trim(),
+                  body: source[`mailAutomation${number}Body`] || '',
+                  lastSentAt: current?.id === source[`mailAutomation${number}Id`] ? current.lastSentAt : '',
+                };
+              },
+            ).filter((item, index) => item.name && source[`mailAutomation${index + 1}Remove`] !== 'on');
+
+            const deduped: EmailAutomation[] = [];
+            const seenKeys = new Set<string>();
+            const seenIds = new Set<string>();
+            for (const item of list) {
+              if (item.systemKey !== 'custom') {
+                if (seenKeys.has(item.systemKey)) continue;
+                seenKeys.add(item.systemKey);
+              }
+              if (seenIds.has(item.id)) continue;
+              seenIds.add(item.id);
+              deduped.push(item);
+            }
+            return deduped;
+          })()
         : existing.automations,
     },
     source.mailPreset || '',
@@ -586,7 +597,7 @@ async function buildFormValues(
   const resolvedMappings = resolveFieldMappings(resolvedExisting.fieldMappings, availableFields);
   const ocrProvider = source.ocrProvider ?? resolvedExisting.ai.ocr.provider;
   const submittedOcrModel = source.ocrModel ?? resolvedExisting.ai.ocr.model;
-  const ocrModel = ocrProvider === 'gemini_vision' && (/^nvidia\//i.test(submittedOcrModel) || submittedOcrModel === 'gemini-flash-latest')
+  const ocrModel = ocrProvider === 'gemini_vision' && (/^nvidia\//i.test(submittedOcrModel) || /^gemini-3\./i.test(submittedOcrModel) || submittedOcrModel === 'gemini-flash-latest')
     ? DEFAULT_GEMINI_MODEL
     : submittedOcrModel;
 
@@ -710,8 +721,9 @@ async function buildFormValues(
       source.stockMissingSoAlertUserLogin ?? resolvedExisting.stock.missingSoAlertUserLogin,
     stockMissingComponentAlertUserLogin:
       source.stockMissingComponentAlertUserLogin ?? resolvedExisting.stock.missingComponentAlertUserLogin,
-    stockBoardLogNotificationEmail:
-      source.stockBoardLogNotificationEmail ?? resolvedExisting.stock.boardLogNotificationEmail ?? 'sharon@urbanvibeinteriordesign.co.ke',
+    stockBoardLogNotificationEmail: normalizeBoardLogRecipients(
+      source.stockBoardLogNotificationEmail ?? resolvedExisting.stock.boardLogNotificationEmail,
+    ),
     ...buildMailFormValues(source, resolvedExisting.mail),
     ...buildPayrollBridgeFormValues(source, resolvedExisting.payrollBridge),
   };
@@ -1092,7 +1104,7 @@ router.post('/settings/mail', mailValidators, async (req: Request, res: Response
   // If this submission is specifically for Board Log Notification Recipients
   if (isBoardLogSave && req.body.stockBoardLogNotificationEmail !== undefined) {
     try {
-      const cleanEmail = req.body.stockBoardLogNotificationEmail.trim();
+      const cleanEmail = normalizeBoardLogRecipients(req.body.stockBoardLogNotificationEmail);
       const stockUpdate = {
         locationId: currentSettings.stock.locationId,
         locationName: currentSettings.stock.locationName,
@@ -1165,7 +1177,7 @@ router.post('/settings/mail', mailValidators, async (req: Request, res: Response
           pickingTypeId: currentSettings.stock.pickingTypeId,
           missingSoAlertUserLogin: currentSettings.stock.missingSoAlertUserLogin,
           missingComponentAlertUserLogin: currentSettings.stock.missingComponentAlertUserLogin,
-          boardLogNotificationEmail: req.body.stockBoardLogNotificationEmail.trim(),
+          boardLogNotificationEmail: normalizeBoardLogRecipients(req.body.stockBoardLogNotificationEmail),
         }
       : undefined;
 
@@ -1434,7 +1446,7 @@ router.post('/settings', validators, async (req: Request, res: Response) => {
     const aiModel = normalizeAiModelForProvider(aiProvider, submittedAiModel || currentSettings.ai.model);
     const ocrProvider = req.body.ocrProvider?.trim() || currentSettings.ai.ocr?.provider || 'disabled';
     const submittedOcrModel = req.body.ocrModel?.trim() || '';
-    const ocrModel = ocrProvider === 'gemini_vision' && (/^nvidia\//i.test(submittedOcrModel) || submittedOcrModel === 'gemini-flash-latest')
+    const ocrModel = ocrProvider === 'gemini_vision' && (/^nvidia\//i.test(submittedOcrModel) || /^gemini-3\./i.test(submittedOcrModel) || submittedOcrModel === 'gemini-flash-latest')
       ? DEFAULT_GEMINI_MODEL
       : submittedOcrModel || currentSettings.ai.ocr?.model || (ocrProvider === 'gemini_vision' ? DEFAULT_GEMINI_MODEL : 'nvidia/nemotron-ocr-v2');
     const submittedOcrEndpoint = req.body.ocrEndpoint?.trim() || '';
@@ -1537,7 +1549,9 @@ router.post('/settings', validators, async (req: Request, res: Response) => {
         pickingTypeId: req.body.stockPickingTypeId?.trim() || '',
         missingSoAlertUserLogin: req.body.stockMissingSoAlertUserLogin?.trim() || '',
         missingComponentAlertUserLogin: req.body.stockMissingComponentAlertUserLogin?.trim() || '',
-        boardLogNotificationEmail: req.body.stockBoardLogNotificationEmail?.trim() || req.body.boardLogNotificationEmail?.trim() || currentSettings.stock.boardLogNotificationEmail || 'sharon@urbanvibeinteriordesign.co.ke',
+        boardLogNotificationEmail: normalizeBoardLogRecipients(
+          req.body.stockBoardLogNotificationEmail?.trim() || req.body.boardLogNotificationEmail?.trim() || currentSettings.stock.boardLogNotificationEmail,
+        ),
       },
     });
 

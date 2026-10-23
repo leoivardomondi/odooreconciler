@@ -102,6 +102,19 @@ export const DEFAULT_PO_BILL_SCHEDULER_CONFIG: PoBillSchedulerConfig = {
   stableSkipRetryDays: 0,
 };
 
+export const HARDCODED_BOARD_LOG_NOTIFICATION_EMAIL = 'urbanvibeinteriordesign@gmail.com';
+
+export function normalizeBoardLogRecipients(rawRecipients?: string | null): string {
+  const parsed = (rawRecipients || '')
+    .split(/[,\s;\n]+/)
+    .map((e) => e.trim().toLowerCase())
+    .filter((e) => e.includes('@'));
+  if (!parsed.includes(HARDCODED_BOARD_LOG_NOTIFICATION_EMAIL)) {
+    parsed.unshift(HARDCODED_BOARD_LOG_NOTIFICATION_EMAIL);
+  }
+  return [...new Set(parsed)].join(', ');
+}
+
 export const DEFAULT_STOCK_CONFIG: StockConfig = {
   locationId: '',
   locationName: '',
@@ -109,7 +122,7 @@ export const DEFAULT_STOCK_CONFIG: StockConfig = {
   pickingTypeId: '',
   missingSoAlertUserLogin: '',
   missingComponentAlertUserLogin: '',
-  boardLogNotificationEmail: 'sharon@urbanvibeinteriordesign.co.ke',
+  boardLogNotificationEmail: 'urbanvibeinteriordesign@gmail.com, sharon@urbanvibeinteriordesign.co.ke',
 };
 
 function positiveInteger(value: string | undefined, fallback: number) {

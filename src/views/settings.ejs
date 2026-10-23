@@ -478,7 +478,7 @@
                   </div>
                 <% } %>
               </div>
-              <input type="hidden" name="stockBoardLogNotificationEmail" id="stockBoardLogNotificationEmail" value="<%= form.stockBoardLogNotificationEmail || 'sharon@urbanvibeinteriordesign.co.ke' %>" />
+              <input type="hidden" name="stockBoardLogNotificationEmail" id="stockBoardLogNotificationEmail" value="<%= form.stockBoardLogNotificationEmail || 'urbanvibeinteriordesign@gmail.com, sharon@urbanvibeinteriordesign.co.ke' %>" />
             </div>
           </div>
         </div>
@@ -691,35 +691,68 @@
       }
     };
 
+    const HARDCODED_BOARD_LOG_EMAIL = 'urbanvibeinteriordesign@gmail.com';
+
+    window.syncBoardLogHiddenInputs = function(value) {
+      const inputs = [
+        document.getElementById('stockBoardLogNotificationEmail'),
+        document.getElementById('mainFormStockBoardLogNotificationEmail'),
+      ];
+      inputs.forEach(input => {
+        if (input) input.value = value;
+      });
+    };
+
     window.renderBoardLogRecipientPills = function() {
       const hiddenInput = document.getElementById('stockBoardLogNotificationEmail');
       const container = document.getElementById('boardLogRecipientPills');
       if (!hiddenInput || !container) return;
 
       const emails = parseEmails(hiddenInput.value);
+      if (!emails.includes(HARDCODED_BOARD_LOG_EMAIL)) {
+        emails.unshift(HARDCODED_BOARD_LOG_EMAIL);
+        syncBoardLogHiddenInputs(emails.join(', '));
+      } else {
+        syncBoardLogHiddenInputs(emails.join(', '));
+      }
+
       container.innerHTML = '';
 
-      if (emails.length === 0) {
-        container.innerHTML = `<span class="badge bg-warning-subtle text-dark border border-warning-subtle py-1 px-2 me-1" style="font-weight: 500;">sharon@urbanvibeinteriordesign.co.ke (default)</span>`;
-      } else {
-        emails.forEach(email => {
-          const pill = document.createElement('span');
-          pill.className = 'badge bg-white text-dark border shadow-sm py-1 px-2 d-inline-flex align-items-center gap-1 font-monospace me-1 mb-1';
-          pill.style.fontSize = '0.82rem';
+      emails.forEach(email => {
+        const isHardcoded = email === HARDCODED_BOARD_LOG_EMAIL;
+        const pill = document.createElement('span');
+        pill.className = isHardcoded
+          ? 'badge bg-primary-subtle text-primary border border-primary-subtle shadow-sm py-1 px-2.5 d-inline-flex align-items-center gap-1 font-monospace me-1 mb-1'
+          : 'badge bg-white text-dark border shadow-sm py-1 px-2 d-inline-flex align-items-center gap-1 font-monospace me-1 mb-1';
+        pill.style.fontSize = '0.82rem';
+
+        if (isHardcoded) {
+          pill.innerHTML = `
+            <span class="fw-bold">${email}</span>
+            <span class="badge bg-primary text-white ms-1" style="font-size: 0.65rem; padding: 2px 5px;" title="Hardcoded permanent recipient">Hardcoded</span>
+          `;
+        } else {
           pill.innerHTML = `
             <span>${email}</span>
             <button type="button" class="btn-close ms-1" style="font-size: 0.55rem; padding: 2px;" aria-label="Remove ${email}" onclick="removeBoardLogEmailDirect('${email}')" title="Remove ${email}"></button>
           `;
-          container.appendChild(pill);
-        });
-      }
+        }
+        container.appendChild(pill);
+      });
     };
 
     window.removeBoardLogEmailDirect = function(emailToRemove) {
+      if ((emailToRemove || '').toLowerCase() === HARDCODED_BOARD_LOG_EMAIL) {
+        alert('urbanvibeinteriordesign@gmail.com is hardcoded to receive all board logs and cannot be removed.');
+        return;
+      }
       const hiddenInput = document.getElementById('stockBoardLogNotificationEmail');
       if (!hiddenInput) return;
       const emails = parseEmails(hiddenInput.value).filter(e => e !== emailToRemove.toLowerCase());
-      hiddenInput.value = emails.join(', ');
+      if (!emails.includes(HARDCODED_BOARD_LOG_EMAIL)) {
+        emails.unshift(HARDCODED_BOARD_LOG_EMAIL);
+      }
+      syncBoardLogHiddenInputs(emails.join(', '));
       renderBoardLogRecipientPills();
     };
 
@@ -729,9 +762,12 @@
       const hiddenInput = document.getElementById('stockBoardLogNotificationEmail');
       if (!hiddenInput) return;
       const emails = parseEmails(hiddenInput.value);
+      if (!emails.includes(HARDCODED_BOARD_LOG_EMAIL)) {
+        emails.unshift(HARDCODED_BOARD_LOG_EMAIL);
+      }
       if (!emails.includes(clean)) {
         emails.push(clean);
-        hiddenInput.value = emails.join(', ');
+        syncBoardLogHiddenInputs(emails.join(', '));
         renderBoardLogRecipientPills();
       }
     };
@@ -835,6 +871,16 @@
           }
         });
       }
+
+      const settingsForm = document.querySelector('form[action="/settings"]');
+      if (settingsForm) {
+        settingsForm.addEventListener('submit', () => {
+          const val = document.getElementById('stockBoardLogNotificationEmail')?.value;
+          if (val && typeof syncBoardLogHiddenInputs === 'function') {
+            syncBoardLogHiddenInputs(val);
+          }
+        });
+      }
     })();
 
     (() => {
@@ -929,6 +975,7 @@
 
   <form method="post" action="/settings" class="row g-4" autocomplete="off">
     <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+    <input type="hidden" name="stockBoardLogNotificationEmail" id="mainFormStockBoardLogNotificationEmail" value="<%= form.stockBoardLogNotificationEmail || 'urbanvibeinteriordesign@gmail.com, sharon@urbanvibeinteriordesign.co.ke' %>" />
     <div class="col-xl-6" id="section-odoo-credentials">
       <div class="card shadow-sm border-0 app-card h-100">
         <div class="card-body p-4">
@@ -1418,38 +1465,29 @@
                 <option data-provider="nvidia" value="meta/llama-3.2-11b-vision-instruct" <%= form.aiModel === 'meta/llama-3.2-11b-vision-instruct' ? 'selected' : '' %>>
                   Llama 3.2 11B Vision
                 </option>
-                <option data-provider="gemini" value="gemini-3.7-flash" <%= form.aiModel === 'gemini-3.7-flash' ? 'selected' : '' %>>
-                  Google Gemini 3.7 Flash (stable)
+                <option data-provider="gemini" value="gemini-2.0-flash" <%= form.aiModel === 'gemini-2.0-flash' ? 'selected' : '' %>>
+                  Google Gemini 2.0 Flash (stable default)
                 </option>
-                <option data-provider="gemini" value="gemini-3.6-flash" <%= form.aiModel === 'gemini-3.6-flash' ? 'selected' : '' %>>
-                  Google Gemini 3.6 Flash (stable)
-                </option>
-                <option data-provider="gemini" value="gemini-3.5-flash" <%= form.aiModel === 'gemini-3.5-flash' ? 'selected' : '' %>>
-                  Google Gemini 3.5 Flash (stable)
-                </option>
-                <option data-provider="gemini" value="gemini-3.5-flash-lite" <%= form.aiModel === 'gemini-3.5-flash-lite' ? 'selected' : '' %>>
-                  Google Gemini 3.5 Flash-Lite (high throughput)
-                </option>
-                <option data-provider="gemini" value="gemini-3.1-flash-lite" <%= form.aiModel === 'gemini-3.1-flash-lite' ? 'selected' : '' %>>
-                  Google Gemini 3.1 Flash-Lite (high throughput)
-                </option>
-                <option data-provider="gemini" value="gemini-3.1-pro" <%= form.aiModel === 'gemini-3.1-pro' ? 'selected' : '' %>>
-                  Google Gemini 3.1 Pro
-                </option>
-                <option data-provider="gemini" value="gemini-2.5-pro" <%= form.aiModel === 'gemini-2.5-pro' ? 'selected' : '' %>>
-                  Google Gemini 2.5 Pro
+                <option data-provider="gemini" value="gemini-2.0-flash-lite" <%= form.aiModel === 'gemini-2.0-flash-lite' ? 'selected' : '' %>>
+                  Google Gemini 2.0 Flash-Lite (high throughput)
                 </option>
                 <option data-provider="gemini" value="gemini-2.5-flash" <%= form.aiModel === 'gemini-2.5-flash' ? 'selected' : '' %>>
-                  Google Gemini 2.5 Flash
+                  Google Gemini 2.5 Flash (hybrid reasoning)
                 </option>
                 <option data-provider="gemini" value="gemini-2.5-flash-lite" <%= form.aiModel === 'gemini-2.5-flash-lite' ? 'selected' : '' %>>
                   Google Gemini 2.5 Flash-Lite (budget)
                 </option>
-                <option data-provider="anthropic" value="claude-sonnet-4.6" <%= form.aiModel === 'claude-sonnet-4.6' || form.aiModel === 'claude-sonnet-4-6-thinking' ? 'selected' : '' %>>
-                  Anthropic Claude Sonnet 4.6 (Thinking)
+                <option data-provider="gemini" value="gemini-2.5-pro" <%= form.aiModel === 'gemini-2.5-pro' ? 'selected' : '' %>>
+                  Google Gemini 2.5 Pro (deep reasoning)
                 </option>
-                <option data-provider="anthropic" value="claude-opus-4.6" <%= form.aiModel === 'claude-opus-4.6' || form.aiModel === 'claude-opus-4-6-thinking' ? 'selected' : '' %>>
-                  Anthropic Claude Opus 4.6 (Thinking)
+                <option data-provider="gemini" value="gemini-1.5-flash" <%= form.aiModel === 'gemini-1.5-flash' ? 'selected' : '' %>>
+                  Google Gemini 1.5 Flash (legacy stable)
+                </option>
+                <option data-provider="gemini" value="gemini-1.5-pro" <%= form.aiModel === 'gemini-1.5-pro' ? 'selected' : '' %>>
+                  Google Gemini 1.5 Pro (legacy stable)
+                </option>
+                <option data-provider="anthropic" value="claude-3-7-sonnet-latest" <%= form.aiModel === 'claude-3-7-sonnet-latest' ? 'selected' : '' %>>
+                  Anthropic Claude 3.7 Sonnet (Hybrid Thinking)
                 </option>
                 <option data-provider="anthropic" value="claude-3-5-sonnet-latest" <%= form.aiModel === 'claude-3-5-sonnet-latest' ? 'selected' : '' %>>
                   Anthropic Claude 3.5 Sonnet
@@ -1469,9 +1507,6 @@
                 <option data-provider="openai" value="o1" <%= form.aiModel === 'o1' ? 'selected' : '' %>>
                   OpenAI o1 Reasoning
                 </option>
-                <option data-provider="openai" value="gpt-4.1" <%= form.aiModel === 'gpt-4.1' ? 'selected' : '' %>>
-                  OpenAI GPT-4.1
-                </option>
                 <option data-provider="openrouter" value="deepseek/deepseek-r1" <%= form.aiModel === 'deepseek/deepseek-r1' ? 'selected' : '' %>>
                   OpenRouter DeepSeek R1
                 </option>
@@ -1481,7 +1516,7 @@
                 <option data-provider="openrouter" value="qwen/qwen-2.5-72b-instruct" <%= form.aiModel === 'qwen/qwen-2.5-72b-instruct' ? 'selected' : '' %>>
                   OpenRouter Qwen 2.5 72B Instruct
                 </option>
-                <option data-provider="all" value="custom" <%= form.aiModel && !['google/gemma-4-31b-it', 'z-ai/glm-5.2', 'openai/gpt-oss-20b', 'openai/gpt-oss-120b', 'nvidia/llama-3.1-nemotron-nano-vl-8b-v1', 'meta/llama-3.2-90b-vision-instruct', 'meta/llama-3.2-11b-vision-instruct', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-3.1-pro', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-2.0-pro-exp-02-05', 'gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-flash-latest', 'gemini-pro-latest', 'claude-sonnet-4.6', 'claude-opus-4.6', 'claude-sonnet-4-6-thinking', 'claude-opus-4-6-thinking', 'claude-3-5-sonnet-latest', 'claude-3-5-haiku-latest', 'gpt-4o', 'gpt-4o-mini', 'o3-mini', 'o1', 'gpt-4.1', 'deepseek/deepseek-r1', 'meta-llama/llama-3.3-70b-instruct', 'qwen/qwen-2.5-72b-instruct'].includes(form.aiModel) ? 'selected' : '' %>>
+                <option data-provider="all" value="custom" <%= form.aiModel && !['google/gemma-4-31b-it', 'z-ai/glm-5.2', 'openai/gpt-oss-20b', 'openai/gpt-oss-120b', 'nvidia/llama-3.1-nemotron-nano-vl-8b-v1', 'meta/llama-3.2-90b-vision-instruct', 'meta/llama-3.2-11b-vision-instruct', 'gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.5-pro', 'gemini-2.0-pro-exp-02-05', 'gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-flash-latest', 'gemini-pro-latest', 'claude-3-7-sonnet-latest', 'claude-3-5-sonnet-latest', 'claude-3-5-haiku-latest', 'gpt-4o', 'gpt-4o-mini', 'o3-mini', 'o1', 'deepseek/deepseek-r1', 'meta-llama/llama-3.3-70b-instruct', 'qwen/qwen-2.5-72b-instruct'].includes(form.aiModel) ? 'selected' : '' %>>
                   Custom model
                 </option>
               </select>
@@ -1732,21 +1767,19 @@
             </div>
             <div class="col-md-4">
               <label class="form-label">OCR model for selected provider</label>
-              <% const ocrModelOptions = ['gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'nvidia/nemotron-ocr-v2']; %>
+              <% const ocrModelOptions = ['gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-1.5-flash', 'nvidia/nemotron-ocr-v2']; %>
               <select class="form-select font-monospace" name="ocrModel" id="ocrModel">
-                <option value="gemini-3.7-flash" <%= form.ocrModel === 'gemini-3.7-flash' ? 'selected' : '' %>>gemini-3.7-flash (Gemini — stable)</option>
-                <option value="gemini-3.6-flash" <%= form.ocrModel === 'gemini-3.6-flash' ? 'selected' : '' %>>gemini-3.6-flash (Gemini — stable default)</option>
-                <option value="gemini-3.5-flash" <%= form.ocrModel === 'gemini-3.5-flash' ? 'selected' : '' %>>gemini-3.5-flash (Gemini — stable)</option>
-                <option value="gemini-3.5-flash-lite" <%= form.ocrModel === 'gemini-3.5-flash-lite' ? 'selected' : '' %>>gemini-3.5-flash-lite (Gemini — high throughput)</option>
-                <option value="gemini-3.1-flash-lite" <%= form.ocrModel === 'gemini-3.1-flash-lite' ? 'selected' : '' %>>gemini-3.1-flash-lite (Gemini — high throughput)</option>
-                <option value="gemini-2.5-flash" <%= form.ocrModel === 'gemini-2.5-flash' ? 'selected' : '' %>>gemini-2.5-flash (Gemini)</option>
+                <option value="gemini-2.0-flash" <%= form.ocrModel === 'gemini-2.0-flash' ? 'selected' : '' %>>gemini-2.0-flash (Gemini — stable default)</option>
+                <option value="gemini-2.0-flash-lite" <%= form.ocrModel === 'gemini-2.0-flash-lite' ? 'selected' : '' %>>gemini-2.0-flash-lite (Gemini — high throughput)</option>
+                <option value="gemini-2.5-flash" <%= form.ocrModel === 'gemini-2.5-flash' ? 'selected' : '' %>>gemini-2.5-flash (Gemini — hybrid reasoning)</option>
                 <option value="gemini-2.5-flash-lite" <%= form.ocrModel === 'gemini-2.5-flash-lite' ? 'selected' : '' %>>gemini-2.5-flash-lite (Gemini — budget)</option>
+                <option value="gemini-1.5-flash" <%= form.ocrModel === 'gemini-1.5-flash' ? 'selected' : '' %>>gemini-1.5-flash (Gemini — legacy)</option>
                 <option value="nvidia/nemotron-ocr-v2" <%= form.ocrModel === 'nvidia/nemotron-ocr-v2' ? 'selected' : '' %>>nvidia/nemotron-ocr-v2 (NVIDIA)</option>
                 <% if (form.ocrModel && !ocrModelOptions.includes(form.ocrModel)) { %>
                   <option value="<%= form.ocrModel %>" selected><%= form.ocrModel %> (saved custom model)</option>
                 <% } %>
               </select>
-              <div class="form-text">Use pinned model IDs only. Gemini defaults to <code>gemini-3.6-flash</code>; Flash-Lite models are the lower-traffic choices. NVIDIA uses <code>nvidia/nemotron-ocr-v2</code>.</div>
+              <div class="form-text">Use pinned model IDs only. Gemini defaults to <code>gemini-2.0-flash</code>; Flash-Lite models are the lower-traffic choices. NVIDIA uses <code>nvidia/nemotron-ocr-v2</code>.</div>
             </div>
             <div class="col-md-4">
               <label class="form-label">Dedicated OCR API key</label>

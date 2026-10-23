@@ -2,7 +2,7 @@ import fs from 'fs/promises';
 import { AiInvoiceExtractionConfig, OcrPageResult } from '../types';
 import { getGeminiOAuthAccessToken } from '../../services/geminiOAuthService';
 
-const DEFAULT_GEMINI_OCR_MODEL = 'gemini-3.6-flash';
+const DEFAULT_GEMINI_OCR_MODEL = 'gemini-2.0-flash';
 
 export async function geminiVisionOcr(
   imagePaths: Array<{ pageNumber: number; imagePath: string }>,
@@ -46,7 +46,8 @@ export async function geminiVisionOcr(
   const configuredModel = ocrConfig?.model?.trim();
   const model = configuredModel &&
     configuredModel !== 'nvidia/nemotron-ocr-v2' &&
-    configuredModel !== 'gemini-flash-latest'
+    configuredModel !== 'gemini-flash-latest' &&
+    !/^gemini-3\./i.test(configuredModel)
     ? configuredModel
     : DEFAULT_GEMINI_OCR_MODEL;
   const configuredBaseUrl = ocrConfig?.endpoint?.trim().replace(/\/+$/, '');
