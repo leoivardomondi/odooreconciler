@@ -435,8 +435,10 @@ class MemoryCache {
       }
     }
     if (prefix === 'shop-floor-dashboard:') {
-      this.cache.delete('shop-floor:shared-work-orders:v1');
-      void deleteShopFloorSharedCache('shop-floor:shared-work-orders:v1').catch(() => {});
+      const sharedMo = this.cache.get('shop-floor:shared-work-orders:v1');
+      if (sharedMo) {
+        sharedMo.freshUntil = 0; // Trigger background revalidation while continuing to serve current snapshot
+      }
     }
   }
 
@@ -1922,16 +1924,27 @@ router.get('/shop-floor/payslip/:id/download', async (req: Request, res: Respons
 router.get('/shop-floor/api/app-badge-counts', async (req: Request, res: Response) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
   try {
+    const ramSharedMo = shopFloorCache.get<{ workOrders: any[] }>('shop-floor:shared-work-orders:v1');
     const [sharedMoEntry, pendingProcesses, sharedIncidentsEntry, receiptsEntry, deliveriesEntry] = await Promise.all([
-      getShopFloorSharedCache<{ workOrders: any[] }>('shop-floor:shared-work-orders:v1').catch(() => null),
+      ramSharedMo?.workOrders?.length
+        ? Promise.resolve({ data: ramSharedMo })
+        : getShopFloorSharedCache<{ workOrders: any[] }>('shop-floor:shared-work-orders:v1').catch(() => null),
       getPendingShopFloorProcesses({ status: 'pending' }).catch(() => []),
       getShopFloorSharedCache<any[]>('shop-floor:shared-incidents:v1').catch(() => null),
       getShopFloorSharedCache<any[]>('shop-floor:receipts:1').catch(() => null),
       getShopFloorSharedCache<any[]>('shop-floor:deliveries:1').catch(() => null),
     ]);
 
-    const workOrders = sharedMoEntry?.data?.workOrders || [];
-    const openWorkOrders = workOrders.filter((o: any) => o.state !== 'done').length;
+    const workOrders = ramSharedMo?.workOrders || sharedMoEntry?.data?.workOrders || [];
+    let openWorkOrders = workOrders.filter((o: any) => o.state !== 'done').length;
+
+    // Fallback: if openWorkOrders is 0, check user's snapshot to prevent transient count drops
+    if (openWorkOrders === 0 && req.authUser?.email) {
+      const snap = await getShopFloorDashboardSnapshot<OperatorDashboardData>(req.authUser.email).catch(() => null);
+      if (snap?.data?.workOrders?.length) {
+        openWorkOrders = snap.data.workOrders.filter((o: any) => o.state !== 'done').length;
+      }
+    }
     const openIncidents = (sharedIncidentsEntry?.data || []).filter((i: any) => {
       const isResolved = i.stage_id ? (i.stage_id[1] === 'Repaired' || i.stage_id[1] === 'Scrap') : false;
       return !isResolved && (i.status === 'open' || !i.status);
@@ -2825,7 +2838,6 @@ async function handleAdvanceMo(req: Request, res: Response) {
     // Stock check passed - Respond instantly for immediate operator feedback
     manuallyPausedMoIds.delete(moId);
     shopFloorCache.clearPrefix('shop-floor-dashboard:');
-    deleteShopFloorSharedCache('shop-floor:shared-work-orders:v1').catch(() => null);
     const message = action === 'finish'
       ? 'Current operation finished.'
       : `Manufacturing operation started for ${employee.name}.`;
@@ -2847,7 +2859,6 @@ async function handleAdvanceMo(req: Request, res: Response) {
       try {
         const advanceResult = await client.advanceManufacturingOrder(moId, action, employee.id, stockCheck);
         shopFloorCache.clearPrefix('shop-floor-dashboard:');
-        deleteShopFloorSharedCache('shop-floor:shared-work-orders:v1').catch(() => null);
         const operatorTrackingWarning = action === 'start'
           && advanceResult
           && typeof advanceResult === 'object'
@@ -2943,7 +2954,6 @@ async function handlePauseMo(req: Request, res: Response) {
 
     manuallyPausedMoIds.add(moId);
     shopFloorCache.clearPrefix('shop-floor-dashboard:');
-    deleteShopFloorSharedCache('shop-floor:shared-work-orders:v1').catch(() => null);
 
     if (wantsJson) {
       res.json({
@@ -2960,7 +2970,6 @@ async function handlePauseMo(req: Request, res: Response) {
       try {
         await client.pauseManufacturingOrder(moId, { createBackorder, qtyProduced }, employee.id);
         shopFloorCache.clearPrefix('shop-floor-dashboard:');
-        deleteShopFloorSharedCache('shop-floor:shared-work-orders:v1').catch(() => null);
         await logEvent('info', 'Manufacturing order paused', { moId, actor: employee.name, createBackorder });
       } catch (bgErr) {
         void logEvent('error', 'Background pauseManufacturingOrder failed in Odoo', {

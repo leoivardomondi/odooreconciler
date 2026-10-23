@@ -2852,6 +2852,10 @@ document.addEventListener('click', function(e) {
           badge.textContent = label;
           badge.title = count + ' item' + (count === 1 ? '' : 's') + ' requiring attention';
         } else if (badge) {
+          // If the page itself is currently displaying open work orders on screen, do NOT remove start-finish badge on transient 0
+          if (key === 'start-finish' && document.querySelectorAll('[data-mo-row]').length > 0) {
+            return;
+          }
           badge.remove();
         }
       });
