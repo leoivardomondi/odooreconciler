@@ -58,6 +58,14 @@ Create an Automation Rule with Action To Do = "Send Webhook Notification":
    - URL: https://app.urbanvibeinteriordesign.co.ke/api/webhooks/odoo-sync?token=reconciler-odoo-webhook-2026-8fK29sLmQx7PzA4n&type=picking
    - Fields: Status (state)
 
+7. ATTENDANCE CHECK-IN / CHECK-OUT (hr.attendance):
+   - Model: Attendance (hr.attendance)
+   - Trigger: On Creation or On Update (check_in, check_out)
+   - Domain: [('employee_id.company_id', '=', 1)]
+   - Action: Send Webhook Notification
+   - URL: https://app.urbanvibeinteriordesign.co.ke/api/webhooks/odoo-sync?token=reconciler-odoo-webhook-2026-8fK29sLmQx7PzA4n&type=attendance&model=hr.attendance
+   - Fields: Employee (employee_id), Check In (check_in), Check Out (check_out)
+
 That's it! 0 lines of Python written = 0 lines billed by Odoo.
 
 OPTION 2: PYTHON SERVER ACTIONS - DO NOT USE FROM THE ODOO UI
@@ -140,6 +148,15 @@ for r in records:
         try: urllib.request.urlopen(f"https://app.urbanvibeinteriordesign.co.ke/api/webhooks/odoo-sync?token=reconciler-odoo-webhook-2026-8fK29sLmQx7PzA4n&type=po&id={r.id}", timeout=2)
         except: pass'''
 
+# ==============================================================================
+# 7. hr.attendance (Check In / Check Out) - ONLY 5 LINES
+# ==============================================================================
+HR_ATTENDANCE_ACTION_CODE = '''import urllib.request
+for r in records:
+    eid = r.employee_id.id if getattr(r, 'employee_id', None) else 0
+    try: urllib.request.urlopen(f"https://app.urbanvibeinteriordesign.co.ke/api/webhooks/odoo-sync?token=reconciler-odoo-webhook-2026-8fK29sLmQx7PzA4n&type=attendance&model=hr.attendance&id={r.id}&employee_id={eid}", timeout=2)
+    except: pass'''
+
 
 def install_automated_actions(odoo_url, db, username, api_key, reconciler_url, webhook_token):
     """
@@ -167,6 +184,7 @@ def install_automated_actions(odoo_url, db, username, api_key, reconciler_url, w
         ('ir.attachment', 'Reconciler: Sync Job Summary (Mini LOC)', format_code(JOB_SUMMARY_ATTACHMENT_ACTION_CODE)),
         ('sale.order', 'Reconciler: Sync Sales Orders (Mini LOC)', format_code(SALES_ORDER_CONFIRMED_ACTION_CODE)),
         ('purchase.order', 'Reconciler: Audit PO vs Job Summary (Mini LOC)', format_code(PURCHASE_ORDER_ACTION_CODE)),
+        ('hr.attendance', 'Reconciler: Sync Attendance Changes (Mini LOC)', format_code(HR_ATTENDANCE_ACTION_CODE)),
     ]
 
     for model_name, action_name, code in actions:

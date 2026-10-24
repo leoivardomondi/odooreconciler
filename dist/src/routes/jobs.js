@@ -883,6 +883,10 @@ async function handleOdooSyncWebhook(req, res) {
     else if (rawModel === 'stock.quant' || ['stock', 'quant', 'inventory'].includes(rawType)) {
         resolvedType = 'stock';
     }
+    else if (rawModel === 'hr.attendance' ||
+        ['attendance', 'checkin', 'checkout', 'check-in', 'check-out'].includes(rawType)) {
+        resolvedType = 'attendance';
+    }
     else if (rawModel === 'purchase.order' ||
         ['po', 'purchase', 'purchases', 'procurement'].includes(rawType)) {
         resolvedType = 'po';
@@ -970,6 +974,18 @@ async function handleOdooSyncWebhook(req, res) {
                     (0, repositories_1.deleteShopFloorDashboardSnapshot)(),
                     (0, stockMirrorService_1.refreshStockMirror)(),
                 ]);
+            }
+            else if (resolvedType === 'attendance' || rawModel === 'hr.attendance') {
+                shopFloor_1.shopFloorCache.clearPrefix('shop-floor-dashboard:');
+                shopFloor_1.shopFloorCache.delete('shop-floor:operators-list:v1');
+                await Promise.allSettled([
+                    (0, repositories_1.deleteShopFloorDashboardSnapshot)(),
+                    (0, repositories_1.deleteShopFloorSharedCache)('shop-floor:operators-list:v1'),
+                ]);
+                await (0, logService_1.logEvent)('info', 'Odoo attendance sync webhook processed', {
+                    recordId: payload.id ?? req.query.id ?? null,
+                    employeeId: payload.employee_id ?? req.query.employee_id ?? null,
+                });
             }
             else if (resolvedType === 'po') {
                 const poId = parsePositiveInteger(payload.id) ||

@@ -1803,6 +1803,13 @@ router.get('/shop-floor/api/app-badge-counts', async (req, res) => {
             qty: o.qty,
             stockStatus: o.stockStatus,
         }));
+        const viewedEmail = getViewedUserEmail(req).trim().toLowerCase();
+        const userSnap = viewedEmail ? exports.shopFloorCache.get(`shop-floor-dashboard:v3:${viewedEmail}`) : null;
+        const attendanceInfo = userSnap?.attendance ? {
+            checkedIn: Boolean(userSnap.attendance.checkedIn),
+            checkedOut: Boolean(userSnap.attendance.checkedOut),
+            isLate: Boolean(userSnap.attendance.isLate),
+        } : null;
         res.json({
             success: true,
             counts: {
@@ -1816,6 +1823,7 @@ router.get('/shop-floor/api/app-badge-counts', async (req, res) => {
                 'panel-rack': areaAttention('Panel Rack Area'),
             },
             workOrders: workOrderStates,
+            attendance: attendanceInfo,
         });
     }
     catch (err) {

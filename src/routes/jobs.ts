@@ -4,6 +4,7 @@ import path from 'path';
 import { Request, Response, Router } from 'express';
 import {
   deleteShopFloorDashboardSnapshot,
+  deleteShopFloorSharedCache,
   deleteShopFloorSharedCachePrefix,
   getLatestExtractedResultByOrderId,
   getSettings,
@@ -1008,7 +1009,7 @@ async function handleOdooSyncWebhook(req: Request, res: Response) {
     .toLowerCase()
     .trim();
 
-  let resolvedType: 'mo' | 'picking' | 'stock' | 'so' | 'po' | 'all' = 'all';
+  let resolvedType: 'mo' | 'picking' | 'stock' | 'attendance' | 'so' | 'po' | 'all' = 'all';
 
   if (
     rawModel === 'mrp.production' ||
@@ -1023,6 +1024,11 @@ async function handleOdooSyncWebhook(req: Request, res: Response) {
     resolvedType = 'picking';
   } else if (rawModel === 'stock.quant' || ['stock', 'quant', 'inventory'].includes(rawType)) {
     resolvedType = 'stock';
+  } else if (
+    rawModel === 'hr.attendance' ||
+    ['attendance', 'checkin', 'checkout', 'check-in', 'check-out'].includes(rawType)
+  ) {
+    resolvedType = 'attendance';
   } else if (
     rawModel === 'purchase.order' ||
     ['po', 'purchase', 'purchases', 'procurement'].includes(rawType)
@@ -1117,6 +1123,17 @@ async function handleOdooSyncWebhook(req: Request, res: Response) {
           deleteShopFloorDashboardSnapshot(),
           refreshStockMirror(),
         ]);
+      } else if (resolvedType === 'attendance' || rawModel === 'hr.attendance') {
+        shopFloorCache.clearPrefix('shop-floor-dashboard:');
+        shopFloorCache.delete('shop-floor:operators-list:v1');
+        await Promise.allSettled([
+          deleteShopFloorDashboardSnapshot(),
+          deleteShopFloorSharedCache('shop-floor:operators-list:v1'),
+        ]);
+        await logEvent('info', 'Odoo attendance sync webhook processed', {
+          recordId: payload.id ?? req.query.id ?? null,
+          employeeId: payload.employee_id ?? req.query.employee_id ?? null,
+        });
       } else if (resolvedType === 'po') {
         const poId =
           parsePositiveInteger(payload.id) ||

@@ -1032,14 +1032,32 @@
           <% } %>
           <script>
             (function() {
-              function updateAttendanceUI(isCheckedIn) {
+              function updateAttendanceUI(state) {
+                var isCheckedIn = state === true || state === 'checked_in';
+                var isCheckedOut = state === 'checked_out' || (state === false && !isCheckedIn);
+                var isNotCheckedIn = state === 'not_checked_in';
+
                 // Update all header and card attendance status badges
                 document.querySelectorAll('#headerAttendanceBadge, .attendance-status-badge').forEach(badge => {
-                  badge.textContent = isCheckedIn ? 'Checked In' : 'Checked Out';
-                  badge.setAttribute('data-i18n', isCheckedIn ? 'checked_in' : 'checked_out');
-                  badge.style.background = isCheckedIn ? 'rgba(16,185,129,0.3)' : 'rgba(255,255,255,0.15)';
-                  badge.style.border = isCheckedIn ? '1px solid rgba(16,185,129,0.5)' : '1px solid rgba(255,255,255,0.3)';
-                  badge.style.color = '#fff';
+                  if (isCheckedIn) {
+                    badge.textContent = 'Checked In';
+                    badge.setAttribute('data-i18n', 'checked_in');
+                    badge.style.background = 'rgba(16,185,129,0.3)';
+                    badge.style.border = '1px solid rgba(16,185,129,0.5)';
+                    badge.style.color = '#fff';
+                  } else if (isNotCheckedIn) {
+                    badge.textContent = 'Not Checked In';
+                    badge.setAttribute('data-i18n', 'not_checked_in');
+                    badge.style.background = 'rgba(239,68,68,0.85)';
+                    badge.style.border = 'none';
+                    badge.style.color = '#fff';
+                  } else {
+                    badge.textContent = 'Checked Out';
+                    badge.setAttribute('data-i18n', 'checked_out');
+                    badge.style.background = 'rgba(255,255,255,0.15)';
+                    badge.style.border = '1px solid rgba(255,255,255,0.3)';
+                    badge.style.color = '#fff';
+                  }
                 });
 
                 const lateWarning = document.getElementById('headerAttendanceLateWarning');
@@ -1067,6 +1085,7 @@
                   setLanguage(localStorage.getItem('shopFloorLang') || 'en');
                 }
               }
+              window.updateAttendanceUI = updateAttendanceUI;
 
               document.addEventListener('submit', async function(event) {
                 const form = event.target.closest('.attendance-action-form');
@@ -2984,6 +3003,20 @@ document.addEventListener('click', function(e) {
             summaryDiv.innerHTML = progressCount + ' <span data-i18n="in_progress">in progress</span> · ' + doneCount + ' <span data-i18n="done">done</span>';
           }
         });
+      }
+
+      // 5. Live synchronization of attendance status from background webhooks & Odoo
+      if (json && json.attendance && typeof window.updateAttendanceUI === 'function') {
+        var attState = json.attendance.checkedIn ? 'checked_in' : (json.attendance.checkedOut ? 'checked_out' : 'not_checked_in');
+        window.updateAttendanceUI(attState);
+        var lateWarning = document.getElementById('headerAttendanceLateWarning');
+        if (lateWarning) {
+          if (json.attendance.checkedIn && json.attendance.isLate) {
+            lateWarning.classList.remove('d-none');
+          } else {
+            lateWarning.classList.add('d-none');
+          }
+        }
       }
     } catch (_err) {
       // Non-blocking
