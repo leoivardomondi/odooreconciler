@@ -7,6 +7,8 @@ exports.isBitcherOnyangoRestrictedFromReceipt = isBitcherOnyangoRestrictedFromRe
 exports.optimisticallyUpdateSharedWorkOrderState = optimisticallyUpdateSharedWorkOrderState;
 exports.reconcileBoardRegistrationWithStockAlerts = reconcileBoardRegistrationWithStockAlerts;
 exports.buildInstantMysqlOperatorDashboard = buildInstantMysqlOperatorDashboard;
+exports.fetchLiveSharedWorkOrders = fetchLiveSharedWorkOrders;
+exports.refreshSharedWorkOrders = refreshSharedWorkOrders;
 exports.buildOperatorDashboard = buildOperatorDashboard;
 const express_1 = require("express");
 const crypto_1 = require("crypto");
@@ -795,6 +797,261 @@ async function fetchSalaryAdvances(employeeName) {
     }
     return salaryAdvances;
 }
+/**
+ * Fetches all active manufacturing work orders, stock allocations, and area performances directly from Odoo.
+ */
+async function fetchLiveSharedWorkOrders(client) {
+    const [allOrdersRaw, performanceOrders] = await Promise.all([
+        client.getAllActiveWorkOrders(100),
+        client.getManufacturingPerformanceOrders(),
+    ]);
+    const allOrders = allOrdersRaw.filter((o) => o.name.startsWith('WH/MO/'));
+    const originsToFetch = [...new Set([...allOrders, ...performanceOrders].flatMap((o) => [
+            o.origin,
+            (0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(o.origin),
+            o.name,
+        ]).filter(Boolean))];
+    const moIds = allOrders.map((o) => o.id);
+    const [clientMap, saleOrderDateMap, allComponents, poStateMap, workOrderStateMap] = await Promise.all([
+        client.getBulkSaleOrderClients(originsToFetch).catch(() => new Map()),
+        client.getBulkSaleOrderConfirmationDates(originsToFetch).catch(() => new Map()),
+        client.getBulkManufacturingOrderComponents(moIds).catch(() => []),
+        client.getBulkRelatedPurchaseOrderStates(originsToFetch).catch(() => new Map()),
+        client.getBulkWorkOrderStates(moIds).catch(() => new Map()),
+    ]);
+    const componentsByMoId = new Map();
+    for (const comp of allComponents) {
+        if (comp.raw_material_production_id) {
+            const moId = comp.raw_material_production_id[0];
+            if (!componentsByMoId.has(moId)) {
+                componentsByMoId.set(moId, []);
+            }
+            componentsByMoId.get(moId).push(comp);
+        }
+    }
+    const moIdsWithStockIssues = new Set();
+    const localStockAlerts = [];
+    const moStockStatus = new Map();
+    let reservedBoardsCount = 0;
+    for (const o of allOrders) {
+        const manufacturedProductName = Array.isArray(o.product_id) ? o.product_id[1] : String(o.product_id || '');
+        if (isStockExemptEdgeBandingService(manufacturedProductName)) {
+            moStockStatus.set(o.id, 'ready');
+            continue;
+        }
+        const components = componentsByMoId.get(o.id) || [];
+        for (const comp of components) {
+            const componentName = Array.isArray(comp.product_id) ? comp.product_id[1] : '';
+            if (isBoardComponentName(componentName)) {
+                reservedBoardsCount += (comp.quantity || 0);
+            }
+        }
+        if (o.state === 'done' || o.state === 'cancel') {
+            moStockStatus.set(o.id, 'ready');
+            continue;
+        }
+        const unavailable = components.filter((c) => {
+            if (c.state === 'done' || c.state === 'cancel' || c.state === 'draft' || c.state === 'assigned') {
+                return false;
+            }
+            if (['confirmed', 'waiting', 'partially_available'].includes(c.state)) {
+                return true;
+            }
+            return !c.forecast_availability || c.forecast_availability === 'unavailable';
+        });
+        if (unavailable.length > 0) {
+            const soOrigin = o.origin ? (0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(o.origin) : null;
+            const poState = (o.origin && poStateMap.get(o.origin)) ||
+                (soOrigin && poStateMap.get(soOrigin)) ||
+                poStateMap.get(o.name) ||
+                null;
+            const hasActivePo = Boolean(poState && poState !== 'cancel');
+            if (!hasActivePo) {
+                moStockStatus.set(o.id, 'no_stock');
+                moIdsWithStockIssues.add(o.id);
+                const confirmedAt = o.origin ? saleOrderDateMap.get(o.origin) || null : null;
+                const overdueDays = getOverdueDaysFromDateOrder(confirmedAt);
+                for (const comp of unavailable) {
+                    const componentName = Array.isArray(comp.product_id) ? comp.product_id[1] : '';
+                    if (!isBoardComponentName(componentName)) {
+                        continue;
+                    }
+                    localStockAlerts.push({
+                        moName: o.name,
+                        product: Array.isArray(o.product_id) ? o.product_id[1] : '',
+                        component: componentName,
+                        qtyNeeded: comp.product_uom_qty - (comp.quantity || 0),
+                        client: clientMap.get(o.origin || '') || null,
+                        moId: o.id,
+                        confirmedAt,
+                        overdueDays,
+                    });
+                }
+            }
+            else {
+                moStockStatus.set(o.id, 'incoming');
+            }
+        }
+        else {
+            moStockStatus.set(o.id, 'ready');
+        }
+    }
+    const confirmedQueueSchedule = (0, moOverdueService_1.getConfirmedMoQueueSchedule)(allOrders);
+    const mappedWorkOrders = allOrders.map((o) => {
+        const baseTiming = (0, moOverdueService_1.getMoOverdueState)({ createDate: o.create_date, plannedStart: o.date_start, clientDeadline: o.date_deadline, quantity: o.product_qty, productName: Array.isArray(o.product_id) ? o.product_id[1] : String(o.product_id || '') });
+        const queueTiming = confirmedQueueSchedule.get(o.id);
+        const rawWoState = workOrderStateMap.get(o.id);
+        const isManuallyPaused = exports.manuallyPausedMoIds.has(o.id);
+        const effectiveState = isManuallyPaused || rawWoState === 'pending'
+            ? 'paused'
+            : rawWoState === 'progress' || o.state === 'progress'
+                ? 'progress'
+                : o.state || 'draft';
+        return {
+            ...baseTiming,
+            ...queueTiming,
+            isOverdue: !baseTiming.createdToday && (baseTiming.overdueReason !== null || Boolean(queueTiming && new Date() > new Date(queueTiming.estimatedFinishAt))),
+            id: o.id,
+            name: o.name,
+            product: Array.isArray(o.product_id) ? o.product_id[1] : String(o.product_id),
+            qty: o.product_qty || 0,
+            produced: o.qty_produced || 0,
+            state: effectiveState,
+            plannedStart: o.date_start || null,
+            dateStarted: o.date_start || null,
+            dateFinished: o.date_finished || null,
+            dateDeadline: o.date_deadline || null,
+            createdAt: o.create_date || null,
+            progress: o.product_qty > 0 ? Math.round(((o.qty_produced || 0) / o.product_qty) * 100) : 0,
+            origin: o.origin || null,
+            client: o.origin ? clientMap.get(o.origin) || null : null,
+            assignedTo: Array.isArray(o.user_id) ? o.user_id[1] : null,
+            area: detectArea(Array.isArray(o.product_id) ? o.product_id[1] : ''),
+            hasStockIssue: moIdsWithStockIssues.has(o.id),
+            stockStatus: moStockStatus.get(o.id) || 'ready',
+        };
+    }).sort((a, b) => {
+        if (a.state === 'progress' && b.state !== 'progress')
+            return -1;
+        if (a.state !== 'progress' && b.state === 'progress')
+            return 1;
+        if (a.state === 'paused' && b.state !== 'paused')
+            return -1;
+        if (a.state !== 'paused' && b.state === 'paused')
+            return 1;
+        if (a.stockStatus === 'ready' && b.stockStatus !== 'ready')
+            return -1;
+        if (a.stockStatus !== 'ready' && b.stockStatus === 'ready')
+            return 1;
+        return 0;
+    });
+    const completedAreaStats = new Map();
+    for (const o of performanceOrders) {
+        const area = detectArea(Array.isArray(o.product_id) ? o.product_id[1] : '');
+        if (!completedAreaStats.has(area)) {
+            completedAreaStats.set(area, { totalOrders: 0, completedOrders: 0, onTimeOrders: 0, overdueQuickClose: 0, days: [] });
+        }
+        const stats = completedAreaStats.get(area);
+        stats.totalOrders += 1;
+        if (o.state !== 'done' || !o.origin || !o.date_finished) {
+            continue;
+        }
+        const confirmedAt = saleOrderDateMap.get(o.origin) || null;
+        if (!confirmedAt) {
+            continue;
+        }
+        const soConfirmed = new Date(confirmedAt.includes('T') ? confirmedAt : confirmedAt.replace(' ', 'T') + 'Z');
+        const startedAt = o.date_start ? new Date(o.date_start.includes('T') ? o.date_start : o.date_start.replace(' ', 'T') + 'Z') : null;
+        const finishedAt = new Date(o.date_finished.includes('T') ? o.date_finished : o.date_finished.replace(' ', 'T') + 'Z');
+        const minPerfDate = new Date('2026-08-05T00:00:00Z');
+        if (soConfirmed.getTime() < minPerfDate.getTime()) {
+            continue;
+        }
+        stats.completedOrders += 1;
+        const daysToComplete = (finishedAt.getTime() - soConfirmed.getTime()) / (1000 * 60 * 60 * 24);
+        const hoursToStart = startedAt ? (startedAt.getTime() - soConfirmed.getTime()) / (1000 * 60 * 60) : null;
+        const minutesFromStartToFinish = startedAt ? (finishedAt.getTime() - startedAt.getTime()) / (1000 * 60) : null;
+        const overdueQuickClose = hoursToStart !== null
+            && minutesFromStartToFinish !== null
+            && hoursToStart > 24
+            && minutesFromStartToFinish >= 0
+            && minutesFromStartToFinish <= 30;
+        if (daysToComplete >= 0) {
+            stats.days.push(daysToComplete);
+        }
+        if (daysToComplete >= 0 && daysToComplete <= 3 && !overdueQuickClose) {
+            stats.onTimeOrders += 1;
+        }
+        if (overdueQuickClose) {
+            stats.overdueQuickClose += 1;
+        }
+    }
+    const areaPerformanceRates = Array.from(completedAreaStats.entries())
+        .map(([area, stats]) => {
+        const percentage = stats.completedOrders > 0
+            ? Math.round((stats.onTimeOrders / stats.completedOrders) * 100)
+            : 0;
+        const avgDaysToComplete = stats.days.length > 0
+            ? Math.round((stats.days.reduce((sum, value) => sum + value, 0) / stats.days.length) * 10) / 10
+            : 0;
+        const color = percentage >= 75 ? 'green' : percentage >= 50 ? 'orange' : 'red';
+        return {
+            area,
+            percentage,
+            color,
+            totalOrders: stats.totalOrders,
+            completedOrders: stats.completedOrders,
+            onTimeOrders: stats.onTimeOrders,
+            overdueQuickClose: stats.overdueQuickClose,
+            avgDaysToComplete,
+        };
+    })
+        .sort((a, b) => {
+        const order = MANUFACTURING_AREAS;
+        const aIndex = order.indexOf(a.area);
+        const bIndex = order.indexOf(b.area);
+        if (aIndex === -1 && bIndex === -1)
+            return a.area.localeCompare(b.area);
+        if (aIndex === -1)
+            return 1;
+        if (bIndex === -1)
+            return -1;
+        return aIndex - bIndex;
+    });
+    return {
+        workOrders: mappedWorkOrders,
+        rawStockAlerts: localStockAlerts,
+        areaPerformanceRates,
+        reservedBoardsCount,
+    };
+}
+/**
+ * Re-fetches live work orders from Odoo and synchronizes both RAM and MySQL shared cache,
+ * ensuring all operator screens receive immediate updates without waiting on cron intervals.
+ */
+async function refreshSharedWorkOrders(client) {
+    let odooClient = client;
+    if (!odooClient) {
+        const settings = await (0, repositories_1.getSettings)();
+        odooClient = new odooClient_1.OdooClient(settings.odoo);
+    }
+    const fresh = await fetchLiveSharedWorkOrders(odooClient);
+    exports.shopFloorCache.set('shop-floor:shared-work-orders:v1', fresh, 30 * 60 * 1000, 3 * 60 * 1000);
+    try {
+        await (0, repositories_1.saveShopFloorSharedCache)('shop-floor:shared-work-orders:v1', fresh);
+    }
+    catch (err) {
+        console.warn('[shopFloorCache] Failed to save shared work orders to MySQL:', err);
+    }
+    exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
+    try {
+        await (0, repositories_1.deleteShopFloorDashboardSnapshot)();
+    }
+    catch (err) {
+        console.warn('[shopFloorCache] Failed to delete dashboard snapshots from MySQL:', err);
+    }
+    return fresh;
+}
 async function buildOperatorDashboard(client, userEmail, req, stockScope) {
     const result = {
         employee: null,
@@ -864,231 +1121,7 @@ async function buildOperatorDashboard(client, userEmail, req, stockScope) {
             (async () => {
                 const sharedMoData = await exports.shopFloorCache.getOrFetchTieredSWR('shop-floor:shared-work-orders:v1', 3 * 60 * 1000, // 3 minutes fresh
                 30 * 60 * 1000, // 30 minutes max stale
-                async () => {
-                    const [allOrdersRaw, performanceOrders] = await Promise.all([
-                        client.getAllActiveWorkOrders(100),
-                        client.getManufacturingPerformanceOrders(),
-                    ]);
-                    const allOrders = allOrdersRaw.filter(o => o.name.startsWith('WH/MO/'));
-                    const originsToFetch = [...new Set([...allOrders, ...performanceOrders].flatMap(o => [
-                            o.origin,
-                            (0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(o.origin),
-                            o.name,
-                        ]).filter(Boolean))];
-                    const moIds = allOrders.map(o => o.id);
-                    const [clientMap, saleOrderDateMap, allComponents, poStateMap, workOrderStateMap] = await Promise.all([
-                        client.getBulkSaleOrderClients(originsToFetch).catch(() => new Map()),
-                        client.getBulkSaleOrderConfirmationDates(originsToFetch).catch(() => new Map()),
-                        client.getBulkManufacturingOrderComponents(moIds).catch(() => []),
-                        client.getBulkRelatedPurchaseOrderStates(originsToFetch).catch(() => new Map()),
-                        client.getBulkWorkOrderStates(moIds).catch(() => new Map()),
-                    ]);
-                    const componentsByMoId = new Map();
-                    for (const comp of allComponents) {
-                        if (comp.raw_material_production_id) {
-                            const moId = comp.raw_material_production_id[0];
-                            if (!componentsByMoId.has(moId)) {
-                                componentsByMoId.set(moId, []);
-                            }
-                            componentsByMoId.get(moId).push(comp);
-                        }
-                    }
-                    const moIdsWithStockIssues = new Set();
-                    const localStockAlerts = [];
-                    const moStockStatus = new Map();
-                    let reservedBoardsCount = 0;
-                    for (const o of allOrders) {
-                        const manufacturedProductName = Array.isArray(o.product_id) ? o.product_id[1] : String(o.product_id || '');
-                        if (isStockExemptEdgeBandingService(manufacturedProductName)) {
-                            moStockStatus.set(o.id, 'ready');
-                            continue;
-                        }
-                        const components = componentsByMoId.get(o.id) || [];
-                        for (const comp of components) {
-                            const componentName = Array.isArray(comp.product_id) ? comp.product_id[1] : '';
-                            if (isBoardComponentName(componentName)) {
-                                reservedBoardsCount += (comp.quantity || 0);
-                            }
-                        }
-                        if (o.state === 'done' || o.state === 'cancel') {
-                            moStockStatus.set(o.id, 'ready');
-                            continue;
-                        }
-                        const unavailable = components.filter((c) => {
-                            if (c.state === 'done' || c.state === 'cancel' || c.state === 'draft' || c.state === 'assigned') {
-                                return false;
-                            }
-                            if (['confirmed', 'waiting', 'partially_available'].includes(c.state)) {
-                                return true;
-                            }
-                            return !c.forecast_availability || c.forecast_availability === 'unavailable';
-                        });
-                        if (unavailable.length > 0) {
-                            const soOrigin = o.origin ? (0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(o.origin) : null;
-                            const poState = (o.origin && poStateMap.get(o.origin)) ||
-                                (soOrigin && poStateMap.get(soOrigin)) ||
-                                poStateMap.get(o.name) ||
-                                null;
-                            const hasActivePo = Boolean(poState && poState !== 'cancel');
-                            if (!hasActivePo) {
-                                moStockStatus.set(o.id, 'no_stock');
-                                moIdsWithStockIssues.add(o.id);
-                                const confirmedAt = o.origin ? saleOrderDateMap.get(o.origin) || null : null;
-                                const overdueDays = getOverdueDaysFromDateOrder(confirmedAt);
-                                for (const comp of unavailable) {
-                                    const componentName = Array.isArray(comp.product_id) ? comp.product_id[1] : '';
-                                    if (!isBoardComponentName(componentName)) {
-                                        continue;
-                                    }
-                                    localStockAlerts.push({
-                                        moName: o.name,
-                                        product: Array.isArray(o.product_id) ? o.product_id[1] : '',
-                                        component: componentName,
-                                        qtyNeeded: comp.product_uom_qty - (comp.quantity || 0),
-                                        client: clientMap.get(o.origin || '') || null,
-                                        moId: o.id,
-                                        confirmedAt,
-                                        overdueDays,
-                                    });
-                                }
-                            }
-                            else {
-                                moStockStatus.set(o.id, 'incoming');
-                            }
-                        }
-                        else {
-                            moStockStatus.set(o.id, 'ready');
-                        }
-                    }
-                    const confirmedQueueSchedule = (0, moOverdueService_1.getConfirmedMoQueueSchedule)(allOrders);
-                    const mappedWorkOrders = allOrders.map((o) => {
-                        const baseTiming = (0, moOverdueService_1.getMoOverdueState)({ createDate: o.create_date, plannedStart: o.date_start, clientDeadline: o.date_deadline, quantity: o.product_qty, productName: Array.isArray(o.product_id) ? o.product_id[1] : String(o.product_id || '') });
-                        const queueTiming = confirmedQueueSchedule.get(o.id);
-                        const rawWoState = workOrderStateMap.get(o.id);
-                        const isManuallyPaused = exports.manuallyPausedMoIds.has(o.id);
-                        const effectiveState = isManuallyPaused || rawWoState === 'pending'
-                            ? 'paused'
-                            : rawWoState === 'progress' || o.state === 'progress'
-                                ? 'progress'
-                                : o.state || 'draft';
-                        return {
-                            ...baseTiming,
-                            ...queueTiming,
-                            isOverdue: !baseTiming.createdToday && (baseTiming.overdueReason !== null || Boolean(queueTiming && new Date() > new Date(queueTiming.estimatedFinishAt))),
-                            id: o.id,
-                            name: o.name,
-                            product: Array.isArray(o.product_id) ? o.product_id[1] : String(o.product_id),
-                            qty: o.product_qty || 0,
-                            produced: o.qty_produced || 0,
-                            state: effectiveState,
-                            plannedStart: o.date_start || null,
-                            dateStarted: o.date_start || null,
-                            dateFinished: o.date_finished || null,
-                            dateDeadline: o.date_deadline || null,
-                            createdAt: o.create_date || null,
-                            progress: o.product_qty > 0 ? Math.round(((o.qty_produced || 0) / o.product_qty) * 100) : 0,
-                            origin: o.origin || null,
-                            client: o.origin ? clientMap.get(o.origin) || null : null,
-                            assignedTo: Array.isArray(o.user_id) ? o.user_id[1] : null,
-                            area: detectArea(Array.isArray(o.product_id) ? o.product_id[1] : ''),
-                            hasStockIssue: moIdsWithStockIssues.has(o.id),
-                            stockStatus: moStockStatus.get(o.id) || 'ready',
-                        };
-                    }).sort((a, b) => {
-                        if (a.state === 'progress' && b.state !== 'progress')
-                            return -1;
-                        if (a.state !== 'progress' && b.state === 'progress')
-                            return 1;
-                        if (a.state === 'paused' && b.state !== 'paused')
-                            return -1;
-                        if (a.state !== 'paused' && b.state === 'paused')
-                            return 1;
-                        if (a.stockStatus === 'ready' && b.stockStatus !== 'ready')
-                            return -1;
-                        if (a.stockStatus !== 'ready' && b.stockStatus === 'ready')
-                            return 1;
-                        return 0;
-                    });
-                    const completedAreaStats = new Map();
-                    for (const o of performanceOrders) {
-                        const area = detectArea(Array.isArray(o.product_id) ? o.product_id[1] : '');
-                        if (!completedAreaStats.has(area)) {
-                            completedAreaStats.set(area, { totalOrders: 0, completedOrders: 0, onTimeOrders: 0, overdueQuickClose: 0, days: [] });
-                        }
-                        const stats = completedAreaStats.get(area);
-                        stats.totalOrders += 1;
-                        if (o.state !== 'done' || !o.origin || !o.date_finished) {
-                            continue;
-                        }
-                        const confirmedAt = saleOrderDateMap.get(o.origin) || null;
-                        if (!confirmedAt) {
-                            continue;
-                        }
-                        const soConfirmed = new Date(confirmedAt.includes('T') ? confirmedAt : confirmedAt.replace(' ', 'T') + 'Z');
-                        const startedAt = o.date_start ? new Date(o.date_start.includes('T') ? o.date_start : o.date_start.replace(' ', 'T') + 'Z') : null;
-                        const finishedAt = new Date(o.date_finished.includes('T') ? o.date_finished : o.date_finished.replace(' ', 'T') + 'Z');
-                        const minPerfDate = new Date('2026-08-05T00:00:00Z');
-                        if (soConfirmed.getTime() < minPerfDate.getTime()) {
-                            continue;
-                        }
-                        stats.completedOrders += 1;
-                        const daysToComplete = (finishedAt.getTime() - soConfirmed.getTime()) / (1000 * 60 * 60 * 24);
-                        const hoursToStart = startedAt ? (startedAt.getTime() - soConfirmed.getTime()) / (1000 * 60 * 60) : null;
-                        const minutesFromStartToFinish = startedAt ? (finishedAt.getTime() - startedAt.getTime()) / (1000 * 60) : null;
-                        const overdueQuickClose = hoursToStart !== null
-                            && minutesFromStartToFinish !== null
-                            && hoursToStart > 24
-                            && minutesFromStartToFinish >= 0
-                            && minutesFromStartToFinish <= 30;
-                        if (daysToComplete >= 0) {
-                            stats.days.push(daysToComplete);
-                        }
-                        if (daysToComplete >= 0 && daysToComplete <= 3 && !overdueQuickClose) {
-                            stats.onTimeOrders += 1;
-                        }
-                        if (overdueQuickClose) {
-                            stats.overdueQuickClose += 1;
-                        }
-                    }
-                    const areaPerformanceRates = Array.from(completedAreaStats.entries())
-                        .map(([area, stats]) => {
-                        const percentage = stats.completedOrders > 0
-                            ? Math.round((stats.onTimeOrders / stats.completedOrders) * 100)
-                            : 0;
-                        const avgDaysToComplete = stats.days.length > 0
-                            ? Math.round((stats.days.reduce((sum, value) => sum + value, 0) / stats.days.length) * 10) / 10
-                            : 0;
-                        const color = percentage >= 75 ? 'green' : percentage >= 50 ? 'orange' : 'red';
-                        return {
-                            area,
-                            percentage,
-                            color,
-                            totalOrders: stats.totalOrders,
-                            completedOrders: stats.completedOrders,
-                            onTimeOrders: stats.onTimeOrders,
-                            overdueQuickClose: stats.overdueQuickClose,
-                            avgDaysToComplete,
-                        };
-                    })
-                        .sort((a, b) => {
-                        const order = MANUFACTURING_AREAS;
-                        const aIndex = order.indexOf(a.area);
-                        const bIndex = order.indexOf(b.area);
-                        if (aIndex === -1 && bIndex === -1)
-                            return a.area.localeCompare(b.area);
-                        if (aIndex === -1)
-                            return 1;
-                        if (bIndex === -1)
-                            return -1;
-                        return aIndex - bIndex;
-                    });
-                    return {
-                        workOrders: mappedWorkOrders,
-                        rawStockAlerts: localStockAlerts,
-                        areaPerformanceRates,
-                        reservedBoardsCount,
-                    };
-                });
+                () => fetchLiveSharedWorkOrders(client));
                 return {
                     workOrders: sharedMoData.workOrders,
                     stockAlerts: applyOptimisticStockAlerts(sharedMoData.rawStockAlerts),
@@ -1757,6 +1790,19 @@ router.get('/shop-floor/api/app-badge-counts', async (req, res) => {
                 return false;
             return Boolean(o.isOverdue) || o.hasStockIssue || o.stockStatus === 'no_stock';
         }).length;
+        // Trigger background revalidation if shared work orders cache is stale
+        if (exports.shopFloorCache.isStale('shop-floor:shared-work-orders:v1') && !exports.shopFloorCache.isInFlight('shop-floor:shared-work-orders:v1')) {
+            void refreshSharedWorkOrders().catch(() => null);
+        }
+        const workOrderStates = workOrders.map((o) => ({
+            id: o.id,
+            name: o.name,
+            state: o.state,
+            progress: o.progress,
+            produced: o.produced,
+            qty: o.qty,
+            stockStatus: o.stockStatus,
+        }));
         res.json({
             success: true,
             counts: {
@@ -1769,6 +1815,7 @@ router.get('/shop-floor/api/app-badge-counts', async (req, res) => {
                 'edge-banding': areaAttention('Edge Banding Area'),
                 'panel-rack': areaAttention('Panel Rack Area'),
             },
+            workOrders: workOrderStates,
         });
     }
     catch (err) {

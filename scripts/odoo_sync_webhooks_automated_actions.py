@@ -39,10 +39,18 @@ Create an Automation Rule with Action To Do = "Send Webhook Notification":
    - Trigger: On Creation or On Update (state)
    - Domain: [('company_id', '=', 1)]
    - Action: Send Webhook Notification
-   - URL: https://app.urbanvibeinteriordesign.co.ke/api/webhooks/odoo-sync?token=reconciler-odoo-webhook-2026-8fK29sLmQx7PzA4n&type=mo
+   - URL: https://app.urbanvibeinteriordesign.co.ke/api/webhooks/odoo-sync?token=reconciler-odoo-webhook-2026-8fK29sLmQx7PzA4n&type=mo&model=mrp.production
    - Fields: Status (state)
 
-5. TRANSFERS / RECEIPTS & DELIVERIES (stock.picking):
+5. WORK ORDERS (mrp.workorder - WHEN OPERATOR STARTS OR CLOSES ON SHOP FLOOR):
+   - Model: Work Order (mrp.workorder)
+   - Trigger: On Update (state)
+   - Domain: [('production_id.company_id', '=', 1)]
+   - Action: Send Webhook Notification
+   - URL: https://app.urbanvibeinteriordesign.co.ke/api/webhooks/odoo-sync?token=reconciler-odoo-webhook-2026-8fK29sLmQx7PzA4n&type=mo&model=mrp.workorder
+   - Fields: Manufacturing Order (production_id), Status (state)
+
+6. TRANSFERS / RECEIPTS & DELIVERIES (stock.picking):
    - Model: Transfer (stock.picking)
    - Trigger: On Update (state)
    - Domain: [('company_id', '=', 1), ('state', '=', 'done')]
@@ -74,12 +82,23 @@ for r in records:
     except: pass'''
 
 # ==============================================================================
+# ==============================================================================
 # 2. mrp.production (MO Confirmed/Done) - ONLY 5 LINES
 # ==============================================================================
 MRP_PRODUCTION_ACTION_CODE = '''import urllib.request
 for r in records:
     if r.company_id.id == 1 and not (r.name or '').startswith('VA/'):
-        try: urllib.request.urlopen(f"https://app.urbanvibeinteriordesign.co.ke/api/webhooks/odoo-sync?token=reconciler-odoo-webhook-2026-8fK29sLmQx7PzA4n&type=mo&id={r.id}", timeout=2)
+        try: urllib.request.urlopen(f"https://app.urbanvibeinteriordesign.co.ke/api/webhooks/odoo-sync?token=reconciler-odoo-webhook-2026-8fK29sLmQx7PzA4n&type=mo&model=mrp.production&id={r.id}&state={r.state}", timeout=2)
+        except: pass'''
+
+# ==============================================================================
+# 2b. mrp.workorder (Work Order Start/Done/Pause in Shop Floor) - ONLY 6 LINES
+# ==============================================================================
+MRP_WORKORDER_ACTION_CODE = '''import urllib.request
+for r in records:
+    p = getattr(r, 'production_id', None)
+    if p and getattr(p, 'company_id', None) and p.company_id.id == 1 and not (p.name or '').startswith('VA/'):
+        try: urllib.request.urlopen(f"https://app.urbanvibeinteriordesign.co.ke/api/webhooks/odoo-sync?token=reconciler-odoo-webhook-2026-8fK29sLmQx7PzA4n&type=mo&model=mrp.workorder&id={r.id}&production_id={p.id}&state={r.state}", timeout=2)
         except: pass'''
 
 # ==============================================================================
@@ -143,6 +162,7 @@ def install_automated_actions(odoo_url, db, username, api_key, reconciler_url, w
 
     actions = [
         ('mrp.production', 'Reconciler: Sync MO Changes (Mini LOC)', format_code(MRP_PRODUCTION_ACTION_CODE)),
+        ('mrp.workorder', 'Reconciler: Sync Work Order Changes (Mini LOC)', format_code(MRP_WORKORDER_ACTION_CODE)),
         ('stock.picking', 'Reconciler: Sync Transfers (Mini LOC)', format_code(STOCK_PICKING_ACTION_CODE)),
         ('ir.attachment', 'Reconciler: Sync Job Summary (Mini LOC)', format_code(JOB_SUMMARY_ATTACHMENT_ACTION_CODE)),
         ('sale.order', 'Reconciler: Sync Sales Orders (Mini LOC)', format_code(SALES_ORDER_CONFIRMED_ACTION_CODE)),
@@ -197,6 +217,8 @@ if __name__ == '__main__':
         print(UNIVERSAL_SYNC_ACTION_CODE)
         print("\n=== 2. MANUFACTURING ORDERS (5 lines) ===")
         print(MRP_PRODUCTION_ACTION_CODE)
+        print("\n=== 2b. WORK ORDERS (SHOP FLOOR START/FINISH) (6 lines) ===")
+        print(MRP_WORKORDER_ACTION_CODE)
         print("\n=== 3. STOCK TRANSFERS / RECEIPTS (6 lines) ===")
         print(STOCK_PICKING_ACTION_CODE)
         print("\n=== 4. JOB SUMMARY ATTACHMENTS (6 lines) ===")

@@ -909,16 +909,38 @@ async function handleOdooSyncWebhook(req, res) {
     void (async () => {
         try {
             if (resolvedType === 'mo') {
-                shopFloor_1.shopFloorCache.clearPrefix('shop-floor-dashboard:');
-                const sharedMoEntry = shopFloor_1.shopFloorCache.getEntry('shop-floor:shared-work-orders:v1');
-                if (sharedMoEntry) {
-                    sharedMoEntry.freshUntil = 0;
+                const rawWoId = parsePositiveInteger(payload.id) || parsePositiveInteger(req.query.id);
+                const targetState = String(payload.state || req.query.state || '').toLowerCase().trim();
+                let moId = null;
+                if (rawModel === 'mrp.workorder') {
+                    moId =
+                        parsePositiveInteger(payload.production_id) ||
+                            (Array.isArray(payload.production_id) ? parsePositiveInteger(payload.production_id[0]) : null) ||
+                            parsePositiveInteger(req.query.production_id) ||
+                            parsePositiveInteger(req.query.mo_id);
                 }
+                else {
+                    moId =
+                        parsePositiveInteger(payload.id) ||
+                            parsePositiveInteger(payload.mo_id) ||
+                            parsePositiveInteger(payload.production_id) ||
+                            parsePositiveInteger(req.query.id);
+                }
+                // 1. Fast-path optimistic update if state is known (e.g. work order started or closed)
+                if (targetState && (moId || (rawModel === 'mrp.production' && rawWoId))) {
+                    const effectiveMoId = (rawModel === 'mrp.production' && rawWoId) ? rawWoId : moId;
+                    const mappedState = targetState === 'progress'
+                        ? 'progress'
+                        : targetState === 'done' || targetState === 'to_close'
+                            ? 'done'
+                            : targetState === 'paused'
+                                ? 'paused'
+                                : 'confirmed';
+                    await (0, shopFloor_1.optimisticallyUpdateSharedWorkOrderState)(effectiveMoId, mappedState);
+                }
+                // 2. Clear stale cache, sync pending MO processes, and trigger full live work order refresh from Odoo
                 await (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(true);
-                const moId = parsePositiveInteger(payload.id) ||
-                    parsePositiveInteger(payload.mo_id) ||
-                    parsePositiveInteger(payload.production_id) ||
-                    parsePositiveInteger(req.query.id);
+                await (0, shopFloor_1.refreshSharedWorkOrders)();
                 if (moId) {
                     try {
                         const settings = await (0, repositories_1.getSettings)();

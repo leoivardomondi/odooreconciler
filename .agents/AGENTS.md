@@ -314,4 +314,30 @@
       - Displays a top high-priority alert banner: `🚨 X Work Order(s) Closed But Stock Not Yet Logged!` with direct action link: *"Review & Log Stock in Add Stock →"*.
       - Under **Penalty Signals**, a dedicated KPI card `Closed Without Stock: X` highlights the count in bold red.
 
-
+- **Real-Time Event-Driven Work Order & MO Sync (Odoo Shop Floor $\longleftrightarrow$ Mobile Reconciler)**:
+  - **The Odoo Shop Floor Webhook Gap**: In Odoo 19 native Shop Floor tablet/web interface, when an operator clicks "Start" or "Done" on an operation, Odoo updates the Work Order model (`mrp.workorder.state`), **not** `mrp.production.state` (`mrp.production` only updates when confirmed or when the supervisor clicks "Close Production"). Therefore, webhooks configured solely on `mrp.production` never fire during normal work order starts/stops.
+  - **Dual Automation Rules in Odoo 19**:
+    1. **`mrp.workorder` Automation Rule**:
+       - Model: Work Order (`mrp.workorder`)
+       - Trigger: On Update (`state`)
+       - Domain: `[('production_id.company_id', '=', 1)]`
+       - Action: Send Webhook Notification
+       - URL: `https://app.urbanvibeinteriordesign.co.ke/api/webhooks/odoo-sync?token=<token>&type=mo&model=mrp.workorder`
+       - Fields: `production_id`, `state`
+    2. **`mrp.production` Automation Rule**:
+       - Model: Manufacturing Order (`mrp.production`)
+       - Trigger: On Creation or On Update (`state`)
+       - Domain: `[('company_id', '=', 1)]`
+       - Action: Send Webhook Notification
+       - URL: `https://app.urbanvibeinteriordesign.co.ke/api/webhooks/odoo-sync?token=<token>&type=mo&model=mrp.production`
+       - Fields: `state`
+  - **Zero-Block Immediate Ingestion Pipeline**:
+    - Webhook `/api/webhooks/odoo-sync` responds immediately (<20ms) with `HTTP 200 OK` (`status: 'queued'`).
+    - Webhook handler resolves `moId` from `payload.production_id` (work orders) or `payload.id` / `payload.mo_id` (MOs).
+    - Applies instant optimistic updates (`optimisticallyUpdateSharedWorkOrderState`) across in-memory RAM cache and MySQL table `shop_floor_shared_cache`.
+    - Deletes stale operator dashboard snapshots (`deleteShopFloorDashboardSnapshot()`) so subsequent page navigations never serve outdated states.
+    - Asynchronously refreshes live work orders (`refreshSharedWorkOrders()`) and pending board processes (`syncPendingProcessesFromOdoo(true)`).
+  - **Client-Side Live Polling & DOM Synchronization**:
+    - The mobile Shop Floor dashboard (`/shop-floor`) polls `/shop-floor/api/app-badge-counts` every 6 seconds.
+    - `/shop-floor/api/app-badge-counts` returns real-time `workOrders: [{ id, name, state, progress, produced, qty, stockStatus }]`.
+    - Client-side script dynamically updates matching on-screen rows (`[data-mo-row="<id>"]`), badges (`[data-mo-state-badge]`), action buttons (`[data-mo-action-buttons]`), progress bars, and area header counts without requiring manual page reload or wiping the view.
