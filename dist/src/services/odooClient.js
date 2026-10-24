@@ -906,6 +906,11 @@ class OdooClient {
             vals: values,
         });
     }
+    async unlinkRecords(model, ids) {
+        if (ids.length === 0)
+            return true;
+        return this.request(model, 'unlink', { ids });
+    }
     async setManufacturingOrderPlanDate(moId, planDate) {
         return this.writeRecord('mrp.production', [moId], {
             date_deadline: planDate,

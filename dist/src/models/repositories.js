@@ -4332,7 +4332,8 @@ async function unmarkPendingShopFloorProcessesLoaded(filters) {
     return updated;
 }
 async function getActiveBoardIntakeLogs() {
-    return (0, db_1.queryAll)(`SELECT partner_id, customer_name, product_id, product_name, quantity
+    return (0, db_1.queryAll)(`SELECT id, partner_id, customer_name, product_id, product_name, quantity,
+            actor_name, actor_email, gate, vehicle_registration, arrival_date, arrival_time, created_at
      FROM board_intake_queue
      WHERE status IN ('synced', 'processing', 'pending')`, []);
 }

@@ -201,6 +201,23 @@
     - When a job is closed in Odoo shop floor (`state in ('to_close', 'done')`) or uses another client's/unreserved stock, the required stock log record in the Add Stock area (`shop_floor_pending_processes`) **ONLY disappears if a matching history log in `board_intake_queue` (`status in ('synced', 'processing', 'pending')`) appears and fulfills the required quantity**.
     - If no operator physically logged the boards at the gate, the requirement is **NEVER pruned or deleted** by background sync or cleanup jobs; it is permanently preserved as `status = 'pending'` so missing client stock is never lost.
     - If a matching history log is reverted by an administrator, `unmarkPendingShopFloorProcessesLoaded` automatically restores `qty_missing` and resets status to `'pending'`, causing the requirement to immediately reappear in the Add Stock area.
+  - **PO Receipt Fulfillment on Matching Manual Board Intake (Preventive Measure & Strict Approval Rule)**:
+    - **Trigger**: When an operator logs boards at the gate that match an active Purchase Order for the customer/job and board product.
+    - **Strict Approval Rule ("Only approve if waiting for approval")**: The Purchase Order is automatically approved via `client.callRecordMethod('purchase.order', 'button_approve')` **ONLY if its state is strictly `'to approve'`**. If the PO is in `'draft'` or `'sent'`, it is **NEVER** approved and receipt fulfillment is bypassed.
+    - **Zero Duplicate Inventory**: When the PO is in `'purchase'` (or was `'to approve'` and approved), the incoming stock receipt (`stock.picking`, `picking_type_code = 'incoming'`) is automatically validated via `button_validate`. Manual stock adjustment (`addBoardsToStock`) is bypassed to prevent duplicate inventory. If the logged quantity exceeds the PO quantity, only the surplus difference is added manually.
+    - **Chatter & Audit Trail**: Confirmation chatter is posted across the Purchase Order, incoming receipt, Sales Order, and Manufacturing Order tagging stakeholders, detailing the operator, gate, vehicle, and PO approval. The mismatch warning note is suppressed.
+  - **Retroactive Prior Board Log Matching for Newly Created MOs ("Boards logged before MO creation")**:
+    - **Trigger**: In `shopFloorPendingSyncService`, when active MOs are synchronized from Odoo to MySQL.
+    - **Candidate Matching**: If an MO has no Purchase Order covering its board components, the system searches prior gate board intake logs (`board_intake_queue`) where `created_at <= mo.create_date`.
+    - **Matching Criteria**: Matches on customer/owner (`partner_id`), component attributes (substrate, thickness, color family), and close quantity ($\pm 2$ sheets or within 20%).
+    - **Actions Taken**:
+      1. Posts a structured notification note to both `mrp.production` and `sale.order` chatter: *"Found Matching Prior Board Log History"*, specifying when the boards were received at the gate, responsible operator, gate, vehicle, and board log ID.
+      2. Automatically triggers `action_assign` on `mrp.production` in Odoo to assign and reserve the inventory immediately.
+      3. Marks the pending requirement as loaded in MySQL (`markPendingShopFloorProcessesLoaded`).
+      4. Deduplicates using in-memory cache (`shopFloorCache`) so the notification only posts once.
+  - **Automatic Cleanup of Preexisting Mismatch Chatter**:
+    - `cleanPreexistingMismatchChatter` in [src/services/boardIntakeSyncService.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/boardIntakeSyncService.ts) searches Odoo `mail.message` for notes containing `%Warning: Board Intake vs Purchase Order Communication Needed%` and permanently unlinks (deletes) them.
+    - Automatically triggered on server startup via `startBoardIntakeSyncInterval`, via admin/cron route `POST /jobs/cleanup-mismatch-chatter`, via script `scripts/cleanup_mismatch_chatter.ts`, and via `python scripts/clean_odoo_chatter_logs.py --delete-mismatch-notes`.
 
 - **Operator MO Lifecycle Control (Start, Pause, Close) & Zero-404 Architecture**:
   - **Resolution of "PAGE NOT FOUND, /shop-floor does not exist"**:

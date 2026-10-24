@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.syncPendingProcessesFromOdoo = syncPendingProcessesFromOdoo;
+exports.matchRetroactiveBoardLogsForActiveMos = matchRetroactiveBoardLogsForActiveMos;
 exports.startShopFloorPendingSyncInterval = startShopFloorPendingSyncInterval;
 exports.stopShopFloorPendingSyncInterval = stopShopFloorPendingSyncInterval;
 const repositories_1 = require("../models/repositories");
@@ -8,6 +9,8 @@ const odooClient_1 = require("./odooClient");
 const boardProductClassifier_1 = require("./boardProductClassifier");
 const poJobSummaryAuditService_1 = require("./poJobSummaryAuditService");
 const logService_1 = require("./logService");
+const boardIntakeSyncService_1 = require("./boardIntakeSyncService");
+const shopFloor_1 = require("../routes/shopFloor");
 let syncInProgress = false;
 let lastSyncTimestamp = 0;
 const MIN_SYNC_INTERVAL_MS = 60 * 1000; // Throttle to at most once per 60 seconds unless forced
@@ -38,7 +41,7 @@ async function syncPendingProcessesFromOdoo(force = false) {
                 ['company_id', '=', targetCompanyId],
                 ['state', 'in', ['confirmed', 'progress', 'to_close']],
             ],
-            fields: ['id', 'name', 'state', 'origin'],
+            fields: ['id', 'name', 'state', 'origin', 'create_date'],
             limit: 250,
             order: 'create_date desc, id desc',
         });
@@ -280,6 +283,10 @@ async function syncPendingProcessesFromOdoo(force = false) {
         }
         // 7. Upsert into MySQL table (preserves locally loaded items)
         await (0, repositories_1.upsertPendingShopFloorProcesses)(recordsToUpsert);
+        // 7b. Check and match prior board intake logs for newly created MOs (boards logged before MO creation)
+        await matchRetroactiveBoardLogsForActiveMos(client, activeMOs, boardMoves, soPartnerMap, originProductPOKeys, activeLogs).catch((err) => {
+            console.error('[ShopFloorPendingSyncService] Error matching retroactive board logs:', err);
+        });
         // 8. Prune stale pending rows for active MOs if components were removed or corrected in Odoo
         // Any PO-covered keys are explicitly purged so they do not linger in the Add Stock area
         await (0, repositories_1.pruneStalePendingProcessesForActiveMos)(activeMOs.map((mo) => mo.id), recordsToUpsert.map((r) => r.id), Array.from(poCoveredKeys));
@@ -313,6 +320,148 @@ async function syncPendingProcessesFromOdoo(force = false) {
     finally {
         syncInProgress = false;
     }
+}
+async function matchRetroactiveBoardLogsForActiveMos(client, activeMOs, boardMoves, soPartnerMap, originProductPOKeys, activeLogs) {
+    let matchedCount = 0;
+    if (!activeMOs.length || !boardMoves.length || !activeLogs.length)
+        return matchedCount;
+    const moMap = new Map();
+    for (const mo of activeMOs) {
+        moMap.set(mo.id, mo);
+    }
+    for (const move of boardMoves) {
+        const moId = Array.isArray(move.raw_material_production_id)
+            ? move.raw_material_production_id[0]
+            : move.raw_material_production_id;
+        const mo = moMap.get(moId);
+        if (!mo || String(mo.name || '').toUpperCase().startsWith('VA/'))
+            continue;
+        const productId = Array.isArray(move.product_id) ? move.product_id[0] : 0;
+        const productName = Array.isArray(move.product_id) ? move.product_id[1] : '';
+        const normalizedMoveProdName = (0, boardProductClassifier_1.normalizeBoardProductName)(productName);
+        // Rule: "no purchase order"
+        const soOrigin = mo.origin ? (0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(mo.origin) : null;
+        const poCovered = Boolean((mo.origin && (originProductPOKeys.has(`${mo.origin}_${productId}`) || originProductPOKeys.has(`${mo.origin}_${normalizedMoveProdName}`))) ||
+            (soOrigin && (originProductPOKeys.has(`${soOrigin}_${productId}`) || originProductPOKeys.has(`${soOrigin}_${normalizedMoveProdName}`))) ||
+            originProductPOKeys.has(`${mo.name}_${productId}`) ||
+            originProductPOKeys.has(`${mo.name}_${normalizedMoveProdName}`));
+        if (poCovered)
+            continue;
+        const partnerInfo = mo.origin ? (soPartnerMap.get(mo.origin) || (soOrigin ? soPartnerMap.get(soOrigin) : null)) : null;
+        const partnerId = partnerInfo?.partnerId || 0;
+        const partnerName = partnerInfo?.partnerName || '';
+        if (partnerId <= 0 || partnerId === 350)
+            continue;
+        const moveQtyNeeded = Number(move.product_uom_qty || 0);
+        const moveAttr = (0, boardProductClassifier_1.extractBoardAttributes)(productName);
+        for (const log of activeLogs) {
+            const logPid = Number(log.partner_id || 0);
+            const logProdId = Number(log.product_id || 0);
+            const logQty = Number(log.quantity || 0);
+            // 1. Owner / Client match
+            const ownerMatch = logPid === partnerId || (partnerName && String(log.customer_name || '').toLowerCase().includes(partnerName.toLowerCase()));
+            if (!ownerMatch)
+                continue;
+            // 2. Component attribute match: substrate, thickness, color
+            const logAttr = (0, boardProductClassifier_1.extractBoardAttributes)(log.product_name);
+            const thicknessMatch = (moveAttr.thicknessMm !== null && logAttr.thicknessMm !== null)
+                ? moveAttr.thicknessMm === logAttr.thicknessMm
+                : true;
+            if (!thicknessMatch)
+                continue;
+            const substrateMatch = (moveAttr.substrate !== 'other' && logAttr.substrate !== 'other')
+                ? moveAttr.substrate === logAttr.substrate
+                : true;
+            if (!substrateMatch)
+                continue;
+            const colorMatch = (0, boardProductClassifier_1.areSameColorFamily)(moveAttr.colorFamily, logAttr.colorFamily) ||
+                (productId > 0 && logProdId > 0 && productId === logProdId) ||
+                (0, boardProductClassifier_1.normalizeBoardProductName)(productName).includes((0, boardProductClassifier_1.normalizeBoardProductName)(log.product_name)) ||
+                (0, boardProductClassifier_1.normalizeBoardProductName)(log.product_name).includes((0, boardProductClassifier_1.normalizeBoardProductName)(productName));
+            if (!colorMatch)
+                continue;
+            // 3. Quantity closeness: "quantity is very close"
+            const diff = Math.abs(logQty - moveQtyNeeded);
+            const qtyVeryClose = diff <= 2 || (logQty >= moveQtyNeeded * 0.8 && logQty <= moveQtyNeeded * 1.5);
+            if (!qtyVeryClose)
+                continue;
+            // 4. Logged before or right around when MO was created
+            const moCreateTime = mo.create_date ? new Date(mo.create_date).getTime() : Date.now();
+            const logCreateTime = log.created_at ? new Date(log.created_at).getTime() : 0;
+            const loggedBeforeMo = logCreateTime <= moCreateTime + 15 * 60 * 1000;
+            if (!loggedBeforeMo)
+                continue;
+            // 5. Deduplication check: only post once per MO + log
+            const dedupKey = `retro-mo-match:${mo.id}:${log.id}`;
+            if (shopFloor_1.shopFloorCache.get(dedupKey))
+                continue;
+            shopFloor_1.shopFloorCache.set(dedupKey, true, 30 * 24 * 3600); // Cache for 30 days
+            const logDateStr = log.arrival_date || (log.created_at ? log.created_at.slice(0, 10) : 'Earlier');
+            const logTimeStr = log.arrival_time ? ` at ${log.arrival_time}` : '';
+            const loggedAtFormatted = `${logDateStr}${logTimeStr}`;
+            const safeOperator = (0, boardIntakeSyncService_1.escapeHtml)(log.actor_name || log.actor_email || 'Operator');
+            const safeProd = (0, boardIntakeSyncService_1.escapeHtml)(log.product_name);
+            const safeGate = (0, boardIntakeSyncService_1.escapeHtml)(log.gate || 'Gate');
+            const safeVehicle = (0, boardIntakeSyncService_1.escapeHtml)(log.vehicle_registration || '—');
+            const moChatterHtml = [
+                `<div style="padding:12px 14px;background:#f0fdf4;border-left:5px solid #22c55e;color:#166534;border-radius:4px;line-height:1.6;">`,
+                `<strong>📦 Found Matching Prior Board Log History</strong><br/>`,
+                `• <strong>Board Component:</strong> ${safeProd}<br/>`,
+                `• <strong>Quantity Logged:</strong> ${logQty} sheet${logQty === 1 ? '' : 's'} <em>(MO requires: ${moveQtyNeeded} sheets)</em><br/>`,
+                `• <strong>Responsible Operator:</strong> <strong>${safeOperator}</strong><br/>`,
+                `• <strong>When Logged:</strong> ${(0, boardIntakeSyncService_1.escapeHtml)(loggedAtFormatted)} <em>(Logged before this MO was created)</em><br/>`,
+                `• <strong>Gate & Vehicle:</strong> ${safeGate} · ${safeVehicle}<br/>`,
+                `• <strong>Log Reference:</strong> Board Log #${log.id}<br/>`,
+                `<br/>`,
+                `<em>These boards arrived and were logged at the gate before this Manufacturing Order was created. Stock has been allocated and assigned.</em>`,
+                `</div>`,
+            ].join('\n');
+            // Post on mrp.production
+            await client.postModelChatterMessage('mrp.production', mo.id, moChatterHtml).catch(() => null);
+            // Post on sale.order if linked
+            if (soOrigin) {
+                const targetCompanyId = await client.getTargetCompanyIdValue().catch(() => 1);
+                const soRecords = await client.searchReadRecords('sale.order', {
+                    domain: [['name', '=', soOrigin], ['company_id', '=', targetCompanyId]],
+                    fields: ['id'],
+                    limit: 1,
+                }).catch(() => []);
+                if (soRecords.length > 0) {
+                    const soChatterHtml = [
+                        `<div style="padding:10px 12px;background:#f0fdf4;border-left:4px solid #22c55e;color:#166534;border-radius:4px;line-height:1.5;">`,
+                        `<strong>📦 Prior Gate Board Log Matched to Manufacturing Order ${(0, boardIntakeSyncService_1.escapeHtml)(mo.name)}</strong><br/>`,
+                        `• <strong>Board:</strong> ${safeProd} (${logQty} sheets)<br/>`,
+                        `• <strong>Logged By:</strong> ${safeOperator} on ${(0, boardIntakeSyncService_1.escapeHtml)(loggedAtFormatted)}<br/>`,
+                        `<em>Boards were already received at the gate before the MO was created, and have now been assigned.</em>`,
+                        `</div>`,
+                    ].join('\n');
+                    await client.postModelChatterMessage('sale.order', soRecords[0].id, soChatterHtml).catch(() => null);
+                }
+            }
+            // Assign stock to the MO
+            await client.callRecordMethod('mrp.production', 'action_assign', [mo.id]).catch(() => null);
+            // Mark requirement as loaded in MySQL
+            await (0, repositories_1.markPendingShopFloorProcessesLoaded)({
+                partnerId,
+                productId,
+                customerName: partnerName,
+                productName,
+                loadedBy: log.actor_name || log.actor_email || 'Operator',
+                quantity: logQty,
+            }).catch(() => null);
+            await (0, logService_1.logEvent)('info', 'Retroactive board intake matched to newly created MO', {
+                moId: mo.id,
+                moName: mo.name,
+                boardLogId: log.id,
+                productName,
+                quantity: logQty,
+                operator: safeOperator,
+            }).catch(() => null);
+            matchedCount++;
+            break; // Matched this move
+        }
+    }
+    return matchedCount;
 }
 let syncIntervalTimer = null;
 const SYNC_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes

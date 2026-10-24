@@ -1,11 +1,14 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.escapeHtml = escapeHtml;
 exports.buildBoardIntakeChatterHtml = buildBoardIntakeChatterHtml;
 exports.resolveBoardIntakeStakeholders = resolveBoardIntakeStakeholders;
+exports.processBoardIntakePurchaseOrderFulfillment = processBoardIntakePurchaseOrderFulfillment;
 exports.checkAndWarnPurchaseOrdersForManualBoardIntake = checkAndWarnPurchaseOrdersForManualBoardIntake;
 exports.syncBoardIntakeEntry = syncBoardIntakeEntry;
 exports.revertBoardIntakeEntry = revertBoardIntakeEntry;
 exports.retryDueBoardIntakeEntries = retryDueBoardIntakeEntries;
+exports.cleanPreexistingMismatchChatter = cleanPreexistingMismatchChatter;
 exports.startBoardIntakeSyncInterval = startBoardIntakeSyncInterval;
 const repositories_1 = require("../models/repositories");
 const repositories_2 = require("../models/repositories");
@@ -140,6 +143,274 @@ async function resolveBoardIntakeStakeholders(client, soUserId, cachedCandySharo
         .map((t) => t.partnerId)
         .filter((id) => typeof id === 'number' && id > 0);
     return { mentionHtml, partnerIds };
+}
+async function processBoardIntakePurchaseOrderFulfillment(client, entry, cachedCandySharon) {
+    try {
+        const partnerId = Number(entry.partner_id || 0);
+        const productId = Number(entry.product_id || 0);
+        const qtyNum = Number(entry.quantity || 0);
+        if (!partnerId || !productId || qtyNum <= 0 || partnerId === 350)
+            return null;
+        const targetCompanyId = await client.getTargetCompanyIdValue();
+        // 1. Find candidate Sales Orders for this customer
+        const salesOrders = await client.searchReadRecords('sale.order', {
+            domain: [
+                ['company_id', '=', targetCompanyId],
+                ['partner_id', '=', partnerId],
+                ['state', 'not in', ['cancel']],
+            ],
+            fields: ['id', 'name', 'partner_id', 'user_id'],
+            limit: 50,
+            order: 'id desc',
+        });
+        // 2. Find candidate MOs for target company
+        const activeMos = await client.searchReadRecords('mrp.production', {
+            domain: [
+                ['company_id', '=', targetCompanyId],
+                ['state', 'in', ['confirmed', 'progress', 'to_close']],
+            ],
+            fields: ['id', 'name', 'origin'],
+            limit: 100,
+        });
+        const originNames = new Set();
+        const soMap = new Map();
+        for (const so of salesOrders) {
+            originNames.add(so.name);
+            soMap.set(so.name, {
+                id: so.id,
+                name: so.name,
+                userId: Array.isArray(so.user_id) ? so.user_id[0] : null,
+                userName: Array.isArray(so.user_id) ? so.user_id[1] : null,
+            });
+        }
+        const moMap = new Map();
+        for (const mo of activeMos) {
+            if (mo.origin) {
+                const extracted = (0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(mo.origin) || mo.origin;
+                if (soMap.has(extracted) || soMap.has(mo.origin)) {
+                    originNames.add(mo.name);
+                    originNames.add(mo.origin);
+                    if (extracted)
+                        originNames.add(extracted);
+                    moMap.set(mo.name, mo.id);
+                    moMap.set(mo.origin, mo.id);
+                    if (extracted)
+                        moMap.set(extracted, mo.id);
+                }
+            }
+        }
+        const candidateOrigins = Array.from(originNames);
+        if (!candidateOrigins.length)
+            return null;
+        // 3. Find active Purchase Orders in target company
+        const purchaseOrders = await client.searchReadRecords('purchase.order', {
+            domain: [
+                ['company_id', '=', targetCompanyId],
+                ['origin', 'in', candidateOrigins],
+                ['state', 'in', ['to approve', 'purchase', 'draft', 'sent']],
+            ],
+            fields: ['id', 'name', 'state', 'origin', 'partner_id'],
+            limit: 50,
+            order: 'id desc',
+        });
+        if (!purchaseOrders.length)
+            return null;
+        // 4. Find PO lines matching this board product
+        const poIds = purchaseOrders.map((p) => p.id);
+        const poLines = await client.searchReadRecords('purchase.order.line', {
+            domain: [
+                ['order_id', 'in', poIds],
+                ['product_id', '=', productId],
+            ],
+            fields: ['id', 'order_id', 'product_id', 'product_qty', 'qty_received'],
+            limit: 100,
+        });
+        if (!poLines.length)
+            return null;
+        // Prioritize PO in 'to approve' (waiting for approval) and 'purchase' (already approved).
+        // RULE: "only approve a PURCHASE ORDER if its waiting for approval."
+        // If a PO is in 'draft' or 'sent', we do NOT approve it and do NOT fulfill via receipt.
+        let eligiblePo = null;
+        let eligibleLine = null;
+        for (const po of purchaseOrders) {
+            if (po.state === 'to approve') {
+                const line = poLines.find((l) => (Array.isArray(l.order_id) ? l.order_id[0] : 0) === po.id);
+                if (line) {
+                    eligiblePo = po;
+                    eligibleLine = line;
+                    break;
+                }
+            }
+        }
+        if (!eligiblePo) {
+            for (const po of purchaseOrders) {
+                if (po.state === 'purchase') {
+                    const line = poLines.find((l) => (Array.isArray(l.order_id) ? l.order_id[0] : 0) === po.id);
+                    if (line) {
+                        eligiblePo = po;
+                        eligibleLine = line;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!eligiblePo || !eligibleLine) {
+            return null;
+        }
+        let autoApproved = false;
+        let currentPoState = eligiblePo.state;
+        // STRICT RULE: Only approve if 'to approve'
+        if (currentPoState === 'to approve') {
+            try {
+                await client.callRecordMethod('purchase.order', 'button_approve', [eligiblePo.id]);
+            }
+            catch (apprErr) {
+                // Fallback to button_confirm only if button_approve failed on 'to approve'
+                await client.callRecordMethod('purchase.order', 'button_confirm', [eligiblePo.id]).catch(() => null);
+            }
+            const refreshed = await client.readRecords('purchase.order', [eligiblePo.id], ['state']);
+            currentPoState = refreshed[0]?.state || 'purchase';
+            autoApproved = true;
+        }
+        if (currentPoState !== 'purchase') {
+            return null;
+        }
+        // 5. Find incoming receipt picking for this approved PO
+        const pickings = await client.searchReadRecords('stock.picking', {
+            domain: [
+                ['company_id', '=', targetCompanyId],
+                ['picking_type_code', '=', 'incoming'],
+                ['state', 'not in', ['done', 'cancel']],
+                '|',
+                ['origin', '=', eligiblePo.name],
+                ['purchase_id', '=', eligiblePo.id],
+            ],
+            fields: ['id', 'name', 'state', 'origin', 'picking_type_code'],
+            limit: 10,
+            order: 'id asc',
+        });
+        if (!pickings.length) {
+            const poWithPickings = await client.readRecords('purchase.order', [eligiblePo.id], ['picking_ids']).catch(() => []);
+            const pickingIds = poWithPickings[0]?.picking_ids || [];
+            if (pickingIds.length) {
+                const extraPickings = await client.searchReadRecords('stock.picking', {
+                    domain: [
+                        ['id', 'in', pickingIds],
+                        ['picking_type_code', '=', 'incoming'],
+                        ['state', 'not in', ['done', 'cancel']],
+                    ],
+                    fields: ['id', 'name', 'state', 'origin', 'picking_type_code'],
+                    limit: 10,
+                }).catch(() => []);
+                pickings.push(...extraPickings);
+            }
+        }
+        if (!pickings.length) {
+            return null;
+        }
+        // 6. Find open move for this board product
+        const pickingIds = pickings.map((p) => p.id);
+        const moves = await client.searchReadRecords('stock.move', {
+            domain: [
+                ['picking_id', 'in', pickingIds],
+                ['product_id', '=', productId],
+                ['state', 'not in', ['done', 'cancel']],
+            ],
+            fields: ['id', 'picking_id', 'product_id', 'product_uom_qty', 'quantity', 'state'],
+            limit: 20,
+        });
+        if (!moves.length) {
+            return null;
+        }
+        const targetMove = moves[0];
+        const targetPickingId = Array.isArray(targetMove.picking_id) ? targetMove.picking_id[0] : targetMove.picking_id;
+        const targetPicking = pickings.find((p) => p.id === targetPickingId) || pickings[0];
+        const moveOrderedQty = Number(targetMove.product_uom_qty || 0);
+        const qtyToFulfill = Math.min(qtyNum, moveOrderedQty > 0 ? moveOrderedQty : qtyNum);
+        const surplusQty = Math.max(0, qtyNum - qtyToFulfill);
+        await client.writeRecord('stock.move', [targetMove.id], { quantity: qtyToFulfill });
+        const moveLines = await client.searchReadRecords('stock.move.line', {
+            domain: [['move_id', '=', targetMove.id]],
+            fields: ['id'],
+            limit: 10,
+        }).catch(() => []);
+        if (moveLines.length > 0) {
+            await client.writeRecord('stock.move.line', [moveLines[0].id], { quantity: qtyToFulfill }).catch(() => null);
+        }
+        if (targetPicking.state === 'draft') {
+            await client.callRecordMethod('stock.picking', 'action_confirm', [targetPicking.id]).catch(() => null);
+        }
+        await client.callRecordMethod('stock.picking', 'action_assign', [targetPicking.id]).catch(() => null);
+        const actorEmail = String(entry.actor_email || 'operator@urbanvibeinteriordesign.co.ke');
+        await client.populatePickingValidationMetadata(targetPicking.id, actorEmail).catch(() => null);
+        const valResult = await client.callRecordMethod('stock.picking', 'button_validate', [targetPicking.id]).catch(() => null);
+        if (valResult && typeof valResult === 'object' && valResult.res_model && valResult.res_id) {
+            try {
+                await client.callRecordMethod(valResult.res_model, 'process', [valResult.res_id]);
+            }
+            catch (wizErr) {
+                console.warn('[BoardIntakeSyncService] Backorder wizard note:', wizErr);
+            }
+        }
+        await client.populatePickingValidationMetadata(targetPicking.id, actorEmail).catch(() => null);
+        const safeCustomerName = escapeHtml(entry.customer_name);
+        const safeProductName = escapeHtml(entry.product_name);
+        const safeActor = escapeHtml(entry.actor_name || entry.actor_email || 'Operator');
+        const orig = eligiblePo.origin ? String(eligiblePo.origin).trim() : '';
+        const extractedSo = (0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(orig);
+        const linkedSo = (orig ? soMap.get(orig) : undefined) ?? (extractedSo ? soMap.get(extractedSo) : undefined) ?? null;
+        const { mentionHtml, partnerIds } = await resolveBoardIntakeStakeholders(client, linkedSo?.userId, cachedCandySharon);
+        const fulfillmentChatterHtml = [
+            mentionHtml,
+            `<div style="margin-top:8px;padding:12px 14px;background:#f0fdf4;border-left:5px solid #22c55e;color:#166534;border-radius:4px;line-height:1.6;">` +
+                `<strong>✅ Gate Board Intake: Received via Purchase Receipt</strong><br/>` +
+                `• <strong>Board:</strong> ${safeProductName}<br/>` +
+                `• <strong>Quantity Received:</strong> ${qtyToFulfill} sheet${qtyToFulfill === 1 ? '' : 's'}${surplusQty > 0 ? ` (+${surplusQty} surplus sheets)` : ''}<br/>` +
+                `• <strong>Responsible Operator:</strong> <strong>${safeActor}</strong><br/>` +
+                `• <strong>Client:</strong> ${safeCustomerName}<br/>` +
+                `• <strong>Purchase Order:</strong> <strong>${escapeHtml(eligiblePo.name)}</strong> (${autoApproved ? 'Approved automatically from Waiting for Approval' : 'Already Approved'})<br/>` +
+                `• <strong>Receipt:</strong> <strong>${escapeHtml(targetPicking.name || 'WH/IN/...')}</strong> (Validated in Odoo)<br/>` +
+                `• <strong>Gate & Vehicle:</strong> ${escapeHtml(entry.gate || 'Gate')} · ${escapeHtml(entry.vehicle_registration || '—')}<br/>` +
+                `<br/>` +
+                `<em>Stock was received officially via the supplier receipt. Manual inventory adjustment was bypassed to prevent duplicate stock.</em>` +
+                `</div>`,
+        ].join('<br/>\n');
+        await client.postModelChatterMessage('purchase.order', eligiblePo.id, fulfillmentChatterHtml, partnerIds).catch(() => null);
+        await client.postModelChatterMessage('stock.picking', targetPicking.id, fulfillmentChatterHtml).catch(() => null);
+        if (linkedSo?.id) {
+            await client.postModelChatterMessage('sale.order', linkedSo.id, fulfillmentChatterHtml, partnerIds).catch(() => null);
+        }
+        const moId = (orig ? moMap.get(orig) : undefined) ?? (extractedSo ? moMap.get(extractedSo) : undefined);
+        if (moId) {
+            await client.postModelChatterMessage('mrp.production', moId, fulfillmentChatterHtml, partnerIds).catch(() => null);
+        }
+        await (0, logService_1.logEvent)('info', 'Board intake fulfilled via purchase order receipt', {
+            poId: eligiblePo.id,
+            poName: eligiblePo.name,
+            pickingId: targetPicking.id,
+            pickingName: targetPicking.name,
+            productId,
+            qtyFulfilled: qtyToFulfill,
+            surplusQty,
+            operator: safeActor,
+            autoApproved,
+        }).catch(() => null);
+        return {
+            fulfilledViaReceipt: true,
+            poId: eligiblePo.id,
+            poName: eligiblePo.name,
+            pickingId: targetPicking.id,
+            pickingName: targetPicking.name,
+            qtyFulfilled: qtyToFulfill,
+            surplusQty,
+            poState: currentPoState,
+            autoApproved,
+        };
+    }
+    catch (err) {
+        console.error('[BoardIntakeSyncService] Error in processBoardIntakePurchaseOrderFulfillment:', err);
+        return null;
+    }
 }
 async function checkAndWarnPurchaseOrdersForManualBoardIntake(client, entry, cachedCandySharon) {
     try {
@@ -322,9 +593,13 @@ async function syncBoardIntakeEntry(id) {
         entry = (await (0, repositories_1.getBoardIntakeQueueEntry)(id));
         const settings = await (0, repositories_2.getSettings)();
         const client = new odooClient_1.OdooClient(settings.odoo);
-        // Persist this checkpoint immediately. If a later Odoo request fails, the
-        // retry skips the inventory addition and cannot double-add the boards.
         let stockQuantity = entry.odoo_stock_quantity;
+        const activeEntry = entry;
+        const candySharonPromise = Promise.all([
+            (0, poJobSummaryAuditService_1.findOdooUserByTerm)(client, 'Candy').catch(() => null),
+            (0, poJobSummaryAuditService_1.findOdooUserByTerm)(client, 'Sharon').catch(() => null),
+        ]);
+        let poFulfillment = null;
         if (stockQuantity == null) {
             if (!(0, boardProductClassifier_1.isBoardProductName)(entry.product_name)) {
                 throw new Error(`${entry.product_name} is not recognized as a physical board. Services and non-board products cannot receive stock quantities.`);
@@ -338,38 +613,54 @@ async function syncBoardIntakeEntry(id) {
                     productName: stockable.productName,
                 }).catch(() => undefined);
             }
-            const stockResult = await client.addBoardsToStock({
-                productId: Number(entry.product_id),
-                quantity: Number(entry.quantity),
+            // 1. Preventive check: Check if this board intake matches an active Purchase Order
+            poFulfillment = await processBoardIntakePurchaseOrderFulfillment(client, entry, candySharonPromise).catch((err) => {
+                console.error('[BoardIntakeSyncService] Error checking PO fulfillment:', err);
+                return null;
             });
-            stockQuantity = stockResult.newQty;
+            if (poFulfillment?.fulfilledViaReceipt) {
+                // Stock arrived through the PO receipt!
+                // If there was any surplus beyond PO quantity, add only the surplus manually
+                if (poFulfillment.surplusQty > 0) {
+                    await client.addBoardsToStock({
+                        productId: Number(entry.product_id),
+                        quantity: poFulfillment.surplusQty,
+                    });
+                    await client.populateInventoryAdjustmentOperator(Number(entry.product_id), entry.actor_name).catch(() => null);
+                }
+                // Read fresh total available quantity from product in Odoo
+                const prods = await client.readRecords('product.product', [Number(entry.product_id)], ['qty_available']).catch(() => []);
+                stockQuantity = Number(prods[0]?.qty_available ?? entry.quantity);
+            }
+            else {
+                // Normal client-supplied board intake: add via inventory adjustment
+                const stockResult = await client.addBoardsToStock({
+                    productId: Number(entry.product_id),
+                    quantity: Number(entry.quantity),
+                });
+                stockQuantity = stockResult.newQty;
+                const operatorAttributed = await client.populateInventoryAdjustmentOperator(Number(entry.product_id), entry.actor_name);
+                if (!operatorAttributed) {
+                    await (0, logService_1.logEvent)('warn', 'Odoo board inventory adjustment was not attributed to the operator', {
+                        boardIntakeId: id,
+                        productId: entry.product_id,
+                        operatorName: entry.actor_name,
+                    }).catch(() => undefined);
+                }
+                // If not fulfilled via PO receipt, check if there are unapproved/draft POs to warn
+                await checkAndWarnPurchaseOrdersForManualBoardIntake(client, activeEntry, candySharonPromise).catch((err) => {
+                    console.error('[BoardIntakeSyncService] Error checking matching POs for board intake warning:', err);
+                });
+            }
             await (0, repositories_1.updateBoardIntakeQueueEntry)(id, {
                 status: 'processing',
                 stockQuantity,
             });
             await (0, stockMirrorService_1.recordExactStockQuantity)(Number(entry.product_id), entry.product_name, stockQuantity);
         }
-        const operatorAttributed = await client.populateInventoryAdjustmentOperator(Number(entry.product_id), entry.actor_name);
-        if (!operatorAttributed) {
-            await (0, logService_1.logEvent)('warn', 'Odoo board inventory adjustment was not attributed to the operator', {
-                boardIntakeId: id,
-                productId: entry.product_id,
-                operatorName: entry.actor_name,
-            }).catch(() => undefined);
-        }
         const matchingMOs = await client.findMOsForBoardIntake({
             productId: Number(entry.product_id),
             partnerId: Number(entry.partner_id),
-        });
-        const activeEntry = entry;
-        const candySharonPromise = Promise.all([
-            (0, poJobSummaryAuditService_1.findOdooUserByTerm)(client, 'Candy').catch(() => null),
-            (0, poJobSummaryAuditService_1.findOdooUserByTerm)(client, 'Sharon').catch(() => null),
-        ]);
-        // Check if there are any Purchase Orders (unapproved or approved) matching this board intake,
-        // and post warning log notes to the salesperson asking to communicate with the responsible operator.
-        await checkAndWarnPurchaseOrdersForManualBoardIntake(client, activeEntry, candySharonPromise).catch((err) => {
-            console.error('[BoardIntakeSyncService] Error checking matching POs for board intake warning:', err);
         });
         if (matchingMOs.length) {
             // NOTE: We do NOT reduce the MO's required component quantity (product_uom_qty).
@@ -516,10 +807,62 @@ async function retryDueBoardIntakeEntries() {
     });
     return batchPromise;
 }
+let cleanupExecuted = false;
+/**
+ * Remove preexisting chatter error log notes for "Warning: Board Intake vs Purchase Order Communication Needed"
+ * across sale.order, purchase.order, and mrp.production records in Odoo.
+ */
+async function cleanPreexistingMismatchChatter(client) {
+    try {
+        let odooClient = client;
+        if (!odooClient) {
+            const settings = await (0, repositories_2.getSettings)();
+            if (!settings?.odoo?.baseUrl)
+                return { deletedCount: 0, deletedIds: [] };
+            odooClient = new odooClient_1.OdooClient(settings.odoo);
+        }
+        const patterns = [
+            '%Warning: Board Intake vs Purchase Order Communication Needed%',
+            '%Board Intake vs Purchase Order Communication Needed%',
+        ];
+        const seenIds = new Set();
+        const allMessageIds = [];
+        for (const pat of patterns) {
+            const msgs = await odooClient.searchReadRecords('mail.message', {
+                domain: [['body', 'ilike', pat]],
+                fields: ['id'],
+                limit: 200,
+            });
+            for (const m of msgs) {
+                if (!seenIds.has(m.id)) {
+                    seenIds.add(m.id);
+                    allMessageIds.push(m.id);
+                }
+            }
+        }
+        if (allMessageIds.length > 0) {
+            await odooClient.unlinkRecords('mail.message', allMessageIds);
+            await (0, logService_1.logEvent)('info', `Cleaned ${allMessageIds.length} preexisting board intake vs PO mismatch chatter message(s)`, {
+                ids: allMessageIds,
+            });
+        }
+        return { deletedCount: allMessageIds.length, deletedIds: allMessageIds };
+    }
+    catch (err) {
+        console.warn('[cleanPreexistingMismatchChatter] Failed to clean chatter messages:', err);
+        return { deletedCount: 0, deletedIds: [] };
+    }
+}
 function startBoardIntakeSyncInterval() {
     if (intervalHandle)
         return;
-    setTimeout(() => void retryDueBoardIntakeEntries(), 10_000).unref();
+    setTimeout(() => {
+        void retryDueBoardIntakeEntries();
+        if (!cleanupExecuted) {
+            cleanupExecuted = true;
+            void cleanPreexistingMismatchChatter().catch(() => undefined);
+        }
+    }, 10_000).unref();
     intervalHandle = setInterval(() => void retryDueBoardIntakeEntries(), AUTO_RETRY_INTERVAL_MS);
     intervalHandle.unref();
 }

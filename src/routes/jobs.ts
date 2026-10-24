@@ -36,6 +36,7 @@ import {
   renderSchedulerFailurePdf,
 } from '../services/schedulerFailureAnalysisService';
 import { syncPendingProcessesFromOdoo } from '../services/shopFloorPendingSyncService';
+import { cleanPreexistingMismatchChatter } from '../services/boardIntakeSyncService';
 import { refreshStockMirror } from '../services/stockMirrorService';
 import {
   shopFloorCache,
@@ -1240,6 +1241,20 @@ router.all('/jobs/mo-stock-shortage', async (req: Request, res: Response) => {
       : [];
     await sendDailyMoStockShortageReport(recipients);
     return res.json({ ok: true, message: 'Daily MO stock shortage report dispatched successfully.' });
+  } catch (error) {
+    return res.status(500).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+router.all('/jobs/cleanup-mismatch-chatter', async (req: Request, res: Response) => {
+  const token = getWebhookToken(req);
+  const authorized = (await isAuthorizedCronRequest(token)) || (await isAuthorizedPoBillCronRequest(token)) || (Boolean(env.ODOO_WEBHOOK_TOKEN) && token === env.ODOO_WEBHOOK_TOKEN);
+  if (!authorized && req.authUser?.role !== 'admin') {
+    return res.status(401).json({ ok: false, error: 'Unauthorized.' });
+  }
+  try {
+    const result = await cleanPreexistingMismatchChatter();
+    return res.json({ ok: true, deletedCount: result.deletedCount, deletedIds: result.deletedIds });
   } catch (error) {
     return res.status(500).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
   }

@@ -86,13 +86,37 @@ def main():
     parser.add_argument('--clean', action='store_true', help="Clean up raw HTML tags and format existing messages into clean text.")
     parser.add_argument('--delete-duplicates', action='store_true', help="Keep only 1 latest message per record and delete duplicates.")
     parser.add_argument('--delete-all', action='store_true', help="Delete all automated board log chatter messages.")
+    parser.add_argument('--delete-mismatch-notes', action='store_true', help="Delete preexisting 'Warning: Board Intake vs Purchase Order Communication Needed' chatter messages.")
     parser.add_argument('--mo', type=str, help="Filter specifically by MO name or record ID (e.g. WH/MO/05477)")
 
     args = parser.parse_args()
-    if not any([args.list, args.clean, args.delete_duplicates, args.delete_all]):
+    if not any([args.list, args.clean, args.delete_duplicates, args.delete_all, args.delete_mismatch_notes]):
         args.list = True
 
     db, uid, api_key, models = get_odoo_client()
+
+    if args.delete_mismatch_notes:
+        mismatch_domain = [
+            '|',
+            ('body', 'ilike', 'Warning: Board Intake vs Purchase Order Communication Needed'),
+            ('body', 'ilike', 'Board Intake vs Purchase Order Communication Needed')
+        ]
+        print("[*] Searching for Board Intake vs PO mismatch chatter notes...")
+        mismatch_msgs = models.execute_kw(
+            db, uid, api_key, 'mail.message', 'search_read',
+            [mismatch_domain],
+            {'fields': ['id', 'model', 'res_id', 'body', 'date', 'record_name'], 'order': 'id desc', 'limit': 200}
+        )
+        if not mismatch_msgs:
+            print("[+] No mismatch chatter messages found.")
+            return
+        mismatch_ids = [m['id'] for m in mismatch_msgs]
+        print(f"[*] Found {len(mismatch_ids)} mismatch message(s): {mismatch_ids}")
+        for m in mismatch_msgs:
+            print(f"  - ID: {m['id']} on {m.get('model')},{m.get('res_id')} ({m.get('date')})")
+        models.execute_kw(db, uid, api_key, 'mail.message', 'unlink', [mismatch_ids])
+        print(f"[SUCCESS] Successfully deleted {len(mismatch_ids)} mismatch chatter messages from Odoo!")
+        return
 
     domain = [
         '|',

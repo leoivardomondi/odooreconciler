@@ -5902,20 +5902,37 @@ export async function unmarkPendingShopFloorProcessesLoaded(filters: {
 }
 
 export async function getActiveBoardIntakeLogs(): Promise<Array<{
+  id: string;
   partner_id: number;
   customer_name: string;
   product_id: number;
   product_name: string;
   quantity: number;
+  actor_name?: string | null;
+  actor_email?: string | null;
+  gate?: string | null;
+  vehicle_registration?: string | null;
+  arrival_date?: string | null;
+  arrival_time?: string | null;
+  created_at?: string | null;
 }>> {
   return queryAll<{
+    id: string;
     partner_id: number;
     customer_name: string;
     product_id: number;
     product_name: string;
     quantity: number;
+    actor_name?: string | null;
+    actor_email?: string | null;
+    gate?: string | null;
+    vehicle_registration?: string | null;
+    arrival_date?: string | null;
+    arrival_time?: string | null;
+    created_at?: string | null;
   }>(
-    `SELECT partner_id, customer_name, product_id, product_name, quantity
+    `SELECT id, partner_id, customer_name, product_id, product_name, quantity,
+            actor_name, actor_email, gate, vehicle_registration, arrival_date, arrival_time, created_at
      FROM board_intake_queue
      WHERE status IN ('synced', 'processing', 'pending')`,
     [],

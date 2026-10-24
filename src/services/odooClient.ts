@@ -1351,6 +1351,11 @@ export class OdooClient {
     });
   }
 
+  async unlinkRecords(model: string, ids: number[]): Promise<boolean> {
+    if (ids.length === 0) return true;
+    return this.request<boolean>(model, 'unlink', { ids });
+  }
+
   async setManufacturingOrderPlanDate(moId: number, planDate: string): Promise<boolean> {
     return this.writeRecord('mrp.production', [moId], {
       date_deadline: planDate,

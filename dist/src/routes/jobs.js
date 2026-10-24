@@ -22,6 +22,7 @@ const odooClient_1 = require("../services/odooClient");
 const schedulerService_1 = require("../services/schedulerService");
 const schedulerFailureAnalysisService_1 = require("../services/schedulerFailureAnalysisService");
 const shopFloorPendingSyncService_1 = require("../services/shopFloorPendingSyncService");
+const boardIntakeSyncService_1 = require("../services/boardIntakeSyncService");
 const stockMirrorService_1 = require("../services/stockMirrorService");
 const shopFloor_1 = require("./shopFloor");
 const env_1 = require("../utils/env");
@@ -1082,6 +1083,20 @@ router.all('/jobs/mo-stock-shortage', async (req, res) => {
             : [];
         await (0, moStockShortageReportService_1.sendDailyMoStockShortageReport)(recipients);
         return res.json({ ok: true, message: 'Daily MO stock shortage report dispatched successfully.' });
+    }
+    catch (error) {
+        return res.status(500).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+});
+router.all('/jobs/cleanup-mismatch-chatter', async (req, res) => {
+    const token = getWebhookToken(req);
+    const authorized = (await isAuthorizedCronRequest(token)) || (await isAuthorizedPoBillCronRequest(token)) || (Boolean(env_1.env.ODOO_WEBHOOK_TOKEN) && token === env_1.env.ODOO_WEBHOOK_TOKEN);
+    if (!authorized && req.authUser?.role !== 'admin') {
+        return res.status(401).json({ ok: false, error: 'Unauthorized.' });
+    }
+    try {
+        const result = await (0, boardIntakeSyncService_1.cleanPreexistingMismatchChatter)();
+        return res.json({ ok: true, deletedCount: result.deletedCount, deletedIds: result.deletedIds });
     }
     catch (error) {
         return res.status(500).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
