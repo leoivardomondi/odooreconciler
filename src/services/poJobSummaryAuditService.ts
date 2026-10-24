@@ -188,6 +188,7 @@ export function comparePoLinesWithSheetMaterials(
   poLines: PurchaseOrderLine[],
   sheetMaterials: ParsedSheetMaterial[],
   edgingItems: ParsedJobSummaryResult['items'] = [],
+  otherPoLines: PurchaseOrderLine[] = [],
 ): {
   shortfalls: string[];
   verified: string[];
@@ -221,27 +222,76 @@ export function comparePoLinesWithSheetMaterials(
     (l) => relationLabel(l.product_id as [number, string] | false | null | undefined) || l.name || '',
   );
 
+  const assignedOtherPoLines = otherPoLines.length > 0
+    ? assignBoardLinesToSheetMaterials(
+        otherPoLines,
+        sheetMaterials,
+        (l) => relationLabel(l.product_id as [number, string] | false | null | undefined) || l.name || '',
+      )
+    : new Map<ParsedSheetMaterial, PurchaseOrderLine[]>();
+
   for (const material of sheetMaterials) {
     const requiredSheets = material.sheets || 0;
     const matchingLines = assignedPoLines.get(material) || [];
-
     const orderedSheets = matchingLines.reduce((sum, l) => sum + (Number(l.product_qty) || 0), 0);
-    const isMatch = orderedSheets === requiredSheets;
 
-    if (orderedSheets < requiredSheets) {
-      const shortfallCount = Math.round((requiredSheets - orderedSheets) * 100) / 100;
-      shortfalls.push(
-        `Board (${material.name} ${material.thickness_mm ? `${material.thickness_mm}mm` : ''}): PO ordered ${orderedSheets} sheet(s), but Job Summary requires ${requiredSheets} sheet(s) (Shortfall: ${shortfallCount} sheet(s)).`,
-      );
-    } else if (orderedSheets > requiredSheets) {
-      const excessCount = Math.round((orderedSheets - requiredSheets) * 100) / 100;
-      shortfalls.push(
-        `Board (${material.name} ${material.thickness_mm ? `${material.thickness_mm}mm` : ''}): PO ordered ${orderedSheets} sheet(s), but Job Summary requires ${requiredSheets} sheet(s) (Excess: ${excessCount} sheet(s) — boards must match exactly).`,
-      );
+    const otherMatchingLines = assignedOtherPoLines.get(material) || [];
+    const otherOrderedSheets = otherMatchingLines.reduce((sum, l) => sum + (Number(l.product_qty) || 0), 0);
+    const totalOrderedAcrossOrder = orderedSheets + otherOrderedSheets;
+
+    const label = `Board (${material.name} ${material.thickness_mm ? `${material.thickness_mm}mm` : ''})`;
+
+    if (otherOrderedSheets > 0) {
+      if (orderedSheets === 0) {
+        if (otherOrderedSheets === requiredSheets) {
+          verified.push(
+            `${label}: Job Summary requires ${requiredSheets} sheet(s) (Procured on other linked PO: ${otherOrderedSheets} sheet(s) — Verified match).`,
+          );
+        } else if (otherOrderedSheets < requiredSheets) {
+          const shortfallCount = Math.round((requiredSheets - otherOrderedSheets) * 100) / 100;
+          shortfalls.push(
+            `${label}: 0 sheet(s) on this PO (${otherOrderedSheets} sheet(s) on other linked PO, required: ${requiredSheets} sheets — Overall Shortfall: ${shortfallCount} sheet(s)).`,
+          );
+        } else {
+          const excessCount = Math.round((otherOrderedSheets - requiredSheets) * 100) / 100;
+          shortfalls.push(
+            `${label}: 0 sheet(s) on this PO (${otherOrderedSheets} sheet(s) on other linked PO, required: ${requiredSheets} sheets — Overall Excess: ${excessCount} sheet(s)).`,
+          );
+        }
+      } else {
+        if (totalOrderedAcrossOrder === requiredSheets) {
+          verified.push(
+            `${label}: PO ordered ${orderedSheets} sheet(s) (${otherOrderedSheets} sheet(s) on other linked PO, Total: ${totalOrderedAcrossOrder}/${requiredSheets} sheet(s) — Verified match).`,
+          );
+        } else if (totalOrderedAcrossOrder < requiredSheets) {
+          const shortfallCount = Math.round((requiredSheets - totalOrderedAcrossOrder) * 100) / 100;
+          shortfalls.push(
+            `${label}: PO ordered ${orderedSheets} sheet(s) (${otherOrderedSheets} sheet(s) on other linked PO, Total: ${totalOrderedAcrossOrder}/${requiredSheets} sheets — Overall Shortfall: ${shortfallCount} sheet(s)).`,
+          );
+        } else {
+          const excessCount = Math.round((totalOrderedAcrossOrder - requiredSheets) * 100) / 100;
+          shortfalls.push(
+            `${label}: PO ordered ${orderedSheets} sheet(s) (${otherOrderedSheets} sheet(s) on other linked PO, Total: ${totalOrderedAcrossOrder}/${requiredSheets} sheets — Overall Excess: ${excessCount} sheet(s) — boards must match exactly).`,
+          );
+        }
+      }
     } else {
-      verified.push(
-        `Board (${material.name} ${material.thickness_mm ? `${material.thickness_mm}mm` : ''}): PO ordered ${orderedSheets} sheet(s) (Required: ${requiredSheets} sheet(s)).`,
-      );
+      const isMatch = orderedSheets === requiredSheets;
+      if (orderedSheets < requiredSheets) {
+        const shortfallCount = Math.round((requiredSheets - orderedSheets) * 100) / 100;
+        shortfalls.push(
+          `${label}: PO ordered ${orderedSheets} sheet(s), but Job Summary requires ${requiredSheets} sheet(s) (Shortfall: ${shortfallCount} sheet(s)).`,
+        );
+      } else if (orderedSheets > requiredSheets) {
+        const excessCount = Math.round((orderedSheets - requiredSheets) * 100) / 100;
+        shortfalls.push(
+          `${label}: PO ordered ${orderedSheets} sheet(s), but Job Summary requires ${requiredSheets} sheet(s) (Excess: ${excessCount} sheet(s) — boards must match exactly).`,
+        );
+      } else {
+        verified.push(
+          `${label}: PO ordered ${orderedSheets} sheet(s) (Required: ${requiredSheets} sheet(s)).`,
+        );
+      }
     }
 
     details.push({
@@ -249,9 +299,9 @@ export function comparePoLinesWithSheetMaterials(
       materialName: material.name,
       thickness_mm: material.thickness_mm,
       requiredQty: requiredSheets,
-      orderedQty: orderedSheets,
+      orderedQty: totalOrderedAcrossOrder,
       unit: 'sheet(s)',
-      isMatch,
+      isMatch: totalOrderedAcrossOrder === requiredSheets,
     });
   }
 
@@ -268,19 +318,29 @@ export function comparePoLinesWithSheetMaterials(
       return normalizeColor(lineName).includes(normalizedColor);
     });
 
-    // If PO contains edge banding lines, audit them
-    if (matchingLines.length > 0 || poLines.some((l) => (relationLabel(l.product_id) || '').toLowerCase().includes('edge band'))) {
-      const orderedMeters = matchingLines.reduce((sum, l) => sum + (Number(l.product_qty) || 0), 0);
-      const isSufficient = orderedMeters >= requiredMeters;
+    const otherMatchingLines = otherPoLines.filter((line) => {
+      const lineName = (relationLabel(line.product_id) || line.name || '').toLowerCase();
+      if (!lineName.includes('edge band') && !lineName.includes('edging band') && !lineName.includes('edgebanding')) {
+        return false;
+      }
+      return normalizeColor(lineName).includes(normalizedColor);
+    });
+
+    const orderedThisPo = matchingLines.reduce((sum, l) => sum + (Number(l.product_qty) || 0), 0);
+    const orderedOtherPos = otherMatchingLines.reduce((sum, l) => sum + (Number(l.product_qty) || 0), 0);
+    const totalOrderedMeters = orderedThisPo + orderedOtherPos;
+
+    if (totalOrderedMeters > 0 || poLines.some((l) => (relationLabel(l.product_id) || '').toLowerCase().includes('edge band'))) {
+      const isSufficient = totalOrderedMeters >= requiredMeters;
 
       if (!isSufficient) {
-        const shortfall = Math.round((requiredMeters - orderedMeters) * 100) / 100;
+        const shortfall = Math.round((requiredMeters - totalOrderedMeters) * 100) / 100;
         shortfalls.push(
-          `Edge Banding (${item.color}): Ordered ${orderedMeters}m, Job Summary requires ${requiredMeters}m — Short by ${shortfall}m.`,
+          `Edge Banding (${item.color}): Ordered ${totalOrderedMeters}m${orderedOtherPos > 0 ? ` (this PO: ${orderedThisPo}m, other PO: ${orderedOtherPos}m)` : ''}, Job Summary requires ${requiredMeters}m — Short by ${shortfall}m.`,
         );
       } else {
         verified.push(
-          `Edge Banding (${item.color}): Ordered ${orderedMeters}m (Required: ${requiredMeters}m — Verified sufficient).`,
+          `Edge Banding (${item.color}): Ordered ${totalOrderedMeters}m${orderedOtherPos > 0 ? ` across linked POs` : ''} (Required: ${requiredMeters}m — Verified sufficient).`,
         );
       }
 
@@ -289,7 +349,7 @@ export function comparePoLinesWithSheetMaterials(
         materialName: item.color,
         thickness_mm: item.thickness_mm,
         requiredQty: requiredMeters,
-        orderedQty: orderedMeters,
+        orderedQty: totalOrderedMeters,
         unit: 'm',
         isMatch: isSufficient,
       });
@@ -561,10 +621,37 @@ export async function auditPurchaseOrderAgainstJobSummary(
 
   // Compare PO lines
   const poLines = await getPurchaseOrderLines(client, po.id);
+
+  // Search for any other confirmed POs linked to this Sales Order (multi-PO procurement support)
+  let otherPoLines: PurchaseOrderLine[] = [];
+  try {
+    const linkedPos = await client.searchReadRecords<{ id: number; name: string }>(
+      'purchase.order',
+      {
+        domain: [
+          ['origin', 'ilike', so.name],
+          ['state', 'in', ['purchase', 'done']],
+          ['id', '!=', po.id],
+        ],
+        fields: ['id', 'name'],
+        limit: 20,
+      },
+    );
+    if (linkedPos.length > 0) {
+      const fetched = await Promise.all(
+        linkedPos.map((p) => getPurchaseOrderLines(client, p.id).catch(() => [])),
+      );
+      otherPoLines = fetched.flat();
+    }
+  } catch {
+    // Non-blocking
+  }
+
   const comparison = comparePoLinesWithSheetMaterials(
     poLines,
     parsed.sheetMaterials || [],
     parsed.items || [],
+    otherPoLines,
   );
 
   // Resolve the 4 key stakeholders: Charles, Leoivard Ongule, Salesperson, Raphael Onyango

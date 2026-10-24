@@ -50,7 +50,9 @@ export function extractBoardAttributes(value: string | null | undefined): BoardA
   const thicknessMm = thickMatch ? parseFloat(thickMatch[1]) : null;
 
   let substrate: BoardAttributes['substrate'] = 'other';
-  if (/\b(mdf|medium density fiberboard|hdf)\b/.test(normalized)) {
+  if (/\b(hardboard|backer)\b/.test(normalized)) {
+    substrate = 'hardboard';
+  } else if (/\b(mdf|medium density fiberboard|hdf)\b/.test(normalized)) {
     substrate = 'mdf';
   } else if (/\b(waterproof|water-proof|wpc|pvc)\b/.test(normalized)) {
     substrate = 'waterproof';
@@ -62,8 +64,6 @@ export function extractBoardAttributes(value: string | null | undefined): BoardA
     substrate = 'block_board';
   } else if (/\b(eco board|fixo board)\b/.test(normalized)) {
     substrate = 'eco_board';
-  } else if (/\b(hardboard|backer)\b/.test(normalized)) {
-    substrate = 'hardboard';
   }
 
   const color = normalized
@@ -197,7 +197,14 @@ export function scoreBoardLineAgainstMaterial(
 
   // 2. Substrate check
   if (matAttr.substrate !== 'other' && lineAttr.substrate !== 'other') {
-    if (matAttr.substrate === lineAttr.substrate) {
+    const isBackerPair =
+      (normLine.includes('backer') || lineAttr.substrate === 'hardboard') &&
+      (normMat.includes('backer') || matAttr.substrate === 'hardboard') &&
+      ((lineAttr.substrate === 'mdf' && matAttr.substrate === 'hardboard') ||
+        (lineAttr.substrate === 'hardboard' && matAttr.substrate === 'mdf') ||
+        lineAttr.substrate === matAttr.substrate);
+
+    if (matAttr.substrate === lineAttr.substrate || isBackerPair) {
       score += 50;
     } else {
       score -= 100;

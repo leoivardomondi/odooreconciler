@@ -166,3 +166,124 @@ const poJobSummaryAuditService_1 = require("./poJobSummaryAuditService");
     strict_1.default.equal(resShortfall.shortfalls.length, 1);
     strict_1.default.ok(resShortfall.shortfalls[0].includes('Short by 15m'));
 });
+(0, node_test_1.default)('comparePoLinesWithSheetMaterials matches Backer White MDF 3mm with BACKER WHITE 3mm and White Waterproof panel 18mm with WHITE WATERPROOF', () => {
+    const sheetMaterials = [
+        {
+            name: 'BACKER WHITE',
+            thickness_mm: 3,
+            sheets: 15,
+            panels: 33,
+            length_mm: 2440,
+            width_mm: 1220,
+        },
+        {
+            name: 'WHITE WATERPROOF',
+            thickness_mm: 18,
+            sheets: 3,
+            panels: 21,
+            length_mm: 2440,
+            width_mm: 1220,
+        },
+        {
+            name: 'LIGHT GREY PARTICLE',
+            thickness_mm: 18,
+            sheets: 29,
+            panels: 249,
+            length_mm: 2440,
+            width_mm: 1220,
+        },
+    ];
+    // PO lines from P01084 (Vendor: TIP TOP)
+    const poLines = [
+        {
+            id: 1,
+            name: 'White Waterproof panel 18mm',
+            product_id: [101, 'White Waterproof panel 18mm'],
+            product_qty: 4, // 4 ordered vs 3 required (excess of 1)
+        },
+        {
+            id: 2,
+            name: 'Backer White MDF 3mm',
+            product_id: [102, 'Backer White MDF 3mm'],
+            product_qty: 10, // 10 ordered vs 15 required (shortfall of 5, NOT 0 sheets ordered!)
+        },
+    ];
+    const res = (0, poJobSummaryAuditService_1.comparePoLinesWithSheetMaterials)(poLines, sheetMaterials);
+    strict_1.default.equal(res.hasShortfall, true);
+    // BACKER WHITE must be recognized as 10 sheets ordered (shortfall of 5 sheets, NOT 15 sheets!)
+    const backerShortfall = res.shortfalls.find((s) => s.includes('BACKER WHITE'));
+    strict_1.default.ok(backerShortfall, 'BACKER WHITE shortfall must be reported');
+    strict_1.default.ok(backerShortfall.includes('PO ordered 10 sheet(s)'), `Expected 10 sheets ordered, got: ${backerShortfall}`);
+    strict_1.default.ok(backerShortfall.includes('Shortfall: 5 sheet(s)'), `Expected Shortfall of 5, got: ${backerShortfall}`);
+    // WHITE WATERPROOF must be recognized as 4 sheets ordered (excess of 1 sheet)
+    const waterproofMismatch = res.shortfalls.find((s) => s.includes('WHITE WATERPROOF'));
+    strict_1.default.ok(waterproofMismatch, 'WHITE WATERPROOF excess must be reported');
+    strict_1.default.ok(waterproofMismatch.includes('PO ordered 4 sheet(s)'), `Expected 4 sheets ordered, got: ${waterproofMismatch}`);
+    strict_1.default.ok(waterproofMismatch.includes('Excess: 1 sheet(s)'), `Expected Excess of 1, got: ${waterproofMismatch}`);
+});
+(0, node_test_1.default)('comparePoLinesWithSheetMaterials handles multi-PO procurement correctly when other confirmed POs cover remaining materials', () => {
+    const sheetMaterials = [
+        {
+            name: 'BACKER WHITE',
+            thickness_mm: 3,
+            sheets: 15,
+            panels: 33,
+            length_mm: 2440,
+            width_mm: 1220,
+        },
+        {
+            name: 'WHITE WATERPROOF',
+            thickness_mm: 18,
+            sheets: 3,
+            panels: 21,
+            length_mm: 2440,
+            width_mm: 1220,
+        },
+        {
+            name: 'LIGHT GREY PARTICLE',
+            thickness_mm: 18,
+            sheets: 29,
+            panels: 249,
+            length_mm: 2440,
+            width_mm: 1220,
+        },
+    ];
+    // PO lines from P01084 (Vendor: TIP TOP): 3 White Waterproof, 10 Backer White
+    const poLinesThis = [
+        {
+            id: 1,
+            name: 'White Waterproof panel 18mm',
+            product_id: [101, 'White Waterproof panel 18mm'],
+            product_qty: 3, // Exact match
+        },
+        {
+            id: 2,
+            name: 'Backer White MDF 3mm',
+            product_id: [102, 'Backer White MDF 3mm'],
+            product_qty: 10,
+        },
+    ];
+    // PO lines from P01085 (Vendor: PG Bison): 29 Light Grey Particle, 5 Backer White MDF
+    const poLinesOther = [
+        {
+            id: 3,
+            name: 'Light Grey Particle 18mm',
+            product_id: [103, 'Light Grey Particle 18mm'],
+            product_qty: 29,
+        },
+        {
+            id: 4,
+            name: 'Backer White MDF 3mm',
+            product_id: [102, 'Backer White MDF 3mm'],
+            product_qty: 5,
+        },
+    ];
+    const res = (0, poJobSummaryAuditService_1.comparePoLinesWithSheetMaterials)(poLinesThis, sheetMaterials, [], poLinesOther);
+    // Across both POs:
+    // WHITE WATERPROOF: 3 + 0 = 3 (exact match)
+    // LIGHT GREY PARTICLE: 0 + 29 = 29 (exact match on other PO)
+    // BACKER WHITE: 10 + 5 = 15 (exact match across both POs)
+    strict_1.default.equal(res.hasShortfall, false, 'Expected no shortfall when all materials are covered across linked POs');
+    strict_1.default.equal(res.shortfalls.length, 0);
+    strict_1.default.equal(res.verified.length, 3);
+});
