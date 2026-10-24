@@ -66,6 +66,10 @@ async function processNextShopFloorValidationJob() {
                 await client.validateBoardReceipt(job.pickingId, job.actorName || job.actorEmail, warehouseId);
                 shopFloor_1.shopFloorCache.clearPrefix('shop-floor-dashboard:');
                 shopFloor_1.shopFloorCache.clearPrefix('shop-floor:receipts:');
+                await Promise.allSettled([
+                    (0, repositories_1.deleteShopFloorSharedCachePrefix)('shop-floor:receipts:'),
+                    (0, repositories_1.deleteShopFloorDashboardSnapshot)(),
+                ]);
                 void (0, stockMirrorService_1.refreshStockMirror)();
                 await (0, logService_1.logEvent)('info', 'Odoo board receipt validated in background FIFO', {
                     pickingId: job.pickingId,
@@ -78,6 +82,10 @@ async function processNextShopFloorValidationJob() {
                 await client.validateDelivery(job.pickingId, job.actorName || job.actorEmail, warehouseId);
                 shopFloor_1.shopFloorCache.clearPrefix('shop-floor-dashboard:');
                 shopFloor_1.shopFloorCache.clearPrefix('shop-floor:deliveries:');
+                await Promise.allSettled([
+                    (0, repositories_1.deleteShopFloorSharedCachePrefix)('shop-floor:deliveries:'),
+                    (0, repositories_1.deleteShopFloorDashboardSnapshot)(),
+                ]);
                 await (0, logService_1.logEvent)('info', 'Odoo delivery validated in background FIFO', {
                     pickingId: job.pickingId,
                     actor: job.actorName,

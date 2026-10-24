@@ -956,11 +956,20 @@ async function handleOdooSyncWebhook(req, res) {
                 shopFloor_1.shopFloorCache.clearPrefix('shop-floor-dashboard:');
                 shopFloor_1.shopFloorCache.clearPrefix('shop-floor:receipts:');
                 shopFloor_1.shopFloorCache.clearPrefix('shop-floor:deliveries:');
-                await (0, stockMirrorService_1.refreshStockMirror)();
+                await Promise.allSettled([
+                    (0, repositories_1.deleteShopFloorSharedCachePrefix)('shop-floor:receipts:'),
+                    (0, repositories_1.deleteShopFloorSharedCachePrefix)('shop-floor:deliveries:'),
+                    (0, repositories_1.deleteShopFloorDashboardSnapshot)(),
+                    (0, stockMirrorService_1.refreshStockMirror)(),
+                ]);
             }
             else if (resolvedType === 'stock') {
                 shopFloor_1.shopFloorCache.clearPrefix('shop-floor-dashboard:');
-                await (0, stockMirrorService_1.refreshStockMirror)();
+                await Promise.allSettled([
+                    (0, repositories_1.deleteShopFloorSharedCachePrefix)('shop-floor:shared-board-reg:'),
+                    (0, repositories_1.deleteShopFloorDashboardSnapshot)(),
+                    (0, stockMirrorService_1.refreshStockMirror)(),
+                ]);
             }
             else if (resolvedType === 'po') {
                 const poId = parsePositiveInteger(payload.id) ||
@@ -1019,6 +1028,9 @@ async function handleOdooSyncWebhook(req, res) {
                 shopFloor_1.shopFloorCache.clearPrefix('shop-floor:receipts:');
                 shopFloor_1.shopFloorCache.clearPrefix('shop-floor:deliveries:');
                 await Promise.allSettled([
+                    (0, repositories_1.deleteShopFloorSharedCachePrefix)('shop-floor:receipts:'),
+                    (0, repositories_1.deleteShopFloorSharedCachePrefix)('shop-floor:deliveries:'),
+                    (0, repositories_1.deleteShopFloorDashboardSnapshot)(),
                     (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(true),
                     (0, stockMirrorService_1.refreshStockMirror)(),
                     (0, schedulerService_1.runSchedulerCycle)('cron'),

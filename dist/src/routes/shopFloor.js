@@ -2126,6 +2126,7 @@ router.post('/shop-floor/operators/sync-access', async (req, res) => {
     }
     try {
         const result = await (0, shopFloorOperatorAccessSyncService_1.syncShopFloorOperatorAccess)();
+        exports.shopFloorCache.delete('shop-floor:operators-list:v1');
         res.redirect(`/shop-floor/operators?message=${encodeURIComponent(`Synced ${result.operators} operator(s): ${result.added} added and ${result.updated} updated with Shop Floor access.`)}`);
     }
     catch (err) {
@@ -2196,6 +2197,10 @@ router.post('/shop-floor/incident', async (req, res) => {
         });
         // Invalidate cached operator dashboards because of the new incident
         exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
+        void Promise.allSettled([
+            (0, repositories_1.deleteShopFloorSharedCache)('shop-floor:shared-incidents:v1'),
+            (0, repositories_1.deleteShopFloorDashboardSnapshot)(),
+        ]).catch(() => { });
         res.redirect('/shop-floor?message=' + encodeURIComponent('Incident reported.'));
     }
     catch (err) {
@@ -2224,6 +2229,10 @@ router.post('/shop-floor/incident/:id/resolve', async (req, res) => {
         }
         // Invalidate cached operator dashboards as an incident was resolved
         exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
+        void Promise.allSettled([
+            (0, repositories_1.deleteShopFloorSharedCache)('shop-floor:shared-incidents:v1'),
+            (0, repositories_1.deleteShopFloorDashboardSnapshot)(),
+        ]).catch(() => { });
         res.redirect('/shop-floor?message=' + encodeURIComponent('Incident resolved.'));
     }
     catch (err) {
@@ -2946,6 +2955,10 @@ router.post('/shop-floor/board-intake', async (req, res) => {
         });
         optimisticBoardIntakes.push({ id: optimisticId, partnerId, productId, productName, customerName, quantity: qty, expiresAt: Date.now() + 10 * 60 * 1000 });
         exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
+        void Promise.allSettled([
+            (0, repositories_1.deleteShopFloorDashboardSnapshot)(),
+            (0, repositories_1.deleteShopFloorSharedCachePrefix)('shop-floor:shared-board-reg:'),
+        ]).catch(() => { });
         const hasMoReq = updatedRequirements && updatedRequirements.length > 0;
         const totalNeeded = hasMoReq ? updatedRequirements.reduce((sum, r) => sum + Number(r.qty_needed || 0), 0) : null;
         const totalMissing = hasMoReq ? updatedRequirements.reduce((sum, r) => sum + Number(r.qty_missing || 0), 0) : null;
@@ -3307,6 +3320,10 @@ router.post('/shop-floor/board-intake/:id/revert', async (req, res) => {
     }
     // Clear dashboard cache immediately
     exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
+    void Promise.allSettled([
+        (0, repositories_1.deleteShopFloorDashboardSnapshot)(),
+        (0, repositories_1.deleteShopFloorSharedCachePrefix)('shop-floor:shared-board-reg:'),
+    ]).catch(() => { });
     // Launch the Odoo stock removal in the background (NON-BLOCKING)
     void (async () => {
         try {
@@ -3533,6 +3550,10 @@ router.post('/shop-floor/deliveries/:id/validate', async (req, res) => {
         await new odooClient_1.OdooClient(settings.odoo).validateDelivery(pickingId, actorName, warehouseId);
         exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
         exports.shopFloorCache.clearPrefix('shop-floor:deliveries:');
+        await Promise.allSettled([
+            (0, repositories_1.deleteShopFloorSharedCachePrefix)('shop-floor:deliveries:'),
+            (0, repositories_1.deleteShopFloorDashboardSnapshot)(),
+        ]).catch(() => { });
         void (0, stockMirrorService_1.refreshStockMirror)();
         await (0, logService_1.logEvent)('info', 'Odoo delivery validated', { pickingId, actor: actorName, actorEmail: req.authUser.email });
         res.redirect('/shop-floor/deliveries?message=' + encodeURIComponent('Delivery validated in Odoo.'));

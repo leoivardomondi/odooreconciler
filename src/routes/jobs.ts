@@ -3,6 +3,8 @@ import fs from 'fs';
 import path from 'path';
 import { Request, Response, Router } from 'express';
 import {
+  deleteShopFloorDashboardSnapshot,
+  deleteShopFloorSharedCachePrefix,
   getLatestExtractedResultByOrderId,
   getSettings,
   retryInvoiceExtractionJob,
@@ -1102,10 +1104,19 @@ async function handleOdooSyncWebhook(req: Request, res: Response) {
         shopFloorCache.clearPrefix('shop-floor-dashboard:');
         shopFloorCache.clearPrefix('shop-floor:receipts:');
         shopFloorCache.clearPrefix('shop-floor:deliveries:');
-        await refreshStockMirror();
+        await Promise.allSettled([
+          deleteShopFloorSharedCachePrefix('shop-floor:receipts:'),
+          deleteShopFloorSharedCachePrefix('shop-floor:deliveries:'),
+          deleteShopFloorDashboardSnapshot(),
+          refreshStockMirror(),
+        ]);
       } else if (resolvedType === 'stock') {
         shopFloorCache.clearPrefix('shop-floor-dashboard:');
-        await refreshStockMirror();
+        await Promise.allSettled([
+          deleteShopFloorSharedCachePrefix('shop-floor:shared-board-reg:'),
+          deleteShopFloorDashboardSnapshot(),
+          refreshStockMirror(),
+        ]);
       } else if (resolvedType === 'po') {
         const poId =
           parsePositiveInteger(payload.id) ||
@@ -1172,6 +1183,9 @@ async function handleOdooSyncWebhook(req: Request, res: Response) {
         shopFloorCache.clearPrefix('shop-floor:receipts:');
         shopFloorCache.clearPrefix('shop-floor:deliveries:');
         await Promise.allSettled([
+          deleteShopFloorSharedCachePrefix('shop-floor:receipts:'),
+          deleteShopFloorSharedCachePrefix('shop-floor:deliveries:'),
+          deleteShopFloorDashboardSnapshot(),
           syncPendingProcessesFromOdoo(true),
           refreshStockMirror(),
           runSchedulerCycle('cron'),
