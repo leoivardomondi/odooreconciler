@@ -8,6 +8,7 @@ import {
   ParserConfig,
 } from '../models/types';
 import { DEFAULT_PARSER_CONFIG, normalizeMultilineText } from '../utils/helpers';
+import { extractThicknessMm } from './boardProductClassifier';
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -128,7 +129,9 @@ function extractJobSummaryMetadata(rawText: string, logs: string[]) {
       const sheetWidthMatch = line.match(/^Sheet\s+Width\s*:\s*([\d.,]+)\s*mm/i);
 
       if (thicknessMatch && currentMaterial) {
-        currentMaterial.thickness_mm = parseFloat(thicknessMatch[1].replace(/,/g, ''));
+        const parsedThick = parseFloat(thicknessMatch[1].replace(/,/g, ''));
+        const nameThick = extractThicknessMm(currentMaterial.name);
+        currentMaterial.thickness_mm = nameThick ?? parsedThick;
       } else if (sheetsMatch && currentMaterial) {
         currentMaterial.sheets = parseInt(sheetsMatch[1], 10);
       } else if (panelsMatch && currentMaterial) {
@@ -145,6 +148,9 @@ function extractJobSummaryMetadata(rawText: string, logs: string[]) {
         !line.toLowerCase().startsWith('sheet materials')
       ) {
         if (currentMaterial && currentMaterial.name) {
+          if (!currentMaterial.thickness_mm) {
+            currentMaterial.thickness_mm = extractThicknessMm(currentMaterial.name);
+          }
           sheetMaterials.push(currentMaterial);
         }
         currentMaterial = {
@@ -159,6 +165,9 @@ function extractJobSummaryMetadata(rawText: string, logs: string[]) {
     }
 
     if (currentMaterial && currentMaterial.name) {
+      if (!currentMaterial.thickness_mm) {
+        currentMaterial.thickness_mm = extractThicknessMm(currentMaterial.name);
+      }
       sheetMaterials.push(currentMaterial);
     }
   }

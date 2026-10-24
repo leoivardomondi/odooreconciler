@@ -41,13 +41,21 @@ export function isStockExemptEdgeBandingService(value: string | null | undefined
   return normalized.includes('edge banding service') || normalized.includes('edging banding service');
 }
 
+export function extractThicknessMm(text?: string | null): number | null {
+  const str = String(text || '');
+  const m = str.match(/\b(\d+(?:\.\d+)?)\s*mm\b/i);
+  if (m) {
+    return parseFloat(m[1]);
+  }
+  return null;
+}
+
 export function extractBoardAttributes(value: string | null | undefined): BoardAttributes {
   const rawName = String(value || '').trim();
   const normalized = normalizeBoardProductName(rawName);
 
-  const thickMatch = normalized.match(/\b(\d+(?:\.\d+)?)\s*mm\b/);
-  const thickness = thickMatch ? `${thickMatch[1]}mm` : null;
-  const thicknessMm = thickMatch ? parseFloat(thickMatch[1]) : null;
+  const thicknessMm = extractThicknessMm(normalized);
+  const thickness = thicknessMm !== null ? `${thicknessMm}mm` : null;
 
   let substrate: BoardAttributes['substrate'] = 'other';
   if (/\b(hardboard|backer)\b/.test(normalized)) {

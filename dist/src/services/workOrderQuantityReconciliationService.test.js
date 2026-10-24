@@ -289,3 +289,76 @@ const workOrderQuantityReconciliationService_1 = require("./workOrderQuantityRec
     strict_1.default.ok(resExcluded);
     strict_1.default.equal(resExcluded.actionTaken, 'skipped_excluded_company');
 });
+(0, node_test_1.default)('Artec Interiors Job Summary 61: correctly matches 6mm, 9mm, and 18mm MOs without scrambling quantities', () => {
+    const sheetMaterials = [
+        {
+            name: '6MM PLY',
+            thickness_mm: 6,
+            sheets: 2,
+            panels: 18,
+            length_mm: 2440,
+            width_mm: 1220,
+        },
+        {
+            name: '9MM PLY',
+            thickness_mm: 9,
+            sheets: 4,
+            panels: 9,
+            length_mm: 2440,
+            width_mm: 1220,
+        },
+        {
+            name: 'CAPPUCCINO WATERPROOF',
+            thickness_mm: 18,
+            sheets: 5,
+            panels: 40,
+            length_mm: 2440,
+            width_mm: 1220,
+        },
+        {
+            name: 'DARK GREY MDF',
+            thickness_mm: 18,
+            sheets: 5,
+            panels: 56,
+            length_mm: 2440,
+            width_mm: 1220,
+        },
+        {
+            name: 'WHITE MDF',
+            thickness_mm: 16,
+            sheets: 19,
+            panels: 164,
+            length_mm: 2440,
+            width_mm: 1220,
+        },
+    ];
+    // MO 1: WH/MO/05554 (Cutting White Mdf 6mm, qty 2)
+    const match6mm = (0, workOrderQuantityReconciliationService_1.findMatchingSheetMaterial)({
+        moProductName: 'Cutting White Mdf 6mm',
+        sheetMaterials,
+        currentMoQty: 2,
+    });
+    strict_1.default.ok(match6mm);
+    strict_1.default.equal(match6mm.material.name, '6MM PLY');
+    strict_1.default.equal(match6mm.material.sheets, 2);
+    // MO 2: WH/MO/05555 (Cutting White MDF 9mm, qty 4)
+    const match9mm = (0, workOrderQuantityReconciliationService_1.findMatchingSheetMaterial)({
+        moProductName: 'Cutting White MDF 9mm',
+        sheetMaterials,
+        currentMoQty: 4,
+        excludedMaterialNames: [match6mm.material.name],
+    });
+    strict_1.default.ok(match9mm);
+    strict_1.default.equal(match9mm.material.name, '9MM PLY');
+    strict_1.default.equal(match9mm.material.sheets, 4);
+    // MO 3: WH/MO/05558 (Cutting White MDF 18mm, qty 19)
+    const match18mm = (0, workOrderQuantityReconciliationService_1.findMatchingSheetMaterial)({
+        moProductName: 'Cutting White MDF 18mm',
+        sheetMaterials,
+        currentMoQty: 19,
+        excludedMaterialNames: [match6mm.material.name, match9mm.material.name],
+    });
+    strict_1.default.ok(match18mm);
+    strict_1.default.equal(match18mm.material.name, 'WHITE MDF');
+    strict_1.default.equal(match18mm.material.sheets, 19);
+});

@@ -7,6 +7,7 @@ exports.parseJobSummaryPdf = parseJobSummaryPdf;
 exports.parseVendorInvoicePdf = parseVendorInvoicePdf;
 const pdf_parse_1 = __importDefault(require("pdf-parse"));
 const helpers_1 = require("../utils/helpers");
+const boardProductClassifier_1 = require("./boardProductClassifier");
 function escapeRegExp(value) {
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -95,7 +96,9 @@ function extractJobSummaryMetadata(rawText, logs) {
             const sheetLengthMatch = line.match(/^Sheet\s+Length\s*:\s*([\d.,]+)\s*mm/i);
             const sheetWidthMatch = line.match(/^Sheet\s+Width\s*:\s*([\d.,]+)\s*mm/i);
             if (thicknessMatch && currentMaterial) {
-                currentMaterial.thickness_mm = parseFloat(thicknessMatch[1].replace(/,/g, ''));
+                const parsedThick = parseFloat(thicknessMatch[1].replace(/,/g, ''));
+                const nameThick = (0, boardProductClassifier_1.extractThicknessMm)(currentMaterial.name);
+                currentMaterial.thickness_mm = nameThick ?? parsedThick;
             }
             else if (sheetsMatch && currentMaterial) {
                 currentMaterial.sheets = parseInt(sheetsMatch[1], 10);
@@ -115,6 +118,9 @@ function extractJobSummaryMetadata(rawText, logs) {
                 !line.toLowerCase().startsWith('area') &&
                 !line.toLowerCase().startsWith('sheet materials')) {
                 if (currentMaterial && currentMaterial.name) {
+                    if (!currentMaterial.thickness_mm) {
+                        currentMaterial.thickness_mm = (0, boardProductClassifier_1.extractThicknessMm)(currentMaterial.name);
+                    }
                     sheetMaterials.push(currentMaterial);
                 }
                 currentMaterial = {
@@ -128,6 +134,9 @@ function extractJobSummaryMetadata(rawText, logs) {
             }
         }
         if (currentMaterial && currentMaterial.name) {
+            if (!currentMaterial.thickness_mm) {
+                currentMaterial.thickness_mm = (0, boardProductClassifier_1.extractThicknessMm)(currentMaterial.name);
+            }
             sheetMaterials.push(currentMaterial);
         }
     }

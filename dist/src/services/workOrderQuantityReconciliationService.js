@@ -1,7 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.extractThicknessMm = void 0;
 exports.isCuttingProductOrWorkOrder = isCuttingProductOrWorkOrder;
-exports.extractThicknessMm = extractThicknessMm;
 exports.findMatchingSheetMaterial = findMatchingSheetMaterial;
 exports.determineTargetCuttingQuantity = determineTargetCuttingQuantity;
 exports.reconcileWorkOrderQuantitiesForMo = reconcileWorkOrderQuantitiesForMo;
@@ -9,6 +9,7 @@ exports.reconcileWorkOrderQuantitiesForSaleOrder = reconcileWorkOrderQuantitiesF
 exports.reconcileWorkOrderQuantitiesForPurchaseOrder = reconcileWorkOrderQuantitiesForPurchaseOrder;
 const repositories_1 = require("../models/repositories");
 const boardProductClassifier_1 = require("./boardProductClassifier");
+Object.defineProperty(exports, "extractThicknessMm", { enumerable: true, get: function () { return boardProductClassifier_1.extractThicknessMm; } });
 const logService_1 = require("./logService");
 const pdfParser_1 = require("./pdfParser");
 const helpers_1 = require("../utils/helpers");
@@ -41,82 +42,150 @@ function isCuttingProductOrWorkOrder(productName, workOrderName) {
     }
     return false;
 }
-/**
- * Extracts board thickness in mm from a product or material string (e.g. "18mm", "18 mm", "16mm").
- */
-function extractThicknessMm(text) {
-    const str = String(text || '');
-    const m = str.match(/\b(\d+(?:\.\d+)?)\s*mm\b/i);
-    if (m) {
-        return parseFloat(m[1]);
-    }
-    return null;
+function cleanMoColor(color) {
+    return String(color || '')
+        .replace(/\b(CUTTING|CUT|SAWING|SAW|PANEL|PANELS|OPERATION|JOB|AREA|SERVICE|WORK|ORDER|GENERIC|PROCESS|PRODUCTION|MANUFACTURING|EXTRACTION)\b/gi, '')
+        .replace(/\s+/g, ' ')
+        .trim();
 }
 /**
  * Matches a Manufacturing Order's product or component boards against
  * the sheet materials parsed from the Job Summary PDF.
+ *
+ * Employs strict thickness tolerance (carcass 16-18mm compatible, others incompatible),
+ * hard color conflict penalties, existing quantity alignment bonus, and material exclusion
+ * to prevent multiple MOs claiming the same material.
  */
 function findMatchingSheetMaterial(input) {
     const sheetMaterials = input.sheetMaterials || [];
     if (sheetMaterials.length === 0)
         return null;
-    // Single sheet material in Job Summary directly maps to the cutting MO
+    const moProductName = String(input.moProductName || '').trim();
+    const moThickness = (0, boardProductClassifier_1.extractThicknessMm)(moProductName);
+    const moAttr = (0, boardProductClassifier_1.extractBoardAttributes)(moProductName);
+    const moColor = cleanMoColor(moAttr.colorFamily);
+    const componentNames = (input.componentNames || []).map((c) => String(c).trim());
+    const compAttrs = componentNames.map((c) => ({
+        name: c,
+        thickness: (0, boardProductClassifier_1.extractThicknessMm)(c),
+        attr: (0, boardProductClassifier_1.extractBoardAttributes)(c),
+        color: cleanMoColor((0, boardProductClassifier_1.extractBoardAttributes)(c).colorFamily),
+    }));
+    // Resolve target thickness from MO product or board components
+    const targetThickness = moThickness ??
+        compAttrs.find((ca) => ca.thickness !== null && (0, boardProductClassifier_1.isBoardProductName)(ca.name))?.thickness ??
+        null;
+    // Single sheet material in Job Summary directly maps to the cutting MO if thickness is compatible
     if (sheetMaterials.length === 1) {
+        const singleMat = sheetMaterials[0];
+        const singleThickness = (0, boardProductClassifier_1.extractThicknessMm)(singleMat.name) ?? singleMat.thickness_mm;
+        if (singleThickness !== null && targetThickness !== null && Math.abs(singleThickness - targetThickness) > 2.1) {
+            return null;
+        }
         return {
-            material: sheetMaterials[0],
+            material: singleMat,
             matchScore: 100,
             reason: 'Single sheet material in Job Summary',
         };
     }
-    const moProductName = String(input.moProductName || '').toLowerCase();
-    const moThickness = extractThicknessMm(moProductName);
-    const componentNames = (input.componentNames || []).map((c) => c.toLowerCase());
     let bestMatch = null;
     for (const mat of sheetMaterials) {
         let score = 0;
         const reasons = [];
-        const matName = mat.name.toLowerCase();
-        const matWords = matName.split(/[\s_\-/]+/).filter((w) => w.length > 2);
-        // 1. Raw material component check (highest fidelity)
-        for (const compName of componentNames) {
-            if ((0, boardProductClassifier_1.isBoardProductName)(compName)) {
-                const compThickness = extractThicknessMm(compName);
-                if (mat.thickness_mm && compThickness === mat.thickness_mm) {
-                    score += 40;
-                    reasons.push(`Component thickness match (${mat.thickness_mm}mm)`);
-                }
-                const compWordsMatch = matWords.filter((w) => compName.includes(w)).length;
+        const matThickness = (0, boardProductClassifier_1.extractThicknessMm)(mat.name) ?? mat.thickness_mm;
+        const matAttr = (0, boardProductClassifier_1.extractBoardAttributes)(mat.name);
+        const matColor = cleanMoColor(matAttr.colorFamily);
+        // 1. Thickness comparison (dominant physical constraint)
+        if (targetThickness !== null && matThickness !== null) {
+            const diff = Math.abs(targetThickness - matThickness);
+            if (diff <= 0.1) {
+                score += 45;
+                reasons.push(`Thickness match (${matThickness}mm)`);
+            }
+            else if (diff <= 2.1) {
+                // Carcass board tolerance: 16mm vs 18mm
+                score += 20;
+                reasons.push(`Thickness compatible (${matThickness}mm vs ${targetThickness}mm)`);
+            }
+            else {
+                // Major thickness conflict (e.g. 6mm vs 18mm, 9mm vs 18mm)
+                score -= 100;
+                reasons.push(`Thickness conflict (${matThickness}mm vs ${targetThickness}mm)`);
+            }
+        }
+        // 2. Color comparison
+        if (moColor && matColor) {
+            if ((0, boardProductClassifier_1.areSameColorFamily)(moColor, matColor)) {
+                score += 40;
+                reasons.push(`Color match (${matColor})`);
+            }
+            else {
+                // Explicit color conflict (e.g. White vs Dark Grey or Cappuccino)
+                score -= 100;
+                reasons.push(`Color conflict (${moColor} vs ${matColor})`);
+            }
+        }
+        else if (!moColor && matColor) {
+            // Check if any component specifies color
+            const matchingCompColor = compAttrs.find((ca) => ca.color && (0, boardProductClassifier_1.areSameColorFamily)(ca.color, matColor));
+            if (matchingCompColor) {
+                score += 35;
+                reasons.push(`Component color match (${matColor})`);
+            }
+        }
+        // 3. Substrate comparison
+        const moSub = moAttr.substrate;
+        const matSub = matAttr.substrate;
+        if (moSub !== 'other' && matSub !== 'other') {
+            if (moSub === matSub) {
+                score += 30;
+                reasons.push(`Substrate match (${matSub})`);
+            }
+            else if ((moSub === 'mdf' && matSub === 'hardboard') ||
+                (moSub === 'hardboard' && matSub === 'mdf')) {
+                score += 15;
+                reasons.push(`Substrate compatible (${moSub}/${matSub})`);
+            }
+            else {
+                score -= 25;
+                reasons.push(`Substrate mismatch (${moSub} vs ${matSub})`);
+            }
+        }
+        // 4. Raw material component keyword match
+        const matWords = mat.name
+            .toLowerCase()
+            .split(/[\s_\-/]+/)
+            .filter((w) => w.length > 2 && !['has', 'grain', 'sheet', 'panels', 'ply', 'mdf'].includes(w));
+        for (const ca of compAttrs) {
+            if ((0, boardProductClassifier_1.isBoardProductName)(ca.name)) {
+                const compWordsMatch = matWords.filter((w) => ca.name.toLowerCase().includes(w)).length;
                 if (compWordsMatch > 0) {
                     score += compWordsMatch * 20;
                     reasons.push(`Component keyword match (${compWordsMatch} words)`);
                 }
             }
         }
-        // 2. MO product name check
-        if (mat.thickness_mm && moThickness === mat.thickness_mm) {
-            score += 30;
-            reasons.push(`MO product thickness match (${mat.thickness_mm}mm)`);
-        }
-        else if (mat.thickness_mm && moThickness && mat.thickness_mm !== moThickness) {
-            score -= 50; // Thickness conflict
-        }
-        const moWordsMatch = matWords.filter((w) => moProductName.includes(w)).length;
+        // 5. MO product name keyword match
+        const moWordsMatch = matWords.filter((w) => moProductName.toLowerCase().includes(w)).length;
         if (moWordsMatch > 0) {
             score += moWordsMatch * 15;
             reasons.push(`MO product keyword match (${moWordsMatch} words)`);
         }
-        // Substrate check
-        const substrates = ['mdf', 'particle', 'chipboard', 'plywood', 'veneer', 'blockboard'];
-        for (const sub of substrates) {
-            const matHasSub = matName.includes(sub);
-            const moHasSub = moProductName.includes(sub);
-            if (matHasSub && moHasSub) {
+        // 6. Existing Quantity Alignment Bonus
+        if (input.currentMoQty != null && input.currentMoQty > 0) {
+            if (mat.sheets === input.currentMoQty) {
+                score += 35;
+                reasons.push(`Quantity exact match (${mat.sheets} sheets)`);
+            }
+            else if (mat.panels === input.currentMoQty) {
                 score += 25;
-                reasons.push(`Substrate match (${sub})`);
+                reasons.push(`Panel count exact match (${mat.panels} panels)`);
             }
-            else if (matHasSub && !moHasSub && substrates.some((s) => s !== sub && moProductName.includes(s))) {
-                score -= 40; // Substrate mismatch
-            }
+        }
+        // 7. Excluded / already claimed material penalty
+        if (input.excludedMaterialNames && input.excludedMaterialNames.includes(mat.name)) {
+            score -= 60;
+            reasons.push('Already claimed by another MO');
         }
         if (score > (bestMatch?.matchScore ?? 0)) {
             bestMatch = {
@@ -332,6 +401,8 @@ async function reconcileWorkOrderQuantitiesForMo(client, moId, options) {
         moProductName,
         componentNames,
         sheetMaterials: parsed?.sheetMaterials || [],
+        currentMoQty: mo.product_qty,
+        excludedMaterialNames: options?.excludedMaterialNames,
     });
     const targetQty = determineTargetCuttingQuantity({
         matchedMaterial: matchResult?.material,
@@ -408,7 +479,9 @@ async function reconcileWorkOrderQuantitiesForMo(client, moId, options) {
     // 4. Re-evaluate stock reservation so 100% stock availability is assigned immediately
     await client.callRecordMethod('mrp.production', 'action_assign', [mo.id]).catch(() => null);
     const matchedMaterialDesc = matchResult?.material
-        ? `${matchResult.material.name} ${matchResult.material.thickness_mm ? `${matchResult.material.thickness_mm}mm` : ''}`
+        ? (matchResult.material.name.toLowerCase().includes('mm')
+            ? matchResult.material.name
+            : `${matchResult.material.name}${matchResult.material.thickness_mm ? ` ${matchResult.material.thickness_mm}mm` : ''}`).trim()
         : 'Job Summary Board';
     // 5. Post audit log notes on MO chatter
     const actorInfo = options?.actorName ? `\nUpdated by: ${options.actorName}` : '';
@@ -468,6 +541,7 @@ async function reconcileWorkOrderQuantitiesForSaleOrder(client, saleOrderId, opt
         limit: 20,
     });
     const results = [];
+    const claimedMaterialNames = [];
     for (const candidate of candidateMos) {
         try {
             const res = await reconcileWorkOrderQuantitiesForMo(client, candidate.id, {
@@ -475,9 +549,13 @@ async function reconcileWorkOrderQuantitiesForSaleOrder(client, saleOrderId, opt
                 soId: so.id,
                 soName: so.name,
                 actorName: options?.actorName,
+                excludedMaterialNames: claimedMaterialNames,
             });
             if (res) {
                 results.push(res);
+                if (res.matchedMaterial) {
+                    claimedMaterialNames.push(res.matchedMaterial);
+                }
             }
         }
         catch (err) {
