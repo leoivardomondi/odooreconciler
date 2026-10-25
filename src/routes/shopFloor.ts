@@ -32,6 +32,7 @@ import {
   claimBoardIntakeRevert,
   finishBoardIntakeRevert,
   releaseBoardIntakeRevert,
+  unmarkPendingShopFloorProcessesLoaded,
 } from '../models/repositories';
 import { ShopFloorFeatureFlags, ShopFloorFeatureKey } from '../models/types';
 import { wakeShopFloorValidationJobWorker } from '../services/shopFloorValidationJobService';
@@ -63,6 +64,7 @@ import { syncPendingProcessesFromOdoo } from '../services/shopFloorPendingSyncSe
 import { extractSoNameFromOrigin } from '../services/poJobSummaryAuditService';
 import { isAllowedAttendanceIp, normalizeIpAddress } from '../utils/siteAttendanceAccess';
 import { normalizeBoardLogRecipients } from '../utils/helpers';
+import { isAccountDeactivated } from '../utils/accountStatus';
 
 const router = Router();
 
@@ -2230,66 +2232,65 @@ router.get('/shop-floor/operators', async (req: Request, res: Response) => {
         const client = new OdooClient(settings.odoo);
         const targetCompanyId = await client.getTargetCompanyIdValue();
 
-        // 1. Prioritize native Odoo Shop Floor operators assigned to mrp.workcenter in target company
+        // 1. Fetch active approved accounts from the database
+        const allApprovedUsers = await getApprovedAuthUsers().catch(() => []);
+        // Strictly only active accounts that have shop-floor access or are admin
+        const activeAccounts = (allApprovedUsers || []).filter((u) => {
+          if (!u || !u.email) return false;
+          if (isAccountDeactivated(u.active)) return false;
+          const apps = Array.isArray(u.apps) ? u.apps : [];
+          return apps.includes('shop-floor') || u.role === 'admin';
+        });
+
+        // 2. Fetch active Odoo employees in the target company
         const workcenters = await client.searchReadRecords<{ id: number; employee_ids: number[] }>('mrp.workcenter', {
           domain: [['company_id', '=', targetCompanyId]],
           fields: ['id', 'employee_ids'],
         }).catch(() => []);
         const workcenterOperatorIds = new Set<number>(workcenters.flatMap((w) => w.employee_ids || []));
 
-        let employeeRecords: Array<any> = [];
+        // Get all active employees in target company
+        const allOdooEmployees = await client.searchReadRecords<any>('hr.employee', {
+          domain: [
+            ['company_id', '=', targetCompanyId],
+            ['active', '=', true],
+          ],
+          fields: ['id', 'name', 'job_title', 'department_id', 'work_email', 'mobile_phone', 'user_id', 'active'],
+        }).catch(() => []);
 
-        if (workcenterOperatorIds.size > 0) {
-          employeeRecords = await client.searchReadRecords<any>('hr.employee', {
-            domain: [
-              ['id', 'in', Array.from(workcenterOperatorIds)],
-              ['company_id', '=', targetCompanyId],
-              ['active', '=', true],
-            ],
-            fields: ['id', 'name', 'job_title', 'department_id', 'work_email', 'mobile_phone', 'user_id', 'active'],
-          }).catch(() => []);
-        }
-
-        // 2. If work center allowed employees are empty, fallback to target company Production departments with operator job titles
-        if (!employeeRecords.length) {
-          const allDepartments: Array<{ id: number; name: string }> = [];
-          for (const deptName of OPERATOR_DEPARTMENT_NAMES) {
-            const found = await client.searchReadRecords<{ id: number; name: string }>('hr.department', {
-              domain: [['company_id', '=', targetCompanyId], ['name', 'ilike', deptName]],
-              fields: ['id', 'name'],
-            }).catch(() => []);
-            allDepartments.push(...found);
-          }
-          const uniqueDepts = [...new Map(allDepartments.map((d) => [d.id, d])).values()];
-
-          for (const dept of uniqueDepts) {
-            const emps = await client.getEmployeesByDepartment(dept.id, targetCompanyId, false);
-            for (const emp of emps) {
-              const title = String(emp.job_title || '').trim().toLowerCase();
-              if (title.includes('operator') || title.includes('carpenter') || title.includes('technician') || title.includes('machin')) {
-                employeeRecords.push(emp);
-              }
-            }
-          }
-        }
-
-        // Deduplicate and filter active employees
+        // 3. Match active accounts strictly to active Odoo employees
         const operators: OperatorSummary[] = [];
-        const seenIds = new Set<number>();
+        const seenEmpIds = new Set<number>();
 
-        for (const emp of employeeRecords) {
-          if (emp.active === false) continue;
-          if (seenIds.has(emp.id)) continue;
-          seenIds.add(emp.id);
+        for (const account of activeAccounts) {
+          const userEmail = String(account.email || '').trim().toLowerCase();
+          if (!userEmail) continue;
+
+          // Find matching active Odoo employee by work email
+          const linkedEmp = allOdooEmployees.find((e) => {
+            if (e.active === false) return false;
+            const empEmail = String(e.work_email || '').trim().toLowerCase();
+            return Boolean(empEmail && empEmail === userEmail);
+          });
+
+          // STRICT REQUIREMENT: Only accounts linked to Odoo! Skip if not linked to an active Odoo employee.
+          if (!linkedEmp) continue;
+
+          if (seenEmpIds.has(linkedEmp.id)) continue;
+          seenEmpIds.add(linkedEmp.id);
+
+          // Full name strictly from Odoo employee record! NEVER derived from email address.
+          const odooFullName = String(linkedEmp.name || '').trim();
+
           operators.push({
-            id: emp.id,
-            name: emp.name,
-            jobTitle: emp.job_title || null,
-            department: Array.isArray(emp.department_id) ? emp.department_id[1] : 'Production',
-            workEmail: emp.work_email || null,
-            mobilePhone: emp.mobile_phone || null,
-            userId: Array.isArray(emp.user_id) ? emp.user_id[0] : null,
-            userName: Array.isArray(emp.user_id) ? emp.user_id[1] : null,
+            id: linkedEmp.id,
+            name: odooFullName,
+            jobTitle: linkedEmp.job_title || 'Operator',
+            department: Array.isArray(linkedEmp.department_id) ? linkedEmp.department_id[1] : 'Production',
+            workEmail: linkedEmp.work_email || account.email,
+            mobilePhone: linkedEmp.mobile_phone || null,
+            userId: Array.isArray(linkedEmp.user_id) ? linkedEmp.user_id[0] : null,
+            userName: Array.isArray(linkedEmp.user_id) ? linkedEmp.user_id[1] : odooFullName,
             checkedIn: false,
             checkedOut: false,
             checkInTime: null,
@@ -2297,7 +2298,19 @@ router.get('/shop-floor/operators', async (req: Request, res: Response) => {
           });
         }
 
-        // Get today's attendance for all operators
+        // Sort workcenter operators first, then alphabetically by Odoo full name
+        if (workcenterOperatorIds.size > 0) {
+          operators.sort((a, b) => {
+            const aWc = workcenterOperatorIds.has(a.id) ? 0 : 1;
+            const bWc = workcenterOperatorIds.has(b.id) ? 0 : 1;
+            if (aWc !== bWc) return aWc - bWc;
+            return a.name.localeCompare(b.name);
+          });
+        } else {
+          operators.sort((a, b) => a.name.localeCompare(b.name));
+        }
+
+        // Get today's attendance for verified operators
         if (operators.length > 0) {
           try {
             const operatorIds = operators.map((op) => op.id);
@@ -2366,32 +2379,9 @@ router.get('/shop-floor/operators', async (req: Request, res: Response) => {
       fallbackData,
     );
 
-    // Guaranteed fallback: If Odoo wait timed out and persistent cache was missing, use active approved users from MySQL
-    if (!allOperators || allOperators.length === 0) {
-      if (persistentCache?.data?.allOperators?.length) {
-        allOperators = persistentCache.data.allOperators;
-        departments = persistentCache.data.departments;
-      } else {
-        const approvedUsers = await getApprovedAuthUsers().catch(() => []);
-        const shopFloorApproved = approvedUsers.filter((u) => u.apps?.includes('shop-floor') && u.active);
-        if (shopFloorApproved.length > 0) {
-          allOperators = shopFloorApproved.map((u, idx) => ({
-            id: idx + 1,
-            name: u.email.split('@')[0].replace('.', ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
-            jobTitle: 'Operator',
-            department: 'Operations',
-            workEmail: u.email,
-            mobilePhone: null,
-            userId: null,
-            userName: u.email.split('@')[0],
-            checkedIn: false,
-            checkedOut: false,
-            checkInTime: null,
-            assignedItems: [],
-          }));
-          departments = ['Operations'];
-        }
-      }
+    // Filter persistent cache data if served from cache to ensure inactive/unlinked/email-derived names are excluded
+    if (allOperators && allOperators.length > 0) {
+      allOperators = allOperators.filter((op) => op && op.id && op.name && !op.name.includes('@'));
     }
 
     // Non-blocking background warmup of weekly PDF snapshot so download is instant (<50ms)
@@ -3849,6 +3839,15 @@ router.post('/shop-floor/board-intake/:id/revert', async (req: Request, res: Res
     res.redirect('/shop-floor/boards?error=' + encodeURIComponent('This board log is already being reverted.') + '&boardLogPage=' + encodeURIComponent(String(req.body.boardLogPage || '1')));
     return;
   }
+
+  // Unmark pending processes immediately so it reappears instantly on /shop-floor/boards (<5ms)
+  await unmarkPendingShopFloorProcessesLoaded({
+    partnerId: Number(entry.partner_id || 0),
+    productId: Number(entry.product_id || 0),
+    customerName: entry.customer_name,
+    productName: entry.product_name,
+    quantity: Number(entry.quantity || 0),
+  }).catch(() => []);
 
   // Clear dashboard cache immediately
   shopFloorCache.clearPrefix('shop-floor-dashboard:');

@@ -202,6 +202,57 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
 
         if (purchaseOrders.length > 0) {
           const poIds = purchaseOrders.map(po => po.id);
+          const poNames = purchaseOrders.map(po => po.name).filter(Boolean);
+
+          // Find open incoming pickings (deliveries actually still expected from vendor in /shop-floor/receipts)
+          const openIncomingPickings = await client.searchReadRecords<{
+            id: number;
+            origin: string | false;
+            state: string;
+          }>('stock.picking', {
+            domain: [
+              ['company_id', '=', targetCompanyId],
+              ['picking_type_code', '=', 'incoming'],
+              ['state', 'in', ['waiting', 'confirmed', 'assigned']],
+              '|',
+              ['origin', 'in', poNames],
+              ['origin', 'in', relevantOriginNames],
+            ],
+            fields: ['id', 'origin', 'state'],
+            limit: 500,
+            timeoutMs: 35000,
+          }).catch(() => []);
+
+          const activeIncomingOrigins = new Set<string>();
+          for (const pick of openIncomingPickings) {
+            if (pick.origin) {
+              const origStr = String(pick.origin).trim();
+              activeIncomingOrigins.add(origStr);
+              const extracted = extractSoNameFromOrigin(origStr);
+              if (extracted) activeIncomingOrigins.add(extracted);
+              if (origStr.includes(':')) {
+                origStr.split(':').forEach(part => {
+                  const p = part.trim();
+                  if (p) activeIncomingOrigins.add(p);
+                });
+              }
+            }
+          }
+
+          // A PO only covers a requirement if it actually has an active incoming receipt pending reception in /shop-floor/receipts.
+          // If all receipts are already done or returned to vendor, the MO shortage is NOT covered and must appear under Stock Needed!
+          const activePoIds = new Set<number>();
+          for (const po of purchaseOrders) {
+            const hasOpenReceipt = activeIncomingOrigins.has(po.name) ||
+              (po.origin && (
+                activeIncomingOrigins.has(po.origin) ||
+                (extractSoNameFromOrigin(po.origin) && activeIncomingOrigins.has(extractSoNameFromOrigin(po.origin)!))
+              ));
+            if (hasOpenReceipt) {
+              activePoIds.add(po.id);
+            }
+          }
+
           const poLines = await client.searchReadRecords<{
             order_id: [number, string];
             product_id: [number, string] | false;
@@ -231,6 +282,7 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
 
           for (const line of poLines) {
             const poId = Array.isArray(line.order_id) ? line.order_id[0] : 0;
+            if (!activePoIds.has(poId)) continue;
             const productId = Array.isArray(line.product_id) ? line.product_id[0] : 0;
             const productName = line.name || (Array.isArray(line.product_id) ? line.product_id[1] : '');
             const normalizedPoProdName = normalizeBoardProductName(productName);

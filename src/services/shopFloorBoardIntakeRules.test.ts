@@ -54,6 +54,46 @@ test('pruneStalePendingProcessesForActiveMos: PO-covered keys are pruned immedia
   assert.ok(!after.some((p) => p.id === key), 'Process covered by active PO must be pruned from Add Stock area');
 });
 
+test('Returned receipt or unallocated PO shortage: requirement is NOT pruned and reappears as boards needed', async () => {
+  const testMoId = 99105;
+  const testProdId = 88105;
+  const key = `${testMoId}_${testProdId}`;
+
+  await execute('DELETE FROM shop_floor_pending_processes WHERE mo_id = ?', [testMoId]);
+
+  const process: PendingShopFloorProcess = {
+    id: key,
+    process_type: 'board_intake',
+    mo_id: testMoId,
+    mo_name: 'WH/MO/99105',
+    origin: 'S99105',
+    partner_id: 105,
+    partner_name: 'Returned Receipt Client',
+    product_id: testProdId,
+    product_name: 'Light Grey Particle 18mm',
+    qty_needed: 27,
+    qty_reserved: 0,
+    qty_missing: 27,
+    status: 'pending',
+    loaded_at: null,
+    loaded_by: null,
+    last_synced_at: new Date().toISOString(),
+  };
+
+  await upsertPendingShopFloorProcesses([process]);
+
+  // When a receipt is returned (e.g. WH/OUT/02055 returning WH/IN/00788),
+  // there are no active incoming receipts pending reception, so poCoveredKeys does NOT contain this key.
+  // The active MO needs 27 boards.
+  await pruneStalePendingProcessesForActiveMos([testMoId], [key], []);
+
+  const after = await getPendingShopFloorProcesses({ status: 'pending' });
+  const restored = after.find((p) => p.id === key);
+  assert.ok(restored, 'Requirement must be preserved and reappear as boards needed when receipt was returned');
+  assert.equal(restored?.qty_missing, 27);
+  assert.equal(restored?.status, 'pending');
+});
+
 test('pruneStalePendingProcessesForActiveMos: closed MO or assigned stock is PRESERVED if NO history log exists', async () => {
   const testMoId = 99202;
   const testProdId = 88202;

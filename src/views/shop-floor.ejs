@@ -62,7 +62,7 @@
       { key: 'payroll', label: 'Payroll', subtitle: 'Payslips and advances', href: '#payroll-app', iconPath: 'M6 2h12v20l-3-2-3 2-3-2-3 2V2Zm3 5h6m-6 4h6m-6 4h3', color: '#0369a1', tint: '#e0f2fe' },
       { key: 'table-saw', label: 'Table Saw Area', subtitle: 'Table saw work orders', href: '#area-table-saw', iconPath: 'M12 3a7 7 0 1 0 7 7h-7V3Zm0 0 2.5 4.5L19 10M3 21h18M6 17v4m12-4v4', color: '#7c3aed', tint: '#ede9fe' },
       { key: 'edge-banding', label: 'Edge Banding Area', subtitle: 'Edge banding work', href: '#area-edge-banding', iconPath: 'M4 17h16v4H4v-4Zm2-4a6 6 0 1 1 12 0H6Zm6-3v3m-3-1.5 1.5 1.5m4.5-1.5L13.5 13', color: '#c2410c', tint: '#ffedd5' },
-      { key: 'panel-rack', label: 'Panel Rack', subtitle: 'Panel rack work orders', href: '#area-panel-rack', iconPath: 'M4 3v18m16-18v18M4 7h16M4 13h16M4 19h16M9 7v6m6 0v6', color: '#0f766e', tint: '#ccfbf1' },
+      { key: 'panel-rack', label: 'Panel Area', subtitle: 'Panel area work orders', href: '#area-panel-rack', iconPath: 'M4 3v18m16-18v18M4 7h16M4 13h16M4 19h16M9 7v6m6 0v6', color: '#0f766e', tint: '#ccfbf1' },
     ];
     const enabledLauncherApps = launcherApps.filter((app) => resolvedFeatureFlags[app.key]);
     const totalAppAttentionCount = enabledLauncherApps.reduce((total, app) => total + (appNotificationCounts[app.key] || 0), 0);
@@ -129,6 +129,15 @@
       [data-mo-row] {padding-left: 0.85rem !important; padding-right: 0.85rem !important;}
       [data-mo-area-group] > div.px-4 {padding-left: 0.85rem !important; padding-right: 0.85rem !important;}
       [data-mo-row] .btn-sm {min-height: 38px; display: inline-flex; align-items: center; justify-content: center;}
+    }
+    @keyframes targetCardPulse {
+      0% { box-shadow: 0 0 0 0 rgba(15, 118, 110, 0.45); }
+      50% { box-shadow: 0 0 0 10px rgba(15, 118, 110, 0.2); }
+      100% { box-shadow: 0 1px 3px rgba(0,0,0,0.04); }
+    }
+    .highlight-target-card {
+      animation: targetCardPulse 1.8s ease-out !important;
+      border-color: #0f766e !important;
     }
   </style>
 
@@ -515,7 +524,7 @@
       </div>
 
       <div class="col-lg-7">
-        <div class="rounded-4 border bg-white overflow-hidden" style="box-shadow:0 1px 3px rgba(0,0,0,0.04)">
+        <div class="rounded-4 border bg-white overflow-hidden" id="payslipsCard" style="box-shadow:0 1px 3px rgba(0,0,0,0.04); scroll-margin-top: 5.5rem;">
           <div class="px-4 py-3 border-bottom">
             <h2 class="h6 mb-0 fw-bold" data-i18n="payslips">Payslips</h2>
           </div>
@@ -614,7 +623,7 @@
     <div class="row g-4">
       <!-- Left: All Work Orders grouped by Area -->
       <% if (!data.isLimitedDashboard) { %>
-      <div id="manufacturing-orders" class="col-lg-8 order-2 order-lg-1" style="scroll-margin-top:1rem">
+      <div id="manufacturing-orders" class="col-lg-8 order-2 order-lg-1" style="scroll-margin-top: 5.5rem">
         <div class="rounded-4 border bg-white p-3 mb-3" style="box-shadow:0 1px 3px rgba(0,0,0,.04)">
           <label for="manufacturingOrderSearch" class="form-label small fw-bold mb-2">Find a manufacturing order</label>
           <div class="input-group">
@@ -704,7 +713,7 @@
           const progressCount = orders.filter(o => o.state === 'progress').length;
           const theme = areaThemes[area] || defaultAreaTheme;
         %>
-        <div id="area-<%= area.toLowerCase().replace(/ area$/, '').replace(/[^a-z0-9]+/g, '-') %>" data-mo-area-group class="rounded-4 bg-white overflow-hidden mb-4" style="box-shadow:0 4px 12px rgba(0,0,0,0.05); border: 2px solid <%= theme.borderLight %> !important; border-left: 7px solid <%= theme.border %> !important;">
+        <div id="area-<%= area.toLowerCase().replace(/ area$/, '').replace(/[^a-z0-9]+/g, '-') %>" data-mo-area-group class="rounded-4 bg-white overflow-hidden mb-4" style="box-shadow:0 4px 12px rgba(0,0,0,0.05); border: 2px solid <%= theme.borderLight %> !important; border-left: 7px solid <%= theme.border %> !important; scroll-margin-top: 5.5rem;">
           <div class="px-4 py-2.5 d-flex justify-content-between align-items-center" style="background:<%= theme.bgHeader %>; border-bottom: 1.5px solid <%= theme.borderLight %>">
             <div class="d-flex align-items-center gap-2">
               <span class="fw-bold" style="font-size:0.9rem; color:<%= theme.border %>"><%= area %></span>
@@ -906,8 +915,14 @@
             </div>
           <% }) %>
           <% if (!orders.length) { %>
-            <div class="px-4 py-3 text-center text-muted" style="font-size:0.8rem; background:#fafafb">
-              No active jobs in <%= area %>.
+            <div class="px-4 py-5 text-center text-muted" style="background:#fafafb">
+              <div class="mb-2" style="font-size: 2.2rem;">📋</div>
+              <div class="fw-bold text-dark mb-1" style="font-size: 0.95rem;">No Open Work Orders in <%= area %></div>
+              <p class="text-muted small mb-3">All current jobs in this work centre are up to date.</p>
+              <button type="button" class="btn btn-sm btn-outline-dark rounded-pill px-3 py-1.5 fw-semibold d-inline-flex align-items-center gap-1.5" data-view-all-areas>
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+                <span>View All Work Areas (<%= (data.workOrders || []).length %>)</span>
+              </button>
             </div>
           <% } %>
         </div>
@@ -923,7 +938,7 @@
       <!-- Right: Quick Info & Actions -->
       <div class="col-lg-4 order-1 order-lg-2">
         <!-- Attendance -->
-        <div class="rounded-4 border bg-white mb-4 p-3 p-sm-4" style="box-shadow:0 1px 3px rgba(0,0,0,0.04)">
+        <div class="rounded-4 border bg-white mb-4 p-3 p-sm-4" id="attendanceCard" style="box-shadow:0 1px 3px rgba(0,0,0,0.04); scroll-margin-top: 5.5rem;">
           <span id="attendance-app" class="position-relative" style="top:-5rem"></span>
           <h2 class="h6 mb-3 fw-bold" data-i18n="recent_attendance">Recent Attendance</h2>
 
@@ -1184,7 +1199,7 @@
 
         <span id="maintenance-app" class="position-relative" style="top:-5rem"></span>
         <!-- Machine Breakdown Logs -->
-        <div class="rounded-4 border bg-white mb-4 overflow-hidden" id="breakdownLogsCard" style="box-shadow:0 1px 3px rgba(0,0,0,0.04)">
+        <div class="rounded-4 border bg-white mb-4 overflow-hidden" id="breakdownLogsCard" style="box-shadow:0 1px 3px rgba(0,0,0,0.04); scroll-margin-top: 5.5rem;">
           <!-- Card Header -->
           <div class="px-4 py-3 d-flex justify-content-between align-items-center" style="background:#f8fafc;border-bottom:1px solid #e2e8f0">
             <div>
@@ -1486,7 +1501,7 @@
 
         <div id="payroll-app"></div>
         <!-- Payslips -->
-        <div class="rounded-4 border bg-white mb-4 overflow-hidden" style="box-shadow:0 1px 3px rgba(0,0,0,0.04)">
+        <div class="rounded-4 border bg-white mb-4 overflow-hidden" id="payslipsCard" style="box-shadow:0 1px 3px rgba(0,0,0,0.04); scroll-margin-top: 5.5rem;">
           <div class="px-4 py-3 border-bottom">
             <h2 class="h6 mb-0 fw-bold" data-i18n="payslips">Payslips</h2>
           </div>
@@ -1771,17 +1786,45 @@
     });
   });
 
-  // Launcher tile smooth-scroll and filter activation
+  window.filterShopFloorArea = filterByArea;
+
+  function pulseTargetCard(el) {
+    if (!el) return;
+    el.classList.remove('highlight-target-card');
+    void el.offsetWidth; // trigger reflow
+    el.classList.add('highlight-target-card');
+    window.setTimeout(function() {
+      el.classList.remove('highlight-target-card');
+    }, 2000);
+  }
+
+  // View All Areas button click listeners
+  document.querySelectorAll('[data-view-all-areas]').forEach(function(btn) {
+    btn.addEventListener('click', function(e) {
+      e.preventDefault();
+      filterByArea('all');
+      var moEl = document.getElementById('manufacturing-orders');
+      if (moEl) {
+        moEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        pulseTargetCard(moEl);
+      }
+    });
+  });
+
+  // Launcher tile smooth-scroll and filter activation for all 10 apps
   document.querySelectorAll('.shop-app-tile').forEach(function(tile) {
     tile.addEventListener('click', function(e) {
       var href = this.getAttribute('href');
-      if (href && href.startsWith('#area-')) {
+      if (!href) return;
+
+      if (href.startsWith('#area-')) {
         e.preventDefault();
         var targetId = href.substring(1);
         filterByArea(targetId);
         var targetEl = document.getElementById(targetId) || document.getElementById('manufacturing-orders');
         if (targetEl) {
           targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          pulseTargetCard(targetEl);
         }
       } else if (href === '#manufacturing-orders') {
         e.preventDefault();
@@ -1789,6 +1832,28 @@
         var moEl = document.getElementById('manufacturing-orders');
         if (moEl) {
           moEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          pulseTargetCard(moEl);
+        }
+      } else if (href === '#attendance-app') {
+        e.preventDefault();
+        var attEl = document.getElementById('attendanceCard') || document.getElementById('attendance-app');
+        if (attEl) {
+          attEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          pulseTargetCard(attEl);
+        }
+      } else if (href === '#maintenance-app') {
+        e.preventDefault();
+        var maintEl = document.getElementById('breakdownLogsCard') || document.getElementById('maintenance-app');
+        if (maintEl) {
+          maintEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          pulseTargetCard(maintEl);
+        }
+      } else if (href === '#payroll-app') {
+        e.preventDefault();
+        var payEl = document.getElementById('payslipsCard') || document.getElementById('payroll-app');
+        if (payEl) {
+          payEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          pulseTargetCard(payEl);
         }
       }
     });
