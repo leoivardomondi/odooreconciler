@@ -633,6 +633,8 @@
         <%
           // Group work orders by area
           const areaGroups = {};
+          const standardAreas = ['Table Saw Area', 'Edge Banding Area', 'Panel Rack Area'];
+          standardAreas.forEach((area) => { areaGroups[area] = []; });
           data.workOrders.forEach(wo => {
             const area = wo.area || 'General';
             if (!areaGroups[area]) areaGroups[area] = [];
@@ -648,6 +650,21 @@
             return aIndex - bIndex;
           });
         %>
+        <!-- Work Center Area Filter Pills -->
+        <div class="d-flex align-items-center gap-1.5 mb-3 overflow-x-auto pb-1" id="moAreaPills">
+          <button type="button" class="btn btn-sm rounded-pill px-3 py-1 fw-bold mo-area-filter active" data-target-area="all" style="background:#0f172a;color:#fff;border:none;font-size:0.75rem;">
+            All Areas (<%= (data.workOrders || []).length %>)
+          </button>
+          <button type="button" class="btn btn-sm rounded-pill px-3 py-1 fw-semibold mo-area-filter" data-target-area="area-table-saw" style="background:#f5f3ff;color:#7c3aed;border:1px solid #ddd6fe;font-size:0.75rem;">
+            Table Saw (<%= areaGroups['Table Saw Area'] ? areaGroups['Table Saw Area'].length : 0 %>)
+          </button>
+          <button type="button" class="btn btn-sm rounded-pill px-3 py-1 fw-semibold mo-area-filter" data-target-area="area-edge-banding" style="background:#fff7ed;color:#c2410c;border:1px solid #ffedd5;font-size:0.75rem;">
+            Edge Banding (<%= areaGroups['Edge Banding Area'] ? areaGroups['Edge Banding Area'].length : 0 %>)
+          </button>
+          <button type="button" class="btn btn-sm rounded-pill px-3 py-1 fw-semibold mo-area-filter" data-target-area="area-panel-rack" style="background:#f0fdf4;color:#0f766e;border:1px solid #ccfbf1;font-size:0.75rem;">
+            Panel Rack (<%= areaGroups['Panel Rack Area'] ? areaGroups['Panel Rack Area'].length : 0 %>)
+          </button>
+        </div>
         <%
           const areaThemes = {
             'Table Saw Area': {
@@ -888,6 +905,11 @@
               </div>
             </div>
           <% }) %>
+          <% if (!orders.length) { %>
+            <div class="px-4 py-3 text-center text-muted" style="font-size:0.8rem; background:#fafafb">
+              No active jobs in <%= area %>.
+            </div>
+          <% } %>
         </div>
         <% }) %>
 
@@ -1713,6 +1735,62 @@
       input.value = '';
       applySearch();
       input.focus();
+    });
+  });
+
+  // Area filter pills logic
+  var activeAreaFilter = 'all';
+  function filterByArea(areaKey) {
+    activeAreaFilter = areaKey;
+    document.querySelectorAll('.mo-area-filter').forEach(function(btn) {
+      var isTarget = btn.getAttribute('data-target-area') === areaKey;
+      btn.classList.toggle('active', isTarget);
+      if (isTarget) {
+        btn.style.background = '#0f172a';
+        btn.style.color = '#fff';
+      } else {
+        btn.style.background = '';
+        btn.style.color = '';
+      }
+    });
+
+    document.querySelectorAll('[data-mo-area-group]').forEach(function(group) {
+      if (areaKey === 'all') {
+        group.classList.remove('d-none');
+      } else {
+        group.classList.toggle('d-none', group.id !== areaKey);
+      }
+    });
+  }
+
+  document.querySelectorAll('.mo-area-filter').forEach(function(btn) {
+    btn.addEventListener('click', function(e) {
+      e.preventDefault();
+      var targetArea = this.getAttribute('data-target-area');
+      filterByArea(targetArea);
+    });
+  });
+
+  // Launcher tile smooth-scroll and filter activation
+  document.querySelectorAll('.shop-app-tile').forEach(function(tile) {
+    tile.addEventListener('click', function(e) {
+      var href = this.getAttribute('href');
+      if (href && href.startsWith('#area-')) {
+        e.preventDefault();
+        var targetId = href.substring(1);
+        filterByArea(targetId);
+        var targetEl = document.getElementById(targetId) || document.getElementById('manufacturing-orders');
+        if (targetEl) {
+          targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      } else if (href === '#manufacturing-orders') {
+        e.preventDefault();
+        filterByArea('all');
+        var moEl = document.getElementById('manufacturing-orders');
+        if (moEl) {
+          moEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }
     });
   });
 })();

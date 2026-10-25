@@ -5709,13 +5709,28 @@ export async function markPendingShopFloorProcessesLoaded(filters: {
   quantity: number;
   customerName?: string;
   productName?: string;
+  moId?: number;
+  moName?: string;
 }): Promise<PendingShopFloorProcess[]> {
-  let pendingRows = await queryAll<PendingShopFloorProcess>(
-    `SELECT * FROM shop_floor_pending_processes
-     WHERE partner_id = ? AND product_id = ? AND status = 'pending' AND qty_missing > 0
-     ORDER BY created_at ASC`,
-    [filters.partnerId, filters.productId],
-  );
+  let pendingRows: PendingShopFloorProcess[] = [];
+
+  if (filters.moId) {
+    pendingRows = await queryAll<PendingShopFloorProcess>(
+      `SELECT * FROM shop_floor_pending_processes
+       WHERE mo_id = ? AND product_id = ? AND status = 'pending' AND qty_missing > 0
+       ORDER BY created_at ASC`,
+      [filters.moId, filters.productId],
+    );
+  }
+
+  if (!pendingRows.length && filters.partnerId && filters.productId) {
+    pendingRows = await queryAll<PendingShopFloorProcess>(
+      `SELECT * FROM shop_floor_pending_processes
+       WHERE partner_id = ? AND product_id = ? AND status = 'pending' AND qty_missing > 0
+       ORDER BY created_at ASC`,
+      [filters.partnerId, filters.productId],
+    );
+  }
 
   // If no rows matched by exact IDs, fallback to resilient matching by normalized customer name and product name
   if (!pendingRows.length && (filters.customerName || filters.productName)) {

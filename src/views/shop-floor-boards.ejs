@@ -169,6 +169,19 @@
       font-size: 1rem;
     }
   }
+
+  /* Requirement card responsiveness rule */
+  .requirement-btn {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: stretch !important;
+    text-align: left !important;
+    width: 100% !important;
+    box-sizing: border-box !important;
+  }
+  .requirement-btn > * {
+    width: 100% !important;
+  }
 </style>
 
 <main class="container my-4">
@@ -316,6 +329,8 @@
                         data-qty="<%= item.qtyNeeded %>"
                         data-total-needed="<%= item.totalNeeded || '' %>"
                         data-qty-reserved="<%= item.qtyReserved || '' %>"
+                        data-mo-id="<%= item.moId || '' %>"
+                        data-mo-name="<%= item.moName || '' %>"
                         title="Fill form with <%= client %> and <%= item.component %> (<%= item.qtyNeeded %> boards)">
                         <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
                         <span>Fill Form<%= (item.qtyReserved && item.qtyReserved > 0) ? ' (' + item.qtyNeeded + ' balance)' : '' %></span>
@@ -332,6 +347,8 @@
                     data-qty="<%= item.qtyNeeded %>"
                     data-total-needed="<%= item.totalNeeded || '' %>"
                     data-qty-reserved="<%= item.qtyReserved || '' %>"
+                    data-mo-id="<%= item.moId || '' %>"
+                    data-mo-name="<%= item.moName || '' %>"
                     data-is-syncing="<%= item.isSyncing ? 'true' : 'false' %>"
                     data-is-closed="<%= item.isMoClosed ? 'true' : 'false' %>"
                     style="<%= index < items.length - 1 ? 'border-bottom:1px dashed ' + (item.isMoClosed ? 'rgba(239,68,68,0.3)' : 'rgba(194,65,12,.15)') + ';' : '' %>font-size:.82rem; <%= item.isSyncing ? 'opacity: 0.78;' : '' %>">
@@ -378,6 +395,8 @@
                               data-qty="<%= item.qtyNeeded %>"
                               data-total-needed="<%= item.totalNeeded || '' %>"
                               data-qty-reserved="<%= item.qtyReserved || '' %>"
+                              data-mo-id="<%= item.moId || '' %>"
+                              data-mo-name="<%= item.moName || '' %>"
                               title="Fill form with <%= item.component %> (<%= item.qtyNeeded %> boards)">
                               <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
                               <span>Fill Form</span>
@@ -428,6 +447,8 @@
               </div>
               <input type="hidden" name="partner_id" id="partnerSelect" required>
               <input type="hidden" name="partner_name" id="partnerName">
+              <input type="hidden" name="mo_id" id="intakeMoId">
+              <input type="hidden" name="mo_name" id="intakeMoName">
               <div class="custom-invalid-feedback" id="partnerFeedback">Please choose a client from the dropdown list.</div>
               
               <!-- Dropdown menu -->
@@ -1349,6 +1370,11 @@
               `;
 
               btn.addEventListener('click', function() {
+                var intakeMoId = document.getElementById('intakeMoId');
+                var intakeMoName = document.getElementById('intakeMoName');
+                if (intakeMoId) intakeMoId.value = req.moId || '';
+                if (intakeMoName) intakeMoName.value = req.moName || '';
+
                 // Populate product select combobox
                 var productList = document.getElementById('productList');
                 var productItem = Array.from(productList.querySelectorAll('.combobox-item')).find(function(item) {
@@ -1421,6 +1447,13 @@
         var component = btn.getAttribute('data-component') || '';
         var productId = btn.getAttribute('data-product-id') || '';
         var qty = btn.getAttribute('data-qty') || '';
+        var moId = btn.getAttribute('data-mo-id') || '';
+        var moName = btn.getAttribute('data-mo-name') || '';
+
+        var intakeMoId = document.getElementById('intakeMoId');
+        var intakeMoName = document.getElementById('intakeMoName');
+        if (intakeMoId) intakeMoId.value = moId;
+        if (intakeMoName) intakeMoName.value = moName;
 
         // 1. Populate Client
         var partnerSearch = document.getElementById('partnerSearch');

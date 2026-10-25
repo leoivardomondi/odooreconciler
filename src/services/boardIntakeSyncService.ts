@@ -226,6 +226,30 @@ export interface MatchingBoardPurchaseOrderWarning {
 }
 
 export async function processBoardIntakePurchaseOrderFulfillment(
+  _client: OdooClient,
+  _entry: {
+    partner_id?: number | string | null;
+    product_id?: number | string | null;
+    product_name?: string | null;
+    quantity?: number | string | null;
+    customer_name?: string | null;
+    actor_name?: string | null;
+    actor_email?: string | null;
+    arrival_date?: string | null;
+    arrival_time?: string | null;
+    gate?: string | null;
+    vehicle_registration?: string | null;
+  },
+  _cachedCandySharon?: Promise<[OdooUserStakeholder | null, OdooUserStakeholder | null]> | null,
+): Promise<BoardIntakePoFulfillmentResult | null> {
+  // CRITICAL RULE: Gate board intake is dedicated to client-supplied boards and raw material stock additions.
+  // It must NEVER automatically approve Purchase Orders or trigger button_validate on stock receipts,
+  // as supplier receipts often contain multiple different products on the same PO that should only be verified and validated
+  // individually via the dedicated Receipts interface (/shop-floor/receipts).
+  return null;
+}
+
+export async function processBoardIntakePurchaseOrderFulfillmentLegacy(
   client: OdooClient,
   entry: {
     partner_id?: number | string | null;

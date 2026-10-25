@@ -2228,42 +2228,73 @@ router.get('/shop-floor/operators', async (req: Request, res: Response) => {
       60 * 60 * 1000,  // 60 minutes max stale
       async () => {
         const client = new OdooClient(settings.odoo);
+        const targetCompanyId = await client.getTargetCompanyIdValue();
 
-        // Find operator departments
-        const allDepartments: Array<{ id: number; name: string }> = [];
-        for (const deptName of OPERATOR_DEPARTMENT_NAMES) {
-          const found = await client.findDepartmentByName(deptName);
-          allDepartments.push(...found);
+        // 1. Prioritize native Odoo Shop Floor operators assigned to mrp.workcenter in target company
+        const workcenters = await client.searchReadRecords<{ id: number; employee_ids: number[] }>('mrp.workcenter', {
+          domain: [['company_id', '=', targetCompanyId]],
+          fields: ['id', 'employee_ids'],
+        }).catch(() => []);
+        const workcenterOperatorIds = new Set<number>(workcenters.flatMap((w) => w.employee_ids || []));
+
+        let employeeRecords: Array<any> = [];
+
+        if (workcenterOperatorIds.size > 0) {
+          employeeRecords = await client.searchReadRecords<any>('hr.employee', {
+            domain: [
+              ['id', 'in', Array.from(workcenterOperatorIds)],
+              ['company_id', '=', targetCompanyId],
+              ['active', '=', true],
+            ],
+            fields: ['id', 'name', 'job_title', 'department_id', 'work_email', 'mobile_phone', 'user_id', 'active'],
+          }).catch(() => []);
         }
 
-        // Deduplicate by ID
-        const uniqueDepts = [...new Map(allDepartments.map((d) => [d.id, d])).values()];
+        // 2. If work center allowed employees are empty, fallback to target company Production departments with operator job titles
+        if (!employeeRecords.length) {
+          const allDepartments: Array<{ id: number; name: string }> = [];
+          for (const deptName of OPERATOR_DEPARTMENT_NAMES) {
+            const found = await client.searchReadRecords<{ id: number; name: string }>('hr.department', {
+              domain: [['company_id', '=', targetCompanyId], ['name', 'ilike', deptName]],
+              fields: ['id', 'name'],
+            }).catch(() => []);
+            allDepartments.push(...found);
+          }
+          const uniqueDepts = [...new Map(allDepartments.map((d) => [d.id, d])).values()];
 
-        // Get active employees from each department (exclude archived/inactive)
+          for (const dept of uniqueDepts) {
+            const emps = await client.getEmployeesByDepartment(dept.id, targetCompanyId, false);
+            for (const emp of emps) {
+              const title = String(emp.job_title || '').trim().toLowerCase();
+              if (title.includes('operator') || title.includes('carpenter') || title.includes('technician') || title.includes('machin')) {
+                employeeRecords.push(emp);
+              }
+            }
+          }
+        }
+
+        // Deduplicate and filter active employees
         const operators: OperatorSummary[] = [];
         const seenIds = new Set<number>();
 
-        for (const dept of uniqueDepts) {
-          const employees = await client.getEmployeesByDepartment(dept.id, undefined, false);
-          for (const emp of employees) {
-            if (emp.active === false) continue;
-            if (seenIds.has(emp.id)) continue;
-            seenIds.add(emp.id);
-            operators.push({
-              id: emp.id,
-              name: emp.name,
-              jobTitle: emp.job_title || null,
-              department: Array.isArray(emp.department_id) ? emp.department_id[1] : dept.name,
-              workEmail: emp.work_email || null,
-              mobilePhone: emp.mobile_phone || null,
-              userId: Array.isArray(emp.user_id) ? emp.user_id[0] : null,
-              userName: Array.isArray(emp.user_id) ? emp.user_id[1] : null,
-              checkedIn: false,
-              checkedOut: false,
-              checkInTime: null,
-              assignedItems: [],
-            });
-          }
+        for (const emp of employeeRecords) {
+          if (emp.active === false) continue;
+          if (seenIds.has(emp.id)) continue;
+          seenIds.add(emp.id);
+          operators.push({
+            id: emp.id,
+            name: emp.name,
+            jobTitle: emp.job_title || null,
+            department: Array.isArray(emp.department_id) ? emp.department_id[1] : 'Production',
+            workEmail: emp.work_email || null,
+            mobilePhone: emp.mobile_phone || null,
+            userId: Array.isArray(emp.user_id) ? emp.user_id[0] : null,
+            userName: Array.isArray(emp.user_id) ? emp.user_id[1] : null,
+            checkedIn: false,
+            checkedOut: false,
+            checkInTime: null,
+            assignedItems: [],
+          });
         }
 
         // Get today's attendance for all operators
@@ -2316,7 +2347,8 @@ router.get('/shop-floor/operators', async (req: Request, res: Response) => {
           }
         }
 
-        const freshData = { allOperators: operators, departments: uniqueDepts.map((d) => d.name) };
+        const departmentsList = [...new Set(operators.map((op) => op.department).filter(Boolean))];
+        const freshData = { allOperators: operators, departments: departmentsList };
         if (operators.length > 0) {
           await saveShopFloorSharedCache(operatorCacheKey, freshData).catch(() => {});
         }
@@ -2484,15 +2516,19 @@ router.post('/shop-floor/operators/send-invite', async (req: Request, res: Respo
     const operatorIds = ids.map(Number).filter((n) => !isNaN(n));
     const allOperators: Array<{ id: number; name: string; workEmail: string | null }> = [];
 
-    for (const deptName of OPERATOR_DEPARTMENT_NAMES) {
-      const depts = await client.findDepartmentByName(deptName);
-      for (const dept of depts) {
-        const emps = await client.getEmployeesByDepartment(dept.id);
-        for (const emp of emps) {
-          if (operatorIds.includes(emp.id) && emp.work_email) {
-            allOperators.push({ id: emp.id, name: emp.name, workEmail: emp.work_email });
-          }
-        }
+    const targetCompanyId = await client.getTargetCompanyIdValue();
+    const emps = await client.searchReadRecords<any>('hr.employee', {
+      domain: [
+        ['id', 'in', operatorIds],
+        ['company_id', '=', targetCompanyId],
+        ['active', '=', true],
+      ],
+      fields: ['id', 'name', 'work_email'],
+    }).catch(() => []);
+
+    for (const emp of emps) {
+      if (emp.work_email) {
+        allOperators.push({ id: emp.id, name: emp.name, workEmail: emp.work_email });
       }
     }
 
@@ -3406,6 +3442,9 @@ router.post('/shop-floor/board-intake', async (req: Request, res: Response) => {
       vehicleRegistration, arrivalDate, arrivalTime, gate,
     });
     await recordOptimisticStockAddition(productId, productName, qty);
+    const moId = req.body.mo_id ? Number(req.body.mo_id) : undefined;
+    const moName = req.body.mo_name ? String(req.body.mo_name).trim() : undefined;
+
     // Mark matching pending board requirements loaded in MySQL immediately
     const updatedRequirements = await markPendingShopFloorProcessesLoaded({
       partnerId,
@@ -3414,6 +3453,8 @@ router.post('/shop-floor/board-intake', async (req: Request, res: Response) => {
       productName,
       loadedBy: actorName,
       quantity: qty,
+      moId,
+      moName,
     });
     optimisticBoardIntakes.push({ id: optimisticId, partnerId, productId, productName, customerName, quantity: qty, expiresAt: Date.now() + 10 * 60 * 1000 });
     shopFloorCache.clearPrefix('shop-floor-dashboard:');
@@ -3426,14 +3467,18 @@ router.post('/shop-floor/board-intake', async (req: Request, res: Response) => {
     const totalNeeded = hasMoReq ? updatedRequirements.reduce((sum, r) => sum + Number(r.qty_needed || 0), 0) : null;
     const totalMissing = hasMoReq ? updatedRequirements.reduce((sum, r) => sum + Number(r.qty_missing || 0), 0) : null;
     const moNames = hasMoReq ? [...new Set(updatedRequirements.map((r) => r.mo_name).filter(Boolean))].join(', ') : '';
+    const resolvedMoNames = moNames || (moName ? moName : '');
+    const effectiveHasMoReq = hasMoReq || Boolean(moName);
 
     let partialSuffix = '';
-    if (hasMoReq && totalNeeded != null && totalMissing != null) {
+    if (effectiveHasMoReq && totalNeeded != null && totalMissing != null) {
       if (totalMissing > 0) {
-        partialSuffix = ` (Partial: ${qty} logged, balance ${totalMissing} of ${totalNeeded} needed for ${moNames || 'MO'})`;
+        partialSuffix = ` (Partial: ${qty} logged, balance ${totalMissing} of ${totalNeeded} needed for ${resolvedMoNames || 'MO'})`;
       } else {
-        partialSuffix = ` (Complete: all ${totalNeeded} supplied for ${moNames || 'MO'})`;
+        partialSuffix = ` (Complete: all ${totalNeeded} supplied for ${resolvedMoNames || 'MO'})`;
       }
+    } else if (resolvedMoNames) {
+      partialSuffix = ` (For ${resolvedMoNames})`;
     }
 
     const successMessage = `Boards saved immediately: ${qty} x ${productName} for ${customerName}${partialSuffix}${vehicleRegistration ? ` (${vehicleRegistration})` : ''}. Odoo synchronization and MO reservation are continuing in the background.`;
@@ -3483,12 +3528,12 @@ router.post('/shop-floor/board-intake', async (req: Request, res: Response) => {
           const safeActorEmail = escapeHtml(actorName);
           const subjectCustomerName = customerName.replace(/[\r\n]+/g, ' ').trim();
 
-          const partialSubjectTag = (hasMoReq && totalMissing != null && totalMissing > 0)
+          const partialSubjectTag = (effectiveHasMoReq && totalMissing != null && totalMissing > 0)
             ? ` (Partial: ${qty} Logged, Balance ${totalMissing} Needed)`
-            : '';
+            : (resolvedMoNames ? ` (${resolvedMoNames})` : '');
 
           let reqDetailsHtml = '';
-          if (hasMoReq && totalNeeded != null) {
+          if (effectiveHasMoReq && totalNeeded != null) {
             reqDetailsHtml += `<br>Total Required: ${totalNeeded} sheets`;
             if (totalMissing != null) {
               if (totalMissing > 0) {
@@ -3498,21 +3543,25 @@ router.post('/shop-floor/board-intake', async (req: Request, res: Response) => {
               }
             }
           }
-          if (moNames) {
-            reqDetailsHtml += `<br>Manufacturing Order: ${escapeHtml(moNames)}`;
+          if (resolvedMoNames) {
+            reqDetailsHtml += `<br>Manufacturing Order: ${escapeHtml(resolvedMoNames)}`;
           }
 
           let calloutHtml = '';
-          if (hasMoReq && totalNeeded != null && totalMissing != null) {
+          if (effectiveHasMoReq && totalNeeded != null && totalMissing != null) {
             if (totalMissing > 0) {
               calloutHtml = `<p style="margin-top:12px;padding:8px 12px;background:#fef2f2;border-left:4px solid #ef4444;color:#991b1b;border-radius:4px;">` +
-                `⚠️ <strong>PARTIAL INTAKE:</strong> ${qty} sheet${qty === 1 ? '' : 's'} logged, balance <strong>${totalMissing} sheet${totalMissing === 1 ? '' : 's'}</strong> still required for ${escapeHtml(moNames || 'MO')}. Stock requirement of ${totalMissing} board${totalMissing === 1 ? '' : 's'} remains active before cutting/completion can start.` +
+                `⚠️ <strong>PARTIAL INTAKE:</strong> ${qty} sheet${qty === 1 ? '' : 's'} logged, balance <strong>${totalMissing} sheet${totalMissing === 1 ? '' : 's'}</strong> still required for ${escapeHtml(resolvedMoNames || 'MO')}. Stock requirement of ${totalMissing} board${totalMissing === 1 ? '' : 's'} remains active before cutting/completion can start.` +
                 `</p>`;
             } else {
               calloutHtml = `<p style="margin-top:12px;padding:8px 12px;background:#f0fdf4;border-left:4px solid #22c55e;color:#166534;border-radius:4px;">` +
-                `✅ <strong>COMPLETE INTAKE:</strong> All ${totalNeeded} sheets received and allocated in stock.` +
+                `✅ <strong>COMPLETE INTAKE:</strong> All ${totalNeeded} sheets received and allocated in stock for ${escapeHtml(resolvedMoNames || 'MO')}.` +
                 `</p>`;
             }
+          } else if (resolvedMoNames) {
+            calloutHtml = `<p style="margin-top:12px;padding:8px 12px;background:#f0fdf4;border-left:4px solid #22c55e;color:#166534;border-radius:4px;">` +
+              `✅ <strong>BOARD INTAKE:</strong> ${qty} sheet${qty === 1 ? '' : 's'} logged and allocated for ${escapeHtml(resolvedMoNames)}.` +
+              `</p>`;
           }
 
           await sendMailWithConfig(settings.mail, {

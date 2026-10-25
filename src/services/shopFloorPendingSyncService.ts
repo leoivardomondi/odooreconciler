@@ -79,8 +79,9 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
       (mo) => !String(mo.name || '').toUpperCase().startsWith('VA/')
     );
 
-    // 1b. Fetch recently completed MOs (last 7 days) to detect any work orders closed without stock logged
+    // 1b. Fetch recently completed MOs (since October 19th, 2026 or last 7 days) to detect any work orders closed without stock logged
     const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    const closedCutoffDate = '2026-10-19 00:00:00' < sevenDaysAgo ? '2026-10-19 00:00:00' : sevenDaysAgo;
     const rawRecentlyClosedMOs = await client.searchReadRecords<{
       id: number;
       name: string;
@@ -90,10 +91,10 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
       domain: [
         ['company_id', '=', targetCompanyId],
         ['state', '=', 'done'],
-        ['write_date', '>=', sevenDaysAgo],
+        ['write_date', '>=', closedCutoffDate],
       ],
       fields: ['id', 'name', 'state', 'origin'],
-      limit: 100,
+      limit: 200,
       order: 'write_date desc, id desc',
     }).catch(() => []);
 
