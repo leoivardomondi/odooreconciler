@@ -5,6 +5,8 @@ import {
   pruneStalePendingProcessesForActiveMos,
   getActiveBoardIntakeLogs,
   markPendingShopFloorProcessesLoaded,
+  deleteShopFloorDashboardSnapshot,
+  deleteShopFloorSharedCachePrefix,
 } from '../models/repositories';
 import { OdooClient, isOdooTrafficPaused } from './odooClient';
 import {
@@ -378,11 +380,25 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
       }
     }
 
+    // Create a pool of available quantities from active non-reverted board intake logs
+    const logPool = new Map<string, number>();
+    for (const log of activeLogs) {
+      logPool.set(log.id, Number(log.quantity || 0));
+    }
+
     for (const [key, agg] of aggregatedMoves.entries()) {
       const cleanCustomer = String(agg.partnerName || '').trim().toLowerCase();
       const cleanProduct = String(agg.productName || '').trim().toLowerCase();
 
-      const matchingLogs = activeLogs.filter((log) => {
+      // Allocate from available active non-reverted intake logs
+      let allocatedFromLogs = 0;
+      let remainingNeeded = agg.qtyNeeded;
+
+      for (const log of activeLogs) {
+        if (remainingNeeded <= 0) break;
+        const availableInLog = logPool.get(log.id) || 0;
+        if (availableInLog <= 0) continue;
+
         const logPid = Number(log.partner_id || 0);
         const logProdId = Number(log.product_id || 0);
         const logCust = String(log.customer_name || '').trim().toLowerCase();
@@ -396,16 +412,19 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
           (agg.productId > 0 && logProdId > 0 && agg.productId === logProdId) ||
           (cleanProduct && (logProd.includes(cleanProduct) || cleanProduct.includes(logProd)))
         );
-        return custMatch && prodMatch;
-      });
 
-      const totalLogged = matchingLogs.reduce((sum, l) => sum + Number(l.quantity || 0), 0);
-      const isFulfilledByHistoryLog = totalLogged >= agg.qtyNeeded;
+        if (custMatch && prodMatch) {
+          const toAllocate = Math.min(remainingNeeded, availableInLog);
+          allocatedFromLogs += toAllocate;
+          remainingNeeded -= toAllocate;
+          logPool.set(log.id, availableInLog - toAllocate);
+        }
+      }
 
       // RULE: "make sure that a board log request under add stock area only disappears if a history log that matches it appears"
       // Even if Odoo shop floor closed the job or reserved someone else's stock (agg.qtyReserved >= agg.qtyNeeded),
-      // if NO history log exists for this customer and product, the customer's boards have NOT been logged at the gate!
-      const qtyMissing = isFulfilledByHistoryLog ? 0 : Math.max(0, agg.qtyNeeded - totalLogged);
+      // if NO non-reverted history log exists for this customer and product, the customer's boards have NOT been logged at the gate!
+      const qtyMissing = Math.max(0, agg.qtyNeeded - allocatedFromLogs);
 
       if (qtyMissing > 0) {
         const mo = moMap.get(agg.moId);
@@ -421,7 +440,7 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
           product_id: agg.productId,
           product_name: agg.productName,
           qty_needed: agg.qtyNeeded,
-          qty_reserved: totalLogged,
+          qty_reserved: allocatedFromLogs,
           qty_missing: qtyMissing,
           status: 'pending',
           loaded_at: null,
@@ -432,7 +451,7 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
       }
     }
 
-    // 7. Upsert into MySQL table (preserves locally loaded items)
+    // 7. Upsert into MySQL table (preserves locally loaded items unless shortage reoccurs)
     await upsertPendingShopFloorProcesses(recordsToUpsert);
 
     // 7b. Check and match prior board intake logs for newly created MOs (boards logged before MO creation)
@@ -457,6 +476,15 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
 
     // 9. Clean up stale completed items older than 7 days
     await deleteStaleCompletedProcesses(7);
+
+    // 10. Invalidate RAM cache and stale MySQL dashboard snapshots so the UI sees up-to-date counts immediately
+    try {
+      shopFloorCache.clearPrefix('shop-floor-dashboard:');
+      await deleteShopFloorDashboardSnapshot().catch(() => null);
+      await deleteShopFloorSharedCachePrefix('shop-floor:shared-board-reg:').catch(() => null);
+    } catch (_cacheErr) {
+      // Non-fatal cache invalidation
+    }
 
     lastSyncTimestamp = Date.now();
     const durationMs = Date.now() - startTime;

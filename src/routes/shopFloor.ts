@@ -18,7 +18,6 @@ import {
   deleteShopFloorDashboardSnapshot,
   getPendingShopFloorProcesses,
   markPendingShopFloorProcessesLoaded,
-  reconcilePendingProcessesWithBoardLogs,
   saveSettings,
   getShopFloorIncidents,
   createShopFloorIncident,
@@ -921,26 +920,7 @@ export async function buildInstantMysqlOperatorDashboard(userEmail: string): Pro
     isMoClosed: Boolean(p.is_mo_closed),
   }));
 
-  const stockAlertsMap = new Map<string, StockAlert>();
-  for (const alert of pendingAlerts) {
-    if (alert.qtyNeeded > 0) {
-      stockAlertsMap.set(`${alert.moName}:${alert.product}`, alert);
-    }
-  }
-  if (sharedMo?.rawStockAlerts && sharedMo.rawStockAlerts.length > 0) {
-    // Only rawStockAlerts from external Odoo cache that are NOT in MySQL need optimistic deduction
-    const externalOdooAlerts = sharedMo.rawStockAlerts.filter(
-      (alert) => !stockAlertsMap.has(`${alert.moName}:${alert.product}`)
-    );
-    const adjustedExternal = applyOptimisticStockAlerts(externalOdooAlerts);
-    for (const alert of adjustedExternal) {
-      const key = `${alert.moName}:${alert.product}`;
-      if (!stockAlertsMap.has(key) && alert.qtyNeeded > 0) {
-        stockAlertsMap.set(key, alert);
-      }
-    }
-  }
-  const stockAlerts = Array.from(stockAlertsMap.values());
+  const stockAlerts = pendingAlerts.filter((alert) => alert.qtyNeeded > 0);
 
   const incidents = (sharedIncidentsEntry?.data || []).map((r: any) => {
     let machineName = r.name || 'Unknown Machine';
@@ -1832,25 +1812,24 @@ router.get('/shop-floor', async (req: Request, res: Response) => {
 
       try {
         const pendingProcesses = await getPendingShopFloorProcesses({ status: 'pending' }).catch(() => []);
-        if (pendingProcesses.length > 0) {
-          const existingKeys = new Set((data.stockAlerts || []).map((a) => `${a.moName}:${a.product}`));
-          for (const p of pendingProcesses) {
-            const key = `${p.mo_name}:${p.product_name}`;
-            if (!existingKeys.has(key)) {
-              existingKeys.add(key);
-              data.stockAlerts.push({
-                moName: p.mo_name,
-                product: p.product_name,
-                component: p.product_name,
-                qtyNeeded: p.qty_missing,
-                client: p.partner_name,
-                moId: p.mo_id,
-                confirmedAt: null,
-                overdueDays: 0,
-              });
-            }
-          }
-        }
+        data.stockAlerts = pendingProcesses
+          .filter((p) => Number(p.qty_missing || 0) > 0)
+          .map((p) => ({
+            moName: p.mo_name,
+            product: p.product_name,
+            component: p.product_name,
+            qtyNeeded: p.qty_missing,
+            totalNeeded: p.qty_needed,
+            qtyReserved: p.qty_reserved,
+            client: p.partner_name,
+            moId: p.mo_id,
+            confirmedAt: null,
+            overdueDays: 0,
+            partnerId: p.partner_id || null,
+            productId: p.product_id || null,
+            isSyncing: false,
+            isMoClosed: Boolean(p.is_mo_closed),
+          }));
       } catch (_e) {}
 
       if (data.boardRegistrationSummary) {
@@ -2770,9 +2749,6 @@ router.get('/shop-floor/boards', async (req: Request, res: Response) => {
       void syncPendingProcessesFromOdoo(true).catch(() => null);
     }
 
-    // Reconcile pending processes against already-synced board logs first
-    await reconcilePendingProcessesWithBoardLogs().catch(() => 0);
-
     const [settings, stockMirror, recentIntakeRows, pendingProcesses, customers] = await Promise.all([
       getSettings(),
       getStockMirrorForPage(isRefresh),
@@ -2784,29 +2760,13 @@ router.get('/shop-floor/boards', async (req: Request, res: Response) => {
     const hasNextBoardLogPage = recentIntakeRows.length > boardLogPageSize;
     const recentIntakes = recentIntakeRows.slice(0, boardLogPageSize);
     const products = stockMirror.products;
-    const viewedEmail = getViewedUserEmail(req);
-    const normalizedEmail = viewedEmail.trim().toLowerCase();
-    const dashboardCacheKey = `shop-floor-dashboard:v3:${normalizedEmail}`;
-    let cachedDashboard = shopFloorCache.get<OperatorDashboardData>(dashboardCacheKey);
-    if (!cachedDashboard) {
-      try {
-        const snapshot = await getShopFloorDashboardSnapshot<OperatorDashboardData>(normalizedEmail);
-        if (snapshot && snapshot.data) {
-          cachedDashboard = snapshot.data;
-          shopFloorCache.set(dashboardCacheKey, cachedDashboard, 60 * 60 * 1000, 3 * 60 * 1000);
-        }
-      } catch (_e) {
-        // ignore
-      }
-    }
-    const dashboardData: OperatorDashboardData = cachedDashboard || ({ stockAlerts: [], isLimitedDashboard: false } as unknown as OperatorDashboardData);
 
     const optimisticSyncs = activeOptimisticBoardIntakes();
     const activeQueueSyncs = recentIntakes.filter(
       (row: any) => row.status === 'processing' || row.status === 'pending',
     );
 
-    // Format local stock alerts from pending processes in MySQL
+    // Format local stock alerts strictly from pending processes in MySQL (single source of truth)
     const localStockAlerts: StockAlert[] = pendingProcesses.map((p) => {
       const pPartner = String(p.partner_name || '').trim().toLowerCase();
       const pProduct = String(p.product_name || '').trim().toLowerCase();
@@ -2866,7 +2826,7 @@ router.get('/shop-floor/boards', async (req: Request, res: Response) => {
       recentIntakes,
       boardLogPage,
       hasNextBoardLogPage,
-      stockAlerts: localStockAlerts.length > 0 ? localStockAlerts : (dashboardData.isLimitedDashboard ? [] : dashboardData.stockAlerts),
+      stockAlerts: localStockAlerts,
       boardLogEmail: normalizeBoardLogRecipients(settings.stock?.boardLogNotificationEmail),
       customers,
       authUser: req.authUser,

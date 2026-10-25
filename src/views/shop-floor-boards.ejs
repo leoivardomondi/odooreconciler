@@ -1903,10 +1903,25 @@
             });
 
             // Update undone count badge if it exists
-            var undoneBadge = document.getElementById('undoneCountNumber');
-            if (undoneBadge) {
-              var count = document.querySelectorAll('.stock-alert-item.item-undone').length;
-              undoneBadge.textContent = String(count);
+            var count = document.querySelectorAll('.stock-alert-item.item-undone').length;
+            var undoneCountBadge = document.getElementById('undoneCountBadge');
+            if (undoneCountBadge) {
+              if (count > 0) {
+                undoneCountBadge.style.background = '#fff7ed';
+                undoneCountBadge.style.color = '#c2410c';
+                undoneCountBadge.style.borderColor = '#fed7aa';
+                undoneCountBadge.innerHTML = '<span id="undoneCountNumber">' + count + '</span> ' + (count === 1 ? 'undone item' : 'undone items');
+              } else {
+                undoneCountBadge.style.background = '#f0fdf4';
+                undoneCountBadge.style.color = '#15803d';
+                undoneCountBadge.style.borderColor = '#bbf7d0';
+                undoneCountBadge.innerHTML = '✓ All items logged &amp; syncing';
+              }
+            } else {
+              var undoneBadge = document.getElementById('undoneCountNumber');
+              if (undoneBadge) {
+                undoneBadge.textContent = String(count);
+              }
             }
           }
         }

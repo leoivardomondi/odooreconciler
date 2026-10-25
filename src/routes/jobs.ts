@@ -1114,8 +1114,11 @@ async function handleOdooSyncWebhook(req: Request, res: Response) {
         await Promise.allSettled([
           deleteShopFloorSharedCachePrefix('shop-floor:receipts:'),
           deleteShopFloorSharedCachePrefix('shop-floor:deliveries:'),
+          deleteShopFloorSharedCachePrefix('shop-floor:shared-board-reg:'),
           deleteShopFloorDashboardSnapshot(),
           refreshStockMirror(),
+          refreshSharedWorkOrders(),
+          syncPendingProcessesFromOdoo(true),
         ]);
       } else if (resolvedType === 'stock') {
         shopFloorCache.clearPrefix('shop-floor-dashboard:');
@@ -1123,6 +1126,8 @@ async function handleOdooSyncWebhook(req: Request, res: Response) {
           deleteShopFloorSharedCachePrefix('shop-floor:shared-board-reg:'),
           deleteShopFloorDashboardSnapshot(),
           refreshStockMirror(),
+          refreshSharedWorkOrders(),
+          syncPendingProcessesFromOdoo(true),
         ]);
       } else if (resolvedType === 'attendance' || rawModel === 'hr.attendance') {
         shopFloorCache.clearPrefix('shop-floor-dashboard:');
@@ -1148,8 +1153,10 @@ async function handleOdooSyncWebhook(req: Request, res: Response) {
           const settings = await getSettings();
           const client = new OdooClient(settings.odoo);
           await auditPurchaseOrderAgainstJobSummary(client, poId);
+          void syncPendingProcessesFromOdoo(true).catch(() => null);
         } else {
           await runPoBillSchedulerCycle('cron');
+          void syncPendingProcessesFromOdoo(true).catch(() => null);
         }
       } else if (resolvedType === 'so') {
         const attachmentId =

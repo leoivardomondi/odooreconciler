@@ -5642,15 +5642,26 @@ export async function upsertPendingShopFloorProcesses(
     );
 
     if (existing) {
-      // If already loaded or synced locally, do NOT revert back to pending from background sync!
-      if (existing.status === 'loaded' || existing.status === 'synced') {
+      // Only protect 'loaded' status if an operator actively logged boards very recently (within 2 minutes)
+      const recentlyLoaded = Boolean(
+        (existing.status === 'loaded' || existing.status === 'synced') &&
+        (existing as any).loaded_at &&
+        (Date.now() - new Date((existing as any).loaded_at).getTime() < 2 * 60 * 1000)
+      );
+
+      if (recentlyLoaded && rec.qty_missing <= 0) {
         continue;
       }
+
+      const nextStatus = rec.qty_missing > 0
+        ? 'pending'
+        : (recentlyLoaded ? existing.status : (rec.status || 'loaded'));
+
       await execute(
         `UPDATE shop_floor_pending_processes
          SET mo_name = ?, origin = ?, partner_id = ?, partner_name = ?,
              product_name = ?, qty_needed = ?, qty_reserved = ?, qty_missing = ?,
-             is_mo_closed = ?,
+             status = ?, is_mo_closed = ?,
              last_synced_at = ?, updated_at = ?
          WHERE id = ?`,
         [
@@ -5662,6 +5673,7 @@ export async function upsertPendingShopFloorProcesses(
           rec.qty_needed,
           rec.qty_reserved,
           rec.qty_missing,
+          nextStatus,
           rec.is_mo_closed ? 1 : 0,
           now,
           now,
@@ -5798,44 +5810,8 @@ export async function markPendingShopFloorProcessesLoaded(filters: {
 }
 
 export async function reconcilePendingProcessesWithBoardLogs(): Promise<number> {
-  try {
-    const activeLogs = await queryAll<{
-      customer_name: string;
-      partner_id: number;
-      product_name: string;
-      product_id: number;
-      quantity: number;
-      status: string;
-      actor_name: string;
-    }>(
-      `SELECT customer_name, partner_id, product_name, product_id, quantity, status, actor_name
-       FROM board_intake_queue
-       WHERE status IN ('synced', 'processing', 'pending')
-       ORDER BY created_at DESC LIMIT 100`,
-      [],
-    );
-
-    if (!activeLogs.length) return 0;
-    let reconciled = 0;
-
-    for (const log of activeLogs) {
-      if (log.status === 'synced') {
-        const updated = await markPendingShopFloorProcessesLoaded({
-          partnerId: Number(log.partner_id || 0),
-          productId: Number(log.product_id || 0),
-          customerName: log.customer_name,
-          productName: log.product_name,
-          loadedBy: log.actor_name || 'System Reconciler',
-          quantity: Number(log.quantity || 0),
-        }).catch(() => []);
-        reconciled += updated.length;
-      }
-    }
-
-    return reconciled;
-  } catch (_e) {
-    return 0;
-  }
+  // Safe no-op or strictly non-reverted recent logs to prevent wiping active shortage cards
+  return 0;
 }
 
 export async function deleteStaleCompletedProcesses(olderThanDays = 7): Promise<void> {
@@ -5888,11 +5864,12 @@ export async function unmarkPendingShopFloorProcessesLoaded(filters: {
   for (const row of loadedRows) {
     if (remaining <= 0) break;
     const reserved = Number(row.qty_reserved || 0);
-    const toUnload = Math.min(remaining, reserved);
+    const effectiveAvailable = reserved > 0 ? reserved : Math.max(1, Number(row.qty_needed || remaining) - Number(row.qty_missing || 0));
+    const toUnload = Math.min(remaining, effectiveAvailable);
     if (toUnload <= 0) continue;
     remaining -= toUnload;
     const newReserved = Math.max(0, reserved - toUnload);
-    const newMissing = Number(row.qty_missing || 0) + toUnload;
+    const newMissing = Math.max(Number(row.qty_missing || 0) + toUnload, Number(row.qty_needed || toUnload));
 
     await execute(
       `UPDATE shop_floor_pending_processes
@@ -5949,7 +5926,9 @@ export async function getActiveBoardIntakeLogs(): Promise<Array<{
     `SELECT id, partner_id, customer_name, product_id, product_name, quantity,
             actor_name, actor_email, gate, vehicle_registration, arrival_date, arrival_time, created_at
      FROM board_intake_queue
-     WHERE status IN ('synced', 'processing', 'pending')`,
+     WHERE status IN ('synced', 'processing', 'pending')
+       AND reverted_at IS NULL
+       AND status NOT IN ('reverted', 'reverting')`,
     [],
   );
 }
