@@ -1726,33 +1726,17 @@ export class OdooClient {
    * Get today's attendance status for an employee.
    */
   async getTodayAttendance(employeeId: number) {
-    const today = new Date();
-    const todayStr = today.toISOString().slice(0, 10);
+    const now = Date.now();
+    const eatDate = new Date(now + 3 * 3600 * 1000);
+    const eatTodayStr = eatDate.toISOString().slice(0, 10);
+    const utcTodayStr = new Date(now).toISOString().slice(0, 10);
 
-    const records = await this.request<Array<{
-      id: number;
-      check_in: string;
-      check_out: string | null;
-      worked_hours: number;
-    }>>(
-      'hr.attendance',
-      'search_read',
-      {
-        domain: [
-          ['employee_id', '=', employeeId],
-          ['check_in', '>=', `${todayStr} 00:00:00`],
-          ['check_in', '<=', `${todayStr} 23:59:59`],
-        ],
-        fields: ['id', 'check_in', 'check_out', 'worked_hours'],
-        order: 'check_in desc',
-      },
-    );
-
-    // Also check Odoo's check_in/check_out directly
+    // Fetch up to 10 recent attendance records for this employee
     const checkIns = await this.request<Array<{
       id: number;
       check_in: string;
       check_out: string | null;
+      worked_hours?: number;
     }>>(
       'hr.attendance',
       'search_read',
@@ -1760,19 +1744,21 @@ export class OdooClient {
         domain: [
           ['employee_id', '=', employeeId],
         ],
-        fields: ['id', 'check_in', 'check_out'],
+        fields: ['id', 'check_in', 'check_out', 'worked_hours'],
         order: 'check_in desc',
-        limit: 5,
+        limit: 10,
       },
     );
 
-    const todayRecord = checkIns.find((r) => r.check_in?.startsWith(todayStr));
+    const todayRecord = checkIns.find(
+      (r) => r.check_in?.startsWith(eatTodayStr) || r.check_in?.startsWith(utcTodayStr),
+    );
 
     return {
       checkedIn: Boolean(todayRecord?.check_in && !todayRecord.check_out),
       checkedOut: Boolean(todayRecord?.check_out),
       todayRecord: todayRecord || null,
-      recentRecords: checkIns.slice(0, 5),
+      recentRecords: checkIns.slice(0, 10),
     };
   }
 

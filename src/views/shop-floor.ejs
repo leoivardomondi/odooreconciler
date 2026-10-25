@@ -1013,6 +1013,7 @@
           }
           %>
 
+          <div id="recentAttendanceContainer">
           <% if (data.attendance && data.attendance.recentRecords.length) { %>
             <div class="d-flex flex-column gap-2">
               <% data.attendance.recentRecords.forEach((rec) => { %>
@@ -1067,6 +1068,7 @@
           <% } else { %>
             <p class="text-muted small mb-0" data-i18n="no_attendance">No recent attendance records.</p>
           <% } %>
+          </div>
           <script>
             (function() {
               function updateAttendanceUI(state) {
@@ -1123,6 +1125,76 @@
                 }
               }
               window.updateAttendanceUI = updateAttendanceUI;
+
+              function fetchAttendanceStatus() {
+                fetch('/shop-floor/api/attendance-status')
+                  .then(function(res) { return res.json(); })
+                  .then(function(res) {
+                    if (!res || !res.success || !res.attendance) return;
+                    var att = res.attendance;
+                    if (att.checkedIn !== undefined) {
+                      updateAttendanceUI(att.checkedIn ? 'checked_in' : (att.checkedOut ? 'checked_out' : 'not_checked_in'));
+                    }
+                    var container = document.getElementById('recentAttendanceContainer');
+                    if (container && att.recentRecords && att.recentRecords.length > 0) {
+                      var hasEmptyState = container.querySelector('[data-i18n="no_attendance"]') || container.children.length === 0;
+                      if (hasEmptyState) {
+                        var html = '<div class="d-flex flex-column gap-2">';
+                        att.recentRecords.forEach(function(rec) {
+                          var inDate = rec.check_in ? new Date(rec.check_in.replace(' ', 'T') + 'Z') : null;
+                          var outDate = rec.check_out ? new Date(rec.check_out.replace(' ', 'T') + 'Z') : null;
+                          var dayName = inDate ? inDate.toLocaleDateString('en-GB', { weekday: 'short', timeZone: 'Africa/Nairobi' }) : '';
+                          var dayNum = inDate ? inDate.toLocaleDateString('en-GB', { day: '2-digit', timeZone: 'Africa/Nairobi' }) : '-';
+                          var monthName = inDate ? inDate.toLocaleDateString('en-GB', { month: 'short', timeZone: 'Africa/Nairobi' }) : '';
+                          var inTime = inDate ? inDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'Africa/Nairobi' }) : '-';
+                          var outTime = outDate ? outDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'Africa/Nairobi' }) : null;
+                          
+                          var durationStr = '';
+                          if (inDate && outDate) {
+                            var diffMs = outDate.getTime() - inDate.getTime();
+                            if (diffMs > 0) {
+                              var diffHrs = Math.floor(diffMs / 3600000);
+                              var diffMins = Math.floor((diffMs % 3600000) / 60000);
+                              durationStr = diffHrs > 0 ? (diffHrs + 'h ' + diffMins + 'm') : (diffMins + 'm');
+                            }
+                          }
+                          
+                          html += '<div class="d-flex align-items-center justify-content-between p-2 rounded-3 border bg-light-subtle" style="font-size:0.82rem;border-color:#f1f5f9 !important;">' +
+                            '<div class="d-flex align-items-center gap-2.5">' +
+                              '<div class="text-center rounded-3 px-2 py-1 flex-shrink-0" style="background:#f0f9ff;color:#0284c7;min-width:66px;border:1px solid #e0f2fe;">' +
+                                '<div class="fw-semibold text-uppercase text-muted" style="font-size:0.58rem;letter-spacing:0.05em;line-height:1;">' + dayName + '</div>' +
+                                '<div class="fw-bold my-0.5" style="font-size:1rem;line-height:1;color:#0369a1;">' + dayNum + '</div>' +
+                                '<div class="text-uppercase fw-semibold" style="font-size:0.55rem;letter-spacing:0.05em;line-height:1;opacity:0.8;">' + monthName + '</div>' +
+                              '</div>' +
+                              '<div>' +
+                                '<div class="fw-bold text-dark d-flex align-items-center gap-1.5" style="font-size:0.85rem;">' +
+                                  '<span>' + inTime + '</span>' +
+                                  '<span class="text-muted opacity-50">&rarr;</span>' +
+                                  (outTime ? '<span>' + outTime + '</span>' : '<span class="d-inline-flex align-items-center gap-1 badge bg-success-subtle text-success border border-success-subtle px-1.5 py-0.5 rounded-pill" style="font-size:0.65rem;font-weight:600;"><span class="pulse-green-dot"></span> On Duty</span>') +
+                                '</div>' +
+                                '<div class="text-muted mt-0.5" style="font-size:0.72rem;">' +
+                                  (durationStr ? ('Duration: <strong>' + durationStr + '</strong>') : (outTime ? '' : 'Shift started today')) +
+                                '</div>' +
+                              '</div>' +
+                            '</div>' +
+                            '<div class="text-end">' +
+                              (outTime ? '<span class="badge bg-secondary-subtle text-secondary px-2 py-0.5 rounded-pill" style="font-size:0.7rem;font-weight:500;">Done</span>' : '<span class="badge bg-success text-white px-2 py-0.5 rounded-pill" style="font-size:0.7rem;font-weight:600;box-shadow:0 2px 6px rgba(34,197,94,0.2);">Active</span>') +
+                            '</div>' +
+                          '</div>';
+                        });
+                        html += '</div>';
+                        container.innerHTML = html;
+                      }
+                    }
+                  })
+                  .catch(function() {});
+              }
+              window.fetchAttendanceStatus = fetchAttendanceStatus;
+              if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', fetchAttendanceStatus);
+              } else {
+                window.setTimeout(fetchAttendanceStatus, 300);
+              }
 
               document.addEventListener('submit', async function(event) {
                 const form = event.target.closest('.attendance-action-form');
@@ -1720,13 +1792,24 @@
 })();
 
 (function() {
+  function pulseTargetCard(el) {
+    if (!el) return;
+    el.classList.remove('highlight-target-card');
+    void el.offsetWidth; // trigger reflow
+    el.classList.add('highlight-target-card');
+    window.setTimeout(function() {
+      el.classList.remove('highlight-target-card');
+    }, 2000);
+  }
+
+  // 1. Search filter logic
   var input = document.getElementById('manufacturingOrderSearch');
-  if (!input) return;
   var clearButton = document.getElementById('clearManufacturingOrderSearch');
   var emptyState = document.getElementById('manufacturingOrderNoResults');
   var count = document.getElementById('manufacturingOrderSearchCount');
 
   function applySearch() {
+    if (!input) return;
     var query = input.value.trim().toLowerCase();
     var visible = 0;
     document.querySelectorAll('[data-mo-area-group]').forEach(function(group) {
@@ -1738,22 +1821,24 @@
       });
       group.classList.toggle('d-none', groupVisible === 0);
     });
-    clearButton.classList.toggle('d-none', !query);
-    emptyState.classList.toggle('d-none', !query || visible > 0);
-    count.textContent = query ? (visible + (visible === 1 ? ' matching job' : ' matching jobs')) : '';
+    if (clearButton) clearButton.classList.toggle('d-none', !query);
+    if (emptyState) emptyState.classList.toggle('d-none', !query || visible > 0);
+    if (count) count.textContent = query ? (visible + (visible === 1 ? ' matching job' : ' matching jobs')) : '';
   }
 
-  input.addEventListener('input', applySearch);
-  [clearButton, document.querySelector('[data-clear-mo-search]')].forEach(function(button) {
-    if (!button) return;
-    button.addEventListener('click', function() {
-      input.value = '';
-      applySearch();
-      input.focus();
+  if (input) {
+    input.addEventListener('input', applySearch);
+    [clearButton, document.querySelector('[data-clear-mo-search]')].forEach(function(button) {
+      if (!button) return;
+      button.addEventListener('click', function() {
+        input.value = '';
+        applySearch();
+        input.focus();
+      });
     });
-  });
+  }
 
-  // Area filter pills logic
+  // 2. Area filter pills logic
   var activeAreaFilter = 'all';
   function filterByArea(areaKey) {
     activeAreaFilter = areaKey;
@@ -1778,25 +1863,20 @@
     });
   }
 
+  window.filterShopFloorArea = filterByArea;
+
   document.querySelectorAll('.mo-area-filter').forEach(function(btn) {
     btn.addEventListener('click', function(e) {
       e.preventDefault();
       var targetArea = this.getAttribute('data-target-area');
       filterByArea(targetArea);
+      if (targetArea !== 'all') {
+        try { history.pushState(null, '', '#' + targetArea); } catch (_e) {}
+      } else {
+        try { history.pushState(null, '', '#manufacturing-orders'); } catch (_e) {}
+      }
     });
   });
-
-  window.filterShopFloorArea = filterByArea;
-
-  function pulseTargetCard(el) {
-    if (!el) return;
-    el.classList.remove('highlight-target-card');
-    void el.offsetWidth; // trigger reflow
-    el.classList.add('highlight-target-card');
-    window.setTimeout(function() {
-      el.classList.remove('highlight-target-card');
-    }, 2000);
-  }
 
   // View All Areas button click listeners
   document.querySelectorAll('[data-view-all-areas]').forEach(function(btn) {
@@ -1808,56 +1888,83 @@
         moEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
         pulseTargetCard(moEl);
       }
+      try { history.pushState(null, '', '#manufacturing-orders'); } catch (_e) {}
     });
   });
 
-  // Launcher tile smooth-scroll and filter activation for all 10 apps
+  // 3. Centralized URL Hash & Launcher Tile Navigation
+  function navigateByHash(hash) {
+    if (!hash) return;
+    var cleanHash = String(hash).replace(/^#/, '');
+    if (!cleanHash) return;
+
+    if (cleanHash.startsWith('area-')) {
+      filterByArea(cleanHash);
+      var targetEl = document.getElementById(cleanHash) || document.getElementById('moAreaPills') || document.getElementById('manufacturing-orders');
+      if (targetEl) {
+        targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        pulseTargetCard(targetEl);
+      }
+    } else if (cleanHash === 'manufacturing-orders') {
+      filterByArea('all');
+      var moEl = document.getElementById('manufacturing-orders');
+      if (moEl) {
+        moEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        pulseTargetCard(moEl);
+      }
+    } else if (cleanHash === 'maintenance-app') {
+      var maintEl = document.getElementById('breakdownLogsCard') || document.getElementById('maintenance-app');
+      if (maintEl) {
+        maintEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        pulseTargetCard(maintEl);
+        var firstCollapse = maintEl.querySelector('.collapse');
+        if (firstCollapse && typeof bootstrap !== 'undefined' && bootstrap.Collapse) {
+          bootstrap.Collapse.getOrCreateInstance(firstCollapse, { toggle: false }).show();
+        }
+      }
+    } else if (cleanHash === 'attendance-app') {
+      var attEl = document.getElementById('attendanceCard') || document.getElementById('attendance-app');
+      if (attEl) {
+        attEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        pulseTargetCard(attEl);
+      }
+    } else if (cleanHash === 'payroll-app') {
+      var payEl = document.getElementById('payslipsCard') || document.getElementById('payroll-app');
+      if (payEl) {
+        payEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        pulseTargetCard(payEl);
+      }
+    }
+  }
+
+  window.navigateShopFloorByHash = navigateByHash;
+
+  // Launcher tile smooth-scroll and filter activation for all apps
   document.querySelectorAll('.shop-app-tile').forEach(function(tile) {
     tile.addEventListener('click', function(e) {
       var href = this.getAttribute('href');
-      if (!href) return;
-
-      if (href.startsWith('#area-')) {
-        e.preventDefault();
-        var targetId = href.substring(1);
-        filterByArea(targetId);
-        var targetEl = document.getElementById(targetId) || document.getElementById('manufacturing-orders');
-        if (targetEl) {
-          targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          pulseTargetCard(targetEl);
-        }
-      } else if (href === '#manufacturing-orders') {
-        e.preventDefault();
-        filterByArea('all');
-        var moEl = document.getElementById('manufacturing-orders');
-        if (moEl) {
-          moEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          pulseTargetCard(moEl);
-        }
-      } else if (href === '#attendance-app') {
-        e.preventDefault();
-        var attEl = document.getElementById('attendanceCard') || document.getElementById('attendance-app');
-        if (attEl) {
-          attEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          pulseTargetCard(attEl);
-        }
-      } else if (href === '#maintenance-app') {
-        e.preventDefault();
-        var maintEl = document.getElementById('breakdownLogsCard') || document.getElementById('maintenance-app');
-        if (maintEl) {
-          maintEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          pulseTargetCard(maintEl);
-        }
-      } else if (href === '#payroll-app') {
-        e.preventDefault();
-        var payEl = document.getElementById('payslipsCard') || document.getElementById('payroll-app');
-        if (payEl) {
-          payEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          pulseTargetCard(payEl);
-        }
+      if (!href || !href.startsWith('#')) return;
+      e.preventDefault();
+      try {
+        history.pushState(null, '', href);
+      } catch (_e) {
+        window.location.hash = href;
       }
+      navigateByHash(href);
     });
   });
+
+  // Listen for hash changes
+  window.addEventListener('hashchange', function() {
+    navigateByHash(window.location.hash);
+  });
+
+  // Execute on initial page load if hash present
+  if (window.location.hash) {
+    window.setTimeout(function() {
+      navigateByHash(window.location.hash);
+    }, 150);
+  }
 })();
 
 (function() {

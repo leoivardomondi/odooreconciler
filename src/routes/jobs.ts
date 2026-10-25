@@ -1115,7 +1115,6 @@ async function handleOdooSyncWebhook(req: Request, res: Response) {
           deleteShopFloorSharedCachePrefix('shop-floor:receipts:'),
           deleteShopFloorSharedCachePrefix('shop-floor:deliveries:'),
           deleteShopFloorSharedCachePrefix('shop-floor:shared-board-reg:'),
-          deleteShopFloorDashboardSnapshot(),
           refreshStockMirror(),
           refreshSharedWorkOrders(),
           syncPendingProcessesFromOdoo(true),
@@ -1124,7 +1123,6 @@ async function handleOdooSyncWebhook(req: Request, res: Response) {
         shopFloorCache.clearPrefix('shop-floor-dashboard:');
         await Promise.allSettled([
           deleteShopFloorSharedCachePrefix('shop-floor:shared-board-reg:'),
-          deleteShopFloorDashboardSnapshot(),
           refreshStockMirror(),
           refreshSharedWorkOrders(),
           syncPendingProcessesFromOdoo(true),

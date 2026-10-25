@@ -161,13 +161,56 @@ function escapeHtml(value: unknown): string {
 
 function normalizeManufacturingArea(areaName: string | null | undefined): string | null {
   const normalized = String(areaName || '').trim().toLowerCase();
+  if (!normalized) return null;
+  if (
+    normalized === 'area-table-saw' ||
+    normalized.includes('table saw') ||
+    normalized.includes('table-saw') ||
+    normalized.includes('saw') ||
+    normalized.includes('cutting') ||
+    normalized.includes('cut')
+  ) {
+    return 'Table Saw Area';
+  }
+  if (
+    normalized === 'area-edge-banding' ||
+    normalized.includes('edge banding') ||
+    normalized.includes('edge-banding') ||
+    normalized.includes('edgeband') ||
+    normalized.includes('edging')
+  ) {
+    return 'Edge Banding Area';
+  }
+  if (
+    normalized === 'area-panel-rack' ||
+    normalized.includes('panel rack') ||
+    normalized.includes('panel-rack') ||
+    normalized.includes('panel area') ||
+    normalized.includes('panel') ||
+    normalized.includes('rack') ||
+    normalized.includes('optimis')
+  ) {
+    return 'Panel Rack Area';
+  }
   return MANUFACTURING_AREAS.find((area) => area.toLowerCase() === normalized) || null;
 }
 
 function detectArea(productName: string): string {
   const n = productName.toLowerCase();
-  if (n.includes('edge banding') || n.includes('edgeband')) return 'Edge Banding Area';
-  if (n.includes('optimised') || n.includes('optimized') || n.includes('panel')) return 'Panel Rack Area';
+  if (n.includes('edge banding') || n.includes('edgeband') || n.includes('edging')) return 'Edge Banding Area';
+  if (
+    n.startsWith('cutting') ||
+    n.includes('cut ') ||
+    n.includes('cutting ') ||
+    n.includes('table saw') ||
+    n.includes('saw') ||
+    isBoardProductName(productName)
+  ) {
+    return 'Table Saw Area';
+  }
+  if (n.includes('optimised') || n.includes('optimized') || n.includes('panel') || n.includes('rack')) {
+    return 'Panel Rack Area';
+  }
   return 'Table Saw Area';
 }
 
@@ -1367,7 +1410,10 @@ export async function buildOperatorDashboard(
 
   try {
     // 1. Find employee — operators may not have res.users, search by work email directly
-    let employee = await client.findEmployeeByUserEmail(userEmail).catch(() => null);
+    let employee = await client.findEmployeeForShopFloorEmail(userEmail).catch(() => null);
+    if (!employee) {
+      employee = await client.findEmployeeByUserEmail(userEmail).catch(() => null);
+    }
     if (!employee) {
       employee = await client.findEmployeeByWorkEmail(userEmail).catch(() => null);
     }
@@ -1747,9 +1793,11 @@ router.get('/shop-floor', async (req: Request, res: Response) => {
       }
     }
 
-    // If data exists, serve immediately (<5ms)! Revalidate in background if explicit refresh or stale
+    // If data exists, serve immediately (<5ms)! Revalidate in background if explicit refresh, stale, or attendance missing
+    const hasRecentAttendance = Boolean(data?.attendance?.recentRecords && data.attendance.recentRecords.length > 0);
+    const needsBackgroundRefresh = isExplicitRefresh || shopFloorCache.isStale(cacheKey) || !hasRecentAttendance;
     if (data && ((data.workOrders && data.workOrders.length > 0) || (data.stockAlerts && data.stockAlerts.length > 0))) {
-      if ((isExplicitRefresh || shopFloorCache.isStale(cacheKey)) && !shopFloorCache.isInFlight(cacheKey)) {
+      if (needsBackgroundRefresh && !shopFloorCache.isInFlight(cacheKey)) {
         void (async () => {
           try {
             const client = new OdooClient(settings.odoo);
@@ -2089,6 +2137,73 @@ router.get('/shop-floor/payslip/:id/download', async (req: Request, res: Respons
     res.send(pdf.data);
   } catch (err) {
     res.status(500).send(err instanceof Error ? err.message : 'Failed to download payslip.');
+  }
+});
+
+/**
+ * GET /shop-floor/api/attendance-status — Lightweight JSON endpoint returning current operator attendance records.
+ */
+router.get('/shop-floor/api/attendance-status', async (req: Request, res: Response) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+  try {
+    const settings = await getSettings();
+    const viewedEmail = getViewedUserEmail(req);
+    const normalizedEmail = viewedEmail.trim().toLowerCase();
+
+    // Check local snapshot first
+    const snapshot = await getShopFloorDashboardSnapshot<OperatorDashboardData>(normalizedEmail).catch(() => null);
+    if (snapshot?.data?.attendance?.recentRecords && snapshot.data.attendance.recentRecords.length > 0) {
+      return res.json({ success: true, attendance: snapshot.data.attendance, employee: snapshot.data.employee });
+    }
+
+    // Otherwise fetch fresh from Odoo
+    const client = new OdooClient(settings.odoo);
+    let employee = await client.findEmployeeForShopFloorEmail(viewedEmail).catch(() => null);
+    if (!employee) {
+      employee = await client.findEmployeeByUserEmail(viewedEmail).catch(() => null);
+    }
+    if (!employee) {
+      employee = await client.findEmployeeByWorkEmail(viewedEmail).catch(() => null);
+    }
+
+    if (!employee) {
+      return res.json({ success: true, attendance: null, employee: null });
+    }
+
+    const rawAttendance = await client.getTodayAttendance(employee.id).catch(() => null);
+    let attendance = null;
+    if (rawAttendance) {
+      attendance = {
+        checkedIn: rawAttendance.checkedIn,
+        checkedOut: rawAttendance.checkedOut,
+        todayRecord: rawAttendance.todayRecord ? {
+          check_in: toEAT(rawAttendance.todayRecord.check_in) || rawAttendance.todayRecord.check_in,
+          check_out: toEAT(rawAttendance.todayRecord.check_out) || rawAttendance.todayRecord.check_out,
+        } : null,
+        recentRecords: (rawAttendance.recentRecords || []).map((r: any) => ({
+          check_in: toEAT(r.check_in) || r.check_in,
+          check_out: toEAT(r.check_out) || r.check_out,
+        })),
+        isLate: false,
+      };
+      if (rawAttendance.todayRecord?.check_in) {
+        const checkInTime = toEAT(rawAttendance.todayRecord.check_in);
+        if (checkInTime) {
+          const timePart = checkInTime.split(' ')[1] || checkInTime;
+          const [hh, mm] = timePart.split(':').map(Number);
+          if (hh > 8 || (hh === 8 && mm > 30)) {
+            attendance.isLate = true;
+          }
+        }
+      }
+    }
+    if (snapshot?.data && attendance) {
+      snapshot.data.attendance = attendance;
+      await saveShopFloorDashboardSnapshot(normalizedEmail, snapshot.data).catch(() => null);
+    }
+    return res.json({ success: true, attendance, employee });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err?.message || 'Failed to fetch attendance status' });
   }
 });
 

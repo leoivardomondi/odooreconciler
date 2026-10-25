@@ -5,7 +5,6 @@ import {
   pruneStalePendingProcessesForActiveMos,
   getActiveBoardIntakeLogs,
   markPendingShopFloorProcessesLoaded,
-  deleteShopFloorDashboardSnapshot,
   deleteShopFloorSharedCachePrefix,
 } from '../models/repositories';
 import { OdooClient, isOdooTrafficPaused } from './odooClient';
@@ -477,10 +476,9 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
     // 9. Clean up stale completed items older than 7 days
     await deleteStaleCompletedProcesses(7);
 
-    // 10. Invalidate RAM cache and stale MySQL dashboard snapshots so the UI sees up-to-date counts immediately
+    // 10. Invalidate RAM cache and stale board registration cache so the UI sees up-to-date counts immediately
     try {
       shopFloorCache.clearPrefix('shop-floor-dashboard:');
-      await deleteShopFloorDashboardSnapshot().catch(() => null);
       await deleteShopFloorSharedCachePrefix('shop-floor:shared-board-reg:').catch(() => null);
     } catch (_cacheErr) {
       // Non-fatal cache invalidation
