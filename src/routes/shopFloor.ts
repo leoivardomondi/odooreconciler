@@ -3841,7 +3841,7 @@ router.post('/shop-floor/board-intake/:id/revert', async (req: Request, res: Res
   }
 
   // Unmark pending processes immediately so it reappears instantly on /shop-floor/boards (<5ms)
-  await unmarkPendingShopFloorProcessesLoaded({
+  const restoredRequirements = await unmarkPendingShopFloorProcessesLoaded({
     partnerId: Number(entry.partner_id || 0),
     productId: Number(entry.product_id || 0),
     customerName: entry.customer_name,
@@ -3869,6 +3869,7 @@ router.post('/shop-floor/board-intake/:id/revert', async (req: Request, res: Res
       await recordExactStockQuantity(Number(entry.product_id), entry.product_name, result.newQty, -Number(entry.quantity));
       shopFloorCache.clearPrefix('shop-floor-dashboard:');
       void refreshStockMirror();
+      void syncPendingProcessesFromOdoo(true).catch(() => null);
 
       // Post comprehensive short statement in Odoo chatter on matching MOs and linked Sales Orders
       const reportDate = new Intl.DateTimeFormat('en-CA', {
@@ -3963,6 +3964,15 @@ router.post('/shop-floor/board-intake/:id/revert', async (req: Request, res: Res
       ok: true,
       status: 'reverting',
       message: 'Board log revert initiated in the background.',
+      restoredRequirements: restoredRequirements || [],
+      item: {
+        id: entryId,
+        product_id: entry.product_id,
+        product_name: entry.product_name,
+        partner_id: entry.partner_id,
+        customer_name: entry.customer_name,
+        quantity: entry.quantity,
+      },
     });
     return;
   }

@@ -525,6 +525,15 @@ document.addEventListener('submit', (event) => {
     return;
   }
 
+  // Board intake, revert, and retry forms handle their own non-blocking async feedback
+  if (
+    form.classList.contains('board-revert-form') ||
+    form.classList.contains('board-retry-form') ||
+    form.id === 'intakeForm'
+  ) {
+    return;
+  }
+
   const submitter = event.submitter instanceof HTMLElement ? event.submitter : null;
 
   if (submitter && submitter.dataset.submitting === 'true') {

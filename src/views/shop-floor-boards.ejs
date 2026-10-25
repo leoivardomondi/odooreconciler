@@ -715,12 +715,12 @@
                   <% } %>
                 </div>
                 <% if (item.status === 'failed') { %>
-                  <form method="post" action="/shop-floor/board-intake/<%= encodeURIComponent(item.id) %>/retry" class="board-retry-form" data-intake-id="<%= item.id %>">
+                  <form method="post" action="/shop-floor/board-intake/<%= encodeURIComponent(item.id) %>/retry" class="board-retry-form" data-intake-id="<%= item.id %>" data-no-loading="true">
                     <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>">
                     <button type="submit" class="btn btn-sm btn-outline-primary rounded-pill btn-retry">Retry now</button>
                   </form>
                 <% } %>
-                <form method="post" action="/shop-floor/board-intake/<%= encodeURIComponent(item.id) %>/revert" class="board-revert-form" data-intake-id="<%= item.id %>">
+                <form method="post" action="/shop-floor/board-intake/<%= encodeURIComponent(item.id) %>/revert" class="board-revert-form" data-intake-id="<%= item.id %>" data-no-loading="true">
                   <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>">
                   <input type="hidden" name="boardLogPage" value="<%= boardLogPage || 1 %>">
                   <button type="submit" class="btn btn-sm btn-outline-danger rounded-pill btn-revert" <%= item.status !== 'synced' || item.reverted_at || item.status === 'reverted' || !canRevert ? 'disabled title="' + (!canRevert ? 'You can only revert board logs that you logged' : 'Only a synced, unreverted log can be reverted') + '"' : '' %>>Revert</button>
@@ -1634,6 +1634,23 @@
               if (retryForm) retryForm.remove();
               pendingLogIds.delete(String(entry.id));
 
+              // If this item was logged in the current session without a revert button, dynamically attach one
+              var logContainer = badge.closest('.d-flex.align-items-center.gap-2');
+              var existingRevert = logContainer ? logContainer.querySelector('.board-revert-form') : null;
+              if (logContainer && !existingRevert) {
+                var rf = document.createElement('form');
+                rf.method = 'post';
+                rf.action = '/shop-floor/board-intake/' + encodeURIComponent(entry.id) + '/revert';
+                rf.className = 'board-revert-form';
+                rf.setAttribute('data-intake-id', entry.id);
+                rf.setAttribute('data-no-loading', 'true');
+                var csrfInput = document.querySelector('input[name="_csrf"]');
+                var csrfVal = csrfInput ? csrfInput.value : '';
+                rf.innerHTML = '<input type="hidden" name="_csrf" value="' + escapeHtml(csrfVal) + '">' +
+                  '<button type="submit" class="btn btn-sm btn-outline-danger rounded-pill btn-revert">Revert</button>';
+                logContainer.appendChild(rf);
+              }
+
               // Also update any matching locked alert items to indicate completion
               var syncedPartnerId = String(entry.partner_id || '');
               var syncedPartnerName = (entry.customer_name || '').toLowerCase().trim();
@@ -1746,12 +1763,26 @@
     }
     hydrateRecentBoardLogsOnLoad();
 
-    // Background Revert Form Handler (Non-blocking)
+    // Background Revert Form Handler (Non-blocking, zero screen blur)
     document.addEventListener('submit', async function(e) {
       var form = e.target.closest('.board-revert-form');
       if (!form) return;
       e.preventDefault();
-      if (!confirm('Revert this board intake in Odoo? This will remove the logged quantity from stock.')) return;
+      e.stopImmediatePropagation();
+      if (typeof hideAppLoading === 'function') {
+        hideAppLoading();
+      }
+
+      if (!confirm('Revert this board intake in Odoo? This will remove the logged quantity from stock.')) {
+        if (typeof hideAppLoading === 'function') {
+          hideAppLoading();
+        }
+        return;
+      }
+
+      if (typeof startTopProgress === 'function') {
+        startTopProgress();
+      }
 
       var id = form.getAttribute('data-intake-id');
       var btn = form.querySelector('.btn-revert') || form.querySelector('button[type="submit"]');
@@ -1789,9 +1820,105 @@
             badge.className = 'badge rounded-pill bg-danger-subtle text-danger';
             badge.textContent = 'Sync failed';
           }
+        } else {
+          // Immediate banner feedback
+          var alertContainer = document.getElementById('intakeAlertContainer');
+          if (alertContainer && data.item) {
+            alertContainer.className = 'alert alert-info alert-dismissible fade show rounded-3 py-2.5 px-3 mb-3 d-flex align-items-center justify-content-between gap-3 shadow-sm';
+            alertContainer.innerHTML =
+              '<div class="small">' +
+                '<strong>✓ Revert initiated:</strong> ' + escapeHtml(data.item.quantity || '') + ' × ' + escapeHtml(data.item.product_name || 'boards') +
+                ' for <strong>' + escapeHtml(data.item.customer_name || 'client') + '</strong>. Stock deduction and requirement restoration are updating in the background.' +
+              '</div>' +
+              '<span class="badge bg-secondary text-white rounded-pill px-2 py-1 flex-shrink-0" style="font-size:0.75rem">Reverting</span>';
+          }
+
+          // Invalidate client-side cache so navigation stays fresh
+          if (window.shopFloorPageCache) {
+            window.shopFloorPageCache.clear();
+          }
+
+          // Restore stock needed item dynamically in the UI
+          if (data.item) {
+            var revertedPartnerId = String(data.item.partner_id || '');
+            var revertedPartnerName = (data.item.customer_name || '').toLowerCase().trim();
+            var revertedProductId = String(data.item.product_id || '');
+            var revertedProductName = (data.item.product_name || '').toLowerCase().trim();
+            var revertedQty = Number(data.item.quantity || 0);
+
+            document.querySelectorAll('.stock-alert-item').forEach(function(itemEl) {
+              var pId = itemEl.getAttribute('data-partner-id');
+              var client = (itemEl.getAttribute('data-client') || '').toLowerCase().trim();
+              var prodId = itemEl.getAttribute('data-product-id');
+              var comp = (itemEl.getAttribute('data-component') || '').toLowerCase().trim();
+
+              var partnerMatch = (pId && revertedPartnerId && pId === revertedPartnerId) || (client && revertedPartnerName && (client.includes(revertedPartnerName) || revertedPartnerName.includes(client)));
+              var productMatch = (prodId && revertedProductId && prodId === revertedProductId) || (comp && revertedProductName && (comp === revertedProductName || comp.includes(revertedProductName) || revertedProductName.includes(comp)));
+
+              if (partnerMatch && productMatch) {
+                var prevMissing = Number(itemEl.getAttribute('data-qty') || 0);
+                var prevReserved = Number(itemEl.getAttribute('data-qty-reserved') || 0);
+                var totalNeeded = Number(itemEl.getAttribute('data-total-needed') || (prevMissing + prevReserved));
+
+                var newMissing = prevMissing + revertedQty;
+                var newReserved = Math.max(0, prevReserved - revertedQty);
+
+                itemEl.setAttribute('data-qty', String(newMissing));
+                itemEl.setAttribute('data-qty-reserved', String(newReserved));
+                itemEl.setAttribute('data-is-syncing', 'false');
+                itemEl.classList.remove('item-syncing-locked');
+                itemEl.classList.add('item-undone');
+                itemEl.style.opacity = '1';
+
+                var actionContainer = itemEl.querySelector('.action-container');
+                if (actionContainer) {
+                  actionContainer.innerHTML =
+                    '<span class="badge bg-danger-subtle text-danger border border-danger-subtle rounded-pill fw-bold">Needed: ' + newMissing + '</span> ' +
+                    '<button type="button" class="btn btn-sm text-white fw-bold px-3 py-1 rounded-pill auto-fill-stock-btn d-inline-flex align-items-center gap-1 shadow-sm" ' +
+                      'style="background:#16a34a;border:1px solid #15803d;font-size:0.78rem;box-shadow:0 2px 6px rgba(22,163,74,0.3);cursor:pointer;" ' +
+                      'data-client="' + (itemEl.getAttribute('data-client') || '') + '" ' +
+                      'data-partner-id="' + pId + '" ' +
+                      'data-component="' + (itemEl.getAttribute('data-component') || '') + '" ' +
+                      'data-product-id="' + prodId + '" ' +
+                      'data-qty="' + newMissing + '" ' +
+                      'data-total-needed="' + totalNeeded + '" ' +
+                      'data-qty-reserved="' + newReserved + '" ' +
+                      'title="Fill form with ' + newMissing + ' boards">' +
+                      '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>' +
+                      '<span>Fill Form (' + newMissing + ')</span>' +
+                    '</button>';
+                }
+
+                var clientGroup = itemEl.closest('.stock-client-group');
+                if (clientGroup) {
+                  var groupBtn = clientGroup.querySelector('.auto-fill-stock-btn');
+                  if (groupBtn) {
+                    groupBtn.setAttribute('data-qty', String(newMissing));
+                    groupBtn.setAttribute('data-qty-reserved', String(newReserved));
+                    var btnSpan = groupBtn.querySelector('span');
+                    if (btnSpan) btnSpan.textContent = 'Fill Form (' + newMissing + ')';
+                  }
+                }
+              }
+            });
+
+            // Update undone count badge if it exists
+            var undoneBadge = document.getElementById('undoneCountNumber');
+            if (undoneBadge) {
+              var count = document.querySelectorAll('.stock-alert-item.item-undone').length;
+              undoneBadge.textContent = String(count);
+            }
+          }
         }
       } catch (err) {
         console.warn('Revert request background error:', err);
+      } finally {
+        if (typeof finishTopProgress === 'function') {
+          finishTopProgress();
+        }
+        if (typeof hideAppLoading === 'function') {
+          hideAppLoading();
+        }
       }
     });
 
@@ -1800,6 +1927,13 @@
       var form = e.target.closest('.board-retry-form');
       if (!form) return;
       e.preventDefault();
+      e.stopImmediatePropagation();
+      if (typeof hideAppLoading === 'function') {
+        hideAppLoading();
+      }
+      if (typeof startTopProgress === 'function') {
+        startTopProgress();
+      }
 
       var id = form.getAttribute('data-intake-id');
       var btn = form.querySelector('.btn-retry') || form.querySelector('button[type="submit"]');
@@ -1840,6 +1974,13 @@
         }
       } catch (err) {
         console.warn('Retry request background error:', err);
+      } finally {
+        if (typeof finishTopProgress === 'function') {
+          finishTopProgress();
+        }
+        if (typeof hideAppLoading === 'function') {
+          hideAppLoading();
+        }
       }
     });
 
