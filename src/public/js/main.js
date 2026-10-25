@@ -394,6 +394,10 @@ function applyShopFloorPageData(pageData, urlStr, pushHistory) {
 
 // Popstate listener for back/forward browser buttons
 window.addEventListener('popstate', () => {
+  if (window.location.pathname === '/shop-floor' && typeof window.navigateShopFloorByHash === 'function') {
+    window.navigateShopFloorByHash(window.location.hash || 'manufacturing-orders');
+    return;
+  }
   if (window.location.pathname.startsWith('/shop-floor')) {
     renderShopFloorInstantPage(window.location.href, false);
   }

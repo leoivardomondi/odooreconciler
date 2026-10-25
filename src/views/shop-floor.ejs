@@ -72,7 +72,7 @@
 
   <section class="shop-app-launcher mb-4" aria-labelledby="shopAppsHeading">
     <div class="d-flex flex-wrap justify-content-between align-items-end gap-3 mb-3">
-      <div><div class="text-uppercase fw-bold mb-1" style="color:#0f766e;font-size:.7rem;letter-spacing:.12em">Shop Floor Apps</div><h1 id="shopAppsHeading" class="h3 mb-1 fw-bold" style="color:#0f172a">What would you like to do?</h1><p class="text-muted mb-0 small">Open a work area or operation directly.</p></div>
+      <div><div class="text-uppercase fw-bold mb-1" style="color:#0f766e;font-size:.7rem;letter-spacing:.12em">Shop Floor Apps</div><h1 id="shopAppsHeading" class="h3 mb-1 fw-bold" style="color:#0f172a;scroll-margin-top:6.5rem">What would you like to do?</h1><p class="text-muted mb-0 small">Open a work area or operation directly.</p></div>
       <% if (resolvedCanManageFeatures) { %><button type="button" class="btn btn-sm btn-outline-secondary d-inline-flex align-items-center gap-2 px-3" data-bs-toggle="offcanvas" data-bs-target="#manageShopApps"><i class="bi bi-sliders"></i> Manage Apps</button><% } %>
     </div>
     <div class="shop-app-grid">
@@ -1838,12 +1838,55 @@
     });
   }
 
-  // 2. Area filter pills logic
+  // 2. Area filter pills and hash normalization logic
   var activeAreaFilter = 'all';
+
+  function normalizeAreaHash(hashStr) {
+    var h = String(hashStr || '').replace(/^#/, '').trim().toLowerCase();
+    if (h === 'table-saw' || h === 'area-table-saw') return 'area-table-saw';
+    if (h === 'edge-banding' || h === 'area-edge-banding') return 'area-edge-banding';
+    if (h === 'panel-rack' || h === 'area-panel-rack' || h === 'panel-area' || h === 'area-panel') return 'area-panel-rack';
+    if (h === 'manufacturing-orders' || h === 'all' || h === 'start-finish') return 'manufacturing-orders';
+    if (h === 'attendance-app' || h === 'attendance') return 'attendance-app';
+    if (h === 'maintenance-app' || h === 'maintenance') return 'maintenance-app';
+    if (h === 'payroll-app' || h === 'payroll') return 'payroll-app';
+    if (h === 'shopappsheading' || h === 'shop-apps' || h === 'apps') return 'shopAppsHeading';
+    return h;
+  }
+
+  function updateUrlHash(hashStr) {
+    var clean = String(hashStr || '').replace(/^#/, '');
+    if (!clean) return;
+    var targetUrl = window.location.pathname + window.location.search + '#' + clean;
+    try {
+      if (window.location.hash !== '#' + clean) {
+        history.pushState(null, '', targetUrl);
+      }
+    } catch (_e) {
+      window.location.hash = clean;
+    }
+  }
+
+  function scrollToTargetElement(targetEl) {
+    if (!targetEl) return;
+    // Force layout recalculation after removing d-none so getBoundingClientRect/scroll offset is accurate
+    void targetEl.offsetHeight;
+    window.requestAnimationFrame(function() {
+      try {
+        targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } catch (_e) {
+        targetEl.scrollIntoView();
+      }
+      pulseTargetCard(targetEl);
+    });
+  }
+
   function filterByArea(areaKey) {
-    activeAreaFilter = areaKey;
+    var normKey = normalizeAreaHash(areaKey);
+    activeAreaFilter = normKey;
     document.querySelectorAll('.mo-area-filter').forEach(function(btn) {
-      var isTarget = btn.getAttribute('data-target-area') === areaKey;
+      var target = normalizeAreaHash(btn.getAttribute('data-target-area'));
+      var isTarget = target === normKey;
       btn.classList.toggle('active', isTarget);
       if (isTarget) {
         btn.style.background = '#0f172a';
@@ -1855,68 +1898,43 @@
     });
 
     document.querySelectorAll('[data-mo-area-group]').forEach(function(group) {
-      if (areaKey === 'all') {
+      if (normKey === 'all' || normKey === 'manufacturing-orders') {
         group.classList.remove('d-none');
       } else {
-        group.classList.toggle('d-none', group.id !== areaKey);
+        group.classList.toggle('d-none', group.id !== normKey);
       }
     });
   }
 
   window.filterShopFloorArea = filterByArea;
 
-  document.querySelectorAll('.mo-area-filter').forEach(function(btn) {
-    btn.addEventListener('click', function(e) {
-      e.preventDefault();
-      var targetArea = this.getAttribute('data-target-area');
-      filterByArea(targetArea);
-      if (targetArea !== 'all') {
-        try { history.pushState(null, '', '#' + targetArea); } catch (_e) {}
-      } else {
-        try { history.pushState(null, '', '#manufacturing-orders'); } catch (_e) {}
-      }
-    });
-  });
-
-  // View All Areas button click listeners
-  document.querySelectorAll('[data-view-all-areas]').forEach(function(btn) {
-    btn.addEventListener('click', function(e) {
-      e.preventDefault();
-      filterByArea('all');
-      var moEl = document.getElementById('manufacturing-orders');
-      if (moEl) {
-        moEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        pulseTargetCard(moEl);
-      }
-      try { history.pushState(null, '', '#manufacturing-orders'); } catch (_e) {}
-    });
-  });
-
   // 3. Centralized URL Hash & Launcher Tile Navigation
   function navigateByHash(hash) {
     if (!hash) return;
-    var cleanHash = String(hash).replace(/^#/, '');
+    var cleanHash = normalizeAreaHash(hash);
     if (!cleanHash) return;
 
     if (cleanHash.startsWith('area-')) {
       filterByArea(cleanHash);
       var targetEl = document.getElementById(cleanHash) || document.getElementById('moAreaPills') || document.getElementById('manufacturing-orders');
       if (targetEl) {
-        targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        pulseTargetCard(targetEl);
+        scrollToTargetElement(targetEl);
       }
     } else if (cleanHash === 'manufacturing-orders') {
       filterByArea('all');
-      var moEl = document.getElementById('manufacturing-orders');
+      var moEl = document.getElementById('manufacturing-orders') || document.getElementById('moAreaPills');
       if (moEl) {
-        moEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        pulseTargetCard(moEl);
+        scrollToTargetElement(moEl);
+      }
+    } else if (cleanHash === 'shopAppsHeading') {
+      var appsHeading = document.getElementById('shopAppsHeading') || document.querySelector('.shop-app-launcher');
+      if (appsHeading) {
+        scrollToTargetElement(appsHeading);
       }
     } else if (cleanHash === 'maintenance-app') {
       var maintEl = document.getElementById('breakdownLogsCard') || document.getElementById('maintenance-app');
       if (maintEl) {
-        maintEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        pulseTargetCard(maintEl);
+        scrollToTargetElement(maintEl);
         var firstCollapse = maintEl.querySelector('.collapse');
         if (firstCollapse && typeof bootstrap !== 'undefined' && bootstrap.Collapse) {
           bootstrap.Collapse.getOrCreateInstance(firstCollapse, { toggle: false }).show();
@@ -1925,19 +1943,42 @@
     } else if (cleanHash === 'attendance-app') {
       var attEl = document.getElementById('attendanceCard') || document.getElementById('attendance-app');
       if (attEl) {
-        attEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        pulseTargetCard(attEl);
+        scrollToTargetElement(attEl);
       }
     } else if (cleanHash === 'payroll-app') {
       var payEl = document.getElementById('payslipsCard') || document.getElementById('payroll-app');
       if (payEl) {
-        payEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        pulseTargetCard(payEl);
+        scrollToTargetElement(payEl);
       }
     }
   }
 
   window.navigateShopFloorByHash = navigateByHash;
+
+  // Area filter pills click listeners
+  document.querySelectorAll('.mo-area-filter').forEach(function(btn) {
+    btn.addEventListener('click', function(e) {
+      e.preventDefault();
+      var targetArea = this.getAttribute('data-target-area');
+      var normTarget = normalizeAreaHash(targetArea);
+      if (normTarget === 'all') {
+        updateUrlHash('manufacturing-orders');
+        navigateByHash('manufacturing-orders');
+      } else {
+        updateUrlHash(normTarget);
+        navigateByHash(normTarget);
+      }
+    });
+  });
+
+  // View All Areas button click listeners
+  document.querySelectorAll('[data-view-all-areas]').forEach(function(btn) {
+    btn.addEventListener('click', function(e) {
+      e.preventDefault();
+      updateUrlHash('manufacturing-orders');
+      navigateByHash('manufacturing-orders');
+    });
+  });
 
   // Launcher tile smooth-scroll and filter activation for all apps
   document.querySelectorAll('.shop-app-tile').forEach(function(tile) {
@@ -1945,22 +1986,32 @@
       var href = this.getAttribute('href');
       if (!href || !href.startsWith('#')) return;
       e.preventDefault();
-      try {
-        history.pushState(null, '', href);
-      } catch (_e) {
-        window.location.hash = href;
-      }
-      navigateByHash(href);
+      var normHash = normalizeAreaHash(href);
+      updateUrlHash(normHash);
+      navigateByHash(normHash);
     });
   });
 
-  // Listen for hash changes
+  // Floating apps button smooth scroll
+  var floatingAppsBtn = document.querySelector('.floating-apps-button');
+  if (floatingAppsBtn) {
+    floatingAppsBtn.addEventListener('click', function(e) {
+      e.preventDefault();
+      updateUrlHash('shopAppsHeading');
+      navigateByHash('shopAppsHeading');
+    });
+  }
+
+  // Listen for hash changes (back/forward or external address bar change)
   window.addEventListener('hashchange', function() {
-    navigateByHash(window.location.hash);
+    if (window.location.hash) {
+      navigateByHash(window.location.hash);
+    }
   });
 
   // Execute on initial page load if hash present
   if (window.location.hash) {
+    navigateByHash(window.location.hash);
     window.setTimeout(function() {
       navigateByHash(window.location.hash);
     }, 150);
