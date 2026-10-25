@@ -47,10 +47,18 @@
                 </span>
               <% } %>
             </div>
-            <div class="small text-muted">
-              <%= receipt.origin || 'No purchase reference' %> &middot; 
+            <div class="small text-muted d-flex flex-wrap align-items-center gap-1">
+              <span><%= receipt.origin || 'No purchase reference' %></span> &middot; 
               <span class="<%- isTintRestricted ? 'fw-bold text-danger' : '' %>"><%= Array.isArray(receipt.partner_id) ? receipt.partner_id[1] : 'Supplier' %></span> &middot; 
-              <%= String(receipt.scheduled_date || '').slice(0,10) %>
+              <span><%= String(receipt.scheduled_date || '').slice(0,10) %></span>
+              <% if (receipt.clientName) { %>
+                &middot; <span class="badge rounded-pill px-2.5 py-1 text-dark border shadow-sm" style="background:#f0fdf4; border-color:#bbf7d0 !important; font-size:0.75rem;">
+                  <span class="text-muted fw-normal">Client:</span> <strong style="color:#15803d;"><%= receipt.clientName %></strong>
+                  <% if (receipt.soName) { %>
+                    <span class="text-muted ms-1" style="font-size:0.7rem;">(<%= receipt.soName %>)</span>
+                  <% } %>
+                </span>
+              <% } %>
             </div>
           </div>
           <div class="receipt-action-slot" id="action-slot-<%= receipt.id %>">
