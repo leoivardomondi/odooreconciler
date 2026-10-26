@@ -16,6 +16,7 @@
 - **Type Checking**: Run `npm run check` (`tsc --noEmit -p tsconfig.json`) to verify type safety.
 - **Dev Server**: Run `npm run dev` (`tsx watch server.ts`) when testing backend services locally.
 - **Context Persistence**: Store critical project decisions, database schema updates, and key business logic in this file (`.agents/AGENTS.md`) so future agent chats in this workspace retain full context.
+- **Strict Secret & Environment File Protection**: Never stage or commit `.env` or `.env.example` to git. Keep all live secrets and local environment configurations isolated and local.
 
 ## Key Business Logic & Decisions
 - **PO Bill Automation**:
