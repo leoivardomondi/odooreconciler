@@ -33,7 +33,9 @@ exports.env = {
     ATTACHMENT_DOWNLOAD_TIMEOUT_MS: process.env.ATTACHMENT_DOWNLOAD_TIMEOUT_MS || '60000',
     TRUST_PROXY: process.env.TRUST_PROXY || 'false',
     ATTENDANCE_ALLOWED_IPS: process.env.ATTENDANCE_ALLOWED_IPS || '41.139.216.177',
-    APP_SESSION_SECRET: process.env.APP_SESSION_SECRET || process.env.APP_ENCRYPTION_KEY || '',
+    APP_SESSION_SECRET: process.env.APP_SESSION_SECRET ||
+        process.env.APP_ENCRYPTION_KEY ||
+        (nodeEnv !== 'production' ? 'dev-session-secret-key-urban-vibe-32b' : ''),
     AUTH_ALLOWED_DOMAINS: process.env.AUTH_ALLOWED_DOMAINS || 'urbanvibeinteriordesign.co.ke,flowcode.co.ke',
     AUTH_OTP_TTL_MINUTES: process.env.AUTH_OTP_TTL_MINUTES || '10',
     AUTH_SESSION_TTL_HOURS: process.env.AUTH_SESSION_TTL_HOURS || '12',

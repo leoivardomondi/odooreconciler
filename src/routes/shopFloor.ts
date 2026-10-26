@@ -1196,12 +1196,14 @@ export async function fetchLiveSharedWorkOrders(client: OdooClient): Promise<Sha
           if (!isBoardComponentName(componentName)) {
             continue;
           }
+          const soOrigin = o.origin ? extractSoNameFromOrigin(o.origin) : null;
+          const resolvedClient = (o.origin && clientMap.get(o.origin)) || (soOrigin && clientMap.get(soOrigin)) || clientMap.get(o.name) || null;
           localStockAlerts.push({
             moName: o.name,
             product: Array.isArray(o.product_id) ? o.product_id[1] : '',
             component: componentName,
             qtyNeeded: comp.product_uom_qty - (comp.quantity || 0),
-            client: clientMap.get(o.origin || '') || null,
+            client: resolvedClient,
             moId: o.id,
             confirmedAt,
             overdueDays,
@@ -1243,7 +1245,7 @@ export async function fetchLiveSharedWorkOrders(client: OdooClient): Promise<Sha
       createdAt: o.create_date || null,
       progress: o.product_qty > 0 ? Math.round(((o.qty_produced || 0) / o.product_qty) * 100) : 0,
       origin: o.origin || null,
-      client: o.origin ? clientMap.get(o.origin) || null : null,
+      client: (o.origin && clientMap.get(o.origin)) || (o.origin && clientMap.get(extractSoNameFromOrigin(o.origin) || '')) || clientMap.get(o.name) || null,
       assignedTo: Array.isArray(o.user_id) ? o.user_id[1] : null,
       area: detectArea(Array.isArray(o.product_id) ? o.product_id[1] : ''),
       hasStockIssue: moIdsWithStockIssues.has(o.id),
@@ -2228,10 +2230,34 @@ router.get('/shop-floor/api/app-badge-counts', async (req: Request, res: Respons
     let openWorkOrders = workOrders.filter((o: any) => o.state !== 'done').length;
 
     // Fallback: if openWorkOrders is 0, check user's snapshot to prevent transient count drops
+    let userSnapshotPromise: Promise<any> | null = null;
+    const getUserSnapshot = () => {
+      if (!userSnapshotPromise && req.authUser?.email) {
+        userSnapshotPromise = getShopFloorDashboardSnapshot<OperatorDashboardData>(req.authUser.email).catch(() => null);
+      }
+      return userSnapshotPromise;
+    };
+
     if (openWorkOrders === 0 && req.authUser?.email) {
-      const snap = await getShopFloorDashboardSnapshot<OperatorDashboardData>(req.authUser.email).catch(() => null);
+      const snap = await getUserSnapshot();
       if (snap?.data?.workOrders?.length) {
         openWorkOrders = snap.data.workOrders.filter((o: any) => o.state !== 'done').length;
+      }
+    }
+
+    // Calculate pending add-stock count with fallbacks to avoid transient count drops
+    const pendingStockAlertsCount = pendingProcesses.filter((p: any) => Number(p.qty_missing || 0) > 0).length;
+    let addStockCount = pendingStockAlertsCount;
+    if (addStockCount === 0) {
+      const rawAlerts = (ramSharedMo as any)?.rawStockAlerts || (sharedMoEntry?.data as any)?.rawStockAlerts;
+      if (rawAlerts && Array.isArray(rawAlerts) && rawAlerts.length > 0) {
+        addStockCount = rawAlerts.length;
+      }
+    }
+    if (addStockCount === 0 && req.authUser?.email) {
+      const snap = await getUserSnapshot();
+      if (snap?.data?.stockAlerts && Array.isArray(snap.data.stockAlerts) && snap.data.stockAlerts.length > 0) {
+        addStockCount = snap.data.stockAlerts.length;
       }
     }
     const openIncidents = (sharedIncidentsEntry?.data || []).filter((i: any) => {
@@ -2278,7 +2304,7 @@ router.get('/shop-floor/api/app-badge-counts', async (req: Request, res: Respons
       success: true,
       counts: {
         'start-finish': openWorkOrders,
-        'add-stock': pendingProcesses.length,
+        'add-stock': addStockCount,
         receipts: openReceipts,
         deliveries: openDeliveries,
         maintenance: openIncidents,
@@ -2909,6 +2935,17 @@ router.get('/shop-floor/boards', async (req: Request, res: Response) => {
       const hasUnloggedBalance = Number(p.qty_missing || 0) > 0;
       const isSyncing = !hasUnloggedBalance && Boolean(matchingSync);
 
+      let resolvedClient = p.partner_name && p.partner_name !== 'Unknown Customer' ? p.partner_name.trim() : '';
+      if (!resolvedClient && p.partner_id) {
+        const matchingCustomer = (customers || []).find((c: any) => c.id === p.partner_id || c.partner_id === p.partner_id);
+        if (matchingCustomer?.name) {
+          resolvedClient = matchingCustomer.name.trim();
+        }
+      }
+      if (!resolvedClient && p.origin) {
+        resolvedClient = p.origin.trim();
+      }
+
       return {
         moName: p.mo_name,
         product: p.product_name,
@@ -2916,7 +2953,7 @@ router.get('/shop-floor/boards', async (req: Request, res: Response) => {
         qtyNeeded: p.qty_missing,
         totalNeeded: p.qty_needed,
         qtyReserved: p.qty_reserved,
-        client: p.partner_name,
+        client: resolvedClient || p.partner_name || 'No Client',
         moId: p.mo_id,
         confirmedAt: null,
         overdueDays: 0,

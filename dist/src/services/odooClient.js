@@ -1140,32 +1140,25 @@ class OdooClient {
      * Get today's attendance status for an employee.
      */
     async getTodayAttendance(employeeId) {
-        const today = new Date();
-        const todayStr = today.toISOString().slice(0, 10);
-        const records = await this.request('hr.attendance', 'search_read', {
-            domain: [
-                ['employee_id', '=', employeeId],
-                ['check_in', '>=', `${todayStr} 00:00:00`],
-                ['check_in', '<=', `${todayStr} 23:59:59`],
-            ],
-            fields: ['id', 'check_in', 'check_out', 'worked_hours'],
-            order: 'check_in desc',
-        });
-        // Also check Odoo's check_in/check_out directly
+        const now = Date.now();
+        const eatDate = new Date(now + 3 * 3600 * 1000);
+        const eatTodayStr = eatDate.toISOString().slice(0, 10);
+        const utcTodayStr = new Date(now).toISOString().slice(0, 10);
+        // Fetch up to 10 recent attendance records for this employee
         const checkIns = await this.request('hr.attendance', 'search_read', {
             domain: [
                 ['employee_id', '=', employeeId],
             ],
-            fields: ['id', 'check_in', 'check_out'],
+            fields: ['id', 'check_in', 'check_out', 'worked_hours'],
             order: 'check_in desc',
-            limit: 5,
+            limit: 10,
         });
-        const todayRecord = checkIns.find((r) => r.check_in?.startsWith(todayStr));
+        const todayRecord = checkIns.find((r) => r.check_in?.startsWith(eatTodayStr) || r.check_in?.startsWith(utcTodayStr));
         return {
             checkedIn: Boolean(todayRecord?.check_in && !todayRecord.check_out),
             checkedOut: Boolean(todayRecord?.check_out),
             todayRecord: todayRecord || null,
-            recentRecords: checkIns.slice(0, 5),
+            recentRecords: checkIns.slice(0, 10),
         };
     }
     /**
@@ -3310,14 +3303,121 @@ class OdooClient {
             limit: 2000,
         });
         const byPicking = new Map();
+        const boardPickingIds = new Set();
         moves.forEach((move) => {
             const id = Array.isArray(move.picking_id) ? move.picking_id[0] : move.picking_id;
             const name = Array.isArray(move.product_id) ? String(move.product_id[1] || '') : '';
             if (!byPicking.has(id))
                 byPicking.set(id, []);
             byPicking.get(id).push({ name, ordered: Number(move.product_uom_qty || 0), received: Number(move.quantity || 0) });
+            if ((0, boardProductClassifier_1.isBoardProductName)(name)) {
+                boardPickingIds.add(id);
+            }
         });
-        return scopedPickings.map((p) => ({ ...p, items: byPicking.get(p.id) || [] }));
+        // Resolve client / Sales Order info for board purchases
+        const poOriginsToLookup = [...new Set(scopedPickings
+                .filter((p) => p.origin && boardPickingIds.has(p.id))
+                .map((p) => String(p.origin).trim()))];
+        const poToClientMap = new Map();
+        if (poOriginsToLookup.length > 0) {
+            try {
+                const purchaseOrders = await this.searchReadRecords('purchase.order', {
+                    domain: [
+                        ['company_id', '=', warehouse.companyId],
+                        ['name', 'in', poOriginsToLookup],
+                    ],
+                    fields: ['name', 'origin'],
+                    limit: 100,
+                }).catch(() => []);
+                const candidateSoNames = new Set();
+                const candidateMoNames = new Set();
+                const poNameToOrigins = new Map();
+                for (const po of purchaseOrders) {
+                    const poOrig = String(po.origin || '').trim();
+                    if (!poOrig)
+                        continue;
+                    const origList = poOrig.split(/[:, ]+/).map((s) => s.trim()).filter(Boolean);
+                    poNameToOrigins.set(po.name, origList);
+                    for (const item of origList) {
+                        if (/^S\d{4,}|^SO\d{3,}/i.test(item)) {
+                            candidateSoNames.add(item.toUpperCase());
+                        }
+                        else if (item.startsWith('WH/MO/') || item.startsWith('MO/')) {
+                            candidateMoNames.add(item);
+                        }
+                    }
+                }
+                // Resolve MOs if any candidate MO names were found in PO origins
+                if (candidateMoNames.size > 0) {
+                    const mos = await this.searchReadRecords('mrp.production', {
+                        domain: [
+                            ['company_id', '=', warehouse.companyId],
+                            ['name', 'in', Array.from(candidateMoNames)],
+                        ],
+                        fields: ['name', 'origin'],
+                        limit: 50,
+                    }).catch(() => []);
+                    for (const mo of mos) {
+                        const moOrig = String(mo.origin || '').trim();
+                        if (moOrig) {
+                            const parts = moOrig.split(/[:, ]+/).map((s) => s.trim()).filter(Boolean);
+                            for (const part of parts) {
+                                if (/^S\d{4,}|^SO\d{3,}/i.test(part)) {
+                                    candidateSoNames.add(part.toUpperCase());
+                                }
+                            }
+                        }
+                    }
+                }
+                // Fetch Sales Orders to get client partner names
+                if (candidateSoNames.size > 0) {
+                    const saleOrders = await this.searchReadRecords('sale.order', {
+                        domain: [
+                            ['company_id', '=', warehouse.companyId],
+                            ['name', 'in', Array.from(candidateSoNames)],
+                        ],
+                        fields: ['name', 'partner_id'],
+                        limit: 100,
+                    }).catch(() => []);
+                    const soClientMap = new Map();
+                    for (const so of saleOrders) {
+                        if (so.partner_id && Array.isArray(so.partner_id) && so.partner_id[0] !== 350) {
+                            soClientMap.set(so.name.toUpperCase(), so.partner_id[1]);
+                        }
+                    }
+                    // Map back to PO name
+                    for (const po of purchaseOrders) {
+                        const origins = poNameToOrigins.get(po.name) || [];
+                        for (const item of origins) {
+                            const upper = item.toUpperCase();
+                            if (soClientMap.has(upper)) {
+                                poToClientMap.set(po.name, {
+                                    clientName: soClientMap.get(upper),
+                                    soName: upper,
+                                });
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (err) {
+                console.warn('[odooClient] Failed to resolve client for board receipts:', err);
+            }
+        }
+        return scopedPickings.map((p) => {
+            const items = byPicking.get(p.id) || [];
+            const hasBoards = boardPickingIds.has(p.id);
+            const poOrigin = p.origin ? String(p.origin).trim() : '';
+            const clientInfo = hasBoards && poOrigin ? poToClientMap.get(poOrigin) : undefined;
+            return {
+                ...p,
+                items,
+                hasBoards,
+                clientName: clientInfo?.clientName || null,
+                soName: clientInfo?.soName || null,
+            };
+        });
     }
     async assertPickingBelongsToWarehouse(pickingId, warehouseId, operation) {
         const warehouse = await this.getVerifiedTargetWarehouse(warehouseId);

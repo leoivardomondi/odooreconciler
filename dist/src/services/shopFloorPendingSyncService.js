@@ -46,16 +46,17 @@ async function syncPendingProcessesFromOdoo(force = false) {
             order: 'create_date desc, id desc',
         });
         const activeMOs = rawActiveMOs.filter((mo) => !String(mo.name || '').toUpperCase().startsWith('VA/'));
-        // 1b. Fetch recently completed MOs (last 7 days) to detect any work orders closed without stock logged
+        // 1b. Fetch recently completed MOs (since October 19th, 2026 or last 7 days) to detect any work orders closed without stock logged
         const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+        const closedCutoffDate = '2026-10-19 00:00:00' < sevenDaysAgo ? '2026-10-19 00:00:00' : sevenDaysAgo;
         const rawRecentlyClosedMOs = await client.searchReadRecords('mrp.production', {
             domain: [
                 ['company_id', '=', targetCompanyId],
                 ['state', '=', 'done'],
-                ['write_date', '>=', sevenDaysAgo],
+                ['write_date', '>=', closedCutoffDate],
             ],
             fields: ['id', 'name', 'state', 'origin'],
-            limit: 100,
+            limit: 200,
             order: 'write_date desc, id desc',
         }).catch(() => []);
         const recentlyClosedMOs = rawRecentlyClosedMOs.filter((mo) => !String(mo.name || '').toUpperCase().startsWith('VA/'));
@@ -86,10 +87,18 @@ async function syncPendingProcessesFromOdoo(force = false) {
                     const pId = so.partner_id[0];
                     const pName = so.partner_id[1];
                     if (pId !== 350 && pName.toUpperCase() !== 'URBAN VIBE 2') {
-                        soPartnerMap.set(so.name, {
+                        const entry = {
                             partnerId: pId,
                             partnerName: pName,
-                        });
+                        };
+                        soPartnerMap.set(so.name, entry);
+                        soPartnerMap.set(so.name.trim(), entry);
+                        soPartnerMap.set(so.name.trim().toUpperCase(), entry);
+                        const cleanSo = (0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(so.name);
+                        if (cleanSo) {
+                            soPartnerMap.set(cleanSo, entry);
+                            soPartnerMap.set(cleanSo.trim().toUpperCase(), entry);
+                        }
                     }
                 }
             }
@@ -136,6 +145,49 @@ async function syncPendingProcessesFromOdoo(force = false) {
                 });
                 if (purchaseOrders.length > 0) {
                     const poIds = purchaseOrders.map(po => po.id);
+                    const poNames = purchaseOrders.map(po => po.name).filter(Boolean);
+                    // Find open incoming pickings (deliveries actually still expected from vendor in /shop-floor/receipts)
+                    const openIncomingPickings = await client.searchReadRecords('stock.picking', {
+                        domain: [
+                            ['company_id', '=', targetCompanyId],
+                            ['picking_type_code', '=', 'incoming'],
+                            ['state', 'in', ['waiting', 'confirmed', 'assigned']],
+                            '|',
+                            ['origin', 'in', poNames],
+                            ['origin', 'in', relevantOriginNames],
+                        ],
+                        fields: ['id', 'origin', 'state'],
+                        limit: 500,
+                        timeoutMs: 35000,
+                    }).catch(() => []);
+                    const activeIncomingOrigins = new Set();
+                    for (const pick of openIncomingPickings) {
+                        if (pick.origin) {
+                            const origStr = String(pick.origin).trim();
+                            activeIncomingOrigins.add(origStr);
+                            const extracted = (0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(origStr);
+                            if (extracted)
+                                activeIncomingOrigins.add(extracted);
+                            if (origStr.includes(':')) {
+                                origStr.split(':').forEach(part => {
+                                    const p = part.trim();
+                                    if (p)
+                                        activeIncomingOrigins.add(p);
+                                });
+                            }
+                        }
+                    }
+                    // A PO only covers a requirement if it actually has an active incoming receipt pending reception in /shop-floor/receipts.
+                    // If all receipts are already done or returned to vendor, the MO shortage is NOT covered and must appear under Stock Needed!
+                    const activePoIds = new Set();
+                    for (const po of purchaseOrders) {
+                        const hasOpenReceipt = activeIncomingOrigins.has(po.name) ||
+                            (po.origin && (activeIncomingOrigins.has(po.origin) ||
+                                ((0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(po.origin) && activeIncomingOrigins.has((0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(po.origin)))));
+                        if (hasOpenReceipt) {
+                            activePoIds.add(po.id);
+                        }
+                    }
                     const poLines = await client.searchReadRecords('purchase.order.line', {
                         domain: [['order_id', 'in', poIds]],
                         fields: ['order_id', 'product_id', 'name'],
@@ -161,6 +213,8 @@ async function syncPendingProcessesFromOdoo(force = false) {
                     }
                     for (const line of poLines) {
                         const poId = Array.isArray(line.order_id) ? line.order_id[0] : 0;
+                        if (!activePoIds.has(poId))
+                            continue;
                         const productId = Array.isArray(line.product_id) ? line.product_id[0] : 0;
                         const productName = line.name || (Array.isArray(line.product_id) ? line.product_id[1] : '');
                         const normalizedPoProdName = (0, boardProductClassifier_1.normalizeBoardProductName)(productName);
@@ -209,7 +263,14 @@ async function syncPendingProcessesFromOdoo(force = false) {
                 poCoveredKeys.add(`${moId}_${productId}`);
                 continue;
             }
-            const partnerInfo = mo.origin ? (soPartnerMap.get(mo.origin) || (soOrigin ? soPartnerMap.get(soOrigin) : null)) : null;
+            const originKey = mo.origin ? mo.origin.trim() : '';
+            const partnerInfo = originKey
+                ? (soPartnerMap.get(originKey) ||
+                    soPartnerMap.get(originKey.toUpperCase()) ||
+                    (soOrigin ? (soPartnerMap.get(soOrigin) || soPartnerMap.get(soOrigin.trim().toUpperCase())) : null) ||
+                    soPartnerMap.get(mo.name) ||
+                    soPartnerMap.get(mo.name.trim().toUpperCase()))
+                : (soPartnerMap.get(mo.name) || soPartnerMap.get(mo.name.trim().toUpperCase()) || null);
             const partnerId = partnerInfo?.partnerId || 0;
             const partnerName = partnerInfo?.partnerName || 'Unknown Customer';
             if (partnerId === 350 || partnerName.toUpperCase() === 'URBAN VIBE 2') {
@@ -237,10 +298,23 @@ async function syncPendingProcessesFromOdoo(force = false) {
                 });
             }
         }
+        // Create a pool of available quantities from active non-reverted board intake logs
+        const logPool = new Map();
+        for (const log of activeLogs) {
+            logPool.set(log.id, Number(log.quantity || 0));
+        }
         for (const [key, agg] of aggregatedMoves.entries()) {
             const cleanCustomer = String(agg.partnerName || '').trim().toLowerCase();
             const cleanProduct = String(agg.productName || '').trim().toLowerCase();
-            const matchingLogs = activeLogs.filter((log) => {
+            // Allocate from available active non-reverted intake logs
+            let allocatedFromLogs = 0;
+            let remainingNeeded = agg.qtyNeeded;
+            for (const log of activeLogs) {
+                if (remainingNeeded <= 0)
+                    break;
+                const availableInLog = logPool.get(log.id) || 0;
+                if (availableInLog <= 0)
+                    continue;
                 const logPid = Number(log.partner_id || 0);
                 const logProdId = Number(log.product_id || 0);
                 const logCust = String(log.customer_name || '').trim().toLowerCase();
@@ -249,14 +323,17 @@ async function syncPendingProcessesFromOdoo(force = false) {
                     (cleanCustomer && (logCust.includes(cleanCustomer) || cleanCustomer.includes(logCust))));
                 const prodMatch = Boolean((agg.productId > 0 && logProdId > 0 && agg.productId === logProdId) ||
                     (cleanProduct && (logProd.includes(cleanProduct) || cleanProduct.includes(logProd))));
-                return custMatch && prodMatch;
-            });
-            const totalLogged = matchingLogs.reduce((sum, l) => sum + Number(l.quantity || 0), 0);
-            const isFulfilledByHistoryLog = totalLogged >= agg.qtyNeeded;
+                if (custMatch && prodMatch) {
+                    const toAllocate = Math.min(remainingNeeded, availableInLog);
+                    allocatedFromLogs += toAllocate;
+                    remainingNeeded -= toAllocate;
+                    logPool.set(log.id, availableInLog - toAllocate);
+                }
+            }
             // RULE: "make sure that a board log request under add stock area only disappears if a history log that matches it appears"
             // Even if Odoo shop floor closed the job or reserved someone else's stock (agg.qtyReserved >= agg.qtyNeeded),
-            // if NO history log exists for this customer and product, the customer's boards have NOT been logged at the gate!
-            const qtyMissing = isFulfilledByHistoryLog ? 0 : Math.max(0, agg.qtyNeeded - totalLogged);
+            // if NO non-reverted history log exists for this customer and product, the customer's boards have NOT been logged at the gate!
+            const qtyMissing = Math.max(0, agg.qtyNeeded - allocatedFromLogs);
             if (qtyMissing > 0) {
                 const mo = moMap.get(agg.moId);
                 const isMoClosed = mo ? (mo.state === 'done' || mo.state === 'to_close') : false;
@@ -271,7 +348,7 @@ async function syncPendingProcessesFromOdoo(force = false) {
                     product_id: agg.productId,
                     product_name: agg.productName,
                     qty_needed: agg.qtyNeeded,
-                    qty_reserved: totalLogged,
+                    qty_reserved: allocatedFromLogs,
                     qty_missing: qtyMissing,
                     status: 'pending',
                     loaded_at: null,
@@ -281,7 +358,7 @@ async function syncPendingProcessesFromOdoo(force = false) {
                 });
             }
         }
-        // 7. Upsert into MySQL table (preserves locally loaded items)
+        // 7. Upsert into MySQL table (preserves locally loaded items unless shortage reoccurs)
         await (0, repositories_1.upsertPendingShopFloorProcesses)(recordsToUpsert);
         // 7b. Check and match prior board intake logs for newly created MOs (boards logged before MO creation)
         await matchRetroactiveBoardLogsForActiveMos(client, activeMOs, boardMoves, soPartnerMap, originProductPOKeys, activeLogs).catch((err) => {
@@ -292,6 +369,14 @@ async function syncPendingProcessesFromOdoo(force = false) {
         await (0, repositories_1.pruneStalePendingProcessesForActiveMos)(activeMOs.map((mo) => mo.id), recordsToUpsert.map((r) => r.id), Array.from(poCoveredKeys));
         // 9. Clean up stale completed items older than 7 days
         await (0, repositories_1.deleteStaleCompletedProcesses)(7);
+        // 10. Invalidate RAM cache and stale board registration cache so the UI sees up-to-date counts immediately
+        try {
+            shopFloor_1.shopFloorCache.clearPrefix('shop-floor-dashboard:');
+            await (0, repositories_1.deleteShopFloorSharedCachePrefix)('shop-floor:shared-board-reg:').catch(() => null);
+        }
+        catch (_cacheErr) {
+            // Non-fatal cache invalidation
+        }
         lastSyncTimestamp = Date.now();
         const durationMs = Date.now() - startTime;
         void (0, logService_1.logEvent)('info', 'Synced pending MO board requirements from Odoo to MySQL', {

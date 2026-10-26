@@ -964,16 +964,19 @@ async function handleOdooSyncWebhook(req, res) {
                 await Promise.allSettled([
                     (0, repositories_1.deleteShopFloorSharedCachePrefix)('shop-floor:receipts:'),
                     (0, repositories_1.deleteShopFloorSharedCachePrefix)('shop-floor:deliveries:'),
-                    (0, repositories_1.deleteShopFloorDashboardSnapshot)(),
+                    (0, repositories_1.deleteShopFloorSharedCachePrefix)('shop-floor:shared-board-reg:'),
                     (0, stockMirrorService_1.refreshStockMirror)(),
+                    (0, shopFloor_1.refreshSharedWorkOrders)(),
+                    (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(true),
                 ]);
             }
             else if (resolvedType === 'stock') {
                 shopFloor_1.shopFloorCache.clearPrefix('shop-floor-dashboard:');
                 await Promise.allSettled([
                     (0, repositories_1.deleteShopFloorSharedCachePrefix)('shop-floor:shared-board-reg:'),
-                    (0, repositories_1.deleteShopFloorDashboardSnapshot)(),
                     (0, stockMirrorService_1.refreshStockMirror)(),
+                    (0, shopFloor_1.refreshSharedWorkOrders)(),
+                    (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(true),
                 ]);
             }
             else if (resolvedType === 'attendance' || rawModel === 'hr.attendance') {
@@ -999,9 +1002,11 @@ async function handleOdooSyncWebhook(req, res) {
                     const settings = await (0, repositories_1.getSettings)();
                     const client = new odooClient_1.OdooClient(settings.odoo);
                     await (0, poJobSummaryAuditService_1.auditPurchaseOrderAgainstJobSummary)(client, poId);
+                    void (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(true).catch(() => null);
                 }
                 else {
                     await (0, schedulerService_1.runPoBillSchedulerCycle)('cron');
+                    void (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(true).catch(() => null);
                 }
             }
             else if (resolvedType === 'so') {

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   processBoardIntakePurchaseOrderFulfillment,
+  processBoardIntakePurchaseOrderFulfillmentLegacy,
   cleanPreexistingMismatchChatter,
 } from './boardIntakeSyncService';
 import { matchRetroactiveBoardLogsForActiveMos } from './shopFloorPendingSyncService';
@@ -89,7 +90,7 @@ test('processBoardIntakePurchaseOrderFulfillment strictly approves PO ONLY if wa
     },
   } as unknown as OdooClient;
 
-  const result = await processBoardIntakePurchaseOrderFulfillment(
+  const result = await processBoardIntakePurchaseOrderFulfillmentLegacy(
     mockClient,
     {
       partner_id: '42',

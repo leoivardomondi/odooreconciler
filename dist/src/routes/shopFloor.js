@@ -33,6 +33,7 @@ const shopFloorPendingSyncService_1 = require("../services/shopFloorPendingSyncS
 const poJobSummaryAuditService_1 = require("../services/poJobSummaryAuditService");
 const siteAttendanceAccess_1 = require("../utils/siteAttendanceAccess");
 const helpers_1 = require("../utils/helpers");
+const accountStatus_1 = require("../utils/accountStatus");
 const router = (0, express_1.Router)();
 // Department names to search for operators (case-insensitive match)
 const OPERATOR_DEPARTMENT_NAMES = ['Operations', 'Production', 'Shop Floor', 'Manufacturing', 'Factory'];
@@ -116,14 +117,49 @@ function escapeHtml(value) {
 }
 function normalizeManufacturingArea(areaName) {
     const normalized = String(areaName || '').trim().toLowerCase();
+    if (!normalized)
+        return null;
+    if (normalized === 'area-table-saw' ||
+        normalized.includes('table saw') ||
+        normalized.includes('table-saw') ||
+        normalized.includes('saw') ||
+        normalized.includes('cutting') ||
+        normalized.includes('cut')) {
+        return 'Table Saw Area';
+    }
+    if (normalized === 'area-edge-banding' ||
+        normalized.includes('edge banding') ||
+        normalized.includes('edge-banding') ||
+        normalized.includes('edgeband') ||
+        normalized.includes('edging')) {
+        return 'Edge Banding Area';
+    }
+    if (normalized === 'area-panel-rack' ||
+        normalized.includes('panel rack') ||
+        normalized.includes('panel-rack') ||
+        normalized.includes('panel area') ||
+        normalized.includes('panel') ||
+        normalized.includes('rack') ||
+        normalized.includes('optimis')) {
+        return 'Panel Rack Area';
+    }
     return MANUFACTURING_AREAS.find((area) => area.toLowerCase() === normalized) || null;
 }
 function detectArea(productName) {
     const n = productName.toLowerCase();
-    if (n.includes('edge banding') || n.includes('edgeband'))
+    if (n.includes('edge banding') || n.includes('edgeband') || n.includes('edging'))
         return 'Edge Banding Area';
-    if (n.includes('optimised') || n.includes('optimized') || n.includes('panel'))
+    if (n.startsWith('cutting') ||
+        n.includes('cut ') ||
+        n.includes('cutting ') ||
+        n.includes('table saw') ||
+        n.includes('saw') ||
+        (0, boardProductClassifier_1.isBoardProductName)(productName)) {
+        return 'Table Saw Area';
+    }
+    if (n.includes('optimised') || n.includes('optimized') || n.includes('panel') || n.includes('rack')) {
         return 'Panel Rack Area';
+    }
     return 'Table Saw Area';
 }
 function isBoardComponentName(productName) {
@@ -658,24 +694,7 @@ async function buildInstantMysqlOperatorDashboard(userEmail) {
         isSyncing: false,
         isMoClosed: Boolean(p.is_mo_closed),
     }));
-    const stockAlertsMap = new Map();
-    for (const alert of pendingAlerts) {
-        if (alert.qtyNeeded > 0) {
-            stockAlertsMap.set(`${alert.moName}:${alert.product}`, alert);
-        }
-    }
-    if (sharedMo?.rawStockAlerts && sharedMo.rawStockAlerts.length > 0) {
-        // Only rawStockAlerts from external Odoo cache that are NOT in MySQL need optimistic deduction
-        const externalOdooAlerts = sharedMo.rawStockAlerts.filter((alert) => !stockAlertsMap.has(`${alert.moName}:${alert.product}`));
-        const adjustedExternal = applyOptimisticStockAlerts(externalOdooAlerts);
-        for (const alert of adjustedExternal) {
-            const key = `${alert.moName}:${alert.product}`;
-            if (!stockAlertsMap.has(key) && alert.qtyNeeded > 0) {
-                stockAlertsMap.set(key, alert);
-            }
-        }
-    }
-    const stockAlerts = Array.from(stockAlertsMap.values());
+    const stockAlerts = pendingAlerts.filter((alert) => alert.qtyNeeded > 0);
     const incidents = (sharedIncidentsEntry?.data || []).map((r) => {
         let machineName = r.name || 'Unknown Machine';
         if (machineName.startsWith('Breakdown: ')) {
@@ -876,12 +895,14 @@ async function fetchLiveSharedWorkOrders(client) {
                     if (!isBoardComponentName(componentName)) {
                         continue;
                     }
+                    const soOrigin = o.origin ? (0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(o.origin) : null;
+                    const resolvedClient = (o.origin && clientMap.get(o.origin)) || (soOrigin && clientMap.get(soOrigin)) || clientMap.get(o.name) || null;
                     localStockAlerts.push({
                         moName: o.name,
                         product: Array.isArray(o.product_id) ? o.product_id[1] : '',
                         component: componentName,
                         qtyNeeded: comp.product_uom_qty - (comp.quantity || 0),
-                        client: clientMap.get(o.origin || '') || null,
+                        client: resolvedClient,
                         moId: o.id,
                         confirmedAt,
                         overdueDays,
@@ -924,7 +945,7 @@ async function fetchLiveSharedWorkOrders(client) {
             createdAt: o.create_date || null,
             progress: o.product_qty > 0 ? Math.round(((o.qty_produced || 0) / o.product_qty) * 100) : 0,
             origin: o.origin || null,
-            client: o.origin ? clientMap.get(o.origin) || null : null,
+            client: (o.origin && clientMap.get(o.origin)) || (o.origin && clientMap.get((0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(o.origin) || '')) || clientMap.get(o.name) || null,
             assignedTo: Array.isArray(o.user_id) ? o.user_id[1] : null,
             area: detectArea(Array.isArray(o.product_id) ? o.product_id[1] : ''),
             hasStockIssue: moIdsWithStockIssues.has(o.id),
@@ -1077,7 +1098,10 @@ async function buildOperatorDashboard(client, userEmail, req, stockScope) {
     };
     try {
         // 1. Find employee — operators may not have res.users, search by work email directly
-        let employee = await client.findEmployeeByUserEmail(userEmail).catch(() => null);
+        let employee = await client.findEmployeeForShopFloorEmail(userEmail).catch(() => null);
+        if (!employee) {
+            employee = await client.findEmployeeByUserEmail(userEmail).catch(() => null);
+        }
         if (!employee) {
             employee = await client.findEmployeeByWorkEmail(userEmail).catch(() => null);
         }
@@ -1401,9 +1425,11 @@ router.get('/shop-floor', async (req, res) => {
                 console.warn('[shopFloor] Failed to build instant MySQL dashboard for', normalizedEmail, mysqlErr);
             }
         }
-        // If data exists, serve immediately (<5ms)! Revalidate in background if explicit refresh or stale
+        // If data exists, serve immediately (<5ms)! Revalidate in background if explicit refresh, stale, or attendance missing
+        const hasRecentAttendance = Boolean(data?.attendance?.recentRecords && data.attendance.recentRecords.length > 0);
+        const needsBackgroundRefresh = isExplicitRefresh || exports.shopFloorCache.isStale(cacheKey) || !hasRecentAttendance;
         if (data && ((data.workOrders && data.workOrders.length > 0) || (data.stockAlerts && data.stockAlerts.length > 0))) {
-            if ((isExplicitRefresh || exports.shopFloorCache.isStale(cacheKey)) && !exports.shopFloorCache.isInFlight(cacheKey)) {
+            if (needsBackgroundRefresh && !exports.shopFloorCache.isInFlight(cacheKey)) {
                 void (async () => {
                     try {
                         const client = new odooClient_1.OdooClient(settings.odoo);
@@ -1464,25 +1490,24 @@ router.get('/shop-floor', async (req, res) => {
             }
             try {
                 const pendingProcesses = await (0, repositories_1.getPendingShopFloorProcesses)({ status: 'pending' }).catch(() => []);
-                if (pendingProcesses.length > 0) {
-                    const existingKeys = new Set((data.stockAlerts || []).map((a) => `${a.moName}:${a.product}`));
-                    for (const p of pendingProcesses) {
-                        const key = `${p.mo_name}:${p.product_name}`;
-                        if (!existingKeys.has(key)) {
-                            existingKeys.add(key);
-                            data.stockAlerts.push({
-                                moName: p.mo_name,
-                                product: p.product_name,
-                                component: p.product_name,
-                                qtyNeeded: p.qty_missing,
-                                client: p.partner_name,
-                                moId: p.mo_id,
-                                confirmedAt: null,
-                                overdueDays: 0,
-                            });
-                        }
-                    }
-                }
+                data.stockAlerts = pendingProcesses
+                    .filter((p) => Number(p.qty_missing || 0) > 0)
+                    .map((p) => ({
+                    moName: p.mo_name,
+                    product: p.product_name,
+                    component: p.product_name,
+                    qtyNeeded: p.qty_missing,
+                    totalNeeded: p.qty_needed,
+                    qtyReserved: p.qty_reserved,
+                    client: p.partner_name,
+                    moId: p.mo_id,
+                    confirmedAt: null,
+                    overdueDays: 0,
+                    partnerId: p.partner_id || null,
+                    productId: p.product_id || null,
+                    isSyncing: false,
+                    isMoClosed: Boolean(p.is_mo_closed),
+                }));
             }
             catch (_e) { }
             if (data.boardRegistrationSummary) {
@@ -1751,6 +1776,69 @@ router.get('/shop-floor/payslip/:id/download', async (req, res) => {
     }
 });
 /**
+ * GET /shop-floor/api/attendance-status — Lightweight JSON endpoint returning current operator attendance records.
+ */
+router.get('/shop-floor/api/attendance-status', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
+    try {
+        const settings = await (0, repositories_1.getSettings)();
+        const viewedEmail = getViewedUserEmail(req);
+        const normalizedEmail = viewedEmail.trim().toLowerCase();
+        // Check local snapshot first
+        const snapshot = await (0, repositories_1.getShopFloorDashboardSnapshot)(normalizedEmail).catch(() => null);
+        if (snapshot?.data?.attendance?.recentRecords && snapshot.data.attendance.recentRecords.length > 0) {
+            return res.json({ success: true, attendance: snapshot.data.attendance, employee: snapshot.data.employee });
+        }
+        // Otherwise fetch fresh from Odoo
+        const client = new odooClient_1.OdooClient(settings.odoo);
+        let employee = await client.findEmployeeForShopFloorEmail(viewedEmail).catch(() => null);
+        if (!employee) {
+            employee = await client.findEmployeeByUserEmail(viewedEmail).catch(() => null);
+        }
+        if (!employee) {
+            employee = await client.findEmployeeByWorkEmail(viewedEmail).catch(() => null);
+        }
+        if (!employee) {
+            return res.json({ success: true, attendance: null, employee: null });
+        }
+        const rawAttendance = await client.getTodayAttendance(employee.id).catch(() => null);
+        let attendance = null;
+        if (rawAttendance) {
+            attendance = {
+                checkedIn: rawAttendance.checkedIn,
+                checkedOut: rawAttendance.checkedOut,
+                todayRecord: rawAttendance.todayRecord ? {
+                    check_in: toEAT(rawAttendance.todayRecord.check_in) || rawAttendance.todayRecord.check_in,
+                    check_out: toEAT(rawAttendance.todayRecord.check_out) || rawAttendance.todayRecord.check_out,
+                } : null,
+                recentRecords: (rawAttendance.recentRecords || []).map((r) => ({
+                    check_in: toEAT(r.check_in) || r.check_in,
+                    check_out: toEAT(r.check_out) || r.check_out,
+                })),
+                isLate: false,
+            };
+            if (rawAttendance.todayRecord?.check_in) {
+                const checkInTime = toEAT(rawAttendance.todayRecord.check_in);
+                if (checkInTime) {
+                    const timePart = checkInTime.split(' ')[1] || checkInTime;
+                    const [hh, mm] = timePart.split(':').map(Number);
+                    if (hh > 8 || (hh === 8 && mm > 30)) {
+                        attendance.isLate = true;
+                    }
+                }
+            }
+        }
+        if (snapshot?.data && attendance) {
+            snapshot.data.attendance = attendance;
+            await (0, repositories_1.saveShopFloorDashboardSnapshot)(normalizedEmail, snapshot.data).catch(() => null);
+        }
+        return res.json({ success: true, attendance, employee });
+    }
+    catch (err) {
+        return res.status(500).json({ success: false, error: err?.message || 'Failed to fetch attendance status' });
+    }
+});
+/**
  * GET /shop-floor/api/app-badge-counts — Fast (<5ms) JSON endpoint returning real-time notification counts from MySQL.
  */
 router.get('/shop-floor/api/app-badge-counts', async (req, res) => {
@@ -1769,10 +1857,32 @@ router.get('/shop-floor/api/app-badge-counts', async (req, res) => {
         const workOrders = ramSharedMo?.workOrders || sharedMoEntry?.data?.workOrders || [];
         let openWorkOrders = workOrders.filter((o) => o.state !== 'done').length;
         // Fallback: if openWorkOrders is 0, check user's snapshot to prevent transient count drops
+        let userSnapshotPromise = null;
+        const getUserSnapshot = () => {
+            if (!userSnapshotPromise && req.authUser?.email) {
+                userSnapshotPromise = (0, repositories_1.getShopFloorDashboardSnapshot)(req.authUser.email).catch(() => null);
+            }
+            return userSnapshotPromise;
+        };
         if (openWorkOrders === 0 && req.authUser?.email) {
-            const snap = await (0, repositories_1.getShopFloorDashboardSnapshot)(req.authUser.email).catch(() => null);
+            const snap = await getUserSnapshot();
             if (snap?.data?.workOrders?.length) {
                 openWorkOrders = snap.data.workOrders.filter((o) => o.state !== 'done').length;
+            }
+        }
+        // Calculate pending add-stock count with fallbacks to avoid transient count drops
+        const pendingStockAlertsCount = pendingProcesses.filter((p) => Number(p.qty_missing || 0) > 0).length;
+        let addStockCount = pendingStockAlertsCount;
+        if (addStockCount === 0) {
+            const rawAlerts = ramSharedMo?.rawStockAlerts || sharedMoEntry?.data?.rawStockAlerts;
+            if (rawAlerts && Array.isArray(rawAlerts) && rawAlerts.length > 0) {
+                addStockCount = rawAlerts.length;
+            }
+        }
+        if (addStockCount === 0 && req.authUser?.email) {
+            const snap = await getUserSnapshot();
+            if (snap?.data?.stockAlerts && Array.isArray(snap.data.stockAlerts) && snap.data.stockAlerts.length > 0) {
+                addStockCount = snap.data.stockAlerts.length;
             }
         }
         const openIncidents = (sharedIncidentsEntry?.data || []).filter((i) => {
@@ -1814,7 +1924,7 @@ router.get('/shop-floor/api/app-badge-counts', async (req, res) => {
             success: true,
             counts: {
                 'start-finish': openWorkOrders,
-                'add-stock': pendingProcesses.length,
+                'add-stock': addStockCount,
                 receipts: openReceipts,
                 deliveries: openDeliveries,
                 maintenance: openIncidents,
@@ -1850,42 +1960,83 @@ router.get('/shop-floor/operators', async (req, res) => {
         60 * 60 * 1000, // 60 minutes max stale
         async () => {
             const client = new odooClient_1.OdooClient(settings.odoo);
-            // Find operator departments
-            const allDepartments = [];
-            for (const deptName of OPERATOR_DEPARTMENT_NAMES) {
-                const found = await client.findDepartmentByName(deptName);
-                allDepartments.push(...found);
-            }
-            // Deduplicate by ID
-            const uniqueDepts = [...new Map(allDepartments.map((d) => [d.id, d])).values()];
-            // Get active employees from each department (exclude archived/inactive)
+            const targetCompanyId = await client.getTargetCompanyIdValue();
+            // 1. Fetch active approved accounts from the database
+            const allApprovedUsers = await (0, repositories_1.getApprovedAuthUsers)().catch(() => []);
+            // Strictly only active accounts that have shop-floor access or are admin
+            const activeAccounts = (allApprovedUsers || []).filter((u) => {
+                if (!u || !u.email)
+                    return false;
+                if ((0, accountStatus_1.isAccountDeactivated)(u.active))
+                    return false;
+                const apps = Array.isArray(u.apps) ? u.apps : [];
+                return apps.includes('shop-floor') || u.role === 'admin';
+            });
+            // 2. Fetch active Odoo employees in the target company
+            const workcenters = await client.searchReadRecords('mrp.workcenter', {
+                domain: [['company_id', '=', targetCompanyId]],
+                fields: ['id', 'employee_ids'],
+            }).catch(() => []);
+            const workcenterOperatorIds = new Set(workcenters.flatMap((w) => w.employee_ids || []));
+            // Get all active employees in target company
+            const allOdooEmployees = await client.searchReadRecords('hr.employee', {
+                domain: [
+                    ['company_id', '=', targetCompanyId],
+                    ['active', '=', true],
+                ],
+                fields: ['id', 'name', 'job_title', 'department_id', 'work_email', 'mobile_phone', 'user_id', 'active'],
+            }).catch(() => []);
+            // 3. Match active accounts strictly to active Odoo employees
             const operators = [];
-            const seenIds = new Set();
-            for (const dept of uniqueDepts) {
-                const employees = await client.getEmployeesByDepartment(dept.id, undefined, false);
-                for (const emp of employees) {
-                    if (emp.active === false)
-                        continue;
-                    if (seenIds.has(emp.id))
-                        continue;
-                    seenIds.add(emp.id);
-                    operators.push({
-                        id: emp.id,
-                        name: emp.name,
-                        jobTitle: emp.job_title || null,
-                        department: Array.isArray(emp.department_id) ? emp.department_id[1] : dept.name,
-                        workEmail: emp.work_email || null,
-                        mobilePhone: emp.mobile_phone || null,
-                        userId: Array.isArray(emp.user_id) ? emp.user_id[0] : null,
-                        userName: Array.isArray(emp.user_id) ? emp.user_id[1] : null,
-                        checkedIn: false,
-                        checkedOut: false,
-                        checkInTime: null,
-                        assignedItems: [],
-                    });
-                }
+            const seenEmpIds = new Set();
+            for (const account of activeAccounts) {
+                const userEmail = String(account.email || '').trim().toLowerCase();
+                if (!userEmail)
+                    continue;
+                // Find matching active Odoo employee by work email
+                const linkedEmp = allOdooEmployees.find((e) => {
+                    if (e.active === false)
+                        return false;
+                    const empEmail = String(e.work_email || '').trim().toLowerCase();
+                    return Boolean(empEmail && empEmail === userEmail);
+                });
+                // STRICT REQUIREMENT: Only accounts linked to Odoo! Skip if not linked to an active Odoo employee.
+                if (!linkedEmp)
+                    continue;
+                if (seenEmpIds.has(linkedEmp.id))
+                    continue;
+                seenEmpIds.add(linkedEmp.id);
+                // Full name strictly from Odoo employee record! NEVER derived from email address.
+                const odooFullName = String(linkedEmp.name || '').trim();
+                operators.push({
+                    id: linkedEmp.id,
+                    name: odooFullName,
+                    jobTitle: linkedEmp.job_title || 'Operator',
+                    department: Array.isArray(linkedEmp.department_id) ? linkedEmp.department_id[1] : 'Production',
+                    workEmail: linkedEmp.work_email || account.email,
+                    mobilePhone: linkedEmp.mobile_phone || null,
+                    userId: Array.isArray(linkedEmp.user_id) ? linkedEmp.user_id[0] : null,
+                    userName: Array.isArray(linkedEmp.user_id) ? linkedEmp.user_id[1] : odooFullName,
+                    checkedIn: false,
+                    checkedOut: false,
+                    checkInTime: null,
+                    assignedItems: [],
+                });
             }
-            // Get today's attendance for all operators
+            // Sort workcenter operators first, then alphabetically by Odoo full name
+            if (workcenterOperatorIds.size > 0) {
+                operators.sort((a, b) => {
+                    const aWc = workcenterOperatorIds.has(a.id) ? 0 : 1;
+                    const bWc = workcenterOperatorIds.has(b.id) ? 0 : 1;
+                    if (aWc !== bWc)
+                        return aWc - bWc;
+                    return a.name.localeCompare(b.name);
+                });
+            }
+            else {
+                operators.sort((a, b) => a.name.localeCompare(b.name));
+            }
+            // Get today's attendance for verified operators
             if (operators.length > 0) {
                 try {
                     const operatorIds = operators.map((op) => op.id);
@@ -1933,7 +2084,8 @@ router.get('/shop-floor/operators', async (req, res) => {
                     op.assignedItems = [];
                 }
             }
-            const freshData = { allOperators: operators, departments: uniqueDepts.map((d) => d.name) };
+            const departmentsList = [...new Set(operators.map((op) => op.department).filter(Boolean))];
+            const freshData = { allOperators: operators, departments: departmentsList };
             if (operators.length > 0) {
                 await (0, repositories_1.saveShopFloorSharedCache)(operatorCacheKey, freshData).catch(() => { });
             }
@@ -1943,33 +2095,9 @@ router.get('/shop-floor/operators', async (req, res) => {
             ? persistentCache.data
             : { allOperators: [], departments: [] };
         let { allOperators, departments } = await withMaxPageWait(operatorsPromise, persistentCache?.data?.allOperators?.length ? 400 : 1200, fallbackData);
-        // Guaranteed fallback: If Odoo wait timed out and persistent cache was missing, use active approved users from MySQL
-        if (!allOperators || allOperators.length === 0) {
-            if (persistentCache?.data?.allOperators?.length) {
-                allOperators = persistentCache.data.allOperators;
-                departments = persistentCache.data.departments;
-            }
-            else {
-                const approvedUsers = await (0, repositories_1.getApprovedAuthUsers)().catch(() => []);
-                const shopFloorApproved = approvedUsers.filter((u) => u.apps?.includes('shop-floor') && u.active);
-                if (shopFloorApproved.length > 0) {
-                    allOperators = shopFloorApproved.map((u, idx) => ({
-                        id: idx + 1,
-                        name: u.email.split('@')[0].replace('.', ' ').replace(/\b\w/g, (c) => c.toUpperCase()),
-                        jobTitle: 'Operator',
-                        department: 'Operations',
-                        workEmail: u.email,
-                        mobilePhone: null,
-                        userId: null,
-                        userName: u.email.split('@')[0],
-                        checkedIn: false,
-                        checkedOut: false,
-                        checkInTime: null,
-                        assignedItems: [],
-                    }));
-                    departments = ['Operations'];
-                }
-            }
+        // Filter persistent cache data if served from cache to ensure inactive/unlinked/email-derived names are excluded
+        if (allOperators && allOperators.length > 0) {
+            allOperators = allOperators.filter((op) => op && op.id && op.name && !op.name.includes('@'));
         }
         // Non-blocking background warmup of weekly PDF snapshot so download is instant (<50ms)
         void (0, weeklyShopFloorReportService_1.getOrBuildWeeklyShopFloorReportPdf)().catch(() => { });
@@ -2083,15 +2211,18 @@ router.post('/shop-floor/operators/send-invite', async (req, res) => {
         // Fetch operator details
         const operatorIds = ids.map(Number).filter((n) => !isNaN(n));
         const allOperators = [];
-        for (const deptName of OPERATOR_DEPARTMENT_NAMES) {
-            const depts = await client.findDepartmentByName(deptName);
-            for (const dept of depts) {
-                const emps = await client.getEmployeesByDepartment(dept.id);
-                for (const emp of emps) {
-                    if (operatorIds.includes(emp.id) && emp.work_email) {
-                        allOperators.push({ id: emp.id, name: emp.name, workEmail: emp.work_email });
-                    }
-                }
+        const targetCompanyId = await client.getTargetCompanyIdValue();
+        const emps = await client.searchReadRecords('hr.employee', {
+            domain: [
+                ['id', 'in', operatorIds],
+                ['company_id', '=', targetCompanyId],
+                ['active', '=', true],
+            ],
+            fields: ['id', 'name', 'work_email'],
+        }).catch(() => []);
+        for (const emp of emps) {
+            if (emp.work_email) {
+                allOperators.push({ id: emp.id, name: emp.name, workEmail: emp.work_email });
             }
         }
         const appUrl = env_1.env.APP_BASE_URL || `http://localhost:${process.env.PORT || 3001}`;
@@ -2335,8 +2466,6 @@ router.get('/shop-floor/boards', async (req, res) => {
             // Trigger fresh sync from Odoo in background without blocking initial render
             void (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(true).catch(() => null);
         }
-        // Reconcile pending processes against already-synced board logs first
-        await (0, repositories_1.reconcilePendingProcessesWithBoardLogs)().catch(() => 0);
         const [settings, stockMirror, recentIntakeRows, pendingProcesses, customers] = await Promise.all([
             (0, repositories_1.getSettings)(),
             (0, stockMirrorService_1.getStockMirrorForPage)(isRefresh),
@@ -2347,26 +2476,9 @@ router.get('/shop-floor/boards', async (req, res) => {
         const hasNextBoardLogPage = recentIntakeRows.length > boardLogPageSize;
         const recentIntakes = recentIntakeRows.slice(0, boardLogPageSize);
         const products = stockMirror.products;
-        const viewedEmail = getViewedUserEmail(req);
-        const normalizedEmail = viewedEmail.trim().toLowerCase();
-        const dashboardCacheKey = `shop-floor-dashboard:v3:${normalizedEmail}`;
-        let cachedDashboard = exports.shopFloorCache.get(dashboardCacheKey);
-        if (!cachedDashboard) {
-            try {
-                const snapshot = await (0, repositories_1.getShopFloorDashboardSnapshot)(normalizedEmail);
-                if (snapshot && snapshot.data) {
-                    cachedDashboard = snapshot.data;
-                    exports.shopFloorCache.set(dashboardCacheKey, cachedDashboard, 60 * 60 * 1000, 3 * 60 * 1000);
-                }
-            }
-            catch (_e) {
-                // ignore
-            }
-        }
-        const dashboardData = cachedDashboard || { stockAlerts: [], isLimitedDashboard: false };
         const optimisticSyncs = activeOptimisticBoardIntakes();
         const activeQueueSyncs = recentIntakes.filter((row) => row.status === 'processing' || row.status === 'pending');
-        // Format local stock alerts from pending processes in MySQL
+        // Format local stock alerts strictly from pending processes in MySQL (single source of truth)
         const localStockAlerts = pendingProcesses.map((p) => {
             const pPartner = String(p.partner_name || '').trim().toLowerCase();
             const pProduct = String(p.product_name || '').trim().toLowerCase();
@@ -2384,6 +2496,16 @@ router.get('/shop-floor/boards', async (req, res) => {
             // An alert item is only "isSyncing" (locked) if there is NO remaining unlogged quantity (qty_missing <= 0).
             const hasUnloggedBalance = Number(p.qty_missing || 0) > 0;
             const isSyncing = !hasUnloggedBalance && Boolean(matchingSync);
+            let resolvedClient = p.partner_name && p.partner_name !== 'Unknown Customer' ? p.partner_name.trim() : '';
+            if (!resolvedClient && p.partner_id) {
+                const matchingCustomer = (customers || []).find((c) => c.id === p.partner_id || c.partner_id === p.partner_id);
+                if (matchingCustomer?.name) {
+                    resolvedClient = matchingCustomer.name.trim();
+                }
+            }
+            if (!resolvedClient && p.origin) {
+                resolvedClient = p.origin.trim();
+            }
             return {
                 moName: p.mo_name,
                 product: p.product_name,
@@ -2391,7 +2513,7 @@ router.get('/shop-floor/boards', async (req, res) => {
                 qtyNeeded: p.qty_missing,
                 totalNeeded: p.qty_needed,
                 qtyReserved: p.qty_reserved,
-                client: p.partner_name,
+                client: resolvedClient || p.partner_name || 'No Client',
                 moId: p.mo_id,
                 confirmedAt: null,
                 overdueDays: 0,
@@ -2414,7 +2536,7 @@ router.get('/shop-floor/boards', async (req, res) => {
             recentIntakes,
             boardLogPage,
             hasNextBoardLogPage,
-            stockAlerts: localStockAlerts.length > 0 ? localStockAlerts : (dashboardData.isLimitedDashboard ? [] : dashboardData.stockAlerts),
+            stockAlerts: localStockAlerts,
             boardLogEmail: (0, helpers_1.normalizeBoardLogRecipients)(settings.stock?.boardLogNotificationEmail),
             customers,
             authUser: req.authUser,
@@ -2952,6 +3074,8 @@ router.post('/shop-floor/board-intake', async (req, res) => {
             vehicleRegistration, arrivalDate, arrivalTime, gate,
         });
         await (0, stockMirrorService_1.recordOptimisticStockAddition)(productId, productName, qty);
+        const moId = req.body.mo_id ? Number(req.body.mo_id) : undefined;
+        const moName = req.body.mo_name ? String(req.body.mo_name).trim() : undefined;
         // Mark matching pending board requirements loaded in MySQL immediately
         const updatedRequirements = await (0, repositories_1.markPendingShopFloorProcessesLoaded)({
             partnerId,
@@ -2960,6 +3084,8 @@ router.post('/shop-floor/board-intake', async (req, res) => {
             productName,
             loadedBy: actorName,
             quantity: qty,
+            moId,
+            moName,
         });
         optimisticBoardIntakes.push({ id: optimisticId, partnerId, productId, productName, customerName, quantity: qty, expiresAt: Date.now() + 10 * 60 * 1000 });
         exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
@@ -2971,14 +3097,19 @@ router.post('/shop-floor/board-intake', async (req, res) => {
         const totalNeeded = hasMoReq ? updatedRequirements.reduce((sum, r) => sum + Number(r.qty_needed || 0), 0) : null;
         const totalMissing = hasMoReq ? updatedRequirements.reduce((sum, r) => sum + Number(r.qty_missing || 0), 0) : null;
         const moNames = hasMoReq ? [...new Set(updatedRequirements.map((r) => r.mo_name).filter(Boolean))].join(', ') : '';
+        const resolvedMoNames = moNames || (moName ? moName : '');
+        const effectiveHasMoReq = hasMoReq || Boolean(moName);
         let partialSuffix = '';
-        if (hasMoReq && totalNeeded != null && totalMissing != null) {
+        if (effectiveHasMoReq && totalNeeded != null && totalMissing != null) {
             if (totalMissing > 0) {
-                partialSuffix = ` (Partial: ${qty} logged, balance ${totalMissing} of ${totalNeeded} needed for ${moNames || 'MO'})`;
+                partialSuffix = ` (Partial: ${qty} logged, balance ${totalMissing} of ${totalNeeded} needed for ${resolvedMoNames || 'MO'})`;
             }
             else {
-                partialSuffix = ` (Complete: all ${totalNeeded} supplied for ${moNames || 'MO'})`;
+                partialSuffix = ` (Complete: all ${totalNeeded} supplied for ${resolvedMoNames || 'MO'})`;
             }
+        }
+        else if (resolvedMoNames) {
+            partialSuffix = ` (For ${resolvedMoNames})`;
         }
         const successMessage = `Boards saved immediately: ${qty} x ${productName} for ${customerName}${partialSuffix}${vehicleRegistration ? ` (${vehicleRegistration})` : ''}. Odoo synchronization and MO reservation are continuing in the background.`;
         if (wantsJson) {
@@ -3025,11 +3156,11 @@ router.post('/shop-floor/board-intake', async (req, res) => {
                     const safeGate = escapeHtml(gate || '—');
                     const safeActorEmail = escapeHtml(actorName);
                     const subjectCustomerName = customerName.replace(/[\r\n]+/g, ' ').trim();
-                    const partialSubjectTag = (hasMoReq && totalMissing != null && totalMissing > 0)
+                    const partialSubjectTag = (effectiveHasMoReq && totalMissing != null && totalMissing > 0)
                         ? ` (Partial: ${qty} Logged, Balance ${totalMissing} Needed)`
-                        : '';
+                        : (resolvedMoNames ? ` (${resolvedMoNames})` : '');
                     let reqDetailsHtml = '';
-                    if (hasMoReq && totalNeeded != null) {
+                    if (effectiveHasMoReq && totalNeeded != null) {
                         reqDetailsHtml += `<br>Total Required: ${totalNeeded} sheets`;
                         if (totalMissing != null) {
                             if (totalMissing > 0) {
@@ -3040,21 +3171,26 @@ router.post('/shop-floor/board-intake', async (req, res) => {
                             }
                         }
                     }
-                    if (moNames) {
-                        reqDetailsHtml += `<br>Manufacturing Order: ${escapeHtml(moNames)}`;
+                    if (resolvedMoNames) {
+                        reqDetailsHtml += `<br>Manufacturing Order: ${escapeHtml(resolvedMoNames)}`;
                     }
                     let calloutHtml = '';
-                    if (hasMoReq && totalNeeded != null && totalMissing != null) {
+                    if (effectiveHasMoReq && totalNeeded != null && totalMissing != null) {
                         if (totalMissing > 0) {
                             calloutHtml = `<p style="margin-top:12px;padding:8px 12px;background:#fef2f2;border-left:4px solid #ef4444;color:#991b1b;border-radius:4px;">` +
-                                `⚠️ <strong>PARTIAL INTAKE:</strong> ${qty} sheet${qty === 1 ? '' : 's'} logged, balance <strong>${totalMissing} sheet${totalMissing === 1 ? '' : 's'}</strong> still required for ${escapeHtml(moNames || 'MO')}. Stock requirement of ${totalMissing} board${totalMissing === 1 ? '' : 's'} remains active before cutting/completion can start.` +
+                                `⚠️ <strong>PARTIAL INTAKE:</strong> ${qty} sheet${qty === 1 ? '' : 's'} logged, balance <strong>${totalMissing} sheet${totalMissing === 1 ? '' : 's'}</strong> still required for ${escapeHtml(resolvedMoNames || 'MO')}. Stock requirement of ${totalMissing} board${totalMissing === 1 ? '' : 's'} remains active before cutting/completion can start.` +
                                 `</p>`;
                         }
                         else {
                             calloutHtml = `<p style="margin-top:12px;padding:8px 12px;background:#f0fdf4;border-left:4px solid #22c55e;color:#166534;border-radius:4px;">` +
-                                `✅ <strong>COMPLETE INTAKE:</strong> All ${totalNeeded} sheets received and allocated in stock.` +
+                                `✅ <strong>COMPLETE INTAKE:</strong> All ${totalNeeded} sheets received and allocated in stock for ${escapeHtml(resolvedMoNames || 'MO')}.` +
                                 `</p>`;
                         }
+                    }
+                    else if (resolvedMoNames) {
+                        calloutHtml = `<p style="margin-top:12px;padding:8px 12px;background:#f0fdf4;border-left:4px solid #22c55e;color:#166534;border-radius:4px;">` +
+                            `✅ <strong>BOARD INTAKE:</strong> ${qty} sheet${qty === 1 ? '' : 's'} logged and allocated for ${escapeHtml(resolvedMoNames)}.` +
+                            `</p>`;
                     }
                     await (0, mailTransport_1.sendMailWithConfig)(settings.mail, {
                         to: toRecipients,
@@ -3326,6 +3462,14 @@ router.post('/shop-floor/board-intake/:id/revert', async (req, res) => {
         res.redirect('/shop-floor/boards?error=' + encodeURIComponent('This board log is already being reverted.') + '&boardLogPage=' + encodeURIComponent(String(req.body.boardLogPage || '1')));
         return;
     }
+    // Unmark pending processes immediately so it reappears instantly on /shop-floor/boards (<5ms)
+    const restoredRequirements = await (0, repositories_1.unmarkPendingShopFloorProcessesLoaded)({
+        partnerId: Number(entry.partner_id || 0),
+        productId: Number(entry.product_id || 0),
+        customerName: entry.customer_name,
+        productName: entry.product_name,
+        quantity: Number(entry.quantity || 0),
+    }).catch(() => []);
     // Clear dashboard cache immediately
     exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
     void Promise.allSettled([
@@ -3345,6 +3489,7 @@ router.post('/shop-floor/board-intake/:id/revert', async (req, res) => {
             await (0, stockMirrorService_1.recordExactStockQuantity)(Number(entry.product_id), entry.product_name, result.newQty, -Number(entry.quantity));
             exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
             void (0, stockMirrorService_1.refreshStockMirror)();
+            void (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(true).catch(() => null);
             // Post comprehensive short statement in Odoo chatter on matching MOs and linked Sales Orders
             const reportDate = new Intl.DateTimeFormat('en-CA', {
                 timeZone: env_1.env.APP_TIMEZONE || 'Africa/Nairobi',
@@ -3429,6 +3574,15 @@ router.post('/shop-floor/board-intake/:id/revert', async (req, res) => {
             ok: true,
             status: 'reverting',
             message: 'Board log revert initiated in the background.',
+            restoredRequirements: restoredRequirements || [],
+            item: {
+                id: entryId,
+                product_id: entry.product_id,
+                product_name: entry.product_name,
+                partner_id: entry.partner_id,
+                customer_name: entry.customer_name,
+                quantity: entry.quantity,
+            },
         });
         return;
     }

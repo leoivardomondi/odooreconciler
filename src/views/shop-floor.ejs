@@ -3202,6 +3202,10 @@ document.addEventListener('click', function(e) {
           if (key === 'start-finish' && document.querySelectorAll('[data-mo-row]').length > 0) {
             return;
           }
+          // If the page itself is currently displaying stock alerts or board intake elements, do NOT remove add-stock badge on transient 0
+          if (key === 'add-stock' && document.querySelectorAll('#stockNeededSection, #boardIntakeApp, [data-stock-alert]').length > 0) {
+            return;
+          }
           badge.remove();
         }
       });

@@ -275,7 +275,13 @@
           const syncingAlerts = stockAlerts.filter(a => a.isSyncing);
           const alertsByClient = {};
           stockAlerts.forEach((alert) => {
-            const key = alert.client || 'No Client';
+            let key = (alert.client && alert.client.trim() && alert.client !== 'Unknown Customer' && alert.client !== 'No Client') ? alert.client.trim() : '';
+            if (!key && alert.origin) {
+              key = 'Order ' + alert.origin;
+            }
+            if (!key) {
+              key = 'No Client';
+            }
             if (!alertsByClient[key]) alertsByClient[key] = [];
             alertsByClient[key].push(alert);
           });
@@ -309,7 +315,7 @@
                     <% if (hasClosedMo) { %>
                       <span class="badge bg-danger text-white rounded-pill px-2 py-0.5" style="font-size:0.68rem;letter-spacing:0.04em;">ALERT</span>
                     <% } %>
-                    Client: <%= client %>
+                    <%= (client.startsWith('Order ') || client === 'No Client') ? client : ('Client: ' + client) %>
                   </div>
                   <% if (items.length === 1) { 
                     const item = items[0];

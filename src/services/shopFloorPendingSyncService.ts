@@ -139,10 +139,18 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
           const pId = so.partner_id[0];
           const pName = so.partner_id[1];
           if (pId !== 350 && pName.toUpperCase() !== 'URBAN VIBE 2') {
-            soPartnerMap.set(so.name, {
+            const entry = {
               partnerId: pId,
               partnerName: pName,
-            });
+            };
+            soPartnerMap.set(so.name, entry);
+            soPartnerMap.set(so.name.trim(), entry);
+            soPartnerMap.set(so.name.trim().toUpperCase(), entry);
+            const cleanSo = extractSoNameFromOrigin(so.name);
+            if (cleanSo) {
+              soPartnerMap.set(cleanSo, entry);
+              soPartnerMap.set(cleanSo.trim().toUpperCase(), entry);
+            }
           }
         }
       }
@@ -349,7 +357,14 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
         continue;
       }
 
-      const partnerInfo = mo.origin ? (soPartnerMap.get(mo.origin) || (soOrigin ? soPartnerMap.get(soOrigin) : null)) : null;
+      const originKey = mo.origin ? mo.origin.trim() : '';
+      const partnerInfo = originKey
+        ? (soPartnerMap.get(originKey) ||
+           soPartnerMap.get(originKey.toUpperCase()) ||
+           (soOrigin ? (soPartnerMap.get(soOrigin) || soPartnerMap.get(soOrigin.trim().toUpperCase())) : null) ||
+           soPartnerMap.get(mo.name) ||
+           soPartnerMap.get(mo.name.trim().toUpperCase()))
+        : (soPartnerMap.get(mo.name) || soPartnerMap.get(mo.name.trim().toUpperCase()) || null);
       const partnerId = partnerInfo?.partnerId || 0;
       const partnerName = partnerInfo?.partnerName || 'Unknown Customer';
       if (partnerId === 350 || partnerName.toUpperCase() === 'URBAN VIBE 2') {

@@ -87,7 +87,7 @@ const shopFloorPendingSyncService_1 = require("./shopFloorPendingSyncService");
             return 1;
         },
     };
-    const result = await (0, boardIntakeSyncService_1.processBoardIntakePurchaseOrderFulfillment)(mockClient, {
+    const result = await (0, boardIntakeSyncService_1.processBoardIntakePurchaseOrderFulfillmentLegacy)(mockClient, {
         partner_id: '42',
         customer_name: 'Test Client Ltd',
         product_id: '205',

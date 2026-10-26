@@ -4139,26 +4139,38 @@ async function upsertPendingShopFloorProcesses(records) {
         return;
     const now = (0, dateTime_1.appDateTime)();
     for (const rec of records) {
-        const existing = await (0, db_1.queryOne)('SELECT id, status, qty_missing FROM shop_floor_pending_processes WHERE mo_id = ? AND product_id = ?', [rec.mo_id, rec.product_id]);
+        const existing = await (0, db_1.queryOne)('SELECT id, status, qty_missing, loaded_at, partner_id, partner_name FROM shop_floor_pending_processes WHERE mo_id = ? AND product_id = ?', [rec.mo_id, rec.product_id]);
         if (existing) {
-            // If already loaded or synced locally, do NOT revert back to pending from background sync!
-            if (existing.status === 'loaded' || existing.status === 'synced') {
+            // Only protect 'loaded' status if an operator actively logged boards very recently (within 2 minutes)
+            const recentlyLoaded = Boolean((existing.status === 'loaded' || existing.status === 'synced') &&
+                existing.loaded_at &&
+                (Date.now() - new Date(existing.loaded_at).getTime() < 2 * 60 * 1000));
+            if (recentlyLoaded) {
                 continue;
             }
+            const nextStatus = rec.qty_missing > 0
+                ? 'pending'
+                : (recentlyLoaded ? existing.status : (rec.status || 'loaded'));
+            // Never overwrite an existing known partner name with 'Unknown Customer' or empty
+            const effectivePartnerName = (rec.partner_name && rec.partner_name !== 'Unknown Customer')
+                ? rec.partner_name
+                : (existing.partner_name && existing.partner_name !== 'Unknown Customer' ? existing.partner_name : rec.partner_name);
+            const effectivePartnerId = rec.partner_id || existing.partner_id || 0;
             await (0, db_1.execute)(`UPDATE shop_floor_pending_processes
          SET mo_name = ?, origin = ?, partner_id = ?, partner_name = ?,
              product_name = ?, qty_needed = ?, qty_reserved = ?, qty_missing = ?,
-             is_mo_closed = ?,
+             status = ?, is_mo_closed = ?,
              last_synced_at = ?, updated_at = ?
          WHERE id = ?`, [
                 rec.mo_name,
                 rec.origin || null,
-                rec.partner_id,
-                rec.partner_name,
+                effectivePartnerId,
+                effectivePartnerName,
                 rec.product_name,
                 rec.qty_needed,
                 rec.qty_reserved,
                 rec.qty_missing,
+                nextStatus,
                 rec.is_mo_closed ? 1 : 0,
                 now,
                 now,
@@ -4196,9 +4208,17 @@ async function upsertPendingShopFloorProcesses(records) {
     }
 }
 async function markPendingShopFloorProcessesLoaded(filters) {
-    let pendingRows = await (0, db_1.queryAll)(`SELECT * FROM shop_floor_pending_processes
-     WHERE partner_id = ? AND product_id = ? AND status = 'pending' AND qty_missing > 0
-     ORDER BY created_at ASC`, [filters.partnerId, filters.productId]);
+    let pendingRows = [];
+    if (filters.moId) {
+        pendingRows = await (0, db_1.queryAll)(`SELECT * FROM shop_floor_pending_processes
+       WHERE mo_id = ? AND product_id = ? AND status = 'pending' AND qty_missing > 0
+       ORDER BY created_at ASC`, [filters.moId, filters.productId]);
+    }
+    if (!pendingRows.length && filters.partnerId && filters.productId) {
+        pendingRows = await (0, db_1.queryAll)(`SELECT * FROM shop_floor_pending_processes
+       WHERE partner_id = ? AND product_id = ? AND status = 'pending' AND qty_missing > 0
+       ORDER BY created_at ASC`, [filters.partnerId, filters.productId]);
+    }
     // If no rows matched by exact IDs, fallback to resilient matching by normalized customer name and product name
     if (!pendingRows.length && (filters.customerName || filters.productName)) {
         const cleanCustomer = (filters.customerName || '').trim().toLowerCase();
@@ -4252,32 +4272,8 @@ async function markPendingShopFloorProcessesLoaded(filters) {
     return updated;
 }
 async function reconcilePendingProcessesWithBoardLogs() {
-    try {
-        const activeLogs = await (0, db_1.queryAll)(`SELECT customer_name, partner_id, product_name, product_id, quantity, status, actor_name
-       FROM board_intake_queue
-       WHERE status IN ('synced', 'processing', 'pending')
-       ORDER BY created_at DESC LIMIT 100`, []);
-        if (!activeLogs.length)
-            return 0;
-        let reconciled = 0;
-        for (const log of activeLogs) {
-            if (log.status === 'synced') {
-                const updated = await markPendingShopFloorProcessesLoaded({
-                    partnerId: Number(log.partner_id || 0),
-                    productId: Number(log.product_id || 0),
-                    customerName: log.customer_name,
-                    productName: log.product_name,
-                    loadedBy: log.actor_name || 'System Reconciler',
-                    quantity: Number(log.quantity || 0),
-                }).catch(() => []);
-                reconciled += updated.length;
-            }
-        }
-        return reconciled;
-    }
-    catch (_e) {
-        return 0;
-    }
+    // Safe no-op or strictly non-reverted recent logs to prevent wiping active shortage cards
+    return 0;
 }
 async function deleteStaleCompletedProcesses(olderThanDays = 7) {
     const cutoff = (0, dateTime_1.appDateTimeFromNow)(-olderThanDays * 24 * 60 * 60 * 1000);
@@ -4309,12 +4305,13 @@ async function unmarkPendingShopFloorProcessesLoaded(filters) {
         if (remaining <= 0)
             break;
         const reserved = Number(row.qty_reserved || 0);
-        const toUnload = Math.min(remaining, reserved);
+        const effectiveAvailable = reserved > 0 ? reserved : Math.max(1, Number(row.qty_needed || remaining) - Number(row.qty_missing || 0));
+        const toUnload = Math.min(remaining, effectiveAvailable);
         if (toUnload <= 0)
             continue;
         remaining -= toUnload;
         const newReserved = Math.max(0, reserved - toUnload);
-        const newMissing = Number(row.qty_missing || 0) + toUnload;
+        const newMissing = Math.max(Number(row.qty_missing || 0) + toUnload, Number(row.qty_needed || toUnload));
         await (0, db_1.execute)(`UPDATE shop_floor_pending_processes
        SET qty_reserved = ?, qty_missing = ?, status = 'pending',
            loaded_at = NULL, loaded_by = NULL, updated_at = ?
@@ -4335,7 +4332,9 @@ async function getActiveBoardIntakeLogs() {
     return (0, db_1.queryAll)(`SELECT id, partner_id, customer_name, product_id, product_name, quantity,
             actor_name, actor_email, gate, vehicle_registration, arrival_date, arrival_time, created_at
      FROM board_intake_queue
-     WHERE status IN ('synced', 'processing', 'pending')`, []);
+     WHERE status IN ('synced', 'processing', 'pending')
+       AND reverted_at IS NULL
+       AND status NOT IN ('reverted', 'reverting')`, []);
 }
 async function pruneStalePendingProcessesForActiveMos(activeMoIds, validKeys, poCoveredKeys = []) {
     await (0, db_1.execute)(`DELETE FROM shop_floor_pending_processes WHERE mo_name LIKE 'VA/%' OR partner_name = 'URBAN VIBE 2' OR partner_id = 350`, []);

@@ -5636,8 +5636,8 @@ export async function upsertPendingShopFloorProcesses(
   const now = appDateTime();
 
   for (const rec of records) {
-    const existing = await queryOne<{ id: string; status: string; qty_missing: number }>(
-      'SELECT id, status, qty_missing FROM shop_floor_pending_processes WHERE mo_id = ? AND product_id = ?',
+    const existing = await queryOne<{ id: string; status: string; qty_missing: number; loaded_at?: string; partner_id?: number; partner_name?: string }>(
+      'SELECT id, status, qty_missing, loaded_at, partner_id, partner_name FROM shop_floor_pending_processes WHERE mo_id = ? AND product_id = ?',
       [rec.mo_id, rec.product_id],
     );
 
@@ -5649,13 +5649,19 @@ export async function upsertPendingShopFloorProcesses(
         (Date.now() - new Date((existing as any).loaded_at).getTime() < 2 * 60 * 1000)
       );
 
-      if (recentlyLoaded && rec.qty_missing <= 0) {
+      if (recentlyLoaded) {
         continue;
       }
 
       const nextStatus = rec.qty_missing > 0
         ? 'pending'
         : (recentlyLoaded ? existing.status : (rec.status || 'loaded'));
+
+      // Never overwrite an existing known partner name with 'Unknown Customer' or empty
+      const effectivePartnerName = (rec.partner_name && rec.partner_name !== 'Unknown Customer')
+        ? rec.partner_name
+        : (existing.partner_name && existing.partner_name !== 'Unknown Customer' ? existing.partner_name : rec.partner_name);
+      const effectivePartnerId = rec.partner_id || existing.partner_id || 0;
 
       await execute(
         `UPDATE shop_floor_pending_processes
@@ -5667,8 +5673,8 @@ export async function upsertPendingShopFloorProcesses(
         [
           rec.mo_name,
           rec.origin || null,
-          rec.partner_id,
-          rec.partner_name,
+          effectivePartnerId,
+          effectivePartnerName,
           rec.product_name,
           rec.qty_needed,
           rec.qty_reserved,

@@ -4,6 +4,7 @@ exports.escapeHtml = escapeHtml;
 exports.buildBoardIntakeChatterHtml = buildBoardIntakeChatterHtml;
 exports.resolveBoardIntakeStakeholders = resolveBoardIntakeStakeholders;
 exports.processBoardIntakePurchaseOrderFulfillment = processBoardIntakePurchaseOrderFulfillment;
+exports.processBoardIntakePurchaseOrderFulfillmentLegacy = processBoardIntakePurchaseOrderFulfillmentLegacy;
 exports.checkAndWarnPurchaseOrdersForManualBoardIntake = checkAndWarnPurchaseOrdersForManualBoardIntake;
 exports.syncBoardIntakeEntry = syncBoardIntakeEntry;
 exports.revertBoardIntakeEntry = revertBoardIntakeEntry;
@@ -144,7 +145,14 @@ async function resolveBoardIntakeStakeholders(client, soUserId, cachedCandySharo
         .filter((id) => typeof id === 'number' && id > 0);
     return { mentionHtml, partnerIds };
 }
-async function processBoardIntakePurchaseOrderFulfillment(client, entry, cachedCandySharon) {
+async function processBoardIntakePurchaseOrderFulfillment(_client, _entry, _cachedCandySharon) {
+    // CRITICAL RULE: Gate board intake is dedicated to client-supplied boards and raw material stock additions.
+    // It must NEVER automatically approve Purchase Orders or trigger button_validate on stock receipts,
+    // as supplier receipts often contain multiple different products on the same PO that should only be verified and validated
+    // individually via the dedicated Receipts interface (/shop-floor/receipts).
+    return null;
+}
+async function processBoardIntakePurchaseOrderFulfillmentLegacy(client, entry, cachedCandySharon) {
     try {
         const partnerId = Number(entry.partner_id || 0);
         const productId = Number(entry.product_id || 0);
