@@ -3956,88 +3956,17 @@ router.post('/shop-floor/board-intake', async (req: Request, res: Response) => {
     }
 
     void (async () => {
-      // 1. Dispatch email alert immediately so recipients are notified in real-time
-      const emailPromise = (async () => {
-        try {
-          const settings = await getSettings();
-          const rawRecipients = normalizeBoardLogRecipients(settings.stock?.boardLogNotificationEmail);
-          const recipientList = [...new Set(rawRecipients.split(/[,\s;\n]+/).map((e) => e.trim().toLowerCase()).filter((e) => e.includes('@')))];
-          const toRecipients = recipientList.join(', ');
-          const reportDate = new Intl.DateTimeFormat('en-CA', { timeZone: env.APP_TIMEZONE || 'Africa/Nairobi', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
-          const safeCustomerName = escapeHtml(customerName);
-          const safeProductName = escapeHtml(productName);
-          const safeVehicleReg = escapeHtml(vehicleRegistration || '—');
-          const safeArrivalTime = escapeHtml(arrivalTime || '—');
-          const safeGate = escapeHtml(gate || '—');
-          const safeActorEmail = escapeHtml(actorName);
-          const subjectCustomerName = customerName.replace(/[\r\n]+/g, ' ').trim();
+      let effectiveIsPurchase = isPurchase;
+      let effectivePoRef = purchaseOrderReference;
 
-          const partialSubjectTag = (effectiveHasMoReq && totalMissing != null && totalMissing > 0)
-            ? ` (Partial: ${qty} Logged, Balance ${totalMissing} Needed)`
-            : (resolvedMoNames ? ` (${resolvedMoNames})` : '');
-
-          let reqDetailsHtml = '';
-          if (effectiveHasMoReq && totalNeeded != null) {
-            reqDetailsHtml += `<br>Total Required: ${totalNeeded} sheets`;
-            if (totalMissing != null) {
-              if (totalMissing > 0) {
-                reqDetailsHtml += `<br>Balance Remaining: <strong style="color:#b91c1c;">${totalMissing} sheet${totalMissing === 1 ? '' : 's'} needed</strong>`;
-              } else {
-                reqDetailsHtml += `<br>Balance Remaining: <strong style="color:#15803d;">0 sheets (Fully supplied)</strong>`;
-              }
-            }
-          }
-          if (resolvedMoNames) {
-            reqDetailsHtml += `<br>Manufacturing Order: ${escapeHtml(resolvedMoNames)}`;
-          }
-
-          let calloutHtml = '';
-          if (effectiveHasMoReq && totalNeeded != null && totalMissing != null) {
-            if (totalMissing > 0) {
-              calloutHtml = `<p style="margin-top:12px;padding:8px 12px;background:#fef2f2;border-left:4px solid #ef4444;color:#991b1b;border-radius:4px;">` +
-                `⚠️ <strong>PARTIAL INTAKE:</strong> ${qty} sheet${qty === 1 ? '' : 's'} logged, balance <strong>${totalMissing} sheet${totalMissing === 1 ? '' : 's'}</strong> still required for ${escapeHtml(resolvedMoNames || 'MO')}. Stock requirement of ${totalMissing} board${totalMissing === 1 ? '' : 's'} remains active before cutting/completion can start.` +
-                `</p>`;
-            } else {
-              calloutHtml = `<p style="margin-top:12px;padding:8px 12px;background:#f0fdf4;border-left:4px solid #22c55e;color:#166534;border-radius:4px;">` +
-                `✅ <strong>COMPLETE INTAKE:</strong> All ${totalNeeded} sheets received and allocated in stock for ${escapeHtml(resolvedMoNames || 'MO')}.` +
-                `</p>`;
-            }
-          } else if (resolvedMoNames) {
-            calloutHtml = `<p style="margin-top:12px;padding:8px 12px;background:#f0fdf4;border-left:4px solid #22c55e;color:#166534;border-radius:4px;">` +
-              `✅ <strong>BOARD INTAKE:</strong> ${qty} sheet${qty === 1 ? '' : 's'} logged and allocated for ${escapeHtml(resolvedMoNames)}.` +
-              `</p>`;
-          }
-
-          const purchaseSubjectTag = isPurchase ? ' [PURCHASE]' : ' [CLIENT SUPPLY]';
-          const purchaseLabel = isPurchase
-            ? (purchaseOrderReference ? `Yes (PO: ${escapeHtml(purchaseOrderReference)})` : 'Yes (Company Purchase)')
-            : 'No (Client Supplied)';
-
-          const appBaseUrl = String(env.APP_BASE_URL || 'https://app.urbanvibeinteriordesign.co.ke').replace(/\/+$/, '');
-          const fullListUrl = `${appBaseUrl}/shop-floor/boards?date=${encodeURIComponent(reportDate)}#recentBoardLogsSection`;
-          const buttonHtml = `<div style="margin-top:20px;margin-bottom:12px;">` +
-            `<a href="${fullListUrl}" style="display:inline-block;background-color:#0f172a;color:#ffffff;text-decoration:none;padding:10px 22px;font-size:14px;font-weight:600;border-radius:8px;box-shadow:0 1px 2px rgba(0,0,0,0.08);letter-spacing:0.01em;" target="_blank">` +
-            `📋 View Full Board Logs List &rarr;` +
-            `</a>` +
-            `</div>`;
-
-          await sendMailWithConfig(settings.mail, {
-            to: toRecipients,
-            subject: `${subjectCustomerName} - Board Log${purchaseSubjectTag}${partialSubjectTag} - ${reportDate}`,
-            html: `<p><strong>Board log completed</strong></p><p>Client: ${safeCustomerName}<br>Board: ${safeProductName}<br>Purchase: <strong style="${isPurchase ? 'color:#1d4ed8;' : 'color:#475569;'}">${purchaseLabel}</strong><br>Quantity: ${qty} sheet${qty === 1 ? '' : 's'}${reqDetailsHtml}<br>Gate: ${safeGate}<br>Vehicle Reg: ${safeVehicleReg}<br>Arrival Time: ${safeArrivalTime}<br>Date: ${reportDate}<br>Logged by: ${safeActorEmail}</p>${calloutHtml}${buttonHtml}`,
-          });
-        } catch (mailError) {
-          await logEvent('error', `Board log email failed`, {
-            customerName, productName, quantity: qty, vehicleRegistration, arrivalTime, gate, actor: actorName, actorEmail: req.authUser?.email,
-            error: mailError instanceof Error ? mailError.message : String(mailError),
-          });
-        }
-      })();
-
-      // 2. Synchronize board inventory and reservations in Odoo concurrently
+      // 1. Synchronize board inventory, validate matching PO receipt if connected, and reserve MO in Odoo
       try {
         const syncResult = await syncBoardIntakeEntry(optimisticId);
-        // Ensure pending processes are re-marked loaded in MySQL even if background Odoo sync ran
+        const refreshed = await getBoardIntakeQueueEntry(optimisticId);
+        if (refreshed) {
+          effectiveIsPurchase = Boolean(refreshed.is_purchase);
+          effectivePoRef = refreshed.purchase_order_reference || null;
+        }
         await markPendingShopFloorProcessesLoaded({
           partnerId,
           productId,
@@ -4045,6 +3974,8 @@ router.post('/shop-floor/board-intake', async (req: Request, res: Response) => {
           productName,
           loadedBy: actorName,
           quantity: qty,
+          moId,
+          moName,
         }).catch(() => 0);
 
         const optimisticIndex = optimisticBoardIntakes.findIndex((entry) => entry.id === optimisticId);
@@ -4053,16 +3984,86 @@ router.post('/shop-floor/board-intake', async (req: Request, res: Response) => {
         await logEvent('info', 'Board intake background MO reservation completed', {
           productId, partnerId, quantity: qty,
           matchingMoCount: syncResult.matchingMoCount || 0,
-        });
-      } catch (backgroundError) {
-        const message = backgroundError instanceof Error ? backgroundError.message : String(backgroundError);
-        await logEvent('error', 'Board intake background MO reservation failed', {
-          productId, partnerId, quantity: qty,
-          error: message,
-        });
+        }).catch(() => undefined);
+      } catch (syncErr) {
+        console.warn('[ShopFloor] Board intake sync background error:', syncErr);
       }
 
-      await emailPromise.catch(() => null);
+      // 2. Dispatch email alert with accurate purchase / PO status
+      try {
+        const settings = await getSettings();
+        const rawRecipients = normalizeBoardLogRecipients(settings.stock?.boardLogNotificationEmail);
+        const recipientList = [...new Set(rawRecipients.split(/[,\s;\n]+/).map((e) => e.trim().toLowerCase()).filter((e) => e.includes('@')))];
+        const toRecipients = recipientList.join(', ');
+        const reportDate = new Intl.DateTimeFormat('en-CA', { timeZone: env.APP_TIMEZONE || 'Africa/Nairobi', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+        const safeCustomerName = escapeHtml(customerName);
+        const safeProductName = escapeHtml(productName);
+        const safeVehicleReg = escapeHtml(vehicleRegistration || '—');
+        const safeArrivalTime = escapeHtml(arrivalTime || '—');
+        const safeGate = escapeHtml(gate || '—');
+        const safeActorEmail = escapeHtml(actorName);
+        const subjectCustomerName = customerName.replace(/[\r\n]+/g, ' ').trim();
+
+        const partialSubjectTag = (effectiveHasMoReq && totalMissing != null && totalMissing > 0)
+          ? ` (Partial: ${qty} Logged, Balance ${totalMissing} Needed)`
+          : (resolvedMoNames ? ` (${resolvedMoNames})` : '');
+
+        let reqDetailsHtml = '';
+        if (effectiveHasMoReq && totalNeeded != null) {
+          reqDetailsHtml += `<br>Total Required: ${totalNeeded} sheets`;
+          if (totalMissing != null) {
+            if (totalMissing > 0) {
+              reqDetailsHtml += `<br>Balance Remaining: <strong style="color:#b91c1c;">${totalMissing} sheet${totalMissing === 1 ? '' : 's'} needed</strong>`;
+            } else {
+              reqDetailsHtml += `<br>Balance Remaining: <strong style="color:#15803d;">0 sheets (Fully supplied)</strong>`;
+            }
+          }
+        }
+        if (resolvedMoNames) {
+          reqDetailsHtml += `<br>Manufacturing Order: ${escapeHtml(resolvedMoNames)}`;
+        }
+
+        let calloutHtml = '';
+        if (effectiveHasMoReq && totalNeeded != null && totalMissing != null) {
+          if (totalMissing > 0) {
+            calloutHtml = `<p style="margin-top:12px;padding:8px 12px;background:#fef2f2;border-left:4px solid #ef4444;color:#991b1b;border-radius:4px;">` +
+              `⚠️ <strong>PARTIAL INTAKE:</strong> ${qty} sheet${qty === 1 ? '' : 's'} logged, balance <strong>${totalMissing} sheet${totalMissing === 1 ? '' : 's'}</strong> still required for ${escapeHtml(resolvedMoNames || 'MO')}. Stock requirement of ${totalMissing} board${totalMissing === 1 ? '' : 's'} remains active before cutting/completion can start.` +
+              `</p>`;
+          } else {
+            calloutHtml = `<p style="margin-top:12px;padding:8px 12px;background:#f0fdf4;border-left:4px solid #22c55e;color:#166534;border-radius:4px;">` +
+              `✅ <strong>COMPLETE INTAKE:</strong> All ${totalNeeded} sheets received and allocated in stock for ${escapeHtml(resolvedMoNames || 'MO')}.` +
+              `</p>`;
+          }
+        } else if (resolvedMoNames) {
+          calloutHtml = `<p style="margin-top:12px;padding:8px 12px;background:#f0fdf4;border-left:4px solid #22c55e;color:#166534;border-radius:4px;">` +
+            `✅ <strong>BOARD INTAKE:</strong> ${qty} sheet${qty === 1 ? '' : 's'} logged and allocated for ${escapeHtml(resolvedMoNames)}.` +
+            `</p>`;
+        }
+
+        const purchaseSubjectTag = effectiveIsPurchase ? ' [PURCHASE]' : ' [CLIENT SUPPLY]';
+        const purchaseLabel = effectiveIsPurchase
+          ? (effectivePoRef ? `Yes (PO: ${escapeHtml(effectivePoRef)})` : 'Yes (Company Purchase)')
+          : 'No (Client Supplied)';
+
+        const appBaseUrl = String(env.APP_BASE_URL || 'https://app.urbanvibeinteriordesign.co.ke').replace(/\/+$/, '');
+        const fullListUrl = `${appBaseUrl}/shop-floor/boards?date=${encodeURIComponent(reportDate)}#recentBoardLogsSection`;
+        const buttonHtml = `<div style="margin-top:20px;margin-bottom:12px;">` +
+          `<a href="${fullListUrl}" style="display:inline-block;background-color:#0f172a;color:#ffffff;text-decoration:none;padding:10px 22px;font-size:14px;font-weight:600;border-radius:8px;box-shadow:0 1px 2px rgba(0,0,0,0.08);letter-spacing:0.01em;" target="_blank">` +
+          `📋 View Full Board Logs List &rarr;` +
+          `</a>` +
+          `</div>`;
+
+        await sendMailWithConfig(settings.mail, {
+          to: toRecipients,
+          subject: `${subjectCustomerName} - Board Log${purchaseSubjectTag}${partialSubjectTag} - ${reportDate}`,
+          html: `<p><strong>Board log completed</strong></p><p>Client: ${safeCustomerName}<br>Board: ${safeProductName}<br>Purchase: <strong style="${effectiveIsPurchase ? 'color:#1d4ed8;' : 'color:#475569;'}">${purchaseLabel}</strong><br>Quantity: ${qty} sheet${qty === 1 ? '' : 's'}${reqDetailsHtml}<br>Gate: ${safeGate}<br>Vehicle Reg: ${safeVehicleReg}<br>Arrival Time: ${safeArrivalTime}<br>Date: ${reportDate}<br>Logged by: ${safeActorEmail}</p>${calloutHtml}${buttonHtml}`,
+        });
+      } catch (mailError) {
+        await logEvent('error', `Board log email failed`, {
+          customerName, productName, quantity: qty, vehicleRegistration, arrivalTime, gate, actor: actorName, actorEmail: req.authUser?.email,
+          error: mailError instanceof Error ? mailError.message : String(mailError),
+        });
+      }
     })();
     return;
   } catch (err) {

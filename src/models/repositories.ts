@@ -5143,13 +5143,42 @@ export async function createBoardIntakeQueueEntry(input: {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`, [input.id, input.productId, input.productName, input.partnerId, input.customerName, input.quantity, input.actorName, input.actorEmail || null, input.vehicleRegistration || null, arrivalDate, input.arrivalTime || null, input.gate || null, isPurchase, purchaseOrderReference, now, now]);
 }
 
-export async function updateBoardIntakeQueueEntry(id: string, input: { status: 'processing' | 'synced' | 'failed'; stockQuantity?: number; errorMessage?: string }) {
+export async function updateBoardIntakeQueueEntry(id: string, input: {
+  status: 'processing' | 'synced' | 'failed';
+  stockQuantity?: number;
+  errorMessage?: string;
+  isPurchase?: boolean | number;
+  purchaseOrderReference?: string | null;
+}) {
   const retryDelayMinutes = input.status === 'failed' ? 2 : 0;
-  await execute(`UPDATE board_intake_queue SET status = ?, odoo_stock_quantity = COALESCE(?, odoo_stock_quantity), error_message = ?,
-    synced_at = CASE WHEN ? = 'synced' THEN CURRENT_TIMESTAMP ELSE synced_at END,
-    next_retry_at = CASE WHEN ? = 'failed' THEN ${getDatabaseDialect() === 'mysql' ? 'DATE_ADD(CURRENT_TIMESTAMP, INTERVAL ? MINUTE)' : "datetime(CURRENT_TIMESTAMP, '+' || ? || ' minutes')"} ELSE NULL END,
-    updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-    [input.status, input.stockQuantity ?? null, input.errorMessage || null, input.status, input.status, retryDelayMinutes, id]);
+  const sets: string[] = [
+    'status = ?',
+    'odoo_stock_quantity = COALESCE(?, odoo_stock_quantity)',
+    'error_message = ?',
+    "synced_at = CASE WHEN ? = 'synced' THEN CURRENT_TIMESTAMP ELSE synced_at END",
+    `next_retry_at = CASE WHEN ? = 'failed' THEN ${getDatabaseDialect() === 'mysql' ? 'DATE_ADD(CURRENT_TIMESTAMP, INTERVAL ? MINUTE)' : "datetime(CURRENT_TIMESTAMP, '+' || ? || ' minutes')"} ELSE NULL END`,
+    'updated_at = CURRENT_TIMESTAMP',
+  ];
+  const params: Array<string | number | boolean | null> = [
+    input.status,
+    input.stockQuantity ?? null,
+    input.errorMessage || null,
+    input.status,
+    input.status,
+    retryDelayMinutes,
+  ];
+
+  if (input.isPurchase !== undefined) {
+    sets.push('is_purchase = ?');
+    params.push(input.isPurchase ? 1 : 0);
+  }
+  if (input.purchaseOrderReference !== undefined) {
+    sets.push('purchase_order_reference = ?');
+    params.push(input.purchaseOrderReference || null);
+  }
+
+  params.push(id);
+  await execute(`UPDATE board_intake_queue SET ${sets.join(', ')} WHERE id = ?`, params);
 }
 
 export async function getRecentBoardIntakeQueueEntries(limit = 12, offset = 0, filterDate?: string | null) {

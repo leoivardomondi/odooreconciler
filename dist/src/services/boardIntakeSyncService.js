@@ -1,10 +1,11 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.processBoardIntakePurchaseOrderFulfillmentLegacy = void 0;
 exports.escapeHtml = escapeHtml;
 exports.buildBoardIntakeChatterHtml = buildBoardIntakeChatterHtml;
 exports.resolveBoardIntakeStakeholders = resolveBoardIntakeStakeholders;
 exports.processBoardIntakePurchaseOrderFulfillment = processBoardIntakePurchaseOrderFulfillment;
-exports.processBoardIntakePurchaseOrderFulfillmentLegacy = processBoardIntakePurchaseOrderFulfillmentLegacy;
+exports.reconcileRetroactiveBoardLogsForLinkedPos = reconcileRetroactiveBoardLogsForLinkedPos;
 exports.checkAndWarnPurchaseOrdersForManualBoardIntake = checkAndWarnPurchaseOrdersForManualBoardIntake;
 exports.syncBoardIntakeEntry = syncBoardIntakeEntry;
 exports.revertBoardIntakeEntry = revertBoardIntakeEntry;
@@ -13,6 +14,7 @@ exports.cleanPreexistingMismatchChatter = cleanPreexistingMismatchChatter;
 exports.startBoardIntakeSyncInterval = startBoardIntakeSyncInterval;
 const repositories_1 = require("../models/repositories");
 const repositories_2 = require("../models/repositories");
+const db_1 = require("../models/db");
 const stockMirrorService_1 = require("./stockMirrorService");
 const logService_1 = require("./logService");
 const odooClient_1 = require("./odooClient");
@@ -145,14 +147,7 @@ async function resolveBoardIntakeStakeholders(client, soUserId, cachedCandySharo
         .filter((id) => typeof id === 'number' && id > 0);
     return { mentionHtml, partnerIds };
 }
-async function processBoardIntakePurchaseOrderFulfillment(_client, _entry, _cachedCandySharon) {
-    // CRITICAL RULE: Gate board intake is dedicated to client-supplied boards and raw material stock additions.
-    // It must NEVER automatically approve Purchase Orders or trigger button_validate on stock receipts,
-    // as supplier receipts often contain multiple different products on the same PO that should only be verified and validated
-    // individually via the dedicated Receipts interface (/shop-floor/receipts).
-    return null;
-}
-async function processBoardIntakePurchaseOrderFulfillmentLegacy(client, entry, cachedCandySharon) {
+async function processBoardIntakePurchaseOrderFulfillment(client, entry, cachedCandySharon) {
     try {
         const partnerId = Number(entry.partner_id || 0);
         const productId = Number(entry.product_id || 0);
@@ -336,19 +331,55 @@ async function processBoardIntakePurchaseOrderFulfillmentLegacy(client, entry, c
         const moveOrderedQty = Number(targetMove.product_uom_qty || 0);
         const qtyToFulfill = Math.min(qtyNum, moveOrderedQty > 0 ? moveOrderedQty : qtyNum);
         const surplusQty = Math.max(0, qtyNum - qtyToFulfill);
-        await client.writeRecord('stock.move', [targetMove.id], { quantity: qtyToFulfill });
-        const moveLines = await client.searchReadRecords('stock.move.line', {
-            domain: [['move_id', '=', targetMove.id]],
-            fields: ['id'],
-            limit: 10,
-        }).catch(() => []);
-        if (moveLines.length > 0) {
-            await client.writeRecord('stock.move.line', [moveLines[0].id], { quantity: qtyToFulfill }).catch(() => null);
-        }
+        // 1. Confirm & assign picking first to ensure all moves are allocated and move lines prepared
         if (targetPicking.state === 'draft') {
             await client.callRecordMethod('stock.picking', 'action_confirm', [targetPicking.id]).catch(() => null);
         }
         await client.callRecordMethod('stock.picking', 'action_assign', [targetPicking.id]).catch(() => null);
+        // 2. CRITICAL MULTI-PRODUCT PO ISOLATION (Operations / Receipt Path):
+        // A PO receipt often has multiple products (e.g. 3 different board items or hardware).
+        // Logging ONE product must ONLY validate that specific product and ONLY the keyed-in quantity!
+        // All other moves on the picking MUST have their done quantity explicitly zeroed out
+        // so Odoo generates a backorder for the unreceived products and does NOT validate them.
+        const allPickingMoves = await client.searchReadRecords('stock.move', {
+            domain: [
+                ['picking_id', '=', targetPicking.id],
+                ['state', 'not in', ['done', 'cancel']],
+            ],
+            fields: ['id', 'product_id', 'product_uom_qty', 'quantity'],
+            limit: 100,
+        }).catch(() => []);
+        const allPickingMoveLines = await client.searchReadRecords('stock.move.line', {
+            domain: [['picking_id', '=', targetPicking.id]],
+            fields: ['id', 'move_id', 'product_id', 'quantity'],
+            limit: 200,
+        }).catch(() => []);
+        const movesToProcess = allPickingMoves.length > 0 ? allPickingMoves : [targetMove];
+        for (const move of movesToProcess) {
+            const moveProdId = Array.isArray(move.product_id) ? move.product_id[0] : move.product_id;
+            const isTarget = moveProdId === productId;
+            const targetDoneQty = isTarget ? qtyToFulfill : 0;
+            await client.writeRecord('stock.move', [move.id], { quantity: targetDoneQty }).catch(() => null);
+            const relatedLines = allPickingMoveLines.filter((l) => {
+                const lineMoveId = Array.isArray(l.move_id) ? l.move_id[0] : l.move_id;
+                return lineMoveId === move.id;
+            });
+            if (relatedLines.length > 0) {
+                if (isTarget) {
+                    // Set first line to qtyToFulfill, any additional line for this move to 0
+                    await client.writeRecord('stock.move.line', [relatedLines[0].id], { quantity: targetDoneQty }).catch(() => null);
+                    if (relatedLines.length > 1) {
+                        const extraIds = relatedLines.slice(1).map((l) => l.id);
+                        await client.writeRecord('stock.move.line', extraIds, { quantity: 0 }).catch(() => null);
+                    }
+                }
+                else {
+                    // Non-target moves: zero out all move lines so Odoo generates backorders and does not validate them
+                    const otherLineIds = relatedLines.map((l) => l.id);
+                    await client.writeRecord('stock.move.line', otherLineIds, { quantity: 0 }).catch(() => null);
+                }
+            }
+        }
         const actorEmail = String(entry.actor_email || 'operator@urbanvibeinteriordesign.co.ke');
         await client.populatePickingValidationMetadata(targetPicking.id, actorEmail).catch(() => null);
         const valResult = await client.callRecordMethod('stock.picking', 'button_validate', [targetPicking.id]).catch(() => null);
@@ -419,6 +450,67 @@ async function processBoardIntakePurchaseOrderFulfillmentLegacy(client, entry, c
         console.error('[BoardIntakeSyncService] Error in processBoardIntakePurchaseOrderFulfillment:', err);
         return null;
     }
+}
+exports.processBoardIntakePurchaseOrderFulfillmentLegacy = processBoardIntakePurchaseOrderFulfillment;
+/**
+ * Scans recent manual board intake logs (last 14 days) that were processed as client-supply
+ * to check if a connected MO or SO now has a confirmed/linked Purchase Order in Odoo.
+ * If a matching PO with open receipt picking is found:
+ * 1. Validates the receipt picking in Odoo (button_validate).
+ * 2. Reverses the earlier temporary manual stock addition to prevent duplicate inventory.
+ * 3. Updates the board_intake_queue record to is_purchase = 1 with the PO reference.
+ * 4. Posts an itemized chatter note on PO, Picking, SO, and MO.
+ */
+async function reconcileRetroactiveBoardLogsForLinkedPos(client, cachedCandySharon) {
+    const result = { matchedCount: 0, logsFulfilled: [] };
+    try {
+        const recentLogs = await (0, db_1.queryAll)(`SELECT id, product_id, product_name, partner_id, customer_name, quantity, actor_name, actor_email,
+              vehicle_registration, arrival_date, arrival_time, gate, is_purchase, purchase_order_reference, odoo_stock_quantity
+       FROM board_intake_queue
+       WHERE status = 'synced' AND reverted_at IS NULL AND (is_purchase = 0 OR is_purchase IS NULL)
+         AND created_at >= ${(0, db_1.getDatabaseDialect)() === 'mysql' ? 'DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 14 DAY)' : "datetime(CURRENT_TIMESTAMP, '-14 days')"}
+       ORDER BY created_at DESC LIMIT 30`);
+        if (!recentLogs.length)
+            return result;
+        for (const log of recentLogs) {
+            try {
+                const poFulfillment = await processBoardIntakePurchaseOrderFulfillment(client, log, cachedCandySharon);
+                if (poFulfillment?.fulfilledViaReceipt) {
+                    // Reconcile manual stock if previously added to avoid double counting
+                    if (poFulfillment.qtyFulfilled > 0) {
+                        await client.removeBoardsFromStock({
+                            productId: Number(log.product_id),
+                            quantity: poFulfillment.qtyFulfilled,
+                        }).catch((err) => {
+                            console.warn('[BoardIntakeSyncService] Note reversing previous manual stock after PO receipt fulfillment:', err);
+                        });
+                    }
+                    await (0, repositories_1.updateBoardIntakeQueueEntry)(log.id, {
+                        status: 'synced',
+                        isPurchase: 1,
+                        purchaseOrderReference: poFulfillment.poName,
+                    });
+                    result.matchedCount += 1;
+                    result.logsFulfilled.push(log.id);
+                    await (0, logService_1.logEvent)('info', 'Retroactive board intake matched to newly connected Purchase Order receipt', {
+                        boardIntakeId: log.id,
+                        productName: log.product_name,
+                        customerName: log.customer_name,
+                        poName: poFulfillment.poName,
+                        pickingName: poFulfillment.pickingName,
+                        qtyFulfilled: poFulfillment.qtyFulfilled,
+                    }).catch(() => undefined);
+                }
+            }
+            catch (logErr) {
+                console.warn(`[BoardIntakeSyncService] Failed checking retroactive PO fulfillment for log ${log.id}:`, logErr);
+            }
+        }
+    }
+    catch (err) {
+        console.error('[BoardIntakeSyncService] Error in reconcileRetroactiveBoardLogsForLinkedPos:', err);
+    }
+    return result;
 }
 async function checkAndWarnPurchaseOrdersForManualBoardIntake(client, entry, cachedCandySharon) {
     try {
@@ -744,7 +836,12 @@ async function syncBoardIntakeEntry(id) {
             // Fire-and-forget warehouse-wide auto-reservation in background so it never blocks intake completion
             void client.autoReserveConfirmedMOs(warehouseId).catch(() => null);
         }
-        await (0, repositories_1.updateBoardIntakeQueueEntry)(id, { status: 'synced', stockQuantity });
+        await (0, repositories_1.updateBoardIntakeQueueEntry)(id, {
+            status: 'synced',
+            stockQuantity,
+            isPurchase: poFulfillment?.fulfilledViaReceipt ? 1 : (entry.is_purchase ? 1 : 0),
+            purchaseOrderReference: poFulfillment?.poName || entry.purchase_order_reference || null,
+        });
         void (0, stockMirrorService_1.refreshStockMirror)();
         await (0, logService_1.logEvent)('info', 'Board intake synchronized with Odoo', {
             boardIntakeId: id,

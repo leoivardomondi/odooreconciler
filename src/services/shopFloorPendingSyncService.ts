@@ -17,7 +17,7 @@ import {
 import { extractSoNameFromOrigin } from './poJobSummaryAuditService';
 import { PendingShopFloorProcess } from '../models/types';
 import { logEvent } from './logService';
-import { escapeHtml } from './boardIntakeSyncService';
+import { escapeHtml, reconcileRetroactiveBoardLogsForLinkedPos } from './boardIntakeSyncService';
 import { shopFloorCache } from '../routes/shopFloor';
 
 let syncInProgress = false;
@@ -496,6 +496,11 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
     } catch (_cacheErr) {
       // Non-fatal cache invalidation
     }
+
+    // 11. Retroactively validate any prior manual board intake logs whose connected MO now has a linked PO
+    void reconcileRetroactiveBoardLogsForLinkedPos(client).catch((err) => {
+      console.warn('[ShopFloorPendingSyncService] Failed checking retroactive PO fulfillment:', err);
+    });
 
     lastSyncTimestamp = Date.now();
     const durationMs = Date.now() - startTime;

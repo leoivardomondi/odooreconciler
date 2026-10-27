@@ -375,6 +375,10 @@ async function syncPendingProcessesFromOdoo(force = false) {
         catch (_cacheErr) {
             // Non-fatal cache invalidation
         }
+        // 11. Retroactively validate any prior manual board intake logs whose connected MO now has a linked PO
+        void (0, boardIntakeSyncService_1.reconcileRetroactiveBoardLogsForLinkedPos)(client).catch((err) => {
+            console.warn('[ShopFloorPendingSyncService] Failed checking retroactive PO fulfillment:', err);
+        });
         lastSyncTimestamp = Date.now();
         const durationMs = Date.now() - startTime;
         void (0, logService_1.logEvent)('info', 'Synced pending MO board requirements from Odoo to MySQL', {

@@ -7,6 +7,8 @@ const node_test_1 = __importDefault(require("node:test"));
 const strict_1 = __importDefault(require("node:assert/strict"));
 const boardIntakeSyncService_1 = require("./boardIntakeSyncService");
 const shopFloorPendingSyncService_1 = require("./shopFloorPendingSyncService");
+const repositories_1 = require("../models/repositories");
+const db_1 = require("../models/db");
 (0, node_test_1.default)('processBoardIntakePurchaseOrderFulfillment strictly approves PO ONLY if waiting for approval (state: "to approve")', async () => {
     const approvedPoIds = [];
     const validatedPickingIds = [];
@@ -242,4 +244,268 @@ const shopFloorPendingSyncService_1 = require("./shopFloorPendingSyncService");
     strict_1.default.deepEqual(assignedMoIds, [501]);
     strict_1.default.ok(postedChatters.some((c) => c.model === 'mrp.production' && c.id === 501 && c.msg.includes('Found Matching Prior Board Log History')));
     strict_1.default.ok(postedChatters.some((c) => c.model === 'sale.order' && c.msg.includes('Prior Gate Board Log Matched to Manufacturing Order')));
+});
+(0, node_test_1.default)('reconcileRetroactiveBoardLogsForLinkedPos validates PO receipt for prior manual log when MO has linked PO', async () => {
+    const testLogId = `retro-test-${Date.now()}`;
+    await (0, repositories_1.createBoardIntakeQueueEntry)({
+        id: testLogId,
+        productId: 205,
+        productName: 'WHITE MDF 18mm',
+        partnerId: 42,
+        customerName: 'Test Client Ltd',
+        quantity: 8,
+        actorName: 'Gate Operator',
+        isPurchase: 0,
+    });
+    await (0, repositories_1.updateBoardIntakeQueueEntry)(testLogId, { status: 'synced', stockQuantity: 8 });
+    const validatedPickingIds = [];
+    const removedStockCalls = [];
+    const mockClient = {
+        getTargetCompanyIdValue: async () => 1,
+        searchReadRecords: async (model, options) => {
+            if (model === 'sale.order') {
+                const partnerDomain = options?.domain?.find((d) => Array.isArray(d) && d[0] === 'partner_id');
+                if (partnerDomain && partnerDomain[2] !== 42)
+                    return [];
+                return [{ id: 401, name: 'S02500', partner_id: [42, 'Test Client Ltd'], user_id: [8, 'Candy Sharon'] }];
+            }
+            if (model === 'mrp.production') {
+                return [{ id: 301, name: 'WH/MO/05500', origin: 'S02500' }];
+            }
+            if (model === 'purchase.order') {
+                return [
+                    {
+                        id: 105,
+                        name: 'P01095',
+                        state: 'purchase', // Already approved PO
+                        origin: 'S02500',
+                        order_line: [505],
+                        picking_ids: [905],
+                    },
+                ];
+            }
+            if (model === 'purchase.order.line') {
+                const prodDomain = options?.domain?.find((d) => Array.isArray(d) && d[0] === 'product_id');
+                if (prodDomain && prodDomain[2] !== 205)
+                    return [];
+                return [
+                    {
+                        id: 505,
+                        order_id: [105, 'P01095'],
+                        product_id: [205, 'WHITE MDF 18mm'],
+                        product_qty: 8,
+                    },
+                ];
+            }
+            if (model === 'stock.picking') {
+                return [
+                    {
+                        id: 905,
+                        name: 'WH/IN/00905',
+                        state: 'assigned',
+                        picking_type_code: 'incoming',
+                        move_ids_without_package: [705],
+                    },
+                ];
+            }
+            if (model === 'stock.move') {
+                return [
+                    {
+                        id: 705,
+                        product_id: [205, 'WHITE MDF 18mm'],
+                        product_uom_qty: 8,
+                        quantity: 0,
+                    },
+                ];
+            }
+            return [];
+        },
+        callRecordMethod: async (model, method, ids) => {
+            if (model === 'stock.picking' && method === 'button_validate') {
+                validatedPickingIds.push(...ids);
+            }
+            return true;
+        },
+        writeRecord: async () => true,
+        populatePickingValidationMetadata: async () => true,
+        postModelChatterMessage: async () => 1,
+        removeBoardsFromStock: async (arg) => {
+            removedStockCalls.push(arg);
+            return { newQty: 0 };
+        },
+    };
+    try {
+        const result = await (0, boardIntakeSyncService_1.reconcileRetroactiveBoardLogsForLinkedPos)(mockClient);
+        strict_1.default.equal(result.matchedCount >= 1, true);
+        strict_1.default.equal(result.logsFulfilled.includes(testLogId), true);
+        strict_1.default.deepEqual(validatedPickingIds, [905]);
+        strict_1.default.deepEqual(removedStockCalls, [{ productId: 205, quantity: 8 }]);
+        const updatedLog = await (0, repositories_1.getBoardIntakeQueueEntry)(testLogId);
+        strict_1.default.ok(updatedLog);
+        strict_1.default.equal(Boolean(updatedLog.is_purchase), true);
+        strict_1.default.equal(updatedLog.purchase_order_reference, 'P01095');
+    }
+    finally {
+        await (0, db_1.execute)('DELETE FROM board_intake_queue WHERE id = ?', [testLogId]);
+    }
+});
+(0, node_test_1.default)('processBoardIntakePurchaseOrderFulfillment isolates multi-product PO receipts and zeroes other items', async () => {
+    const writtenMoveRecords = [];
+    const writtenMoveLines = [];
+    const processedWizards = [];
+    const validatedPickingIds = [];
+    const mockClient = {
+        getTargetCompanyIdValue: async () => 1,
+        searchReadRecords: async (model, options) => {
+            if (model === 'sale.order') {
+                return [
+                    {
+                        id: 488,
+                        name: 'S02888',
+                        partner_id: [99, 'Multi-Product Customer'],
+                        user_id: [12, 'Leoivard Ongule'],
+                    },
+                ];
+            }
+            if (model === 'purchase.order') {
+                return [
+                    {
+                        id: 888,
+                        name: 'P01888',
+                        state: 'purchase',
+                        origin: 'S02888',
+                        order_line: [901, 902, 903],
+                    },
+                ];
+            }
+            if (model === 'purchase.order.line') {
+                return [
+                    { id: 901, order_id: [888, 'P01888'], product_id: [205, 'WHITE MDF 18mm'], product_qty: 10 },
+                    { id: 902, order_id: [888, 'P01888'], product_id: [206, 'HARBOUR GREY 18mm'], product_qty: 5 },
+                    { id: 903, order_id: [888, 'P01888'], product_id: [207, 'BACKER WHITE 3mm'], product_qty: 8 },
+                ];
+            }
+            if (model === 'stock.picking') {
+                return [
+                    {
+                        id: 777,
+                        name: 'WH/IN/00777',
+                        state: 'assigned',
+                        picking_type_code: 'incoming',
+                        move_ids_without_package: [1001, 1002, 1003],
+                    },
+                ];
+            }
+            if (model === 'stock.move') {
+                // If domain filters by product_id = 205 (the target product)
+                const prodDomain = options?.domain?.find((d) => Array.isArray(d) && d[0] === 'product_id');
+                if (prodDomain && prodDomain[2] === 205) {
+                    return [
+                        {
+                            id: 1001,
+                            picking_id: [777, 'WH/IN/00777'],
+                            product_id: [205, 'WHITE MDF 18mm'],
+                            product_uom_qty: 10,
+                            quantity: 0,
+                            state: 'assigned',
+                        },
+                    ];
+                }
+                // If searching all moves for picking 777:
+                return [
+                    {
+                        id: 1001,
+                        picking_id: [777, 'WH/IN/00777'],
+                        product_id: [205, 'WHITE MDF 18mm'],
+                        product_uom_qty: 10,
+                        quantity: 0,
+                        state: 'assigned',
+                    },
+                    {
+                        id: 1002,
+                        picking_id: [777, 'WH/IN/00777'],
+                        product_id: [206, 'HARBOUR GREY 18mm'],
+                        product_uom_qty: 5,
+                        quantity: 5, // Initially populated
+                        state: 'assigned',
+                    },
+                    {
+                        id: 1003,
+                        picking_id: [777, 'WH/IN/00777'],
+                        product_id: [207, 'BACKER WHITE 3mm'],
+                        product_uom_qty: 8,
+                        quantity: 8, // Initially populated
+                        state: 'assigned',
+                    },
+                ];
+            }
+            if (model === 'stock.move.line') {
+                return [
+                    { id: 2001, move_id: [1001, 'move1'], product_id: [205, 'prod1'], quantity: 10 },
+                    { id: 2002, move_id: [1002, 'move2'], product_id: [206, 'prod2'], quantity: 5 },
+                    { id: 2003, move_id: [1003, 'move3'], product_id: [207, 'prod3'], quantity: 8 },
+                ];
+            }
+            return [];
+        },
+        writeRecord: async (model, ids, values) => {
+            if (model === 'stock.move')
+                writtenMoveRecords.push({ ids, values });
+            if (model === 'stock.move.line')
+                writtenMoveLines.push({ ids, values });
+            return true;
+        },
+        callRecordMethod: async (model, method, ids) => {
+            if (model === 'stock.picking' && method === 'button_validate') {
+                validatedPickingIds.push(...ids);
+                // Returns backorder wizard action
+                return {
+                    res_model: 'stock.backorder.confirmation',
+                    res_id: 55,
+                };
+            }
+            if (model === 'stock.backorder.confirmation' && method === 'process') {
+                processedWizards.push({ model, method, ids });
+                return true;
+            }
+            return true;
+        },
+        populatePickingValidationMetadata: async () => true,
+        postModelChatterMessage: async () => 1,
+    };
+    // Logging 6 sheets of WHITE MDF (partial, out of 10) on a PO with 3 products
+    const result = await (0, boardIntakeSyncService_1.processBoardIntakePurchaseOrderFulfillment)(mockClient, {
+        partner_id: '99',
+        customer_name: 'Multi-Product Customer',
+        product_id: '205',
+        product_name: 'WHITE MDF 18mm',
+        quantity: 6,
+        actor_name: 'Gate Operator',
+    });
+    strict_1.default.ok(result);
+    strict_1.default.equal(result.fulfilledViaReceipt, true);
+    strict_1.default.equal(result.qtyFulfilled, 6);
+    strict_1.default.equal(result.surplusQty, 0);
+    // Assert target move (1001) got quantity: 6
+    const targetMoveWrite = writtenMoveRecords.find((r) => r.ids.includes(1001));
+    strict_1.default.ok(targetMoveWrite, 'Target move 1001 should be written');
+    strict_1.default.equal(targetMoveWrite.values.quantity, 6);
+    // Assert non-target moves (1002, 1003) got quantity: 0
+    const otherMoveWrites = writtenMoveRecords.filter((r) => r.ids.includes(1002) || r.ids.includes(1003));
+    strict_1.default.equal(otherMoveWrites.length, 2);
+    for (const w of otherMoveWrites) {
+        strict_1.default.equal(w.values.quantity, 0, `Move ${w.ids} must be zeroed out`);
+    }
+    // Assert move lines: target move line (2001) got 6, non-target move lines (2002, 2003) got 0
+    const targetLineWrite = writtenMoveLines.find((r) => r.ids.includes(2001));
+    strict_1.default.ok(targetLineWrite);
+    strict_1.default.equal(targetLineWrite.values.quantity, 6);
+    const otherLineWrites = writtenMoveLines.filter((r) => r.ids.includes(2002) || r.ids.includes(2003));
+    strict_1.default.equal(otherLineWrites.length, 2);
+    for (const lw of otherLineWrites) {
+        strict_1.default.equal(lw.values.quantity, 0, `Move line ${lw.ids} must be zeroed out`);
+    }
+    // Assert picking validated and backorder wizard processed
+    strict_1.default.deepEqual(validatedPickingIds, [777]);
+    strict_1.default.deepEqual(processedWizards, [{ model: 'stock.backorder.confirmation', method: 'process', ids: [55] }]);
 });

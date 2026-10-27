@@ -3789,10 +3789,32 @@ async function createBoardIntakeQueueEntry(input) {
 }
 async function updateBoardIntakeQueueEntry(id, input) {
     const retryDelayMinutes = input.status === 'failed' ? 2 : 0;
-    await (0, db_1.execute)(`UPDATE board_intake_queue SET status = ?, odoo_stock_quantity = COALESCE(?, odoo_stock_quantity), error_message = ?,
-    synced_at = CASE WHEN ? = 'synced' THEN CURRENT_TIMESTAMP ELSE synced_at END,
-    next_retry_at = CASE WHEN ? = 'failed' THEN ${(0, db_1.getDatabaseDialect)() === 'mysql' ? 'DATE_ADD(CURRENT_TIMESTAMP, INTERVAL ? MINUTE)' : "datetime(CURRENT_TIMESTAMP, '+' || ? || ' minutes')"} ELSE NULL END,
-    updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [input.status, input.stockQuantity ?? null, input.errorMessage || null, input.status, input.status, retryDelayMinutes, id]);
+    const sets = [
+        'status = ?',
+        'odoo_stock_quantity = COALESCE(?, odoo_stock_quantity)',
+        'error_message = ?',
+        "synced_at = CASE WHEN ? = 'synced' THEN CURRENT_TIMESTAMP ELSE synced_at END",
+        `next_retry_at = CASE WHEN ? = 'failed' THEN ${(0, db_1.getDatabaseDialect)() === 'mysql' ? 'DATE_ADD(CURRENT_TIMESTAMP, INTERVAL ? MINUTE)' : "datetime(CURRENT_TIMESTAMP, '+' || ? || ' minutes')"} ELSE NULL END`,
+        'updated_at = CURRENT_TIMESTAMP',
+    ];
+    const params = [
+        input.status,
+        input.stockQuantity ?? null,
+        input.errorMessage || null,
+        input.status,
+        input.status,
+        retryDelayMinutes,
+    ];
+    if (input.isPurchase !== undefined) {
+        sets.push('is_purchase = ?');
+        params.push(input.isPurchase ? 1 : 0);
+    }
+    if (input.purchaseOrderReference !== undefined) {
+        sets.push('purchase_order_reference = ?');
+        params.push(input.purchaseOrderReference || null);
+    }
+    params.push(id);
+    await (0, db_1.execute)(`UPDATE board_intake_queue SET ${sets.join(', ')} WHERE id = ?`, params);
 }
 async function getRecentBoardIntakeQueueEntries(limit = 12, offset = 0, filterDate) {
     const hasFilter = Boolean(filterDate && filterDate !== 'all');

@@ -522,41 +522,6 @@
               <div class="text-muted mt-1" id="qtyCurrentStock" style="font-size: 0.75rem; display: none;"></div>
             </div>
 
-            <!-- Intake Source: Is it a Purchase or Client Supplied? -->
-            <div class="mb-3">
-              <label class="form-label fw-semibold d-flex justify-content-between align-items-center" style="font-size: 0.92rem; color: #334155;">
-                <span>Is this a Purchase?</span>
-                <span class="text-muted small fw-normal" style="font-size: 0.75rem;">Company bought vs Client supplied</span>
-              </label>
-              <div class="row g-2">
-                <div class="col-6">
-                  <input type="radio" class="btn-check" name="is_purchase" id="sourceClientSupply" value="0" checked onchange="togglePurchasePoInput(false)">
-                  <label class="btn btn-outline-secondary w-100 py-2 px-2 rounded-3 text-start d-flex align-items-center gap-2 h-100" for="sourceClientSupply" style="border-color: #cbd5e1; font-size: 0.86rem;">
-                    <span style="font-size: 1.15rem;">📦</span>
-                    <div>
-                      <div class="fw-bold text-dark" style="font-size: 0.84rem;">Client Supply</div>
-                      <div class="text-muted" style="font-size: 0.70rem; line-height: 1.1;">Not a purchase</div>
-                    </div>
-                  </label>
-                </div>
-                <div class="col-6">
-                  <input type="radio" class="btn-check" name="is_purchase" id="sourcePurchase" value="1" onchange="togglePurchasePoInput(true)">
-                  <label class="btn btn-outline-primary w-100 py-2 px-2 rounded-3 text-start d-flex align-items-center gap-2 h-100" for="sourcePurchase" style="border-color: #cbd5e1; font-size: 0.86rem;">
-                    <span style="font-size: 1.15rem;">🛒</span>
-                    <div>
-                      <div class="fw-bold" style="font-size: 0.84rem;">Purchase</div>
-                      <div class="text-muted" style="font-size: 0.70rem; line-height: 1.1;">Supplier / PO delivery</div>
-                    </div>
-                  </label>
-                </div>
-              </div>
-              <div id="purchaseOrderRefContainer" class="mt-2 d-none">
-                <div class="input-group input-group-sm rounded-3 overflow-hidden border">
-                  <span class="input-group-text bg-light border-0 small text-muted" style="font-size: 0.78rem;">PO # / Supplier</span>
-                  <input type="text" name="purchase_order_reference" id="purchaseOrderRef" class="form-control border-0" placeholder="e.g. P00123 or supplier name" style="font-size: 0.82rem;">
-                </div>
-              </div>
-            </div>
 
             <!-- Optional Details Toggle Button (Default is Collapsed) -->
             <div class="mb-3">
@@ -924,18 +889,6 @@
 </main>
 
 <script>
-  window.togglePurchasePoInput = function(isPurchase) {
-    var container = document.getElementById('purchaseOrderRefContainer');
-    if (container) {
-      if (isPurchase) {
-        container.classList.remove('d-none');
-        var poInput = document.getElementById('purchaseOrderRef');
-        if (poInput) poInput.focus();
-      } else {
-        container.classList.add('d-none');
-      }
-    }
-  };
 
   (function() {
     var arrivalTimeInput = document.getElementById('arrivalTime');
@@ -2462,15 +2415,6 @@
             vehicleReg.value = '';
           }
 
-          var sourceClient = document.getElementById('sourceClientSupply');
-          if (sourceClient) sourceClient.checked = true;
-          var sourcePurchase = document.getElementById('sourcePurchase');
-          if (sourcePurchase) sourcePurchase.checked = false;
-          if (typeof window.togglePurchasePoInput === 'function') {
-            window.togglePurchasePoInput(false);
-          }
-          var poInput = document.getElementById('purchaseOrderRef');
-          if (poInput) poInput.value = '';
 
           var arrivalDateInput = document.getElementById('arrivalDate');
           if (arrivalDateInput) {
