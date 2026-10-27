@@ -39,11 +39,13 @@ import {
   getGeminiOAuthRedirectUri,
   verifyGeminiOAuthState,
 } from '../services/geminiOAuthService';
+import { sendTestNvidiaExpirationReminder } from '../services/nvidiaApiKeyExpirationReminderService';
 
 const router = Router();
 const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
 
 const NVIDIA_AI_MODELS = [
+  'minimaxai/minimax-m3.1-flash',
   'google/gemma-4-31b-it',
   'z-ai/glm-5.2',
   'openai/gpt-oss-20b',
@@ -1311,6 +1313,43 @@ router.post('/settings/test-mail', mailValidators, async (req: Request, res: Res
     return renderSettingsPage(res.status(502), {
       existing: currentSettings,
       source: req.body,
+      status: { type: 'danger', message },
+    });
+  }
+});
+
+router.post('/settings/test-nvidia-expiration-reminder', async (req: Request, res: Response) => {
+  try {
+    const stage = req.body?.stage === '7d' || req.body?.stage === '1d' ? req.body.stage : '30d';
+    const recipient = req.body?.recipient ? String(req.body.recipient).trim() : undefined;
+    const result = await sendTestNvidiaExpirationReminder(recipient, stage);
+
+    if (req.xhr || req.headers.accept?.includes('application/json')) {
+      return res.json({
+        success: true,
+        message: `Test NVIDIA API expiration reminder (${result.stage}) successfully sent to ${result.recipient}.`,
+        stage: result.stage,
+        recipient: result.recipient,
+      });
+    }
+
+    const currentSettings = await getSettings();
+    return renderSettingsPage(res, {
+      existing: currentSettings,
+      status: {
+        type: 'success',
+        message: `Test NVIDIA API expiration reminder (${result.stage}) sent to ${result.recipient}.`,
+      },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Failed to send test expiration reminder.';
+    if (req.xhr || req.headers.accept?.includes('application/json')) {
+      return res.status(500).json({ success: false, error: message });
+    }
+
+    const currentSettings = await getSettings();
+    return renderSettingsPage(res.status(500), {
+      existing: currentSettings,
       status: { type: 'danger', message },
     });
   }

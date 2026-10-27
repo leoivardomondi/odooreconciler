@@ -1444,6 +1444,9 @@
             <div class="col-md-4">
               <label class="form-label">Reasoning model</label>
               <select class="form-select" name="aiModelPreset">
+                <option data-provider="nvidia" value="minimaxai/minimax-m3.1-flash" <%= form.aiModel === 'minimaxai/minimax-m3.1-flash' ? 'selected' : '' %>>
+                  MiniMax M3.1 Flash (Multimodal MoE 1M Context)
+                </option>
                 <option data-provider="nvidia" value="google/gemma-4-31b-it" <%= form.aiModel === 'google/gemma-4-31b-it' || !form.aiModel ? 'selected' : '' %>>
                   Google Gemma 4 31B IT (Vision)
                 </option>
@@ -1516,7 +1519,7 @@
                 <option data-provider="openrouter" value="qwen/qwen-2.5-72b-instruct" <%= form.aiModel === 'qwen/qwen-2.5-72b-instruct' ? 'selected' : '' %>>
                   OpenRouter Qwen 2.5 72B Instruct
                 </option>
-                <option data-provider="all" value="custom" <%= form.aiModel && !['google/gemma-4-31b-it', 'z-ai/glm-5.2', 'openai/gpt-oss-20b', 'openai/gpt-oss-120b', 'nvidia/llama-3.1-nemotron-nano-vl-8b-v1', 'meta/llama-3.2-90b-vision-instruct', 'meta/llama-3.2-11b-vision-instruct', 'gemini-3.8-flash', 'gemini-3.8-flash-lite', 'gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.5-pro', 'gemini-2.0-pro-exp-02-05', 'gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-flash-latest', 'gemini-pro-latest', 'claude-3-7-sonnet-latest', 'claude-3-5-sonnet-latest', 'claude-3-5-haiku-latest', 'gpt-4o', 'gpt-4o-mini', 'o3-mini', 'o1', 'deepseek/deepseek-r1', 'meta-llama/llama-3.3-70b-instruct', 'qwen/qwen-2.5-72b-instruct'].includes(form.aiModel) ? 'selected' : '' %>>
+                <option data-provider="all" value="custom" <%= form.aiModel && !['minimaxai/minimax-m3.1-flash', 'google/gemma-4-31b-it', 'z-ai/glm-5.2', 'openai/gpt-oss-20b', 'openai/gpt-oss-120b', 'nvidia/llama-3.1-nemotron-nano-vl-8b-v1', 'meta/llama-3.2-90b-vision-instruct', 'meta/llama-3.2-11b-vision-instruct', 'gemini-3.8-flash', 'gemini-3.8-flash-lite', 'gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.5-pro', 'gemini-2.0-pro-exp-02-05', 'gemini-1.5-pro', 'gemini-1.5-flash', 'gemini-flash-latest', 'gemini-pro-latest', 'claude-3-7-sonnet-latest', 'claude-3-5-sonnet-latest', 'claude-3-5-haiku-latest', 'gpt-4o', 'gpt-4o-mini', 'o3-mini', 'o1', 'deepseek/deepseek-r1', 'meta-llama/llama-3.3-70b-instruct', 'qwen/qwen-2.5-72b-instruct'].includes(form.aiModel) ? 'selected' : '' %>>
                   Custom model
                 </option>
               </select>
@@ -1653,11 +1656,25 @@
               </div>
             </div>
             <div class="col-md-6">
-              <label class="form-label">NVIDIA reasoning API key</label>
+              <label class="form-label d-flex justify-content-between align-items-center">
+                <span>NVIDIA reasoning API key</span>
+                <span class="badge bg-warning-subtle text-warning border border-warning-subtle font-monospace small" title="NVIDIA Build trial keys expire in 6 months">Expires: 04/28/2027</span>
+              </label>
               <input type="password" class="form-control" name="nvidiaApiKey" placeholder="<%= form.hasNvidiaApiKey ? 'Leave blank to keep stored NVIDIA key' : 'Paste NVIDIA API key' %>" />
-              <div class="form-check mt-2">
-                <input class="form-check-input" type="checkbox" name="clearNvidiaApiKey" id="clearNvidiaApiKey" />
-                <label class="form-check-label small" for="clearNvidiaApiKey">Clear saved NVIDIA key</label>
+              <div class="d-flex justify-content-between align-items-center mt-2">
+                <div class="form-check mb-0">
+                  <input class="form-check-input" type="checkbox" name="clearNvidiaApiKey" id="clearNvidiaApiKey" />
+                  <label class="form-check-label small" for="clearNvidiaApiKey">Clear saved NVIDIA key</label>
+                </div>
+                <div class="small text-secondary">
+                  <i class="bi bi-clock-history me-1"></i>Key: NVIDIABuild-Autogen-19 (Valid 6 mo)
+                </div>
+              </div>
+              <div class="mt-2 pt-2 border-top d-flex justify-content-between align-items-center">
+                <span class="small text-muted" style="font-size: 11.5px;"><i class="bi bi-envelope-check me-1 text-primary"></i>3 auto-reminders to dbadmin (30d, 7d, 1d)</span>
+                <button type="button" class="btn btn-outline-secondary btn-sm py-0 px-2" style="font-size: 11px;" onclick="testNvidiaExpirationReminder(this)">
+                  <i class="bi bi-send me-1"></i>Send Test Email
+                </button>
               </div>
             </div>
             <div class="col-md-6">
@@ -1694,6 +1711,7 @@
             </div>
             <div class="col-12 mt-2">
               <% const nvidiaModelKeyFields = [
+                ['minimaxai/minimax-m3.1-flash', 'MiniMax M3.1 Flash (MoE)'],
                 ['google/gemma-4-31b-it', 'Google Gemma 4 31B IT'],
                 ['z-ai/glm-5.2', 'NVIDIA Z-AI GLM 5.2'],
                 ['openai/gpt-oss-20b', 'NVIDIA GPT-OSS 20B'],
@@ -2138,6 +2156,30 @@
 
     window.addEventListener('scroll', updateActiveNavOnScroll, { passive: true });
   });
+
+  async function testNvidiaExpirationReminder(btn) {
+    const origText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1" role="status"></span>Sending...';
+    try {
+      const res = await fetch('/settings/test-nvidia-expiration-reminder', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: JSON.stringify({ stage: '30d' })
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert(data.message);
+      } else {
+        alert('Error: ' + (data.error || 'Failed to send test reminder'));
+      }
+    } catch (err) {
+      alert('Network error: ' + err.message);
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = origText;
+    }
+  }
 </script>
 
 <%- include('partials/footer') %>

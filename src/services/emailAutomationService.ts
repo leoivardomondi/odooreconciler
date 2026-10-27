@@ -7,6 +7,7 @@ import { sendMoOvertimeSuggestion } from './moOvertimeSuggestionService';
 import { sendHourlyShopFloorTaskReminders } from './shopFloorTaskReminderService';
 import { sendWeeklyShopFloorReport } from './weeklyShopFloorReportService';
 import { sendDailyMoStockShortageReport } from './moStockShortageReportService';
+import { checkAndSendNvidiaApiKeyExpirationReminders } from './nvidiaApiKeyExpirationReminderService';
 
 let timer: NodeJS.Timeout | null = null;
 let running = false;
@@ -158,6 +159,13 @@ export async function runEmailAutomations(now = new Date()) {
         }).catch(() => undefined);
       }
     }
+
+    // Check and dispatch 3-stage expiration reminders for NVIDIA API key (30d, 7d, 1d)
+    await checkAndSendNvidiaApiKeyExpirationReminders(now).catch((err) => {
+      logEvent('error', 'Failed running NVIDIA API key expiration reminder check', {
+        error: err instanceof Error ? err.message : String(err),
+      }).catch(() => undefined);
+    });
   } finally {
     running = false;
   }

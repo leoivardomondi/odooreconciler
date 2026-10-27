@@ -33,6 +33,14 @@
     - **Candidate Pre-Scoring**: Orders are pre-scored on vendor, amount, and date before line inspection; only viable candidate orders (top 20 max) fetch lines. Orders with mismatched vendors or 0 preliminary score skip line fetching completely.
     - **Single-Pass Candidate Matching**: When `onlyUnbilledPurchaseOrders` is active, a single broad search pass is performed and unbilled eligible candidates are derived in memory, cutting candidate search queries in half.
     - **In-Memory Static Caching**: Schema fields (`ir.model.fields`), document tags (`documents.tag` for Validated and Delivery Note), payment journals (`account.journal` for MPESA and Bank), and vendor partner IDs (`res.partner` with 15m TTL) are cached in memory to eliminate repeated static Odoo round-trips.
+  - **NVIDIA NIM API Key Expiration Reminders**:
+    - Key `NVIDIABuild-Autogen-19` (expires `2027-04-28`) is monitored automatically via [src/services/nvidiaApiKeyExpirationReminderService.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/nvidiaApiKeyExpirationReminderService.ts).
+    - Dispatches 3 sequential automated email notices to `dbadmin` (`env.DBADMIN_EMAIL`, fallback `dbadmin@urbanvibeinteriordesign.co.ke`):
+      1. **30 Days Remaining (~March 29, 2027)**: Advance notice with renewal instructions.
+      2. **7 Days Remaining (~April 21, 2027)**: Urgent action notice.
+      3. **1 Day Remaining (~April 27, 2027)**: Final warning before expiration.
+    - Automated checks run continuously in `emailAutomationService.runEmailAutomations()`, with state tracked in `shop_floor_shared_cache` (`nvidia_api_key_expiration_reminders`) to ensure each reminder is dispatched strictly once.
+    - Admin test trigger available via `POST /settings/test-nvidia-expiration-reminder` and the "Send Test Email" button in `/settings`.
 
 - **Zero-Blocking UI & Navigation Architecture**:
   - **No Blocking Overlays on Navigation**: Never display full-screen blocking overlays (`.app-loading-overlay`) during page navigation or data browsing. A non-blocking top progress bar (`#topNavProgressBar`) provides smooth visual progress while keeping the current page interactive and responsive.
