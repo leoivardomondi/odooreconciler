@@ -4388,7 +4388,7 @@ async function getActiveBoardIntakeLogs() {
 }
 async function pruneStalePendingProcessesForActiveMos(activeMoIds, validKeys, poCoveredKeys = []) {
     await (0, db_1.execute)(`DELETE FROM shop_floor_pending_processes WHERE mo_name LIKE 'VA/%' OR partner_name = 'URBAN VIBE 2' OR partner_id = 350`, []);
-    const existingPending = await (0, db_1.queryAll)(`SELECT id, mo_id, product_id, partner_id, partner_name, product_name, qty_needed, is_mo_closed
+    const existingPending = await (0, db_1.queryAll)(`SELECT id, mo_id, mo_name, origin, product_id, partner_id, partner_name, product_name, qty_needed, is_mo_closed
      FROM shop_floor_pending_processes WHERE status = 'pending'`);
     if (!existingPending.length)
         return;
@@ -4400,8 +4400,12 @@ async function pruneStalePendingProcessesForActiveMos(activeMoIds, validKeys, po
     const idsToDelete = [];
     for (const row of existingPending) {
         const compositeKey = `${row.mo_id}_${row.product_id}`;
-        // 1. If an active PO covers this MO and product, prune it (stock will come from receipt after PO approval, not manual board log)
-        if (poCoveredKeySet.has(row.id) || poCoveredKeySet.has(compositeKey)) {
+        const nameKey = `${row.mo_name}_${row.product_id}`;
+        // 1. If an active or received PO covers this MO and product, prune it immediately
+        // Crucial anti-double-logging rule:
+        // When a PO was received, boards were already logged in Odoo via PO receipt.
+        // They must never linger under "Stock Needed - No Purchase Orders"!
+        if (poCoveredKeySet.has(row.id) || poCoveredKeySet.has(compositeKey) || poCoveredKeySet.has(nameKey)) {
             idsToDelete.push(row.id);
             continue;
         }

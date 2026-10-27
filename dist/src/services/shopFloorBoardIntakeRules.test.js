@@ -75,6 +75,38 @@ const repositories_1 = require("../models/repositories");
     const after = await (0, repositories_1.getPendingShopFloorProcesses)({ status: 'pending' });
     strict_1.default.ok(!after.some((p) => p.id === key), 'Process covered by active PO must be pruned from Add Stock area');
 });
+(0, node_test_1.default)('pruneStalePendingProcessesForActiveMos: closed MO whose boards were received on a PO is pruned to prevent double logging', async () => {
+    const testMoId = 99365;
+    const testProdId = 88365;
+    const key = `${testMoId}_${testProdId}`;
+    await (0, db_1.execute)('DELETE FROM shop_floor_pending_processes WHERE mo_id = ?', [testMoId]);
+    const process = {
+        id: key,
+        process_type: 'board_intake',
+        mo_id: testMoId,
+        mo_name: 'WH/MO/99365',
+        origin: 'S99365',
+        partner_id: 365,
+        partner_name: 'Ufanisi Resorts Test',
+        product_id: testProdId,
+        product_name: 'White Waterproof panel 18mm',
+        qty_needed: 12,
+        qty_reserved: 0,
+        qty_missing: 12,
+        status: 'pending',
+        loaded_at: null,
+        loaded_by: null,
+        last_synced_at: new Date().toISOString(),
+        is_mo_closed: true,
+    };
+    await (0, repositories_1.upsertPendingShopFloorProcesses)([process]);
+    const before = await (0, repositories_1.getPendingShopFloorProcesses)({ status: 'pending' });
+    strict_1.default.ok(before.some((p) => p.id === key), 'Process should initially exist as pending');
+    // Prune with allMoIds containing testMoId and poCoveredKeys containing key (since PO was received)
+    await (0, repositories_1.pruneStalePendingProcessesForActiveMos)([testMoId], [], [key, `${testMoId}_${testProdId}`, `WH/MO/99365_${testProdId}`]);
+    const after = await (0, repositories_1.getPendingShopFloorProcesses)({ status: 'pending' });
+    strict_1.default.ok(!after.some((p) => p.id === key), 'Closed MO covered by received PO must be pruned to avoid double logging');
+});
 (0, node_test_1.default)('Returned receipt or unallocated PO shortage: requirement is NOT pruned and reappears as boards needed', async () => {
     const testMoId = 99105;
     const testProdId = 88105;

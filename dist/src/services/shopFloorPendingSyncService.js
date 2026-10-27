@@ -146,12 +146,12 @@ async function syncPendingProcessesFromOdoo(force = false) {
                 if (purchaseOrders.length > 0) {
                     const poIds = purchaseOrders.map(po => po.id);
                     const poNames = purchaseOrders.map(po => po.name).filter(Boolean);
-                    // Find open incoming pickings (deliveries actually still expected from vendor in /shop-floor/receipts)
-                    const openIncomingPickings = await client.searchReadRecords('stock.picking', {
+                    // Find incoming pickings (both open deliveries expected in /shop-floor/receipts and done receipts already received into stock)
+                    const incomingPickings = await client.searchReadRecords('stock.picking', {
                         domain: [
                             ['company_id', '=', targetCompanyId],
                             ['picking_type_code', '=', 'incoming'],
-                            ['state', 'in', ['waiting', 'confirmed', 'assigned']],
+                            ['state', 'in', ['waiting', 'confirmed', 'assigned', 'done']],
                             '|',
                             ['origin', 'in', poNames],
                             ['origin', 'in', relevantOriginNames],
@@ -160,47 +160,61 @@ async function syncPendingProcessesFromOdoo(force = false) {
                         limit: 500,
                         timeoutMs: 35000,
                     }).catch(() => []);
-                    const activeIncomingOrigins = new Set();
-                    for (const pick of openIncomingPickings) {
+                    const openIncomingOrigins = new Set();
+                    const doneIncomingOrigins = new Set();
+                    for (const pick of incomingPickings) {
                         if (pick.origin) {
                             const origStr = String(pick.origin).trim();
-                            activeIncomingOrigins.add(origStr);
+                            const targetSet = pick.state === 'done' ? doneIncomingOrigins : openIncomingOrigins;
+                            targetSet.add(origStr);
                             const extracted = (0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(origStr);
                             if (extracted)
-                                activeIncomingOrigins.add(extracted);
+                                targetSet.add(extracted);
                             if (origStr.includes(':')) {
                                 origStr.split(':').forEach(part => {
                                     const p = part.trim();
                                     if (p)
-                                        activeIncomingOrigins.add(p);
+                                        targetSet.add(p);
                                 });
                             }
                         }
                     }
-                    // A PO only covers a requirement if it actually has an active incoming receipt pending reception in /shop-floor/receipts.
-                    // If all receipts are already done or returned to vendor, the MO shortage is NOT covered and must appear under Stock Needed!
-                    const activePoIds = new Set();
+                    // A PO covers the board requirement if:
+                    // 1. It is active or approved/done (state in 'to approve', 'purchase', 'done', or has pickings)
+                    // 2. Either it was ALREADY RECEIVED (receipt state = 'done' or line qty_received > 0),
+                    //    OR it is an open incoming delivery pending validation in Receipts (/shop-floor/receipts).
+                    // CRITICAL ANTI-DOUBLE-LOGGING RULE:
+                    // When a PO was received, boards were already logged in Odoo inventory via PO receipt (WH/IN/...).
+                    // Adding them to "Stock Needed — No Purchase Orders" would prompt operators to log them again at the gate,
+                    // causing duplicate stock in Odoo.
+                    // Likewise, if a PO is active and pending, stock is coming via PO receipt, NOT manual gate log!
+                    const validPoIds = new Set();
                     for (const po of purchaseOrders) {
-                        const hasOpenReceipt = activeIncomingOrigins.has(po.name) ||
-                            (po.origin && (activeIncomingOrigins.has(po.origin) ||
-                                ((0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(po.origin) && activeIncomingOrigins.has((0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(po.origin)))));
-                        if (hasOpenReceipt) {
-                            activePoIds.add(po.id);
+                        const hasOpenReceipt = openIncomingOrigins.has(po.name) ||
+                            (po.origin && (openIncomingOrigins.has(po.origin) ||
+                                ((0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(po.origin) && openIncomingOrigins.has((0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(po.origin)))));
+                        const hasDoneReceipt = doneIncomingOrigins.has(po.name) ||
+                            (po.origin && (doneIncomingOrigins.has(po.origin) ||
+                                ((0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(po.origin) && doneIncomingOrigins.has((0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(po.origin)))));
+                        const isPoApprovedOrDone = po.state === 'purchase' || po.state === 'done' || po.state === 'to approve';
+                        if (hasOpenReceipt || hasDoneReceipt || isPoApprovedOrDone) {
+                            validPoIds.add(po.id);
                         }
                     }
                     const poLines = await client.searchReadRecords('purchase.order.line', {
                         domain: [['order_id', 'in', poIds]],
-                        fields: ['order_id', 'product_id', 'name'],
+                        fields: ['id', 'order_id', 'product_id', 'name', 'product_qty', 'qty_received'],
                         limit: 1000,
                         timeoutMs: 35000,
                     });
                     const poOriginMap = new Map();
                     for (const po of purchaseOrders) {
+                        const keys = [po.name];
                         if (po.origin) {
-                            const keys = [po.origin];
+                            keys.push(po.origin.trim());
                             const extracted = (0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(po.origin);
                             if (extracted)
-                                keys.push(extracted);
+                                keys.push(extracted.trim());
                             if (po.origin.includes(':')) {
                                 po.origin.split(':').forEach(part => {
                                     const p = part.trim();
@@ -208,12 +222,12 @@ async function syncPendingProcessesFromOdoo(force = false) {
                                         keys.push(p);
                                 });
                             }
-                            poOriginMap.set(po.id, keys);
                         }
+                        poOriginMap.set(po.id, [...new Set(keys)]);
                     }
                     for (const line of poLines) {
                         const poId = Array.isArray(line.order_id) ? line.order_id[0] : 0;
-                        if (!activePoIds.has(poId))
+                        if (!validPoIds.has(poId))
                             continue;
                         const productId = Array.isArray(line.product_id) ? line.product_id[0] : 0;
                         const productName = line.name || (Array.isArray(line.product_id) ? line.product_id[1] : '');
@@ -225,9 +239,11 @@ async function syncPendingProcessesFromOdoo(force = false) {
                         for (const orig of origins) {
                             if (productId) {
                                 originProductPOKeys.add(`${orig}_${productId}`);
+                                originProductPOKeys.add(`${orig.toUpperCase()}_${productId}`);
                             }
                             if (normalizedPoProdName) {
                                 originProductPOKeys.add(`${orig}_${normalizedPoProdName}`);
+                                originProductPOKeys.add(`${orig.toUpperCase()}_${normalizedPoProdName}`);
                             }
                         }
                     }
@@ -253,14 +269,33 @@ async function syncPendingProcessesFromOdoo(force = false) {
             const productId = Array.isArray(move.product_id) ? move.product_id[0] : 0;
             const productName = Array.isArray(move.product_id) ? move.product_id[1] : '';
             const normalizedMoveProdName = (0, boardProductClassifier_1.normalizeBoardProductName)(productName);
-            // If an active PO exists for this origin/MO and product, exclude it (procured via vendor delivery, not gate log)
+            // If an active or received PO exists for this origin/MO and product, exclude it (procured via vendor delivery, not gate log)
             const soOrigin = mo.origin ? (0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(mo.origin) : null;
-            const poCovered = Boolean((mo.origin && (originProductPOKeys.has(`${mo.origin}_${productId}`) || originProductPOKeys.has(`${mo.origin}_${normalizedMoveProdName}`))) ||
-                (soOrigin && (originProductPOKeys.has(`${soOrigin}_${productId}`) || originProductPOKeys.has(`${soOrigin}_${normalizedMoveProdName}`))) ||
+            const poCovered = Boolean((mo.origin && (originProductPOKeys.has(`${mo.origin}_${productId}`) ||
+                originProductPOKeys.has(`${mo.origin.toUpperCase()}_${productId}`) ||
+                originProductPOKeys.has(`${mo.origin}_${normalizedMoveProdName}`) ||
+                originProductPOKeys.has(`${mo.origin.toUpperCase()}_${normalizedMoveProdName}`))) ||
+                (soOrigin && (originProductPOKeys.has(`${soOrigin}_${productId}`) ||
+                    originProductPOKeys.has(`${soOrigin.toUpperCase()}_${productId}`) ||
+                    originProductPOKeys.has(`${soOrigin}_${normalizedMoveProdName}`) ||
+                    originProductPOKeys.has(`${soOrigin.toUpperCase()}_${normalizedMoveProdName}`))) ||
                 originProductPOKeys.has(`${mo.name}_${productId}`) ||
-                originProductPOKeys.has(`${mo.name}_${normalizedMoveProdName}`));
+                originProductPOKeys.has(`${mo.name.toUpperCase()}_${productId}`) ||
+                originProductPOKeys.has(`${mo.name}_${normalizedMoveProdName}`) ||
+                originProductPOKeys.has(`${mo.name.toUpperCase()}_${normalizedMoveProdName}`));
             if (poCovered) {
                 poCoveredKeys.add(`${moId}_${productId}`);
+                poCoveredKeys.add(`${mo.name}_${productId}`);
+                poCoveredKeys.add(`${moId}_${normalizedMoveProdName}`);
+                poCoveredKeys.add(`${mo.name}_${normalizedMoveProdName}`);
+                if (mo.origin) {
+                    poCoveredKeys.add(`${mo.origin}_${productId}`);
+                    poCoveredKeys.add(`${mo.origin}_${normalizedMoveProdName}`);
+                }
+                if (soOrigin) {
+                    poCoveredKeys.add(`${soOrigin}_${productId}`);
+                    poCoveredKeys.add(`${soOrigin}_${normalizedMoveProdName}`);
+                }
                 continue;
             }
             const originKey = mo.origin ? mo.origin.trim() : '';
@@ -362,9 +397,9 @@ async function syncPendingProcessesFromOdoo(force = false) {
         await matchRetroactiveBoardLogsForActiveMos(client, activeMOs, boardMoves, soPartnerMap, originProductPOKeys, activeLogs).catch((err) => {
             console.error('[ShopFloorPendingSyncService] Error matching retroactive board logs:', err);
         });
-        // 8. Prune stale pending rows for active MOs if components were removed or corrected in Odoo
+        // 8. Prune stale pending rows for active and closed MOs if components were removed or covered by POs
         // Any PO-covered keys are explicitly purged so they do not linger in the Add Stock area
-        await (0, repositories_1.pruneStalePendingProcessesForActiveMos)(activeMOs.map((mo) => mo.id), recordsToUpsert.map((r) => r.id), Array.from(poCoveredKeys));
+        await (0, repositories_1.pruneStalePendingProcessesForActiveMos)(allMOs.map((mo) => mo.id), recordsToUpsert.map((r) => r.id), Array.from(poCoveredKeys));
         // 9. Clean up stale completed items older than 7 days
         await (0, repositories_1.deleteStaleCompletedProcesses)(7);
         // 10. Invalidate RAM cache and stale board registration cache so the UI sees up-to-date counts immediately

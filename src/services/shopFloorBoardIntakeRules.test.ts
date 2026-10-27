@@ -54,6 +54,44 @@ test('pruneStalePendingProcessesForActiveMos: PO-covered keys are pruned immedia
   assert.ok(!after.some((p) => p.id === key), 'Process covered by active PO must be pruned from Add Stock area');
 });
 
+test('pruneStalePendingProcessesForActiveMos: closed MO whose boards were received on a PO is pruned to prevent double logging', async () => {
+  const testMoId = 99365;
+  const testProdId = 88365;
+  const key = `${testMoId}_${testProdId}`;
+
+  await execute('DELETE FROM shop_floor_pending_processes WHERE mo_id = ?', [testMoId]);
+
+  const process: PendingShopFloorProcess = {
+    id: key,
+    process_type: 'board_intake',
+    mo_id: testMoId,
+    mo_name: 'WH/MO/99365',
+    origin: 'S99365',
+    partner_id: 365,
+    partner_name: 'Ufanisi Resorts Test',
+    product_id: testProdId,
+    product_name: 'White Waterproof panel 18mm',
+    qty_needed: 12,
+    qty_reserved: 0,
+    qty_missing: 12,
+    status: 'pending',
+    loaded_at: null,
+    loaded_by: null,
+    last_synced_at: new Date().toISOString(),
+    is_mo_closed: true,
+  };
+
+  await upsertPendingShopFloorProcesses([process]);
+  const before = await getPendingShopFloorProcesses({ status: 'pending' });
+  assert.ok(before.some((p) => p.id === key), 'Process should initially exist as pending');
+
+  // Prune with allMoIds containing testMoId and poCoveredKeys containing key (since PO was received)
+  await pruneStalePendingProcessesForActiveMos([testMoId], [], [key, `${testMoId}_${testProdId}`, `WH/MO/99365_${testProdId}`]);
+
+  const after = await getPendingShopFloorProcesses({ status: 'pending' });
+  assert.ok(!after.some((p) => p.id === key), 'Closed MO covered by received PO must be pruned to avoid double logging');
+});
+
 test('Returned receipt or unallocated PO shortage: requirement is NOT pruned and reappears as boards needed', async () => {
   const testMoId = 99105;
   const testProdId = 88105;
