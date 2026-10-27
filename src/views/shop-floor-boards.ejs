@@ -793,17 +793,66 @@
 
         <div class="vstack gap-2" id="recentBoardLogsList">
           <% if (!recentIntakes || !recentIntakes.length) { %>
-            <div id="emptyBoardLogsNotice" class="text-center py-4 px-3 text-muted">
-              <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="#94a3b8" stroke-width="2" class="mb-2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
-              <div class="fw-semibold small" style="color: #475569;">No board intake logs recorded for <%= activeDateDisplay %></div>
-              <div class="small text-muted mt-0.5">When board intakes are recorded for this date, they will appear here in real time.</div>
-              <div class="d-flex justify-content-center gap-2 mt-3">
-                <% if (!isFilteringYesterday) { %>
-                  <a href="/shop-floor/boards?date=<%= yesterdayDate %>#recentBoardLogsSection" class="btn btn-sm btn-outline-secondary rounded-pill px-3">‹ View Yesterday (<%= yesterdayLogsCount || 0 %>)</a>
+            <div id="emptyBoardLogsNotice" class="text-center py-5 px-4 my-2 rounded-4" style="background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%); border: 1.5px dashed #cbd5e1;">
+              <div class="d-inline-flex align-items-center justify-content-center rounded-circle mb-3 shadow-sm" style="width: 52px; height: 52px; background: #ffffff; border: 1px solid #e2e8f0;">
+                <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="#64748b" stroke-width="2">
+                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                  <polyline points="14 2 14 8 20 8"/>
+                  <line x1="16" y1="13" x2="8" y2="13"/>
+                  <line x1="16" y1="17" x2="8" y2="17"/>
+                  <polyline points="10 9 9 9 8 9"/>
+                </svg>
+              </div>
+              <% if (isFilteringToday) { %>
+                <h3 class="fw-bold text-dark mb-1" style="font-size: 1.15rem; letter-spacing: -0.01em;">
+                  No boards have been logged in today
+                </h3>
+                <p class="text-muted small mb-3" style="max-width: 480px; margin-inline: auto;">
+                  No raw board deliveries or client supplies have been recorded yet for today (<%= todayDisplayShort %>). When boards arrive at the factory gate or receipt area, they will appear here in real time.
+                </p>
+              <% } else if (isFilteringYesterday) { %>
+                <h3 class="fw-bold text-dark mb-1" style="font-size: 1.15rem; letter-spacing: -0.01em;">
+                  No boards were logged yesterday
+                </h3>
+                <p class="text-muted small mb-3" style="max-width: 480px; margin-inline: auto;">
+                  No raw board intake records were found for yesterday (<%= yesterdayDisplayShort %>).
+                </p>
+              <% } else if (isDateAll) { %>
+                <h3 class="fw-bold text-dark mb-1" style="font-size: 1.15rem; letter-spacing: -0.01em;">
+                  No board logs found
+                </h3>
+                <p class="text-muted small mb-3" style="max-width: 480px; margin-inline: auto;">
+                  There are currently no board intake records in the system.
+                </p>
+              <% } else { %>
+                <h3 class="fw-bold text-dark mb-1" style="font-size: 1.15rem; letter-spacing: -0.01em;">
+                  No boards have been logged in for <%= activeDateDisplay %>
+                </h3>
+                <p class="text-muted small mb-3" style="max-width: 480px; margin-inline: auto;">
+                  No raw board delivery records were found for this selected calendar date.
+                </p>
+              <% } %>
+
+              <!-- Quick Action Navigation / Intake Links -->
+              <div class="d-flex flex-wrap justify-content-center gap-2 mt-2">
+                <% if (!isFilteringToday) { %>
+                  <a href="/shop-floor/boards?date=<%= todayDate %>#recentBoardLogsSection" class="btn btn-sm btn-dark rounded-pill px-3 py-1.5 shadow-sm fw-semibold">
+                    • Jump to Today (<%= todayLogsCount || 0 %>)
+                  </a>
+                <% } %>
+                <% if (!isFilteringYesterday && (yesterdayLogsCount || 0) > 0) { %>
+                  <a href="/shop-floor/boards?date=<%= yesterdayDate %>#recentBoardLogsSection" class="btn btn-sm btn-outline-secondary rounded-pill px-3 py-1.5 shadow-sm">
+                    ‹ View Yesterday (<%= yesterdayLogsCount %>)
+                  </a>
                 <% } %>
                 <% if (!isDateAll) { %>
-                  <a href="/shop-floor/boards?date=all#recentBoardLogsSection" class="btn btn-sm btn-outline-primary rounded-pill px-3">View All Logs</a>
+                  <a href="/shop-floor/boards?date=all#recentBoardLogsSection" class="btn btn-sm btn-outline-secondary rounded-pill px-3 py-1.5 shadow-sm">
+                    View All Logs
+                  </a>
                 <% } %>
+                <a href="#boardIntakeForm" class="btn btn-sm btn-outline-primary rounded-pill px-3 py-1.5 shadow-sm fw-semibold" onclick="document.getElementById('boardIntakeCustomerInput')?.focus();">
+                  + Log Board Intake
+                </a>
               </div>
             </div>
           <% } %>
@@ -816,21 +865,35 @@
               const itemName = (item.actor_name || '').trim().toLowerCase();
               const isOwner = Boolean((userEmail && itemEmail && userEmail === itemEmail) || (userName && itemName && userName === itemName));
               const canRevert = isAdminUser || isOwner;
+              const isPurchase = Boolean(item.is_purchase);
             %>
-            <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 border rounded-3 px-3 py-2 <%= item.reverted_at || item.status === 'reverted' ? 'bg-light' : 'bg-white' %>" data-board-log-row="<%= item.id %>" style="<%= item.reverted_at || item.status === 'reverted' ? 'opacity:0.75;' : '' %>border-color:#cbd5e1!important;">
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 border rounded-3 px-3 py-2.5 <%= item.reverted_at || item.status === 'reverted' ? 'bg-light' : 'bg-white' %>" data-board-log-row="<%= item.id %>" style="<%= item.reverted_at || item.status === 'reverted' ? 'opacity:0.75;' : '' %>border-color:#cbd5e1!important;<%= isPurchase ? 'border-left: 4.5px solid #2563eb !important;' : 'border-left: 4.5px solid #059669 !important;' %>">
               <div>
-                <strong class="text-dark" style="font-size:0.92rem;"><%= item.quantity %> × <%= item.product_name %></strong>
-                <% if (Boolean(item.is_purchase)) { %>
-                  <span class="badge bg-primary-subtle text-primary border border-primary-subtle ms-1" style="font-size:0.74rem;font-weight:600;" title="Company Purchase">
-                    🛒 Purchase<%= item.purchase_order_reference ? ' (' + item.purchase_order_reference + ')' : '' %>
-                  </span>
-                <% } else { %>
-                  <span class="badge bg-secondary-subtle text-secondary border border-secondary-subtle ms-1" style="font-size:0.74rem;font-weight:600;" title="Client Supplied Boards">
-                    📦 Client Supply
-                  </span>
-                <% } %>
-                <div class="small mt-0.5" style="color:#334155;font-weight:500;">
-                  <span class="fw-bold" style="color:#0f172a;"><%= item.customer_name %></span> · <span style="color:#475569;"><%= formatDateTime(item.created_at) %></span>
+                <div class="d-flex flex-wrap align-items-center gap-2">
+                  <strong class="text-dark" style="font-size:0.95rem;"><%= item.quantity %> × <%= item.product_name %></strong>
+                  <% if (isPurchase) { %>
+                    <span class="badge bg-primary text-white border-0 shadow-sm" style="font-size:0.72rem;font-weight:700;letter-spacing:0.02em;" title="Company Purchase (PO-backed)">
+                      🛒 COMPANY PURCHASE
+                    </span>
+                    <% if (item.purchase_order_reference) { %>
+                      <span class="badge bg-primary-subtle text-primary border border-primary-subtle fw-semibold" style="font-size:0.72rem;" title="Purchase Order Reference">
+                        PO: <%= item.purchase_order_reference %>
+                      </span>
+                    <% } %>
+                  <% } else { %>
+                    <span class="badge text-white border-0 shadow-sm" style="background-color: #059669 !important; font-size:0.72rem; font-weight:700; letter-spacing:0.02em;" title="Client Supplied Boards (Customer Provided)">
+                      📦 CLIENT SUPPLY
+                    </span>
+                  <% } %>
+                </div>
+                <div class="small mt-1" style="color:#334155;font-weight:500;">
+                  <span class="fw-bold" style="color:#0f172a;"><%= item.customer_name %></span>
+                  <% if (isPurchase) { %>
+                    <span class="badge bg-light text-primary border border-primary-subtle px-1.5 py-0.5 ms-1" style="font-size: 0.68rem; font-weight: 600;">Company Procured</span>
+                  <% } else { %>
+                    <span class="badge bg-light text-success border border-success-subtle px-1.5 py-0.5 ms-1" style="font-size: 0.68rem; font-weight: 600;">Customer's Own Material</span>
+                  <% } %>
+                  · <span style="color:#475569;"><%= formatDateTime(item.created_at) %></span>
                   <% if (item.gate) { %>
                     · <strong>Gate: <%= item.gate %></strong>
                   <% } %>
@@ -1884,16 +1947,26 @@
 
     async function hydrateRecentBoardLogsOnLoad() {
       try {
-        var res = await fetch('/shop-floor/board-intake/status');
-        if (!res.ok) return;
-        var data = await res.json();
-        if (!data.ok || !Array.isArray(data.entries) || data.entries.length === 0) return;
-        
         var list = document.getElementById('recentBoardLogsList');
         if (!list) return;
 
-        var emptyNotice = document.getElementById('emptyBoardLogsNotice');
-        if (emptyNotice) emptyNotice.remove();
+        var existingRows = list.querySelectorAll('[data-board-log-row]');
+        if (existingRows.length === 0) {
+          // If there are no board log rows on this view, keep the empty notice visible
+          return;
+        }
+
+        var existingBadgeEls = Array.from(list.querySelectorAll('[data-board-log-status]'));
+        var existingIds = existingBadgeEls.map(function(el) {
+          return el.getAttribute('data-board-log-status');
+        }).filter(Boolean);
+
+        if (existingIds.length === 0) return;
+
+        var res = await fetch('/shop-floor/board-intake/status?ids=' + encodeURIComponent(existingIds.join(',')));
+        if (!res.ok) return;
+        var data = await res.json();
+        if (!data.ok || !Array.isArray(data.entries) || data.entries.length === 0) return;
 
         data.entries.forEach(function(entry) {
           if (!entry || !entry.id) return;
@@ -2331,22 +2404,30 @@
             var emptyNotice = document.getElementById('emptyBoardLogsNotice');
             if (emptyNotice) emptyNotice.remove();
             var row = document.createElement('div');
-            row.className = 'd-flex flex-wrap justify-content-between align-items-center gap-2 border rounded-3 px-3 py-2 bg-white';
-            row.setAttribute('data-board-log-row', result.item.id);
-            row.style.borderColor = '#cbd5e1';
-            row.style.background = '#f0fdf4';
-            row.style.transition = 'background 1.5s ease';
             var isPurchase = Boolean(result.item.is_purchase);
+            row.className = 'd-flex flex-wrap justify-content-between align-items-center gap-2 border rounded-3 px-3 py-2.5 bg-white';
+            row.setAttribute('data-board-log-row', result.item.id);
+            row.style.cssText = (isPurchase ? 'border-left: 4.5px solid #2563eb !important;' : 'border-left: 4.5px solid #059669 !important;') + 'border-color: #cbd5e1 !important; background: #f0fdf4; transition: background 1.5s ease;';
+
             var purchaseBadge = isPurchase
-              ? '<span class="badge bg-primary-subtle text-primary border border-primary-subtle ms-1" style="font-size:0.74rem;font-weight:600;" title="Company Purchase">🛒 Purchase' + (result.item.purchase_order_reference ? ' (' + escapeHtml(result.item.purchase_order_reference) + ')' : '') + '</span>'
-              : '<span class="badge bg-secondary-subtle text-secondary border border-secondary-subtle ms-1" style="font-size:0.74rem;font-weight:600;" title="Client Supplied Boards">📦 Client Supply</span>';
+              ? '<span class="badge bg-primary text-white border-0 shadow-sm" style="font-size:0.72rem;font-weight:700;letter-spacing:0.02em;" title="Company Purchase (PO-backed)">🛒 COMPANY PURCHASE</span>' +
+                (result.item.purchase_order_reference ? ' <span class="badge bg-primary-subtle text-primary border border-primary-subtle fw-semibold" style="font-size:0.72rem;">PO: ' + escapeHtml(result.item.purchase_order_reference) + '</span>' : '')
+              : '<span class="badge text-white border-0 shadow-sm" style="background-color: #059669 !important; font-size:0.72rem; font-weight:700; letter-spacing:0.02em;" title="Client Supplied Boards (Customer Provided)">📦 CLIENT SUPPLY</span>';
+
+            var sourceTag = isPurchase
+              ? '<span class="badge bg-light text-primary border border-primary-subtle px-1.5 py-0.5 ms-1" style="font-size: 0.68rem; font-weight: 600;">Company Procured</span>'
+              : '<span class="badge bg-light text-success border border-success-subtle px-1.5 py-0.5 ms-1" style="font-size: 0.68rem; font-weight: 600;">Customer\'s Own Material</span>';
 
             row.innerHTML =
               '<div>' +
-                '<strong class="text-dark" style="font-size:0.92rem;">' + escapeHtml(result.item.quantity) + ' × ' + escapeHtml(result.item.product_name) + '</strong>' +
-                purchaseBadge +
-                '<div class="small mt-0.5" style="color:#334155;font-weight:500;">' +
-                  '<span class="fw-bold" style="color:#0f172a;">' + escapeHtml(result.item.customer_name) + '</span> · <span style="color:#475569;">Just now</span>' +
+                '<div class="d-flex flex-wrap align-items-center gap-2">' +
+                  '<strong class="text-dark" style="font-size:0.95rem;">' + escapeHtml(result.item.quantity) + ' × ' + escapeHtml(result.item.product_name) + '</strong>' +
+                  purchaseBadge +
+                '</div>' +
+                '<div class="small mt-1" style="color:#334155;font-weight:500;">' +
+                  '<span class="fw-bold" style="color:#0f172a;">' + escapeHtml(result.item.customer_name) + '</span>' +
+                  sourceTag +
+                  ' · <span style="color:#475569;">Just now</span>' +
                   (result.item.gate ? ' · <strong>Gate: ' + escapeHtml(result.item.gate) + '</strong>' : '') +
                   (result.item.arrival_date ? ' · Date: <strong>' + escapeHtml(result.item.arrival_date) + '</strong>' : '') +
                   (result.item.arrival_time ? ' · Arrived: <strong>' + escapeHtml(result.item.arrival_time) + '</strong>' : '') +
