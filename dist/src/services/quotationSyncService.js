@@ -55,13 +55,19 @@ function compareQuotationLinesWithJobSummary(lines, parsed) {
         const requiredSheets = material.sheets || 0;
         const matchingBoardLines = assignedBoardLines.get(material) || [];
         const quotedSheets = matchingBoardLines.reduce((sum, l) => sum + (Number(l.product_uom_qty) || 0), 0);
-        // Rule: "Not less, but can be more" applies ONLY to edge banding, NOT boards (MDF, particle board, etc.)
-        const isSufficient = quotedSheets === requiredSheets;
+        // Rule: "Not less, but can be more" — only mention quantity if it's lower than Job Summary
+        const isSufficient = quotedSheets >= requiredSheets;
         if (quotedSheets < requiredSheets) {
-            shortfalls.push(`Board (${material.name} ${material.thickness_mm ? `${material.thickness_mm}mm` : ''}): Quotation has ${quotedSheets} sheet(s), but Job Summary requires ${requiredSheets} sheet(s) (Shortfall: ${Math.round((requiredSheets - quotedSheets) * 100) / 100} sheet(s)).`);
-        }
-        else if (quotedSheets > requiredSheets) {
-            shortfalls.push(`Board (${material.name} ${material.thickness_mm ? `${material.thickness_mm}mm` : ''}): Quotation has ${quotedSheets} sheet(s), but Job Summary requires ${requiredSheets} sheet(s) (Excess: ${Math.round((quotedSheets - requiredSheets) * 100) / 100} sheet(s) — boards must match exactly).`);
+            if (quotedSheets === 0) {
+                const existingBoards = productLines
+                    .map(lineDisplayName)
+                    .filter((name) => (0, boardProductClassifier_1.isBoardProductName)(name) && !/example\s+board/i.test(name) && !/optimis?ed\s+panels?/i.test(name));
+                const hint = existingBoards.length > 0 ? ` (Quotation has '${existingBoards.join("', '")}')` : '';
+                shortfalls.push(`Board Mismatch / Missing Board: Job Summary requires '${material.name}${material.thickness_mm ? ` ${material.thickness_mm}mm` : ''}' (${requiredSheets} sheet(s)), but this board was not found on the quotation${hint}.`);
+            }
+            else {
+                shortfalls.push(`Board Shortfall (${material.name} ${material.thickness_mm ? `${material.thickness_mm}mm` : ''}): Quotation has ${quotedSheets} sheet(s), but Job Summary requires ${requiredSheets} sheet(s) (Shortfall: ${Math.round((requiredSheets - quotedSheets) * 100) / 100} sheet(s)).`);
+            }
         }
         boardDetails.push({
             sheetMaterial: material.name,
@@ -149,132 +155,212 @@ async function syncQuotationWithJobSummary(client, orderId, parsed) {
     if (isTemplate) {
         let updatedLinesCount = 0;
         let createdLinesCount = 0;
-        const unresolvedBoards = [];
+        const unmatchedItems = [];
+        // 1. Identify or Create Sections
+        let boardsSection = lines.find((l) => l.display_type === 'line_section' && /boards?/i.test(l.name || ''));
+        let servicesSection = lines.find((l) => l.display_type === 'line_section' && /(cutting|edging|grooving)/i.test(l.name || ''));
+        if (!boardsSection) {
+            await client.createRecord('sale.order.line', {
+                order_id: orderId,
+                display_type: 'line_section',
+                name: 'BOARDS',
+                sequence: 10,
+            });
+            createdLinesCount++;
+        }
+        if (!servicesSection) {
+            await client.createRecord('sale.order.line', {
+                order_id: orderId,
+                display_type: 'line_section',
+                name: 'CUTTING+EDGING+GROOVING',
+                sequence: 20,
+            });
+            createdLinesCount++;
+        }
+        let boardSequence = 11;
+        let serviceSequence = 21;
         const exampleBoardLine = lines.find((l) => !l.display_type && /example\s+board/i.test(lineDisplayName(l)));
         const optimisedPanelsLine = lines.find((l) => !l.display_type && /optimis?ed\s+panels?/i.test(lineDisplayName(l)));
-        // 1. Boards: Replace Example Board or Create Board Lines
+        // Fetch candidate products in bulk (lightning-fast single RPC call)
+        const candidateProducts = await client.searchReadRecords('product.product', {
+            domain: [
+                ['sale_ok', '=', true],
+            ],
+            fields: ['id', 'name', 'display_name'],
+            limit: 500,
+        });
         const sheetMaterials = parsed.sheetMaterials || [];
         let exampleBoardUsed = false;
+        // Helper to find raw board product in candidateProducts
+        function findRawBoard(matName, thicknessMm) {
+            const cleanName = matName.replace(/^cutting\s+/i, '').trim();
+            const normClean = (0, boardProductClassifier_1.normalizeBoardProductName)(cleanName);
+            const matWords = normClean.split(/[\s_\-/]+/).filter((w) => w.length > 2 && !['board', 'boards', 'sheet', 'sheets'].includes(w));
+            return candidateProducts.find((p) => {
+                const prodName = (p.display_name || p.name || '');
+                if (!(0, boardProductClassifier_1.isRawBoardProductName)(prodName))
+                    return false;
+                const normProd = (0, boardProductClassifier_1.normalizeBoardProductName)(prodName);
+                if (thicknessMm) {
+                    const tStr = `${thicknessMm}mm`;
+                    const tSpaced = `${thicknessMm} mm`;
+                    if (!normProd.includes(tStr) && !normProd.includes(tSpaced))
+                        return false;
+                }
+                return matWords.length > 0 && matWords.every((w) => normProd.includes(w));
+            });
+        }
+        // Helper to find cutting service product in candidateProducts
+        function findCuttingService(matName, thicknessMm) {
+            const cleanName = matName.replace(/^cutting\s+/i, '').trim();
+            const normClean = (0, boardProductClassifier_1.normalizeBoardProductName)(cleanName);
+            const matWords = normClean.split(/[\s_\-/]+/).filter((w) => w.length > 2 && !['board', 'boards', 'sheet', 'sheets', 'cutting'].includes(w));
+            return candidateProducts.find((p) => {
+                const prodName = (p.display_name || p.name || '');
+                if (!(0, boardProductClassifier_1.isCuttingServiceProductName)(prodName))
+                    return false;
+                const normProd = (0, boardProductClassifier_1.normalizeBoardProductName)(prodName);
+                if (thicknessMm) {
+                    const tStr = `${thicknessMm}mm`;
+                    const tSpaced = `${thicknessMm} mm`;
+                    if (!normProd.includes(tStr) && !normProd.includes(tSpaced))
+                        return false;
+                }
+                return matWords.length > 0 && matWords.every((w) => normProd.includes(w));
+            });
+        }
+        // Helper to find edge banding service product in candidateProducts
+        function findEdgeBandingService(color) {
+            const colorNorm = (0, stockProcessingService_1.normalizeColor)(color);
+            return candidateProducts.find((p) => {
+                const prodName = (p.display_name || p.name || '');
+                if (!(0, boardProductClassifier_1.isStockExemptEdgeBandingService)(prodName))
+                    return false;
+                const normProd = (0, stockProcessingService_1.normalizeColor)(prodName);
+                return normProd.includes(colorNorm);
+            });
+        }
+        // A. Populate Boards under BOARDS section
         for (const material of sheetMaterials) {
             const sheets = material.sheets || 1;
-            const searchTerms = [material.name];
-            if (material.thickness_mm) {
-                searchTerms.push(`${material.thickness_mm}mm`);
-            }
-            // Find matching Odoo board product
-            const candidateProducts = await client.searchReadRecords('product.product', {
-                domain: [
-                    ['sale_ok', '=', true],
-                    ['name', 'ilike', material.name],
-                ],
-                fields: ['id', 'name', 'display_name'],
-                limit: 10,
-            });
-            // Filter candidate products to physical boards
-            const matchedProducts = candidateProducts.filter((p) => {
-                const prodName = (p.display_name || p.name).toLowerCase();
-                if (material.thickness_mm) {
-                    const thicknessStr = `${material.thickness_mm}mm`;
-                    const thicknessSpaced = `${material.thickness_mm} mm`;
-                    if (!prodName.includes(thicknessStr) && !prodName.includes(thicknessSpaced)) {
-                        return false;
-                    }
-                }
-                return (0, boardProductClassifier_1.isBoardProductName)(prodName);
-            });
-            const selectedProduct = matchedProducts.length === 1 ? matchedProducts[0] : null;
-            if (selectedProduct) {
+            const rawBoard = findRawBoard(material.name, material.thickness_mm);
+            if (rawBoard) {
                 if (exampleBoardLine && !exampleBoardUsed) {
-                    // Replace Example Board line
                     await client.writeRecord('sale.order.line', [exampleBoardLine.id], {
-                        product_id: selectedProduct.id,
-                        name: selectedProduct.display_name || selectedProduct.name,
+                        product_id: rawBoard.id,
+                        name: rawBoard.display_name || rawBoard.name,
                         product_uom_qty: sheets,
+                        sequence: boardSequence++,
                     });
                     exampleBoardUsed = true;
                     updatedLinesCount++;
                 }
                 else {
-                    // Add additional board line
                     await client.createRecord('sale.order.line', {
                         order_id: orderId,
-                        product_id: selectedProduct.id,
-                        name: selectedProduct.display_name || selectedProduct.name,
+                        product_id: rawBoard.id,
+                        name: rawBoard.display_name || rawBoard.name,
                         product_uom_qty: sheets,
+                        sequence: boardSequence++,
                     });
                     createdLinesCount++;
                 }
             }
             else {
-                unresolvedBoards.push(`${material.name} ${material.thickness_mm ? `${material.thickness_mm}mm` : ''} (${sheets} sheets)`);
+                const boardDesc = `${material.name}${material.thickness_mm ? ` ${material.thickness_mm}mm` : ''}`;
+                unmatchedItems.push({
+                    type: 'Board',
+                    name: `${boardDesc} (${sheets} sheet(s))`,
+                    reason: 'No matching physical board product found in Odoo catalog',
+                });
             }
         }
-        // 2. Update Optimised Panels quantity to Optimized Sheets
-        if (optimisedPanelsLine && parsed.optimizedSheets) {
+        // B. Populate Services under CUTTING+EDGING+GROOVING section
+        // 1. Optimised Panels
+        const totalPanels = Number(parsed.optimizedSheets ?? parsed.totalPanels ?? 0);
+        if (optimisedPanelsLine && totalPanels > 0) {
             await client.writeRecord('sale.order.line', [optimisedPanelsLine.id], {
-                product_uom_qty: parsed.optimizedSheets,
+                product_uom_qty: totalPanels,
+                sequence: serviceSequence++,
             });
             updatedLinesCount++;
         }
-        // 3. Create Edge Banding Service line(s)
-        for (const item of parsed.items || []) {
-            const meters = Math.round((item.length_mm || 0) / 1000);
-            const colorNormalized = (0, stockProcessingService_1.normalizeColor)(item.color);
-            const expectedServiceName = `Edge Banding Service ${colorNormalized}`;
-            // Search for edge banding service product in Odoo
-            const serviceCandidates = await client.searchReadRecords('product.product', {
-                domain: [
-                    ['sale_ok', '=', true],
-                    ['name', 'ilike', 'Edge Banding Service'],
-                ],
-                fields: ['id', 'name', 'display_name'],
-                limit: 50,
-            });
-            const matchedService = serviceCandidates.find((p) => {
-                const prodName = (p.display_name || p.name).toLowerCase();
-                return prodName.includes(colorNormalized);
-            });
-            if (matchedService) {
+        else if (totalPanels > 0) {
+            const panelsProduct = candidateProducts.find((p) => /optimis?ed\s+panels?/i.test(p.display_name || p.name));
+            if (panelsProduct) {
                 await client.createRecord('sale.order.line', {
                     order_id: orderId,
-                    product_id: matchedService.id,
-                    name: matchedService.display_name || matchedService.name,
-                    product_uom_qty: meters,
+                    product_id: panelsProduct.id,
+                    name: panelsProduct.display_name || panelsProduct.name,
+                    product_uom_qty: totalPanels,
+                    sequence: serviceSequence++,
+                });
+                createdLinesCount++;
+            }
+        }
+        // 2. Cutting Services (for each sheet material)
+        for (const material of sheetMaterials) {
+            const sheets = material.sheets || 1;
+            const cuttingProduct = findCuttingService(material.name, material.thickness_mm);
+            if (cuttingProduct) {
+                await client.createRecord('sale.order.line', {
+                    order_id: orderId,
+                    product_id: cuttingProduct.id,
+                    name: cuttingProduct.display_name || cuttingProduct.name,
+                    product_uom_qty: sheets,
+                    sequence: serviceSequence++,
                 });
                 createdLinesCount++;
             }
             else {
-                // Create an activity if the edge banding service product wasn't found
-                const userId = resolveSalespersonUserId(order);
-                if (userId) {
-                    await (0, odooActivityService_1.createTodoActivity)(client, {
-                        modelName: 'sale.order',
-                        recordId: orderId,
-                        userId,
-                        summary: 'ADD EDGE BANDING SERVICE TO QUOTATION',
-                        noteLines: [
-                            `Sales Order / Quotation: ${order.name}`,
-                            `Job Summary specifies ${meters}m of ${item.color} edging.`,
-                            `Could not find product matching '${expectedServiceName}'. Please add it manually.`,
-                        ],
-                    });
-                }
+                const cuttingDesc = `Cutting ${material.name.replace(/^cutting\s+/i, '')}${material.thickness_mm ? ` ${material.thickness_mm}mm` : ''}`;
+                unmatchedItems.push({
+                    type: 'Cutting Service',
+                    name: `${cuttingDesc} (${sheets} sheet(s))`,
+                    reason: 'No matching cutting service product found in Odoo catalog',
+                });
             }
         }
-        // If any boards could not be uniquely resolved, notify salesperson
-        if (unresolvedBoards.length > 0) {
+        // 3. Edge Banding Services (for each edging item)
+        for (const item of parsed.items || []) {
+            const meters = Math.round((item.length_mm || 0) / 1000);
+            const edgeService = findEdgeBandingService(item.color);
+            if (edgeService) {
+                await client.createRecord('sale.order.line', {
+                    order_id: orderId,
+                    product_id: edgeService.id,
+                    name: edgeService.display_name || edgeService.name,
+                    product_uom_qty: meters,
+                    sequence: serviceSequence++,
+                });
+                createdLinesCount++;
+            }
+            else {
+                unmatchedItems.push({
+                    type: 'Edge Banding Service',
+                    name: `Edge Banding Service ${item.color} (${meters}m)`,
+                    reason: `No matching edge banding service product found in Odoo catalog for color '${item.color}'`,
+                });
+            }
+        }
+        // C. Post Chatter Note and Assign Activity if Any Items Unmatched
+        if (unmatchedItems.length > 0) {
+            const itemRows = unmatchedItems
+                .map((u) => `<li><strong>${u.type}:</strong> ${u.name} — <em>${u.reason}</em></li>`)
+                .join('');
+            await client.postModelChatterMessage('sale.order', orderId, `<p><strong>Job Summary Line Population Notice:</strong></p><p>The following item(s) from the Job Summary could not be created because no matching product exists in Odoo:</p><ul>${itemRows}</ul><p><em>Please create the missing products or add them manually to the quotation.</em></p>`);
             const userId = resolveSalespersonUserId(order);
             if (userId) {
                 await (0, odooActivityService_1.createTodoActivity)(client, {
                     modelName: 'sale.order',
                     recordId: orderId,
                     userId,
-                    summary: exports.QUOTATION_BOARD_SELECTION_ACTIVITY_SUMMARY,
+                    summary: 'UNMATCHED PRODUCTS FROM JOB SUMMARY',
                     noteLines: [
                         `Quotation: ${order.name}`,
-                        `The following board material(s) from Job Summary could not be uniquely matched to Odoo products:`,
-                        ...unresolvedBoards.map((b) => `• ${b}`),
-                        `Please select the correct board product(s) on the quotation lines.`,
+                        `The following item(s) from the Job Summary could not be created because no matching product exists in Odoo:`,
+                        ...unmatchedItems.map((u) => `• [${u.type}] ${u.name}: ${u.reason}`),
+                        `Please create the missing products or select them manually.`,
                     ],
                 });
             }
@@ -284,7 +370,7 @@ async function syncQuotationWithJobSummary(client, orderId, parsed) {
             orderName: order.name,
             updatedLinesCount,
             createdLinesCount,
-            unresolvedBoards,
+            unmatchedItems,
         });
         return {
             orderId,
@@ -295,7 +381,7 @@ async function syncQuotationWithJobSummary(client, orderId, parsed) {
             createdLinesCount,
             updatedLinesCount,
             shortfalls: [],
-            summary: `Populated quotation lines: ${updatedLinesCount} updated, ${createdLinesCount} created.`,
+            summary: `Populated quotation lines: ${updatedLinesCount} updated, ${createdLinesCount} created under BOARDS and CUTTING+EDGING+GROOVING sections.`,
         };
     }
     // Case B: Quotation already has custom/filled order lines -> Compare quantities

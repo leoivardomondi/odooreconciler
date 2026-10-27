@@ -2,6 +2,8 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.normalizeBoardProductName = normalizeBoardProductName;
 exports.isBoardProductName = isBoardProductName;
+exports.isRawBoardProductName = isRawBoardProductName;
+exports.isCuttingServiceProductName = isCuttingServiceProductName;
 exports.isStockExemptEdgeBandingService = isStockExemptEdgeBandingService;
 exports.extractThicknessMm = extractThicknessMm;
 exports.extractBoardAttributes = extractBoardAttributes;
@@ -28,6 +30,16 @@ function isBoardProductName(value) {
     // Some board colors omit the material family and are named only by thickness,
     // for example "Congo 18mm", "Honey Bee 18mm", and "Mahogany 20mm".
     return /\b(?:3|4|6|8|9|12|15|16|18|20|25|30|36)\s*mm\b/.test(name);
+}
+function isRawBoardProductName(value) {
+    if (!isBoardProductName(value))
+        return false;
+    const name = normalizeBoardProductName(value);
+    return !name.startsWith('cutting ') && !name.startsWith('cutting+');
+}
+function isCuttingServiceProductName(value) {
+    const name = normalizeBoardProductName(value);
+    return name.startsWith('cutting ') || name.startsWith('cutting+');
 }
 function isStockExemptEdgeBandingService(value) {
     const normalized = String(value || '').trim().toLowerCase();
@@ -196,6 +208,9 @@ function scoreBoardLineAgainstMaterial(lineName, material) {
         if (areSameColorFamily(matAttr.colorFamily, lineAttr.colorFamily)) {
             score += 20;
         }
+        else {
+            score -= 100;
+        }
     }
     return score;
 }
@@ -216,11 +231,6 @@ function assignBoardLinesToSheetMaterials(lines, sheetMaterials, getLineDisplayN
             return false;
         return true;
     });
-    if (sheetMaterials.length === 1) {
-        const mat = sheetMaterials[0];
-        result.set(mat, boardLines);
-        return result;
-    }
     for (const line of boardLines) {
         const displayName = getLineDisplayName(line);
         let bestMat = null;

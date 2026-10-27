@@ -145,6 +145,7 @@ exports.finishStaffOnboardingApproval = finishStaffOnboardingApproval;
 exports.createBoardIntakeQueueEntry = createBoardIntakeQueueEntry;
 exports.updateBoardIntakeQueueEntry = updateBoardIntakeQueueEntry;
 exports.getRecentBoardIntakeQueueEntries = getRecentBoardIntakeQueueEntries;
+exports.countBoardIntakeQueueEntries = countBoardIntakeQueueEntries;
 exports.getBoardIntakeQueueEntry = getBoardIntakeQueueEntry;
 exports.findActiveBoardIntakeLogsByPartnerOrProduct = findActiveBoardIntakeLogsByPartnerOrProduct;
 exports.claimBoardIntakeRevert = claimBoardIntakeRevert;
@@ -3779,8 +3780,12 @@ async function finishStaffOnboardingApproval(id, input) {
     await (0, db_1.execute)(`UPDATE staff_onboarding_applications SET status = ?, odoo_employee_id = COALESCE(?, odoo_employee_id), error_message = ?, reviewed_at = ?, reviewed_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [input.employeeId ? 'approved' : 'approval_failed', input.employeeId || null, input.errorMessage || null, (0, dateTime_1.appDateTime)(), input.reviewedBy, id]);
 }
 async function createBoardIntakeQueueEntry(input) {
-    await (0, db_1.execute)(`INSERT INTO board_intake_queue (id, product_id, product_name, partner_id, customer_name, quantity, actor_name, actor_email, vehicle_registration, arrival_date, arrival_time, gate, status)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`, [input.id, input.productId, input.productName, input.partnerId, input.customerName, input.quantity, input.actorName, input.actorEmail || null, input.vehicleRegistration || null, input.arrivalDate || null, input.arrivalTime || null, input.gate || null]);
+    const now = (0, dateTime_1.appDateTime)();
+    const arrivalDate = input.arrivalDate || now.slice(0, 10);
+    const isPurchase = input.isPurchase ? 1 : 0;
+    const purchaseOrderReference = input.purchaseOrderReference || null;
+    await (0, db_1.execute)(`INSERT INTO board_intake_queue (id, product_id, product_name, partner_id, customer_name, quantity, actor_name, actor_email, vehicle_registration, arrival_date, arrival_time, gate, is_purchase, purchase_order_reference, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`, [input.id, input.productId, input.productName, input.partnerId, input.customerName, input.quantity, input.actorName, input.actorEmail || null, input.vehicleRegistration || null, arrivalDate, input.arrivalTime || null, input.gate || null, isPurchase, purchaseOrderReference, now, now]);
 }
 async function updateBoardIntakeQueueEntry(id, input) {
     const retryDelayMinutes = input.status === 'failed' ? 2 : 0;
@@ -3789,22 +3794,40 @@ async function updateBoardIntakeQueueEntry(id, input) {
     next_retry_at = CASE WHEN ? = 'failed' THEN ${(0, db_1.getDatabaseDialect)() === 'mysql' ? 'DATE_ADD(CURRENT_TIMESTAMP, INTERVAL ? MINUTE)' : "datetime(CURRENT_TIMESTAMP, '+' || ? || ' minutes')"} ELSE NULL END,
     updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [input.status, input.stockQuantity ?? null, input.errorMessage || null, input.status, input.status, retryDelayMinutes, id]);
 }
-async function getRecentBoardIntakeQueueEntries(limit = 12, offset = 0) {
-    const query = `SELECT id, product_name, customer_name, quantity, vehicle_registration, arrival_date, arrival_time, gate, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at, reverted_at, reverted_by, actor_name, actor_email
+async function getRecentBoardIntakeQueueEntries(limit = 12, offset = 0, filterDate) {
+    const hasFilter = Boolean(filterDate && filterDate !== 'all');
+    const whereClause = hasFilter ? 'WHERE (arrival_date = ? OR substr(created_at, 1, 10) = ?)' : '';
+    const filterParams = hasFilter && filterDate ? [filterDate, filterDate] : [];
+    const query = `SELECT id, product_name, customer_name, quantity, vehicle_registration, arrival_date, arrival_time, gate, is_purchase, purchase_order_reference, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at, reverted_at, reverted_by, actor_name, actor_email
     FROM board_intake_queue 
+    ${whereClause}
     ORDER BY 
       CASE WHEN status IN ('pending', 'processing') THEN 0 ELSE 1 END ASC,
       created_at DESC 
     LIMIT ? OFFSET ?`;
     try {
-        return await (0, db_1.queryAll)(query, [Math.max(1, Math.min(50, limit)), Math.max(0, offset)]);
+        return await (0, db_1.queryAll)(query, [...filterParams, Math.max(1, Math.min(50, limit)), Math.max(0, offset)]);
     }
     catch (_error) {
         await (0, db_1.execute)(`ALTER TABLE board_intake_queue ADD COLUMN vehicle_registration VARCHAR(100) NULL`).catch(() => { });
         await (0, db_1.execute)(`ALTER TABLE board_intake_queue ADD COLUMN arrival_date VARCHAR(50) NULL`).catch(() => { });
         await (0, db_1.execute)(`ALTER TABLE board_intake_queue ADD COLUMN arrival_time VARCHAR(50) NULL`).catch(() => { });
         await (0, db_1.execute)(`ALTER TABLE board_intake_queue ADD COLUMN gate VARCHAR(50) NULL`).catch(() => { });
-        return (0, db_1.queryAll)(query, [Math.max(1, Math.min(50, limit)), Math.max(0, offset)]);
+        await (0, db_1.execute)(`ALTER TABLE board_intake_queue ADD COLUMN is_purchase INTEGER DEFAULT 0`).catch(() => { });
+        await (0, db_1.execute)(`ALTER TABLE board_intake_queue ADD COLUMN purchase_order_reference VARCHAR(100) NULL`).catch(() => { });
+        return (0, db_1.queryAll)(query, [...filterParams, Math.max(1, Math.min(50, limit)), Math.max(0, offset)]);
+    }
+}
+async function countBoardIntakeQueueEntries(filterDate) {
+    const hasFilter = Boolean(filterDate && filterDate !== 'all');
+    const whereClause = hasFilter ? 'WHERE (arrival_date = ? OR substr(created_at, 1, 10) = ?)' : '';
+    const filterParams = hasFilter && filterDate ? [filterDate, filterDate] : [];
+    try {
+        const row = await (0, db_1.queryOne)(`SELECT COUNT(*) as total FROM board_intake_queue ${whereClause}`, filterParams);
+        return Number(row?.total || 0);
+    }
+    catch {
+        return 0;
     }
 }
 async function getBoardIntakeQueueEntry(id) {
@@ -4151,6 +4174,9 @@ async function upsertPendingShopFloorProcesses(records) {
             const nextStatus = rec.qty_missing > 0
                 ? 'pending'
                 : (recentlyLoaded ? existing.status : (rec.status || 'loaded'));
+            const isNewlyLoaded = nextStatus === 'loaded' && existing.status !== 'loaded';
+            const effectiveLoadedAt = isNewlyLoaded ? (rec.loaded_at || now) : (existing.loaded_at || null);
+            const effectiveLoadedBy = isNewlyLoaded ? (rec.loaded_by || 'Automated Sync') : (existing.loaded_by || null);
             // Never overwrite an existing known partner name with 'Unknown Customer' or empty
             const effectivePartnerName = (rec.partner_name && rec.partner_name !== 'Unknown Customer')
                 ? rec.partner_name
@@ -4159,7 +4185,7 @@ async function upsertPendingShopFloorProcesses(records) {
             await (0, db_1.execute)(`UPDATE shop_floor_pending_processes
          SET mo_name = ?, origin = ?, partner_id = ?, partner_name = ?,
              product_name = ?, qty_needed = ?, qty_reserved = ?, qty_missing = ?,
-             status = ?, is_mo_closed = ?,
+             status = ?, loaded_at = ?, loaded_by = ?, is_mo_closed = ?,
              last_synced_at = ?, updated_at = ?
          WHERE id = ?`, [
                 rec.mo_name,
@@ -4171,6 +4197,8 @@ async function upsertPendingShopFloorProcesses(records) {
                 rec.qty_reserved,
                 rec.qty_missing,
                 nextStatus,
+                effectiveLoadedAt,
+                effectiveLoadedBy,
                 rec.is_mo_closed ? 1 : 0,
                 now,
                 now,
@@ -4388,10 +4416,17 @@ async function pruneStalePendingProcessesForActiveMos(activeMoIds, validKeys, po
         // If a matching history log DOES exist:
         // Check if the total logged quantity fulfills the requirement
         const totalLogged = matchingLogs.reduce((sum, l) => sum + Number(l.quantity || 0), 0);
-        if (totalLogged >= Number(row.qty_needed || 0)) {
+        const isNotInOdooRequirements = !validKeySet.has(row.id) && !validKeySet.has(compositeKey);
+        if (totalLogged >= Number(row.qty_needed || 0) || (isNotInOdooRequirements && totalLogged > 0)) {
             // If MO is closed or no longer pending in Odoo, it has been fulfilled by history log
-            if (isMoClosed || (!validKeySet.has(row.id) && !validKeySet.has(compositeKey))) {
-                await (0, db_1.execute)(`UPDATE shop_floor_pending_processes SET status = 'loaded', updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [row.id]);
+            if (isMoClosed || isNotInOdooRequirements) {
+                await (0, db_1.execute)(`UPDATE shop_floor_pending_processes
+           SET status = 'loaded',
+               qty_needed = CASE WHEN qty_needed > ? THEN ? ELSE qty_needed END,
+               qty_reserved = CASE WHEN qty_needed > ? THEN ? ELSE qty_reserved END,
+               qty_missing = 0,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = ?`, [totalLogged, totalLogged, totalLogged, totalLogged, row.id]);
             }
         }
         else {

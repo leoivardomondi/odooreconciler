@@ -196,13 +196,13 @@ test('compareQuotationLinesWithJobSummary correctly flags shortfalls and verifie
   assert.equal(resultEdgingSurplus.hasShortfall, false);
   assert.equal(resultEdgingSurplus.shortfalls.length, 0);
 
-  // Scenario D: Board Surplus (mismatch: "not less, but can be more" does NOT apply to boards)
+  // Scenario D: Board Surplus (sufficient: only lower quantity is flagged in ATTENTION)
   const boardSurplusLines: SaleOrderLine[] = [
     {
       id: 1,
       name: 'White MDF 18mm',
       product_id: [201, 'White MDF 18mm'],
-      product_uom_qty: 5, // 5 > 3: excess mismatch for boards!
+      product_uom_qty: 5, // 5 > 3: surplus is sufficient, only lower quantities are flagged
       display_type: false,
     },
     {
@@ -222,9 +222,37 @@ test('compareQuotationLinesWithJobSummary correctly flags shortfalls and verifie
   ];
 
   const resultBoardSurplus = compareQuotationLinesWithJobSummary(boardSurplusLines, parsedJobSummary);
-  assert.equal(resultBoardSurplus.hasShortfall, true);
-  assert.equal(resultBoardSurplus.shortfalls.length, 1);
-  assert.ok(resultBoardSurplus.shortfalls[0].includes('Excess: 2 sheet(s)'));
+  assert.equal(resultBoardSurplus.hasShortfall, false);
+  assert.equal(resultBoardSurplus.shortfalls.length, 0);
+
+  // Scenario E: Board Mismatch (e.g., Quotation has White Waterproof but Job Summary has Harbour Grey Waterproof)
+  const mismatchedBoardLines: SaleOrderLine[] = [
+    {
+      id: 1,
+      name: 'Cutting White Waterproof 18mm',
+      product_id: [401, 'Cutting White Waterproof 18mm'],
+      product_uom_qty: 17,
+      display_type: false,
+    },
+    {
+      id: 2,
+      name: 'Optimised Panels',
+      product_id: [102, 'Optimised Panels'],
+      product_uom_qty: 3,
+      display_type: false,
+    },
+    {
+      id: 3,
+      name: 'Edge Banding Service White',
+      product_id: [301, 'Edge Banding Service White'],
+      product_uom_qty: 16,
+      display_type: false,
+    },
+  ];
+
+  const resultMismatch = compareQuotationLinesWithJobSummary(mismatchedBoardLines, parsedJobSummary);
+  assert.equal(resultMismatch.hasShortfall, true);
+  assert.ok(resultMismatch.shortfalls.some(s => s.includes('Board Mismatch')));
 });
 
 test('compareQuotationLinesWithJobSummary correctly distinguishes multiple boards of same color (WHITE MDF vs WHITE WATERPROOF)', () => {

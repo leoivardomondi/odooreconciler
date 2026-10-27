@@ -20,6 +20,17 @@ export function isBoardProductName(value: string | null | undefined): boolean {
   return /\b(?:3|4|6|8|9|12|15|16|18|20|25|30|36)\s*mm\b/.test(name);
 }
 
+export function isRawBoardProductName(value: string | null | undefined): boolean {
+  if (!isBoardProductName(value)) return false;
+  const name = normalizeBoardProductName(value);
+  return !name.startsWith('cutting ') && !name.startsWith('cutting+');
+}
+
+export function isCuttingServiceProductName(value: string | null | undefined): boolean {
+  const name = normalizeBoardProductName(value);
+  return name.startsWith('cutting ') || name.startsWith('cutting+');
+}
+
 export interface BoardAttributes {
   rawName: string;
   thickness: string | null;
@@ -238,6 +249,8 @@ export function scoreBoardLineAgainstMaterial(
   if (matAttr.colorFamily && lineAttr.colorFamily) {
     if (areSameColorFamily(matAttr.colorFamily, lineAttr.colorFamily)) {
       score += 20;
+    } else {
+      score -= 100;
     }
   }
 
@@ -266,11 +279,6 @@ export function assignBoardLinesToSheetMaterials<
     return true;
   });
 
-  if (sheetMaterials.length === 1) {
-    const mat = sheetMaterials[0];
-    result.set(mat, boardLines);
-    return result;
-  }
 
   for (const line of boardLines) {
     const displayName = getLineDisplayName(line);

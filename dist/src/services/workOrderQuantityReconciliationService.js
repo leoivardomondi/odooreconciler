@@ -8,6 +8,9 @@ exports.reconcileWorkOrderQuantitiesForMo = reconcileWorkOrderQuantitiesForMo;
 exports.reconcileWorkOrderQuantitiesForSaleOrder = reconcileWorkOrderQuantitiesForSaleOrder;
 exports.reconcileWorkOrderQuantitiesForPurchaseOrder = reconcileWorkOrderQuantitiesForPurchaseOrder;
 const repositories_1 = require("../models/repositories");
+const db_1 = require("../models/db");
+const shopFloor_1 = require("../routes/shopFloor");
+const shopFloorPendingSyncService_1 = require("./shopFloorPendingSyncService");
 const boardProductClassifier_1 = require("./boardProductClassifier");
 Object.defineProperty(exports, "extractThicknessMm", { enumerable: true, get: function () { return boardProductClassifier_1.extractThicknessMm; } });
 const logService_1 = require("./logService");
@@ -478,6 +481,42 @@ async function reconcileWorkOrderQuantitiesForMo(client, moId, options) {
     }
     // 4. Re-evaluate stock reservation so 100% stock availability is assigned immediately
     await client.callRecordMethod('mrp.production', 'action_assign', [mo.id]).catch(() => null);
+    // 4b. Reconcile local shop_floor_pending_processes for this MO so board intake requirements reflect the new target
+    try {
+        const existingProcesses = await (0, db_1.queryAll)('SELECT id, product_name, qty_needed, qty_reserved, qty_missing, status FROM shop_floor_pending_processes WHERE mo_id = ?', [mo.id]);
+        for (const proc of existingProcesses) {
+            const prodName = proc.product_name || '';
+            if ((0, boardProductClassifier_1.isBoardProductName)(prodName) ||
+                (matchResult && prodName.toLowerCase().includes(matchResult.material.name.toLowerCase()))) {
+                const newQtyNeeded = targetQty;
+                const curReserved = Number(proc.qty_reserved || 0);
+                const newQtyMissing = Math.max(0, newQtyNeeded - curReserved);
+                const newQtyReserved = Math.min(newQtyNeeded, curReserved);
+                const newStatus = newQtyMissing <= 0 ? 'loaded' : 'pending';
+                await (0, db_1.execute)(`UPDATE shop_floor_pending_processes
+           SET qty_needed = ?, qty_reserved = ?, qty_missing = ?, status = ?,
+               loaded_at = CASE WHEN ? = 'loaded' AND (loaded_at IS NULL OR loaded_at = '') THEN CURRENT_TIMESTAMP ELSE loaded_at END,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = ?`, [newQtyNeeded, newQtyReserved, newQtyMissing, newStatus, newStatus, proc.id]);
+            }
+        }
+        // Invalidate shop-floor RAM and shared snapshots
+        try {
+            shopFloor_1.shopFloorCache.clearPrefix('shop-floor-dashboard:');
+            await (0, repositories_1.deleteShopFloorSharedCachePrefix)('shop-floor:').catch(() => null);
+        }
+        catch (_cacheErr) {
+            // Non-fatal cache invalidation
+        }
+        // Trigger full background sync to ensure clean state
+        void (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(true).catch(() => null);
+    }
+    catch (syncErr) {
+        void (0, logService_1.logEvent)('warn', 'Failed to update shop_floor_pending_processes after cutting quantity reconciliation', {
+            moId: mo.id,
+            error: syncErr instanceof Error ? syncErr.message : String(syncErr),
+        }).catch(() => null);
+    }
     const matchedMaterialDesc = matchResult?.material
         ? (matchResult.material.name.toLowerCase().includes('mm')
             ? matchResult.material.name

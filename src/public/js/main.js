@@ -529,10 +529,15 @@ document.addEventListener('submit', (event) => {
     return;
   }
 
-  // Board intake, revert, and retry forms handle their own non-blocking async feedback
+  // Work order actions, pause, attendance, board intake, and non-blocking async forms handle their own feedback
   if (
+    event.defaultPrevented ||
+    form.getAttribute('data-no-loading') === 'true' ||
+    form.id === 'pauseMoForm' ||
+    form.id === 'manufacturingOrderActionForm' ||
     form.classList.contains('board-revert-form') ||
     form.classList.contains('board-retry-form') ||
+    form.classList.contains('attendance-action-form') ||
     form.id === 'intakeForm'
   ) {
     return;

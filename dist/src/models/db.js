@@ -733,6 +733,8 @@ async function ensureSqliteDatabase(config) {
       arrival_date TEXT,
       arrival_time TEXT,
       gate TEXT,
+      is_purchase INTEGER DEFAULT 0,
+      purchase_order_reference TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       odoo_stock_quantity REAL,
       reverted_at TEXT,
@@ -1322,6 +1324,8 @@ async function ensureMysqlDatabase(config) {
       arrival_date VARCHAR(50) NULL,
       arrival_time VARCHAR(50) NULL,
       gate VARCHAR(50) NULL,
+      is_purchase INT NOT NULL DEFAULT 0,
+      purchase_order_reference VARCHAR(100) NULL,
       status VARCHAR(32) NOT NULL DEFAULT 'pending',
       odoo_stock_quantity DECIMAL(16,4) NULL,
       reverted_at DATETIME NULL,
@@ -1340,6 +1344,8 @@ async function ensureMysqlDatabase(config) {
     await ensureColumnMysql(pool, 'board_intake_queue', 'arrival_date', 'VARCHAR(50) NULL', config.mysqlDatabase);
     await ensureColumnMysql(pool, 'board_intake_queue', 'arrival_time', 'VARCHAR(50) NULL', config.mysqlDatabase);
     await ensureColumnMysql(pool, 'board_intake_queue', 'gate', 'VARCHAR(50) NULL', config.mysqlDatabase);
+    await ensureColumnMysql(pool, 'board_intake_queue', 'is_purchase', 'INT NOT NULL DEFAULT 0', config.mysqlDatabase);
+    await ensureColumnMysql(pool, 'board_intake_queue', 'purchase_order_reference', 'VARCHAR(100) NULL', config.mysqlDatabase);
     await query('create shop floor dashboard snapshots table', `
     CREATE TABLE IF NOT EXISTS shop_floor_dashboard_snapshots (
       user_email VARCHAR(255) PRIMARY KEY,

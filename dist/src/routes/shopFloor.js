@@ -1,4 +1,7 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.shopFloorCache = exports.manuallyPausedMoIds = void 0;
 exports.isBitcherOnyangoUser = isBitcherOnyangoUser;
@@ -9,9 +12,11 @@ exports.reconcileBoardRegistrationWithStockAlerts = reconcileBoardRegistrationWi
 exports.buildInstantMysqlOperatorDashboard = buildInstantMysqlOperatorDashboard;
 exports.fetchLiveSharedWorkOrders = fetchLiveSharedWorkOrders;
 exports.refreshSharedWorkOrders = refreshSharedWorkOrders;
+exports.fetchFastOperatorProfile = fetchFastOperatorProfile;
 exports.buildOperatorDashboard = buildOperatorDashboard;
 const express_1 = require("express");
 const crypto_1 = require("crypto");
+const dayjs_1 = __importDefault(require("dayjs"));
 const repositories_1 = require("../models/repositories");
 const shopFloorValidationJobService_1 = require("../services/shopFloorValidationJobService");
 const odooClient_1 = require("../services/odooClient");
@@ -662,13 +667,14 @@ function emptyOperatorDashboardShell(userEmail) {
  */
 async function buildInstantMysqlOperatorDashboard(userEmail) {
     const normalizedEmail = (userEmail || '').trim().toLowerCase();
-    const [sharedMoEntry, pendingProcesses, sharedIncidentsEntry, userSnapshot, receiptsEntry, deliveriesEntry] = await Promise.all([
+    const [sharedMoEntry, pendingProcesses, sharedIncidentsEntry, userSnapshot, receiptsEntry, deliveriesEntry, operatorsListEntry] = await Promise.all([
         (0, repositories_1.getShopFloorSharedCache)('shop-floor:shared-work-orders:v1').catch(() => null),
         (0, repositories_1.getPendingShopFloorProcesses)({ status: 'pending' }).catch(() => []),
         (0, repositories_1.getShopFloorSharedCache)('shop-floor:shared-incidents:v1').catch(() => null),
         (0, repositories_1.getShopFloorDashboardSnapshot)(normalizedEmail).catch(() => null),
         (0, repositories_1.getShopFloorSharedCache)('shop-floor:receipts:1').catch(() => null),
         (0, repositories_1.getShopFloorSharedCache)('shop-floor:deliveries:1').catch(() => null),
+        (0, repositories_1.getShopFloorSharedCache)('shop-floor:operators-list:v2').catch(() => null),
     ]);
     const sharedMo = sharedMoEntry?.data;
     const workOrders = (sharedMo?.workOrders || []).map((wo) => {
@@ -711,15 +717,20 @@ async function buildInstantMysqlOperatorDashboard(userEmail) {
             resolvedAt: r.close_date || null,
         };
     });
-    const employee = userSnapshot?.data?.employee || {
-        id: 0,
-        name: normalizedEmail.split('@')[0] || 'Operator',
-        jobTitle: 'Operator',
-        department: null,
-        workEmail: normalizedEmail,
-        mobilePhone: null,
-        manager: null,
-    };
+    const cachedOp = Array.isArray(operatorsListEntry?.data)
+        ? operatorsListEntry.data.find((o) => o.email && String(o.email).trim().toLowerCase() === normalizedEmail)
+        : null;
+    const employee = (userSnapshot?.data?.employee && userSnapshot.data.employee.id > 0)
+        ? userSnapshot.data.employee
+        : {
+            id: cachedOp?.id || 0,
+            name: cachedOp?.name || normalizedEmail.split('@')[0] || 'Operator',
+            jobTitle: cachedOp?.jobTitle || 'Operator',
+            department: cachedOp?.department || null,
+            workEmail: normalizedEmail,
+            mobilePhone: cachedOp?.phone || null,
+            manager: cachedOp?.manager || null,
+        };
     const attendance = userSnapshot?.data?.attendance || null;
     const areaPerformanceRates = sharedMo?.areaPerformanceRates || [];
     const reservedBoardsCount = sharedMo?.reservedBoardsCount || 0;
@@ -1073,6 +1084,88 @@ async function refreshSharedWorkOrders(client) {
     }
     return fresh;
 }
+/**
+ * Fast Operator Profile Hydration (<500ms):
+ * Fetches employee details, recent attendance, and payslips concurrently from Odoo.
+ * Avoids the heavy 40s manufacturing timeline calculation so the operator sees attendance and payslips immediately.
+ */
+async function fetchFastOperatorProfile(client, userEmail) {
+    const normalizedEmail = (userEmail || '').trim().toLowerCase();
+    let employee = await client.findEmployeeForShopFloorEmail(userEmail).catch(() => null);
+    if (!employee) {
+        employee = await client.findEmployeeByUserEmail(userEmail).catch(() => null);
+    }
+    if (!employee) {
+        employee = await client.findEmployeeByWorkEmail(userEmail).catch(() => null);
+    }
+    if (!employee) {
+        return {
+            employee: {
+                id: 0,
+                name: userEmail ? userEmail.split('@')[0] : 'Operator',
+                jobTitle: 'Operator',
+                department: null,
+                workEmail: userEmail,
+                mobilePhone: null,
+                manager: null,
+            },
+            attendance: null,
+            payslips: [],
+        };
+    }
+    const [rawAttendance, rawPayslips] = await Promise.all([
+        client.getTodayAttendance(employee.id).catch(() => null),
+        client.getEmployeePayslips(employee.id, 6).catch(() => []),
+    ]);
+    let attendance = null;
+    if (rawAttendance) {
+        attendance = {
+            checkedIn: rawAttendance.checkedIn,
+            checkedOut: rawAttendance.checkedOut,
+            todayRecord: rawAttendance.todayRecord ? {
+                check_in: toEAT(rawAttendance.todayRecord.check_in) || rawAttendance.todayRecord.check_in,
+                check_out: toEAT(rawAttendance.todayRecord.check_out) || rawAttendance.todayRecord.check_out,
+            } : null,
+            recentRecords: (rawAttendance.recentRecords || []).map((r) => ({
+                check_in: toEAT(r.check_in) || r.check_in,
+                check_out: toEAT(r.check_out) || r.check_out,
+            })),
+            isLate: false,
+        };
+        if (rawAttendance.todayRecord?.check_in) {
+            const checkInTime = toEAT(rawAttendance.todayRecord.check_in);
+            if (checkInTime) {
+                const timePart = checkInTime.split(' ')[1] || checkInTime;
+                const [hh, mm] = timePart.split(':').map(Number);
+                if (hh > 8 || (hh === 8 && mm > 30)) {
+                    attendance.isLate = true;
+                }
+            }
+        }
+    }
+    const payslips = (rawPayslips || []).map((p) => ({
+        id: p.id,
+        name: p.name,
+        dateFrom: p.date_from,
+        dateTo: p.date_to,
+        state: p.state || 'draft',
+        structure: Array.isArray(p.struct_id) ? p.struct_id[1] : '',
+    }));
+    const employeeData = {
+        id: employee.id,
+        name: employee.name,
+        jobTitle: employee.job_title || null,
+        department: Array.isArray(employee.department_id) ? employee.department_id[1] : null,
+        workEmail: employee.work_email || null,
+        mobilePhone: employee.mobile_phone || null,
+        manager: Array.isArray(employee.parent_id) ? employee.parent_id[1] : null,
+    };
+    return {
+        employee: employeeData,
+        attendance,
+        payslips,
+    };
+}
 async function buildOperatorDashboard(client, userEmail, req, stockScope) {
     const result = {
         employee: null,
@@ -1425,8 +1518,31 @@ router.get('/shop-floor', async (req, res) => {
                 console.warn('[shopFloor] Failed to build instant MySQL dashboard for', normalizedEmail, mysqlErr);
             }
         }
-        // If data exists, serve immediately (<5ms)! Revalidate in background if explicit refresh, stale, or attendance missing
+        // Fast Profile Hydration (<900ms) if attendance, payslips, or real employee are missing from MySQL snapshot
         const hasRecentAttendance = Boolean(data?.attendance?.recentRecords && data.attendance.recentRecords.length > 0);
+        const hasPayslips = Boolean(data?.payslips && data.payslips.length > 0);
+        const hasRealEmployee = Boolean(data?.employee && data.employee.id > 0);
+        if (data && (!hasRecentAttendance || !hasPayslips || !hasRealEmployee)) {
+            try {
+                const client = new odooClient_1.OdooClient(settings.odoo);
+                const fastProfile = await withMaxPageWait(fetchFastOperatorProfile(client, viewedEmail), 900, null);
+                if (fastProfile && fastProfile.employee.id > 0) {
+                    data.employee = fastProfile.employee;
+                    if (fastProfile.attendance) {
+                        data.attendance = fastProfile.attendance;
+                    }
+                    if (fastProfile.payslips && fastProfile.payslips.length > 0) {
+                        data.payslips = fastProfile.payslips;
+                    }
+                    exports.shopFloorCache.set(cacheKey, data, 60 * 60 * 1000, 3 * 60 * 1000);
+                    void (0, repositories_1.saveShopFloorDashboardSnapshot)(normalizedEmail, data).catch(() => null);
+                }
+            }
+            catch (profileErr) {
+                console.warn('[shopFloor] Fast profile hydration warning for', normalizedEmail, profileErr);
+            }
+        }
+        // Revalidate full analytics in background if explicit refresh, stale, or attendance missing
         const needsBackgroundRefresh = isExplicitRefresh || exports.shopFloorCache.isStale(cacheKey) || !hasRecentAttendance;
         if (data && ((data.workOrders && data.workOrders.length > 0) || (data.stockAlerts && data.stockAlerts.length > 0))) {
             if (needsBackgroundRefresh && !exports.shopFloorCache.isInFlight(cacheKey)) {
@@ -1776,68 +1892,61 @@ router.get('/shop-floor/payslip/:id/download', async (req, res) => {
     }
 });
 /**
- * GET /shop-floor/api/attendance-status — Lightweight JSON endpoint returning current operator attendance records.
+ * GET /shop-floor/api/attendance-status (and /shop-floor/api/operator-profile)
+ * Fast JSON endpoint returning current operator profile, attendance records, and payslips.
  */
-router.get('/shop-floor/api/attendance-status', async (req, res) => {
+const handleOperatorProfileSync = async (req, res) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
     try {
         const settings = await (0, repositories_1.getSettings)();
         const viewedEmail = getViewedUserEmail(req);
         const normalizedEmail = viewedEmail.trim().toLowerCase();
+        const cacheKey = `shop-floor-dashboard:v3:${normalizedEmail}`;
         // Check local snapshot first
         const snapshot = await (0, repositories_1.getShopFloorDashboardSnapshot)(normalizedEmail).catch(() => null);
-        if (snapshot?.data?.attendance?.recentRecords && snapshot.data.attendance.recentRecords.length > 0) {
-            return res.json({ success: true, attendance: snapshot.data.attendance, employee: snapshot.data.employee });
+        const hasAttendance = Boolean(snapshot?.data?.attendance?.recentRecords && snapshot.data.attendance.recentRecords.length > 0);
+        const hasPayslips = Boolean(snapshot?.data?.payslips && snapshot.data.payslips.length > 0);
+        const hasEmployee = Boolean(snapshot?.data?.employee && snapshot.data.employee.id > 0);
+        if (hasAttendance && hasPayslips && hasEmployee) {
+            return res.json({
+                success: true,
+                attendance: snapshot.data.attendance,
+                employee: snapshot.data.employee,
+                payslips: snapshot.data.payslips,
+            });
         }
-        // Otherwise fetch fresh from Odoo
+        // Otherwise fetch fresh fast profile concurrently from Odoo (<500ms)
         const client = new odooClient_1.OdooClient(settings.odoo);
-        let employee = await client.findEmployeeForShopFloorEmail(viewedEmail).catch(() => null);
-        if (!employee) {
-            employee = await client.findEmployeeByUserEmail(viewedEmail).catch(() => null);
+        const profile = await fetchFastOperatorProfile(client, viewedEmail);
+        let baseData = snapshot?.data;
+        if (!baseData) {
+            baseData = await buildInstantMysqlOperatorDashboard(viewedEmail).catch(() => emptyOperatorDashboardShell(viewedEmail));
         }
-        if (!employee) {
-            employee = await client.findEmployeeByWorkEmail(viewedEmail).catch(() => null);
+        if (profile.employee.id > 0) {
+            baseData.employee = profile.employee;
         }
-        if (!employee) {
-            return res.json({ success: true, attendance: null, employee: null });
+        if (profile.attendance) {
+            baseData.attendance = profile.attendance;
         }
-        const rawAttendance = await client.getTodayAttendance(employee.id).catch(() => null);
-        let attendance = null;
-        if (rawAttendance) {
-            attendance = {
-                checkedIn: rawAttendance.checkedIn,
-                checkedOut: rawAttendance.checkedOut,
-                todayRecord: rawAttendance.todayRecord ? {
-                    check_in: toEAT(rawAttendance.todayRecord.check_in) || rawAttendance.todayRecord.check_in,
-                    check_out: toEAT(rawAttendance.todayRecord.check_out) || rawAttendance.todayRecord.check_out,
-                } : null,
-                recentRecords: (rawAttendance.recentRecords || []).map((r) => ({
-                    check_in: toEAT(r.check_in) || r.check_in,
-                    check_out: toEAT(r.check_out) || r.check_out,
-                })),
-                isLate: false,
-            };
-            if (rawAttendance.todayRecord?.check_in) {
-                const checkInTime = toEAT(rawAttendance.todayRecord.check_in);
-                if (checkInTime) {
-                    const timePart = checkInTime.split(' ')[1] || checkInTime;
-                    const [hh, mm] = timePart.split(':').map(Number);
-                    if (hh > 8 || (hh === 8 && mm > 30)) {
-                        attendance.isLate = true;
-                    }
-                }
-            }
+        if (profile.payslips && profile.payslips.length > 0) {
+            baseData.payslips = profile.payslips;
         }
-        if (snapshot?.data && attendance) {
-            snapshot.data.attendance = attendance;
-            await (0, repositories_1.saveShopFloorDashboardSnapshot)(normalizedEmail, snapshot.data).catch(() => null);
-        }
-        return res.json({ success: true, attendance, employee });
+        // Persist immediately to MySQL snapshot and RAM cache
+        await (0, repositories_1.saveShopFloorDashboardSnapshot)(normalizedEmail, baseData).catch(() => null);
+        exports.shopFloorCache.set(cacheKey, baseData, 60 * 60 * 1000, 3 * 60 * 1000);
+        return res.json({
+            success: true,
+            attendance: baseData.attendance,
+            employee: baseData.employee,
+            payslips: baseData.payslips || [],
+        });
     }
     catch (err) {
         return res.status(500).json({ success: false, error: err?.message || 'Failed to fetch attendance status' });
     }
-});
+};
+router.get('/shop-floor/api/attendance-status', handleOperatorProfileSync);
+router.get('/shop-floor/api/operator-profile', handleOperatorProfileSync);
 /**
  * GET /shop-floor/api/app-badge-counts — Fast (<5ms) JSON endpoint returning real-time notification counts from MySQL.
  */
@@ -1940,8 +2049,63 @@ router.get('/shop-floor/api/app-badge-counts', async (req, res) => {
         res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
     }
 });
+function cleanOdooDepartment(emp) {
+    if (Array.isArray(emp.department_id) && emp.department_id[1]) {
+        const raw = String(emp.department_id[1]).trim();
+        if (raw.includes('/')) {
+            const leaf = raw.split('/').pop()?.trim();
+            if (leaf)
+                return leaf;
+        }
+        return raw;
+    }
+    if (typeof emp.department_id === 'string' && emp.department_id.trim()) {
+        const raw = emp.department_id.trim();
+        if (raw.includes('/')) {
+            const leaf = raw.split('/').pop()?.trim();
+            if (leaf)
+                return leaf;
+        }
+        return raw;
+    }
+    const title = String(emp.job_title || '').trim().toLowerCase();
+    const name = String(emp.name || '').trim().toLowerCase();
+    if (title.includes('director') || title.includes('managing') || title.includes('executive') || name.includes('charles') || name.includes('raphael')) {
+        return 'Management';
+    }
+    if (title.includes('information') || title.includes('system') || title.includes('tech') || title.includes('it') || name.includes('leoivard') || name.includes('dbadmin')) {
+        return 'Information Technology';
+    }
+    if (title.includes('sales') || title.includes('optimizer') || name.includes('sharon') || name.includes('candy')) {
+        return 'Sales';
+    }
+    return 'Operations';
+}
+function cleanOdooJobTitle(emp) {
+    if (emp.job_title && typeof emp.job_title === 'string' && emp.job_title.trim()) {
+        return emp.job_title.trim();
+    }
+    const name = String(emp.name || '').trim().toLowerCase();
+    if (name.includes('charles'))
+        return 'Managing Director';
+    if (name.includes('raphael'))
+        return 'Director';
+    if (name.includes('leoivard'))
+        return 'Information Systems';
+    if (name.includes('janet'))
+        return 'Operations Assistant';
+    if (name.includes('joel'))
+        return 'Junior Operator';
+    if (name.includes('thomas'))
+        return 'Assistant Jr Operator';
+    if (name.includes('okoth') || name.includes('michael'))
+        return 'Helper';
+    if (name.includes('akulo') || name.includes('bitcher'))
+        return 'Senior Operator';
+    return 'Operator';
+}
 /**
- * GET /shop-floor/operators — Admin view: list all operators from Odoo Operations/Production departments.
+ * GET /shop-floor/operators — Admin view: list all operators from Odoo with true names and accurate departments.
  */
 router.get('/shop-floor/operators', async (req, res) => {
     const isAdmin = req.authUser?.role === 'admin';
@@ -1953,9 +2117,32 @@ router.get('/shop-floor/operators', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
     try {
         const settings = await (0, repositories_1.getSettings)();
-        const operatorCacheKey = 'shop-floor:operators-list:v1';
+        const operatorCacheKey = 'shop-floor:operators-list:v2';
+        // Purge obsolete v1 cache key to ensure any old fallback with truncated email names is cleared
+        void (0, repositories_1.deleteShopFloorSharedCache)('shop-floor:operators-list:v1').catch(() => { });
         // 1. Read persistent MySQL shared cache immediately (<5ms)
-        const persistentCache = await (0, repositories_1.getShopFloorSharedCache)(operatorCacheKey).catch(() => null);
+        let persistentCache = await (0, repositories_1.getShopFloorSharedCache)(operatorCacheKey).catch(() => null);
+        // Validate cached data: if ANY operator has name derived from email prefix, single-word username, or is inactive/unlinked, discard cache!
+        if (persistentCache?.data?.allOperators && Array.isArray(persistentCache.data.allOperators)) {
+            const hasCorruptNames = persistentCache.data.allOperators.some((op) => {
+                if (!op || !op.name || typeof op.name !== 'string')
+                    return true;
+                const n = op.name.trim();
+                const emailPrefix = String(op.workEmail || '').split('@')[0].trim().toLowerCase();
+                if (n.toLowerCase() === emailPrefix)
+                    return true;
+                if (op.workEmail && op.workEmail.toLowerCase().includes('onyangoakulo22'))
+                    return true;
+                if (!n.includes(' ') && (n.toLowerCase() === 'dbadmin' || n.toLowerCase().startsWith('okoth') || n.toLowerCase().startsWith('joel')))
+                    return true;
+                return false;
+            });
+            if (hasCorruptNames) {
+                persistentCache = null;
+                void (0, repositories_1.deleteShopFloorSharedCache)(operatorCacheKey).catch(() => { });
+                exports.shopFloorCache.delete(operatorCacheKey);
+            }
+        }
         const operatorsPromise = exports.shopFloorCache.getOrFetchTieredSWR(operatorCacheKey, req.query.refresh === 'true' ? 0 : 5 * 60 * 1000, // Non-blocking serve with background revalidation on refresh
         60 * 60 * 1000, // 60 minutes max stale
         async () => {
@@ -1963,29 +2150,39 @@ router.get('/shop-floor/operators', async (req, res) => {
             const targetCompanyId = await client.getTargetCompanyIdValue();
             // 1. Fetch active approved accounts from the database
             const allApprovedUsers = await (0, repositories_1.getApprovedAuthUsers)().catch(() => []);
-            // Strictly only active accounts that have shop-floor access or are admin
+            // Strictly only active accounts that have shop-floor access or are admin (exclude deactivated accounts and obsolete emails)
             const activeAccounts = (allApprovedUsers || []).filter((u) => {
                 if (!u || !u.email)
                     return false;
                 if ((0, accountStatus_1.isAccountDeactivated)(u.active))
                     return false;
+                if (u.email.toLowerCase().includes('onyangoakulo22'))
+                    return false;
                 const apps = Array.isArray(u.apps) ? u.apps : [];
                 return apps.includes('shop-floor') || u.role === 'admin';
             });
-            // 2. Fetch active Odoo employees in the target company
-            const workcenters = await client.searchReadRecords('mrp.workcenter', {
-                domain: [['company_id', '=', targetCompanyId]],
-                fields: ['id', 'employee_ids'],
-            }).catch(() => []);
+            // 2. Fetch active Odoo employees and active users in target company
+            const [workcenters, allOdooEmployees, allOdooUsers] = await Promise.all([
+                client.searchReadRecords('mrp.workcenter', {
+                    domain: [['company_id', '=', targetCompanyId]],
+                    fields: ['id', 'employee_ids'],
+                }).catch(() => []),
+                client.searchReadRecords('hr.employee', {
+                    domain: [
+                        ['company_id', '=', targetCompanyId],
+                        ['active', '=', true],
+                    ],
+                    fields: ['id', 'name', 'job_title', 'department_id', 'work_email', 'mobile_phone', 'user_id', 'active'],
+                }).catch(() => []),
+                client.searchReadRecords('res.users', {
+                    domain: [
+                        ['company_id', '=', targetCompanyId],
+                        ['active', '=', true],
+                    ],
+                    fields: ['id', 'name', 'login', 'email', 'active'],
+                }).catch(() => []),
+            ]);
             const workcenterOperatorIds = new Set(workcenters.flatMap((w) => w.employee_ids || []));
-            // Get all active employees in target company
-            const allOdooEmployees = await client.searchReadRecords('hr.employee', {
-                domain: [
-                    ['company_id', '=', targetCompanyId],
-                    ['active', '=', true],
-                ],
-                fields: ['id', 'name', 'job_title', 'department_id', 'work_email', 'mobile_phone', 'user_id', 'active'],
-            }).catch(() => []);
             // 3. Match active accounts strictly to active Odoo employees
             const operators = [];
             const seenEmpIds = new Set();
@@ -1993,14 +2190,30 @@ router.get('/shop-floor/operators', async (req, res) => {
                 const userEmail = String(account.email || '').trim().toLowerCase();
                 if (!userEmail)
                     continue;
-                // Find matching active Odoo employee by work email
+                // Find matching active Odoo employee by work_email, user login, user email, or director name
                 const linkedEmp = allOdooEmployees.find((e) => {
                     if (e.active === false)
                         return false;
                     const empEmail = String(e.work_email || '').trim().toLowerCase();
-                    return Boolean(empEmail && empEmail === userEmail);
+                    if (empEmail && empEmail === userEmail)
+                        return true;
+                    if (Array.isArray(e.user_id) && e.user_id[0]) {
+                        const u = allOdooUsers.find((user) => user.id === e.user_id[0]);
+                        if (u) {
+                            const uLogin = String(u.login || '').trim().toLowerCase();
+                            const uEmail = String(u.email || '').trim().toLowerCase();
+                            if (uLogin === userEmail || uEmail === userEmail)
+                                return true;
+                        }
+                    }
+                    const localPart = userEmail.split('@')[0].replace(/[._-]/g, ' ').trim().toLowerCase();
+                    const eName = String(e.name || '').trim().toLowerCase();
+                    if (localPart.length >= 3 && eName.includes(localPart)) {
+                        return true;
+                    }
+                    return false;
                 });
-                // STRICT REQUIREMENT: Only accounts linked to Odoo! Skip if not linked to an active Odoo employee.
+                // STRICT REQUIREMENT: Only accounts linked to an active Odoo employee in company 1!
                 if (!linkedEmp)
                     continue;
                 if (seenEmpIds.has(linkedEmp.id))
@@ -2008,12 +2221,15 @@ router.get('/shop-floor/operators', async (req, res) => {
                 seenEmpIds.add(linkedEmp.id);
                 // Full name strictly from Odoo employee record! NEVER derived from email address.
                 const odooFullName = String(linkedEmp.name || '').trim();
+                if (!odooFullName || odooFullName.toLowerCase() === userEmail.split('@')[0].toLowerCase()) {
+                    continue;
+                }
                 operators.push({
                     id: linkedEmp.id,
                     name: odooFullName,
-                    jobTitle: linkedEmp.job_title || 'Operator',
-                    department: Array.isArray(linkedEmp.department_id) ? linkedEmp.department_id[1] : 'Production',
-                    workEmail: linkedEmp.work_email || account.email,
+                    jobTitle: cleanOdooJobTitle(linkedEmp),
+                    department: cleanOdooDepartment(linkedEmp),
+                    workEmail: account.email || linkedEmp.work_email,
                     mobilePhone: linkedEmp.mobile_phone || null,
                     userId: Array.isArray(linkedEmp.user_id) ? linkedEmp.user_id[0] : null,
                     userName: Array.isArray(linkedEmp.user_id) ? linkedEmp.user_id[1] : odooFullName,
@@ -2023,19 +2239,42 @@ router.get('/shop-floor/operators', async (req, res) => {
                     assignedItems: [],
                 });
             }
-            // Sort workcenter operators first, then alphabetically by Odoo full name
-            if (workcenterOperatorIds.size > 0) {
-                operators.sort((a, b) => {
-                    const aWc = workcenterOperatorIds.has(a.id) ? 0 : 1;
-                    const bWc = workcenterOperatorIds.has(b.id) ? 0 : 1;
-                    if (aWc !== bWc)
-                        return aWc - bWc;
-                    return a.name.localeCompare(b.name);
+            // Also include any active workcenter operators or operations / management employees from Odoo
+            for (const emp of allOdooEmployees) {
+                if (emp.active === false)
+                    continue;
+                if (seenEmpIds.has(emp.id))
+                    continue;
+                const isWc = workcenterOperatorIds.has(emp.id);
+                const dept = cleanOdooDepartment(emp);
+                if (!isWc && dept !== 'Operations' && dept !== 'Management')
+                    continue;
+                seenEmpIds.add(emp.id);
+                const odooFullName = String(emp.name || '').trim();
+                const email = String(emp.work_email || '').trim().toLowerCase();
+                operators.push({
+                    id: emp.id,
+                    name: odooFullName,
+                    jobTitle: cleanOdooJobTitle(emp),
+                    department: dept,
+                    workEmail: email && email !== 'false' ? email : null,
+                    mobilePhone: emp.mobile_phone || null,
+                    userId: Array.isArray(emp.user_id) ? emp.user_id[0] : null,
+                    userName: Array.isArray(emp.user_id) ? emp.user_id[1] : odooFullName,
+                    checkedIn: false,
+                    checkedOut: false,
+                    checkInTime: null,
+                    assignedItems: [],
                 });
             }
-            else {
-                operators.sort((a, b) => a.name.localeCompare(b.name));
-            }
+            // Sort: Management & workcenter operators first, then alphabetically by Odoo full name
+            operators.sort((a, b) => {
+                const aPriority = a.department === 'Management' ? 0 : workcenterOperatorIds.has(a.id) ? 1 : 2;
+                const bPriority = b.department === 'Management' ? 0 : workcenterOperatorIds.has(b.id) ? 1 : 2;
+                if (aPriority !== bPriority)
+                    return aPriority - bPriority;
+                return a.name.localeCompare(b.name);
+            });
             // Get today's attendance for verified operators
             if (operators.length > 0) {
                 try {
@@ -2095,9 +2334,20 @@ router.get('/shop-floor/operators', async (req, res) => {
             ? persistentCache.data
             : { allOperators: [], departments: [] };
         let { allOperators, departments } = await withMaxPageWait(operatorsPromise, persistentCache?.data?.allOperators?.length ? 400 : 1200, fallbackData);
-        // Filter persistent cache data if served from cache to ensure inactive/unlinked/email-derived names are excluded
+        // Guaranteed post-filter: Exclude any entry that is inactive or has an email-derived username as its name
         if (allOperators && allOperators.length > 0) {
-            allOperators = allOperators.filter((op) => op && op.id && op.name && !op.name.includes('@'));
+            allOperators = allOperators.filter((op) => {
+                if (!op || !op.id || !op.name)
+                    return false;
+                const n = op.name.trim();
+                const prefix = String(op.workEmail || '').split('@')[0].trim().toLowerCase();
+                if (n.toLowerCase() === prefix)
+                    return false;
+                if (op.workEmail && op.workEmail.toLowerCase().includes('onyangoakulo22'))
+                    return false;
+                return true;
+            });
+            departments = [...new Set(allOperators.map((op) => op.department).filter(Boolean))];
         }
         // Non-blocking background warmup of weekly PDF snapshot so download is instant (<50ms)
         void (0, weeklyShopFloorReportService_1.getOrBuildWeeklyShopFloorReportPdf)().catch(() => { });
@@ -2266,6 +2516,11 @@ router.post('/shop-floor/operators/sync-access', async (req, res) => {
     try {
         const result = await (0, shopFloorOperatorAccessSyncService_1.syncShopFloorOperatorAccess)();
         exports.shopFloorCache.delete('shop-floor:operators-list:v1');
+        exports.shopFloorCache.delete('shop-floor:operators-list:v2');
+        await Promise.allSettled([
+            (0, repositories_1.deleteShopFloorSharedCache)('shop-floor:operators-list:v1'),
+            (0, repositories_1.deleteShopFloorSharedCache)('shop-floor:operators-list:v2'),
+        ]);
         res.redirect(`/shop-floor/operators?message=${encodeURIComponent(`Synced ${result.operators} operator(s): ${result.added} added and ${result.updated} updated with Shop Floor access.`)}`);
     }
     catch (err) {
@@ -2462,16 +2717,63 @@ router.get('/shop-floor/boards', async (req, res) => {
         const boardLogPage = Math.max(1, Number.parseInt(String(req.query.boardLogPage || '1'), 10) || 1);
         const boardLogPageSize = 12;
         const isRefresh = req.query.refresh === 'true';
+        const nairobiNow = (0, dayjs_1.default)().tz(env_1.env.APP_TIMEZONE || 'Africa/Nairobi');
+        const todayDate = nairobiNow.format('YYYY-MM-DD');
+        const yesterdayDate = nairobiNow.subtract(1, 'day').format('YYYY-MM-DD');
+        const rawDateQuery = typeof req.query.date === 'string' ? req.query.date.trim() : null;
+        let selectedDate = todayDate;
+        if (rawDateQuery === 'all') {
+            selectedDate = 'all';
+        }
+        else if (rawDateQuery === 'today') {
+            selectedDate = todayDate;
+        }
+        else if (rawDateQuery === 'yesterday') {
+            selectedDate = yesterdayDate;
+        }
+        else if (rawDateQuery && /^\d{4}-\d{2}-\d{2}$/.test(rawDateQuery)) {
+            selectedDate = rawDateQuery;
+        }
+        const isDateAll = selectedDate === 'all';
+        const effectiveDate = isDateAll ? todayDate : selectedDate;
+        const activeDayjs = dayjs_1.default.tz(effectiveDate, env_1.env.APP_TIMEZONE || 'Africa/Nairobi');
+        const prevDate = activeDayjs.subtract(1, 'day').format('YYYY-MM-DD');
+        const nextDate = activeDayjs.add(1, 'day').format('YYYY-MM-DD');
+        const isNextDisabled = !isDateAll && effectiveDate >= todayDate;
+        const isFilteringToday = !isDateAll && effectiveDate === todayDate;
+        const isFilteringYesterday = !isDateAll && effectiveDate === yesterdayDate;
+        const todayDisplayShort = nairobiNow.format('D MMM');
+        const yesterdayDisplayShort = nairobiNow.subtract(1, 'day').format('D MMM');
+        let activeDateDisplay = 'Today (' + todayDisplayShort + ')';
+        if (isDateAll) {
+            activeDateDisplay = 'All Logs';
+        }
+        else if (isFilteringToday) {
+            activeDateDisplay = 'Today (' + todayDisplayShort + ')';
+        }
+        else if (isFilteringYesterday) {
+            activeDateDisplay = 'Yesterday (' + yesterdayDisplayShort + ')';
+        }
+        else {
+            activeDateDisplay = activeDayjs.format('D MMM YYYY');
+        }
+        const prevDateLabel = prevDate === yesterdayDate ? 'Yesterday' : dayjs_1.default.tz(prevDate, env_1.env.APP_TIMEZONE || 'Africa/Nairobi').format('D MMM');
+        const prevDateShortLabel = prevDate === yesterdayDate ? 'Yesterday' : dayjs_1.default.tz(prevDate, env_1.env.APP_TIMEZONE || 'Africa/Nairobi').format('D MMM');
+        const nextDateLabel = nextDate === todayDate ? 'Today' : dayjs_1.default.tz(nextDate, env_1.env.APP_TIMEZONE || 'Africa/Nairobi').format('D MMM');
+        const nextDateShortLabel = nextDate === todayDate ? 'Today' : dayjs_1.default.tz(nextDate, env_1.env.APP_TIMEZONE || 'Africa/Nairobi').format('D MMM');
         if (isRefresh) {
             // Trigger fresh sync from Odoo in background without blocking initial render
             void (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(true).catch(() => null);
         }
-        const [settings, stockMirror, recentIntakeRows, pendingProcesses, customers] = await Promise.all([
+        const [settings, stockMirror, recentIntakeRows, pendingProcesses, customers, todayLogsCount, yesterdayLogsCount, selectedDateLogsCount] = await Promise.all([
             (0, repositories_1.getSettings)(),
             (0, stockMirrorService_1.getStockMirrorForPage)(isRefresh),
-            (0, repositories_1.getRecentBoardIntakeQueueEntries)(boardLogPageSize + 1, (boardLogPage - 1) * boardLogPageSize),
+            (0, repositories_1.getRecentBoardIntakeQueueEntries)(boardLogPageSize + 1, (boardLogPage - 1) * boardLogPageSize, selectedDate),
             (0, repositories_1.getPendingShopFloorProcesses)({ status: 'pending' }),
             (0, customerMirrorService_1.getCustomersForPage)(200),
+            (0, repositories_1.countBoardIntakeQueueEntries)(todayDate),
+            (0, repositories_1.countBoardIntakeQueueEntries)(yesterdayDate),
+            (0, repositories_1.countBoardIntakeQueueEntries)(selectedDate),
         ]);
         const hasNextBoardLogPage = recentIntakeRows.length > boardLogPageSize;
         const recentIntakes = recentIntakeRows.slice(0, boardLogPageSize);
@@ -2539,6 +2841,25 @@ router.get('/shop-floor/boards', async (req, res) => {
             stockAlerts: localStockAlerts,
             boardLogEmail: (0, helpers_1.normalizeBoardLogRecipients)(settings.stock?.boardLogNotificationEmail),
             customers,
+            selectedDate,
+            todayDate,
+            yesterdayDate,
+            prevDate,
+            nextDate,
+            isNextDisabled,
+            isFilteringToday,
+            isFilteringYesterday,
+            isDateAll,
+            activeDateDisplay,
+            todayDisplayShort,
+            yesterdayDisplayShort,
+            prevDateLabel,
+            prevDateShortLabel,
+            nextDateLabel,
+            nextDateShortLabel,
+            todayLogsCount,
+            yesterdayLogsCount,
+            selectedDateLogsCount,
             authUser: req.authUser,
             csrfToken: req.csrfToken || null,
             message: typeof req.query.message === 'string' ? req.query.message : null,
@@ -3066,12 +3387,15 @@ router.post('/shop-floor/board-intake', async (req, res) => {
         const arrivalDate = String(req.body.arrival_date || '').trim();
         const arrivalTime = String(req.body.arrival_time || '').trim();
         const gate = String(req.body.gate || '').trim();
+        const isPurchase = req.body.is_purchase === 'true' || req.body.is_purchase === '1' || req.body.is_purchase === 'on' || req.body.is_purchase === 'purchase' || req.body.source_type === 'purchase';
+        const purchaseOrderReference = String(req.body.purchase_order_reference || '').trim() || null;
         const actorName = req.authUser.displayName || req.authUser.email;
         const optimisticId = (0, crypto_1.randomUUID)();
         await (0, repositories_1.createBoardIntakeQueueEntry)({
             id: optimisticId, productId, productName, partnerId, customerName,
             quantity: qty, actorName, actorEmail: req.authUser.email,
             vehicleRegistration, arrivalDate, arrivalTime, gate,
+            isPurchase, purchaseOrderReference: purchaseOrderReference || undefined,
         });
         await (0, stockMirrorService_1.recordOptimisticStockAddition)(productId, productName, qty);
         const moId = req.body.mo_id ? Number(req.body.mo_id) : undefined;
@@ -3111,7 +3435,8 @@ router.post('/shop-floor/board-intake', async (req, res) => {
         else if (resolvedMoNames) {
             partialSuffix = ` (For ${resolvedMoNames})`;
         }
-        const successMessage = `Boards saved immediately: ${qty} x ${productName} for ${customerName}${partialSuffix}${vehicleRegistration ? ` (${vehicleRegistration})` : ''}. Odoo synchronization and MO reservation are continuing in the background.`;
+        const purchaseTypeBadge = isPurchase ? ' [Purchase]' : ' [Client Supply]';
+        const successMessage = `Boards saved immediately: ${qty} x ${productName} for ${customerName}${purchaseTypeBadge}${partialSuffix}${vehicleRegistration ? ` (${vehicleRegistration})` : ''}. Odoo synchronization and MO reservation are continuing in the background.`;
         if (wantsJson) {
             res.json({
                 ok: true,
@@ -3127,6 +3452,8 @@ router.post('/shop-floor/board-intake', async (req, res) => {
                     arrival_date: arrivalDate,
                     arrival_time: arrivalTime,
                     gate,
+                    is_purchase: isPurchase ? 1 : 0,
+                    purchase_order_reference: purchaseOrderReference,
                     actor_name: actorName,
                     actor_email: req.authUser.email,
                     status: 'pending',
@@ -3192,10 +3519,21 @@ router.post('/shop-floor/board-intake', async (req, res) => {
                             `✅ <strong>BOARD INTAKE:</strong> ${qty} sheet${qty === 1 ? '' : 's'} logged and allocated for ${escapeHtml(resolvedMoNames)}.` +
                             `</p>`;
                     }
+                    const purchaseSubjectTag = isPurchase ? ' [PURCHASE]' : ' [CLIENT SUPPLY]';
+                    const purchaseLabel = isPurchase
+                        ? (purchaseOrderReference ? `Yes (PO: ${escapeHtml(purchaseOrderReference)})` : 'Yes (Company Purchase)')
+                        : 'No (Client Supplied)';
+                    const appBaseUrl = String(env_1.env.APP_BASE_URL || 'https://app.urbanvibeinteriordesign.co.ke').replace(/\/+$/, '');
+                    const fullListUrl = `${appBaseUrl}/shop-floor/boards?date=${encodeURIComponent(reportDate)}#recentBoardLogsSection`;
+                    const buttonHtml = `<div style="margin-top:20px;margin-bottom:12px;">` +
+                        `<a href="${fullListUrl}" style="display:inline-block;background-color:#0f172a;color:#ffffff;text-decoration:none;padding:10px 22px;font-size:14px;font-weight:600;border-radius:8px;box-shadow:0 1px 2px rgba(0,0,0,0.08);letter-spacing:0.01em;" target="_blank">` +
+                        `📋 View Full Board Logs List &rarr;` +
+                        `</a>` +
+                        `</div>`;
                     await (0, mailTransport_1.sendMailWithConfig)(settings.mail, {
                         to: toRecipients,
-                        subject: `${subjectCustomerName} - Board Log${partialSubjectTag} - ${reportDate}`,
-                        html: `<p><strong>Board log completed</strong></p><p>Client: ${safeCustomerName}<br>Board: ${safeProductName}<br>Quantity: ${qty} sheet${qty === 1 ? '' : 's'}${reqDetailsHtml}<br>Gate: ${safeGate}<br>Vehicle Reg: ${safeVehicleReg}<br>Arrival Time: ${safeArrivalTime}<br>Date: ${reportDate}<br>Logged by: ${safeActorEmail}</p>${calloutHtml}`,
+                        subject: `${subjectCustomerName} - Board Log${purchaseSubjectTag}${partialSubjectTag} - ${reportDate}`,
+                        html: `<p><strong>Board log completed</strong></p><p>Client: ${safeCustomerName}<br>Board: ${safeProductName}<br>Purchase: <strong style="${isPurchase ? 'color:#1d4ed8;' : 'color:#475569;'}">${purchaseLabel}</strong><br>Quantity: ${qty} sheet${qty === 1 ? '' : 's'}${reqDetailsHtml}<br>Gate: ${safeGate}<br>Vehicle Reg: ${safeVehicleReg}<br>Arrival Time: ${safeArrivalTime}<br>Date: ${reportDate}<br>Logged by: ${safeActorEmail}</p>${calloutHtml}${buttonHtml}`,
                     });
                 }
                 catch (mailError) {
@@ -3531,20 +3869,35 @@ router.post('/shop-floor/board-intake/:id/revert', async (req, res) => {
             const recipientList = [...new Set(rawRecipients.split(/[,\s;\n]+/).map((e) => e.trim().toLowerCase()).filter((e) => e.includes('@')))];
             const toRecipients = recipientList.join(', ');
             const subjectCustomerName = (entry.customer_name || 'Client').replace(/[\r\n]+/g, ' ').trim();
+            const appBaseUrl = String(env_1.env.APP_BASE_URL || 'https://app.urbanvibeinteriordesign.co.ke').replace(/\/+$/, '');
+            const fullListUrl = `${appBaseUrl}/shop-floor/boards?date=${encodeURIComponent(reportDate)}#recentBoardLogsSection`;
+            const buttonHtml = `<div style="margin-top:20px;margin-bottom:12px;">` +
+                `<a href="${fullListUrl}" style="display:inline-block;background-color:#0f172a;color:#ffffff;text-decoration:none;padding:10px 22px;font-size:14px;font-weight:600;border-radius:8px;box-shadow:0 1px 2px rgba(0,0,0,0.08);letter-spacing:0.01em;" target="_blank">` +
+                `📋 View Full Board Logs List &rarr;` +
+                `</a>` +
+                `</div>`;
+            const isPurchase = Boolean(entry.is_purchase);
+            const poRef = entry.purchase_order_reference;
+            const purchaseLabel = isPurchase
+                ? (poRef ? `Yes (PO: ${escapeHtml(String(poRef))})` : 'Yes (Company Purchase)')
+                : 'No (Client Supplied)';
+            const purchaseSubjectTag = isPurchase ? ' [PURCHASE]' : ' [CLIENT SUPPLY]';
             await (0, mailTransport_1.sendMailWithConfig)(settings.mail, {
                 to: toRecipients,
-                subject: `[REVERTED] ${subjectCustomerName} - Board Intake Cancelled - ${reportDate}`,
+                subject: `[REVERTED] ${subjectCustomerName} - Board Intake Cancelled${purchaseSubjectTag} - ${reportDate}`,
                 html: `<p style="color:#b91c1c;"><strong>⚠️ Board Intake Cancelled &amp; Reverted in Odoo</strong></p>` +
                     `<p>` +
                     `<strong>Client:</strong> ${safeCustomerName}<br>` +
                     `<strong>Board:</strong> ${safeProductName}<br>` +
+                    `<strong>Purchase:</strong> ${purchaseLabel}<br>` +
                     `<strong>Quantity Reverted:</strong> -${qtyNum} sheets<br>` +
                     `<strong>Remaining Odoo Stock:</strong> ${result.newQty}<br>` +
                     `<strong>Originally Logged By:</strong> ${safeOriginalActor}<br>` +
                     `<strong>Reverted By:</strong> ${safeRevertedBy}<br>` +
                     `<strong>Date:</strong> ${escapeHtml(reportDate)}<br>` +
                     `</p>` +
-                    `<p style="font-size:0.9em;color:#475569;"><em>Comprehensive note: The previous board entry was reverted. ${qtyNum} sheets of ${safeProductName} have been deducted from inventory and component reservation released.</em></p>`,
+                    `<p style="font-size:0.9em;color:#475569;"><em>Comprehensive note: The previous board entry was reverted. ${qtyNum} sheets of ${safeProductName} have been deducted from inventory and component reservation released.</em></p>` +
+                    buttonHtml,
             }).catch((mailError) => (0, logService_1.logEvent)('error', `Board intake revert email to ${toRecipients} failed`, {
                 customerName: entry.customer_name,
                 productName: entry.product_name,
@@ -3602,7 +3955,8 @@ router.get('/shop-floor/board-intake/status', async (req, res) => {
             res.json({ ok: true, entries: entries.filter(Boolean) });
             return;
         }
-        const entries = await (0, repositories_1.getRecentBoardIntakeQueueEntries)(12, 0);
+        const dateParam = typeof req.query.date === 'string' ? req.query.date.trim() : undefined;
+        const entries = await (0, repositories_1.getRecentBoardIntakeQueueEntries)(12, 0, dateParam);
         res.json({ ok: true, entries });
     }
     catch (error) {

@@ -439,30 +439,28 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
       // Even if Odoo shop floor closed the job or reserved someone else's stock (agg.qtyReserved >= agg.qtyNeeded),
       // if NO non-reverted history log exists for this customer and product, the customer's boards have NOT been logged at the gate!
       const qtyMissing = Math.max(0, agg.qtyNeeded - allocatedFromLogs);
+      const mo = moMap.get(agg.moId);
+      const isMoClosed = mo ? (mo.state === 'done' || mo.state === 'to_close') : false;
 
-      if (qtyMissing > 0) {
-        const mo = moMap.get(agg.moId);
-        const isMoClosed = mo ? (mo.state === 'done' || mo.state === 'to_close') : false;
-        recordsToUpsert.push({
-          id: key,
-          process_type: 'board_intake',
-          mo_id: agg.moId,
-          mo_name: agg.moName,
-          origin: agg.origin,
-          partner_id: agg.partnerId,
-          partner_name: agg.partnerName,
-          product_id: agg.productId,
-          product_name: agg.productName,
-          qty_needed: agg.qtyNeeded,
-          qty_reserved: allocatedFromLogs,
-          qty_missing: qtyMissing,
-          status: 'pending',
-          loaded_at: null,
-          loaded_by: null,
-          is_mo_closed: isMoClosed,
-          last_synced_at: new Date().toISOString(),
-        });
-      }
+      recordsToUpsert.push({
+        id: key,
+        process_type: 'board_intake',
+        mo_id: agg.moId,
+        mo_name: agg.moName,
+        origin: agg.origin,
+        partner_id: agg.partnerId,
+        partner_name: agg.partnerName,
+        product_id: agg.productId,
+        product_name: agg.productName,
+        qty_needed: agg.qtyNeeded,
+        qty_reserved: Math.min(agg.qtyNeeded, allocatedFromLogs),
+        qty_missing: qtyMissing,
+        status: qtyMissing > 0 ? 'pending' : 'loaded',
+        loaded_at: qtyMissing > 0 ? null : new Date().toISOString(),
+        loaded_by: qtyMissing > 0 ? null : 'Automated Sync',
+        is_mo_closed: isMoClosed,
+        last_synced_at: new Date().toISOString(),
+      });
     }
 
     // 7. Upsert into MySQL table (preserves locally loaded items unless shortage reoccurs)

@@ -7,7 +7,7 @@ import {
   determineTargetCuttingQuantity,
   reconcileWorkOrderQuantitiesForMo,
 } from './workOrderQuantityReconciliationService';
-import { ParsedJobSummaryResult, ParsedSheetMaterial } from '../models/types';
+import { ParsedJobSummaryResult, ParsedSheetMaterial, PendingShopFloorProcess } from '../models/types';
 import { OdooClient } from './odooClient';
 
 test('isCuttingProductOrWorkOrder correctly identifies cutting products and operations', () => {
@@ -395,5 +395,143 @@ test('Artec Interiors Job Summary 61: correctly matches 6mm, 9mm, and 18mm MOs w
   assert.ok(match18mm);
   assert.equal(match18mm.material.name, 'WHITE MDF');
   assert.equal(match18mm.material.sheets, 19);
+});
+
+test('reconcileWorkOrderQuantitiesForMo updates shop_floor_pending_processes and fulfills requirement when logged boards satisfy new target', async () => {
+  const { execute, queryOne } = await import('../models/db');
+  const { upsertPendingShopFloorProcesses, getPendingShopFloorProcesses } = await import('../models/repositories');
+
+  const testMoId = 6235;
+  const testProdId = 294;
+  const key = `${testMoId}_${testProdId}`;
+
+  await execute('DELETE FROM shop_floor_pending_processes WHERE mo_id = ?', [testMoId]);
+
+  // Seed pending process: MO originally needed 8 boards, 6 were logged (leaving 2 balance unlogged)
+  const initialPending: PendingShopFloorProcess = {
+    id: key,
+    process_type: 'board_intake',
+    mo_id: testMoId,
+    mo_name: 'WH/MO/05664',
+    origin: 'S03686',
+    partner_id: 539,
+    partner_name: 'PAMBA INTERIORS',
+    product_id: testProdId,
+    product_name: 'Backer White MDF 3mm',
+    qty_needed: 8,
+    qty_reserved: 6,
+    qty_missing: 2,
+    status: 'pending',
+    loaded_at: null,
+    loaded_by: null,
+    last_synced_at: new Date().toISOString(),
+  };
+
+  await upsertPendingShopFloorProcesses([initialPending]);
+
+  // Verify initially pending
+  const before = await getPendingShopFloorProcesses({ status: 'pending' });
+  const pendingBefore = before.find((p) => p.id === key);
+  assert.ok(pendingBefore);
+  assert.equal(pendingBefore.qty_needed, 8);
+  assert.equal(pendingBefore.qty_reserved, 6);
+  assert.equal(pendingBefore.qty_missing, 2);
+
+  // Mock OdooClient for MO 6235 currently having product_qty = 8
+  const mockClient = {
+    searchReadRecords: async (model: string) => {
+      if (model === 'mrp.production') {
+        return [
+          {
+            id: testMoId,
+            name: 'WH/MO/05664',
+            product_id: [597, 'Cutting Backer White Mdf 3mm'],
+            product_qty: 8,
+            state: 'confirmed',
+            origin: 'S03686',
+            move_raw_ids: [62882],
+            company_id: [1, 'URBAN VIBE INTERIOR DESIGN COMPANY LTD'],
+          },
+        ];
+      }
+      if (model === 'mrp.workorder') {
+        return [
+          {
+            id: 5801,
+            name: 'PAMBA INTERIORS - Cutting Backer White Mdf 3mm',
+            qty_production: 8,
+            qty_producing: 0,
+            state: 'ready',
+          },
+        ];
+      }
+      if (model === 'stock.move') {
+        return [
+          {
+            id: 62882,
+            product_id: [testProdId, 'Backer White MDF 3mm'],
+            product_uom_qty: 8,
+            quantity: 0,
+            state: 'confirmed',
+          },
+        ];
+      }
+      return [];
+    },
+    readRecords: async () => [],
+    writeRecord: async () => true,
+    callRecordMethod: async () => true,
+    postModelChatterMessage: async () => 1,
+  } as unknown as OdooClient;
+
+  const parsedJobSummary: ParsedJobSummaryResult = {
+    items: [],
+    sectionFound: true,
+    sectionText: '',
+    rawText: '',
+    logs: [],
+    optimizedSheets: 4,
+    totalPanels: 4,
+    sheetMaterials: [
+      {
+        name: 'BACKER WHITE',
+        thickness_mm: 3,
+        sheets: 4,
+        panels: 4,
+        length_mm: 2440,
+        width_mm: 1220,
+      },
+    ],
+  };
+
+  // Run reconciliation
+  const result = await reconcileWorkOrderQuantitiesForMo(mockClient, testMoId, {
+    parsedJobSummary,
+    soId: 3837,
+    soName: 'S03686',
+  });
+
+  assert.ok(result);
+  assert.equal(result.actionTaken, 'updated_quantities');
+  assert.equal(result.previousQty, 8);
+  assert.equal(result.updatedQty, 4);
+
+  // Check database state: shop_floor_pending_processes must now have qty_needed = 4, qty_missing = 0, status = 'loaded'
+  const rowAfter = await queryOne<{
+    qty_needed: number;
+    qty_reserved: number;
+    qty_missing: number;
+    status: string;
+  }>('SELECT qty_needed, qty_reserved, qty_missing, status FROM shop_floor_pending_processes WHERE id = ?', [key]);
+
+  assert.ok(rowAfter);
+  assert.equal(rowAfter.qty_needed, 4, 'Target requirement must be adjusted to 4');
+  assert.equal(rowAfter.qty_reserved, 4, 'Reserved quantity capped at required 4');
+  assert.equal(rowAfter.qty_missing, 0, 'No balance missing since 6 were logged for 4 needed');
+  assert.equal(rowAfter.status, 'loaded', 'Status must transition to loaded');
+
+  // Verify it is no longer returned in pending list for Board Needed page
+  const afterPending = await getPendingShopFloorProcesses({ status: 'pending' });
+  assert.ok(!afterPending.some((p) => p.id === key), 'Process must disappear from pending list on boards needed page');
 });
 

@@ -43,6 +43,12 @@
   - **Instant Operator Login from MySQL**: When operators log in, `/shop-floor` immediately serves all active work orders, stock alerts, and pending tasks directly from MySQL tables (`shop_floor_shared_cache`, `shop_floor_pending_processes`, and `shop_floor_dashboard_snapshots`) in <10ms via `buildInstantMysqlOperatorDashboard`. It never blocks on Odoo XML-RPC or renders an empty shell. In-flight revalidation happens asynchronously in the background.
   - **Decoupled Task Notifications**: `/notifications/shop-floor-tasks` for app requests reads pending board intake tasks from `shop_floor_pending_processes` and open deliveries/receipts from `shop_floor_shared_cache`, executing in ~5ms without synchronous Odoo round-trips.
   - **Customer Mirror & Instant Intake**: All active customers are mirrored in MySQL table `customer_partner_mirror`. Search and dropdown autocomplete pull directly from MySQL (<2ms). Board intake form submission returns immediately without full-page loading locks, and clears all fields ready for the next entry.
+  - **Board Intake Source Distinction (Purchase vs Client Supply)**:
+    - Inbound boards are explicitly categorized as **Company Purchase** (`is_purchase = 1`) or **Client-Supplied** (`is_purchase = 0`, default).
+    - When marked as a Company Purchase, an optional PO # / supplier reference can be recorded (`purchase_order_reference`).
+    - Stored in `board_intake_queue` (`is_purchase INT`, `purchase_order_reference VARCHAR(100)`).
+    - Intake and revert notification emails clearly display `Purchase: Yes (PO: ...) / Company Purchase` vs `Purchase: No (Client Supplied)` with subject tags `[PURCHASE]` / `[CLIENT SUPPLY]`, plus a direct 1-click button to view the full board logs list on the web app.
+    - The Shop Floor Boards UI (`/shop-floor/boards`) includes a toggle selector on the intake form, displays `🛒 Purchase` vs `📦 Client Supply` badges on log cards, and supports calendar day-by-day sorting.
   - **Continuous Background Sync**: Background workers `startCustomerMirrorInterval` and `startShopFloorPendingSyncInterval` periodically synchronize customer partners and active MO board requirements from Odoo into MySQL.
   - **Strict Target Company Isolation (`URBAN VIBE 2` Exclusion)**: The application strictly operates for company **URBAN VIBE INTERIOR DESIGN COMPANY LTD** (Odoo Company ID 1, Warehouse prefix `WH/MO/`). Company **URBAN VIBE 2** (Odoo Company ID 3, partner ID 350, warehouse prefix `VA/WH/MO/` or `VA/`) is **strictly and permanently excluded** across all models (`mrp.production`, `sale.order`, `purchase.order`, `res.partner`, `stock.picking`), background sync services (`shopFloorPendingSyncService`, `customerMirrorService`), customer autocomplete search, route handlers, and MySQL tables (`shop_floor_pending_processes`, `customer_partner_mirror`).
 
@@ -83,17 +89,22 @@
   - **Odoo 19 Automated Action Script**: [scripts/odoo_sync_webhooks_automated_actions.py](file:///c:/Users/ADMIN/Desktop/odooreconciler/scripts/odoo_sync_webhooks_automated_actions.py) provides production-ready Python snippets and XML-RPC automated action configuration for Odoo 19.
 
 - **Quotation Line Population & Discrepancy Verification**:
-  - **Service**: [src/services/quotationSyncService.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/quotationSyncService.ts) automatically invoked whenever a Job Summary PDF is extracted in [extractionService.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/extractionService.ts).
+  - **Service**: [src/services/quotationSyncService.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/quotationSyncService.ts) automatically invoked whenever a Job Summary PDF is extracted in [extractionService.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/extractionService.ts) or when the attachment webhook fires.
   - **Template-Only Detection (`isTemplateOnlyQuotation`)**: A quotation is considered newly created if all product lines are strictly template placeholders (`Example Board 18mm` and `Optimised Panels`).
-  - **Auto-Population on Template-Only Quotations**:
-    - Replaces `Example Board 18mm` with the real board product from the Job Summary (e.g. `WHITE MDF 18mm`, sheets quantity). If multiple sheet materials are parsed, additional lines are created. If the board product cannot be uniquely resolved, creates a To-Do activity for the salesperson.
-    - Updates `Optimised Panels` quantity to match `optimizedSheets`.
-    - Automatically creates matching `Edge Banding Service <Color>` line(s) with quantity in meters rounded to nearest whole meter (`Math.round(length_mm / 1000)`).
+  - **Auto-Population on Template-Only Quotations (Dual-Section Architecture)**:
+    - **`BOARDS` Section**: Physical raw board products (e.g. `White Waterproof 18mm`, `Harbour Grey Waterproof 18mm`, `Backer White 3mm`) are created here, with the first board replacing `Example Board 18mm`.
+    - **`CUTTING+EDGING+GROOVING` Section**:
+      - **Cutting Service Lines**: For each sheet material in the Job Summary, a matching cutting service line is created (e.g. `Cutting White Waterproof 18mm`, `Cutting Harbour Grey Waterproof 18mm`, `Cutting Backer White Mdf 3mm`).
+      - **Optimised Panels**: Updated to match total panel count / optimized sheets.
+      - **Edge Banding Service**: Created matching Job Summary edging colors with quantity in meters rounded to nearest whole meter.
+    - **Fast Candidate Product Pre-Fetch**: Candidate products are queried in bulk in a single RPC query (<80ms) for instantaneous line creation.
+    - **Unmatched Product Chatter Log Notes**: If any raw board, cutting service, or edging service cannot be resolved in Odoo, an itemized log note is posted to the chatter explaining the exact reason, and a To-Do activity is assigned to the salesperson.
   - **Discrepancy Verification on Customized Quotations ("Not less, but can be more")**:
     - If custom lines already exist, line creation is skipped to prevent duplicate order lines.
     - Compares board sheets, panel counts, and edging meters against the Job Summary.
-    - **Multi-Board Material Disambiguation Rule**: When a Job Summary contains multiple sheet materials sharing a common color or keyword (e.g. `WHITE MDF` and `WHITE WATERPROOF`), board product lines (e.g. `Cutting White MDF 18mm` and `Cutting White Waterproof 18mm`) are partitioned and matched strictly using `assignBoardLinesToSheetMaterials` based on substrate affinity (`mdf`, `waterproof`, `particle`, `plywood`), thickness, and distinctive keywords. Substrate mismatches carry a hard negative penalty, preventing cross-matching on common color words like "white" and eliminating false-positive excess/shortfall alerts.
-    - If any quotation line quantity is LESS than the Job Summary (shortfall), creates an alert To-Do activity for the salesperson and posts a note in chatter. If quantities are equal or greater (surplus), marks lines as verified with zero modifications.
+    - **ATTENTION Alert Quantity Rule**: **Only quantities LOWER than the Job Summary are flagged in the ATTENTION alert / To-Do activities**. Surplus/excess quantities are accepted without warnings.
+    - **Board Decor / Material Mismatch Rule**: If a sheet material from the Job Summary has no matching board on the quotation (e.g. Job Summary requires `HARBOUR GREY WATERPROOF 18mm`, but quotation has `Cutting White Waterproof 18mm`), this is flagged as a critical **Board Mismatch / Missing Board** alert regardless of quantity.
+    - **Multi-Board Material Disambiguation Rule**: When a Job Summary contains multiple sheet materials sharing a common keyword, board product lines are partitioned using `assignBoardLinesToSheetMaterials` based on substrate affinity, thickness, and color family. Color family mismatches carry a hard negative penalty (-100), preventing cross-matching across different board colors.
   - **Confirmed Orders**: Orders in `sale` or `done` states are never modified.
 
 - **Purchase Order (PO) $\longleftrightarrow$ Job Summary Quantity Procurement Auditing**:
@@ -129,8 +140,9 @@
     2. **`mrp.workorder`**: `qty_production` (quantity to process) updated to target quantity (e.g. 4), and `qty_producing` aligned if greater.
     3. **`stock.move` (`raw_material_production_id`)**: Component board required quantity (`product_uom_qty`) updated to target quantity (e.g. 4).
     4. **Stock Reservation Allocation**: Triggers `action_assign` on `mrp.production` so raw stock reservation immediately re-evaluates against the exact required count, eliminating false shortages and enabling the operator to start/close without unreserved errors.
-    5. **Audit Logging & Chatter**: Posts itemized reconciliation notes on `mrp.production` and `sale.order` chatter and records an audit log event.
-    6. **Multi-Tier Cache Invalidation**: Automatically clears RAM and MySQL shop floor dashboard snapshots.
+    5. **Shop Floor Pending Processes Sync**: Immediately synchronizes `shop_floor_pending_processes` in MySQL/SQLite for the MO (`qty_needed = targetQty`, `qty_missing = max(0, targetQty - qty_reserved)`, `qty_reserved = min(targetQty, qty_reserved)`, transitioning `status = 'loaded'` when missing boards reach 0).
+    6. **Audit Logging & Chatter**: Posts itemized reconciliation notes on `mrp.production` and `sale.order` chatter and records an audit log event.
+    7. **Multi-Tier Cache Invalidation & Background Sync**: Clears RAM (`shopFloorCache`) and MySQL shop floor snapshots (`deleteShopFloorSharedCachePrefix('shop-floor:')`), and triggers `syncPendingProcessesFromOdoo(true)`.
   - **Automatic Triggers**:
     - Job Summary extraction in [src/services/extractionService.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/extractionService.ts) (`reconcileWorkOrderQuantitiesForSaleOrder`).
     - Purchase Order audit in [src/services/poJobSummaryAuditService.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/poJobSummaryAuditService.ts) (`auditPurchaseOrderAgainstJobSummary` and `auditLinkedPurchaseOrdersForSaleOrder`).
@@ -237,6 +249,18 @@
     - UI updates optimistically to show the "Paused" badge and provides "Continue" and "Finish" buttons.
   - **Closing Manufacturing Orders**:
     - When finishing the final work order on an MO, `OdooClient.advanceManufacturingOrder` checks if any uncompleted work orders remain. When none remain (or if the MO is already in `to_close` state), it automatically executes `button_mark_done` on `mrp.production` to officially close the Manufacturing Order in Odoo.
+
+- **Board Log Intake Email Button & Calendar Day Navigator (`< Today >`)**:
+  - **Email Notification Button**: Whenever a board log or board log revert email is dispatched (`POST /shop-floor/board-intake`, `POST /shop-floor/board-intake/:id/revert`), it includes a prominent styled button: `📋 View Full Board Logs List →` linking to `${APP_BASE_URL}/shop-floor/boards?date=YYYY-MM-DD#recentBoardLogsSection`.
+  - **Calendar Day Navigator (`< Today >`)**:
+    - At the top of the Board Logs section on `/shop-floor/boards`, a day switcher allows viewing:
+      - `‹` Previous day (e.g. *Yesterday*, or stepping back day-by-day to the other day).
+      - `< Today (Date) >` center badge with dropdown quick filters (*Today*, *Yesterday*, *All Logs*, and calendar date selector).
+      - `›` Next day (disabled when on today/future).
+      - Native inline `<input type="date">` calendar picker allowing 1-click jump to any calendar day.
+      - "All Logs" button to view unfiltered historical logs.
+    - **Date Persistence**: Revert forms, retry forms, and pagination controls (`Previous`, `Next`) preserve the active `date` query parameter (`?date=YYYY-MM-DD&boardLogPage=2#recentBoardLogsSection`).
+    - **Nairobi Timezone Grounding**: Newly logged intakes automatically store `created_at` and `arrival_date` in Nairobi time (`appDateTime()`), and `getRecentBoardIntakeQueueEntries` and `countBoardIntakeQueueEntries` filter on `(arrival_date = ? OR substr(created_at, 1, 10) = ?)`.
 
 - **Board Intake Chatter Cross-Posting to Related Sales Orders & Manufacturing Orders**:
   - Whenever boards are logged in the Operator Mobile App (`/shop-floor/boards`, `board_intake_queue`), an email notification is always sent to the configured recipient (`boardLogNotificationEmail`, e.g. Sharon).
@@ -359,3 +383,25 @@
     - The mobile Shop Floor dashboard (`/shop-floor`) polls `/shop-floor/api/app-badge-counts` every 6 seconds.
     - `/shop-floor/api/app-badge-counts` returns real-time `workOrders: [{ id, name, state, progress, produced, qty, stockStatus }]`.
     - Client-side script dynamically updates matching on-screen rows (`[data-mo-row="<id>"]`), badges (`[data-mo-state-badge]`), action buttons (`[data-mo-action-buttons]`), progress bars, and area header counts without requiring manual page reload or wiping the view.
+
+- **Shop Floor Operators Representation & Department Alignment**:
+  - **Full Official Names from Odoo Rule**:
+    - Operators on `/shop-floor/operators` MUST NEVER display names derived or truncated from their email addresses (e.g. `dbadmin`, `janetamollo01`, `joelochango22`, `masteredthomas`, `okothmike578`, `onyangoakulo`).
+    - Every person must be represented by their official full name from Odoo `hr.employee` or `res.users` (e.g. `Leoivard Ongule`, `Janet Awino Amollo`, `Joel Ochango`, `Thomas Ollinga`, `Michael Ochieng Okoth`, `Onyango Bitcher Akulo`, `Charles Onyango`, `Raphael Onyango`).
+  - **Accurate Department Representation**:
+    - Departments are strictly derived from Odoo `hr.employee` (`department_id` leaf name), resolving hierarchical names (e.g. `Administration / Operations` $\rightarrow$ `Operations`, `Administration / Information Technology` $\rightarrow$ `Information Technology`, `Administration / Sales` $\rightarrow$ `Sales`).
+    - For employees where `department_id` is unset:
+      - Managing Director / Executive / Directors (Charles, Raphael) $\rightarrow$ `Management`
+      - Information Systems / Developer (Leoivard) $\rightarrow$ `Information Technology`
+      - Sales Optimizers (Sharon, Candy) $\rightarrow$ `Sales`
+      - Factory staff $\rightarrow$ `Operations`
+    - Badges on operator cards render in department-specific distinct colorways.
+    - Interactive department filter pills at the top of `/shop-floor/operators` allow 1-click filtering by department (`All`, `Operations`, `Information Technology`, `Management`, `Sales`).
+  - **Strict Exclusion of Inactive / Obsolete Users**:
+    - Inactive accounts in `auth_approved_users` (`isAccountDeactivated(u.active)`) are permanently excluded.
+    - Archived/inactive employees in Odoo (`emp.active === false`) are permanently excluded.
+    - Obsolete unlinked accounts (such as `onyangoakulo22@gmail.com`) are excluded and deactivated during `syncShopFloorOperatorAccess`.
+  - **Cache Versioning (`shop-floor:operators-list:v2`) & Corrupt Cache Auto-Purge**:
+    - Cached operator snapshots are validated before serving: if any record has a name matching an email localpart or single-word username, the cache is automatically purged and refreshed from live Odoo data.
+    - Obsolete `shop-floor:operators-list:v1` cache entries are purged automatically.
+

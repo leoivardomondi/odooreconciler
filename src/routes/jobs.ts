@@ -1130,9 +1130,11 @@ async function handleOdooSyncWebhook(req: Request, res: Response) {
       } else if (resolvedType === 'attendance' || rawModel === 'hr.attendance') {
         shopFloorCache.clearPrefix('shop-floor-dashboard:');
         shopFloorCache.delete('shop-floor:operators-list:v1');
+        shopFloorCache.delete('shop-floor:operators-list:v2');
         await Promise.allSettled([
           deleteShopFloorDashboardSnapshot(),
           deleteShopFloorSharedCache('shop-floor:operators-list:v1'),
+          deleteShopFloorSharedCache('shop-floor:operators-list:v2'),
         ]);
         await logEvent('info', 'Odoo attendance sync webhook processed', {
           recordId: payload.id ?? req.query.id ?? null,

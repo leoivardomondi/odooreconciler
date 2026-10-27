@@ -121,9 +121,18 @@ function defaultReportWindow() {
 async function getOperators(client, companyId) {
     // 1. Check persistent operator cache from MySQL (0 Odoo RPC calls, instant <5ms)
     try {
-        const cached = await (0, repositories_1.getShopFloorSharedCache)('shop-floor:operators-list:v1');
+        const cached = await (0, repositories_1.getShopFloorSharedCache)('shop-floor:operators-list:v2');
         if (cached?.data?.allOperators && cached.data.allOperators.length > 0) {
-            return cached.data.allOperators.map((op) => ({ id: op.id, name: op.name }));
+            const valid = cached.data.allOperators.filter((op) => {
+                if (!op || !op.id || !op.name)
+                    return false;
+                const n = op.name.trim();
+                const prefix = String(op.workEmail || '').split('@')[0].trim().toLowerCase();
+                return n.toLowerCase() !== prefix;
+            });
+            if (valid.length > 0) {
+                return valid.map((op) => ({ id: op.id, name: op.name }));
+            }
         }
     }
     catch (err) {

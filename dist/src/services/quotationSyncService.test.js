@@ -183,13 +183,13 @@ const helpers_1 = require("../utils/helpers");
     const resultEdgingSurplus = (0, quotationSyncService_1.compareQuotationLinesWithJobSummary)(edgingSurplusLines, parsedJobSummary);
     strict_1.default.equal(resultEdgingSurplus.hasShortfall, false);
     strict_1.default.equal(resultEdgingSurplus.shortfalls.length, 0);
-    // Scenario D: Board Surplus (mismatch: "not less, but can be more" does NOT apply to boards)
+    // Scenario D: Board Surplus (sufficient: only lower quantity is flagged in ATTENTION)
     const boardSurplusLines = [
         {
             id: 1,
             name: 'White MDF 18mm',
             product_id: [201, 'White MDF 18mm'],
-            product_uom_qty: 5, // 5 > 3: excess mismatch for boards!
+            product_uom_qty: 5, // 5 > 3: surplus is sufficient, only lower quantities are flagged
             display_type: false,
         },
         {
@@ -208,9 +208,35 @@ const helpers_1 = require("../utils/helpers");
         },
     ];
     const resultBoardSurplus = (0, quotationSyncService_1.compareQuotationLinesWithJobSummary)(boardSurplusLines, parsedJobSummary);
-    strict_1.default.equal(resultBoardSurplus.hasShortfall, true);
-    strict_1.default.equal(resultBoardSurplus.shortfalls.length, 1);
-    strict_1.default.ok(resultBoardSurplus.shortfalls[0].includes('Excess: 2 sheet(s)'));
+    strict_1.default.equal(resultBoardSurplus.hasShortfall, false);
+    strict_1.default.equal(resultBoardSurplus.shortfalls.length, 0);
+    // Scenario E: Board Mismatch (e.g., Quotation has White Waterproof but Job Summary has Harbour Grey Waterproof)
+    const mismatchedBoardLines = [
+        {
+            id: 1,
+            name: 'Cutting White Waterproof 18mm',
+            product_id: [401, 'Cutting White Waterproof 18mm'],
+            product_uom_qty: 17,
+            display_type: false,
+        },
+        {
+            id: 2,
+            name: 'Optimised Panels',
+            product_id: [102, 'Optimised Panels'],
+            product_uom_qty: 3,
+            display_type: false,
+        },
+        {
+            id: 3,
+            name: 'Edge Banding Service White',
+            product_id: [301, 'Edge Banding Service White'],
+            product_uom_qty: 16,
+            display_type: false,
+        },
+    ];
+    const resultMismatch = (0, quotationSyncService_1.compareQuotationLinesWithJobSummary)(mismatchedBoardLines, parsedJobSummary);
+    strict_1.default.equal(resultMismatch.hasShortfall, true);
+    strict_1.default.ok(resultMismatch.shortfalls.some(s => s.includes('Board Mismatch')));
 });
 (0, node_test_1.default)('compareQuotationLinesWithJobSummary correctly distinguishes multiple boards of same color (WHITE MDF vs WHITE WATERPROOF)', () => {
     const parsedJobSummary = {

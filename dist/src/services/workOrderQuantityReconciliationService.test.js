@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -361,4 +394,124 @@ const workOrderQuantityReconciliationService_1 = require("./workOrderQuantityRec
     strict_1.default.ok(match18mm);
     strict_1.default.equal(match18mm.material.name, 'WHITE MDF');
     strict_1.default.equal(match18mm.material.sheets, 19);
+});
+(0, node_test_1.default)('reconcileWorkOrderQuantitiesForMo updates shop_floor_pending_processes and fulfills requirement when logged boards satisfy new target', async () => {
+    const { execute, queryOne } = await Promise.resolve().then(() => __importStar(require('../models/db')));
+    const { upsertPendingShopFloorProcesses, getPendingShopFloorProcesses } = await Promise.resolve().then(() => __importStar(require('../models/repositories')));
+    const testMoId = 6235;
+    const testProdId = 294;
+    const key = `${testMoId}_${testProdId}`;
+    await execute('DELETE FROM shop_floor_pending_processes WHERE mo_id = ?', [testMoId]);
+    // Seed pending process: MO originally needed 8 boards, 6 were logged (leaving 2 balance unlogged)
+    const initialPending = {
+        id: key,
+        process_type: 'board_intake',
+        mo_id: testMoId,
+        mo_name: 'WH/MO/05664',
+        origin: 'S03686',
+        partner_id: 539,
+        partner_name: 'PAMBA INTERIORS',
+        product_id: testProdId,
+        product_name: 'Backer White MDF 3mm',
+        qty_needed: 8,
+        qty_reserved: 6,
+        qty_missing: 2,
+        status: 'pending',
+        loaded_at: null,
+        loaded_by: null,
+        last_synced_at: new Date().toISOString(),
+    };
+    await upsertPendingShopFloorProcesses([initialPending]);
+    // Verify initially pending
+    const before = await getPendingShopFloorProcesses({ status: 'pending' });
+    const pendingBefore = before.find((p) => p.id === key);
+    strict_1.default.ok(pendingBefore);
+    strict_1.default.equal(pendingBefore.qty_needed, 8);
+    strict_1.default.equal(pendingBefore.qty_reserved, 6);
+    strict_1.default.equal(pendingBefore.qty_missing, 2);
+    // Mock OdooClient for MO 6235 currently having product_qty = 8
+    const mockClient = {
+        searchReadRecords: async (model) => {
+            if (model === 'mrp.production') {
+                return [
+                    {
+                        id: testMoId,
+                        name: 'WH/MO/05664',
+                        product_id: [597, 'Cutting Backer White Mdf 3mm'],
+                        product_qty: 8,
+                        state: 'confirmed',
+                        origin: 'S03686',
+                        move_raw_ids: [62882],
+                        company_id: [1, 'URBAN VIBE INTERIOR DESIGN COMPANY LTD'],
+                    },
+                ];
+            }
+            if (model === 'mrp.workorder') {
+                return [
+                    {
+                        id: 5801,
+                        name: 'PAMBA INTERIORS - Cutting Backer White Mdf 3mm',
+                        qty_production: 8,
+                        qty_producing: 0,
+                        state: 'ready',
+                    },
+                ];
+            }
+            if (model === 'stock.move') {
+                return [
+                    {
+                        id: 62882,
+                        product_id: [testProdId, 'Backer White MDF 3mm'],
+                        product_uom_qty: 8,
+                        quantity: 0,
+                        state: 'confirmed',
+                    },
+                ];
+            }
+            return [];
+        },
+        readRecords: async () => [],
+        writeRecord: async () => true,
+        callRecordMethod: async () => true,
+        postModelChatterMessage: async () => 1,
+    };
+    const parsedJobSummary = {
+        items: [],
+        sectionFound: true,
+        sectionText: '',
+        rawText: '',
+        logs: [],
+        optimizedSheets: 4,
+        totalPanels: 4,
+        sheetMaterials: [
+            {
+                name: 'BACKER WHITE',
+                thickness_mm: 3,
+                sheets: 4,
+                panels: 4,
+                length_mm: 2440,
+                width_mm: 1220,
+            },
+        ],
+    };
+    // Run reconciliation
+    const result = await (0, workOrderQuantityReconciliationService_1.reconcileWorkOrderQuantitiesForMo)(mockClient, testMoId, {
+        parsedJobSummary,
+        soId: 3837,
+        soName: 'S03686',
+    });
+    strict_1.default.ok(result);
+    strict_1.default.equal(result.actionTaken, 'updated_quantities');
+    strict_1.default.equal(result.previousQty, 8);
+    strict_1.default.equal(result.updatedQty, 4);
+    // Check database state: shop_floor_pending_processes must now have qty_needed = 4, qty_missing = 0, status = 'loaded'
+    const rowAfter = await queryOne('SELECT qty_needed, qty_reserved, qty_missing, status FROM shop_floor_pending_processes WHERE id = ?', [key]);
+    strict_1.default.ok(rowAfter);
+    strict_1.default.equal(rowAfter.qty_needed, 4, 'Target requirement must be adjusted to 4');
+    strict_1.default.equal(rowAfter.qty_reserved, 4, 'Reserved quantity capped at required 4');
+    strict_1.default.equal(rowAfter.qty_missing, 0, 'No balance missing since 6 were logged for 4 needed');
+    strict_1.default.equal(rowAfter.status, 'loaded', 'Status must transition to loaded');
+    // Verify it is no longer returned in pending list for Board Needed page
+    const afterPending = await getPendingShopFloorProcesses({ status: 'pending' });
+    strict_1.default.ok(!afterPending.some((p) => p.id === key), 'Process must disappear from pending list on boards needed page');
 });

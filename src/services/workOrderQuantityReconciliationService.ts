@@ -2,7 +2,10 @@ import {
   ParsedJobSummaryResult,
   ParsedSheetMaterial,
 } from '../models/types';
-import { getLatestExtractedResultByOrderId } from '../models/repositories';
+import { getLatestExtractedResultByOrderId, deleteShopFloorSharedCachePrefix } from '../models/repositories';
+import { queryAll, execute } from '../models/db';
+import { shopFloorCache } from '../routes/shopFloor';
+import { syncPendingProcessesFromOdoo } from './shopFloorPendingSyncService';
 import {
   isBoardProductName,
   extractBoardAttributes,
@@ -616,6 +619,60 @@ export async function reconcileWorkOrderQuantitiesForMo(
 
   // 4. Re-evaluate stock reservation so 100% stock availability is assigned immediately
   await client.callRecordMethod('mrp.production', 'action_assign', [mo.id]).catch(() => null);
+
+  // 4b. Reconcile local shop_floor_pending_processes for this MO so board intake requirements reflect the new target
+  try {
+    const existingProcesses = await queryAll<{
+      id: string;
+      product_name: string;
+      qty_needed: number;
+      qty_reserved: number;
+      qty_missing: number;
+      status: string;
+    }>(
+      'SELECT id, product_name, qty_needed, qty_reserved, qty_missing, status FROM shop_floor_pending_processes WHERE mo_id = ?',
+      [mo.id],
+    );
+
+    for (const proc of existingProcesses) {
+      const prodName = proc.product_name || '';
+      if (
+        isBoardProductName(prodName) ||
+        (matchResult && prodName.toLowerCase().includes(matchResult.material.name.toLowerCase()))
+      ) {
+        const newQtyNeeded = targetQty;
+        const curReserved = Number(proc.qty_reserved || 0);
+        const newQtyMissing = Math.max(0, newQtyNeeded - curReserved);
+        const newQtyReserved = Math.min(newQtyNeeded, curReserved);
+        const newStatus = newQtyMissing <= 0 ? 'loaded' : 'pending';
+
+        await execute(
+          `UPDATE shop_floor_pending_processes
+           SET qty_needed = ?, qty_reserved = ?, qty_missing = ?, status = ?,
+               loaded_at = CASE WHEN ? = 'loaded' AND (loaded_at IS NULL OR loaded_at = '') THEN CURRENT_TIMESTAMP ELSE loaded_at END,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = ?`,
+          [newQtyNeeded, newQtyReserved, newQtyMissing, newStatus, newStatus, proc.id],
+        );
+      }
+    }
+
+    // Invalidate shop-floor RAM and shared snapshots
+    try {
+      shopFloorCache.clearPrefix('shop-floor-dashboard:');
+      await deleteShopFloorSharedCachePrefix('shop-floor:').catch(() => null);
+    } catch (_cacheErr) {
+      // Non-fatal cache invalidation
+    }
+
+    // Trigger full background sync to ensure clean state
+    void syncPendingProcessesFromOdoo(true).catch(() => null);
+  } catch (syncErr) {
+    void logEvent('warn', 'Failed to update shop_floor_pending_processes after cutting quantity reconciliation', {
+      moId: mo.id,
+      error: syncErr instanceof Error ? syncErr.message : String(syncErr),
+    }).catch(() => null);
+  }
 
   const matchedMaterialDesc = matchResult?.material
     ? (matchResult.material.name.toLowerCase().includes('mm')

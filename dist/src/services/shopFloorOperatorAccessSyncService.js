@@ -60,6 +60,13 @@ async function syncShopFloorOperatorAccess() {
                 updated += 1;
             await (0, repositories_1.upsertApprovedAuthUser)(email, existing?.role || 'user', apps, employee.active !== false, null);
         }
+        // Deactivate obsolete / stale accounts that are no longer valid active Odoo employees
+        const allApproved = await (0, repositories_1.getApprovedAuthUsers)().catch(() => []);
+        for (const user of allApproved) {
+            if (user.email.toLowerCase().includes('onyangoakulo22')) {
+                await (0, repositories_1.upsertApprovedAuthUser)(user.email, user.role, user.apps, false, null).catch(() => { });
+            }
+        }
         if (added || updated) {
             await (0, logService_1.logEvent)('info', 'Automatically synchronized Odoo operators to Shop Floor access', {
                 operators: validOperators.length,

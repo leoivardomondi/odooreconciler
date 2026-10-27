@@ -112,10 +112,18 @@ async function getOperators(client: OdooClient, companyId: number): Promise<Arra
   // 1. Check persistent operator cache from MySQL (0 Odoo RPC calls, instant <5ms)
   try {
     const cached = await getShopFloorSharedCache<{
-      allOperators: Array<{ id: number; name: string; active?: boolean }>;
-    }>('shop-floor:operators-list:v1');
+      allOperators: Array<{ id: number; name: string; workEmail?: string | null; active?: boolean }>;
+    }>('shop-floor:operators-list:v2');
     if (cached?.data?.allOperators && cached.data.allOperators.length > 0) {
-      return cached.data.allOperators.map((op) => ({ id: op.id, name: op.name }));
+      const valid = cached.data.allOperators.filter((op) => {
+        if (!op || !op.id || !op.name) return false;
+        const n = op.name.trim();
+        const prefix = String(op.workEmail || '').split('@')[0].trim().toLowerCase();
+        return n.toLowerCase() !== prefix;
+      });
+      if (valid.length > 0) {
+        return valid.map((op) => ({ id: op.id, name: op.name }));
+      }
     }
   } catch (err) {
     console.warn('[weekly-report] Failed to read cached operator list:', err);

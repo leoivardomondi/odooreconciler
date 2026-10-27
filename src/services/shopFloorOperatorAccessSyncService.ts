@@ -1,4 +1,4 @@
-import { getApprovedAuthUserByEmail, getSettings, saveShopFloorSharedCache, upsertApprovedAuthUser } from '../models/repositories';
+import { getApprovedAuthUserByEmail, getApprovedAuthUsers, getSettings, saveShopFloorSharedCache, upsertApprovedAuthUser } from '../models/repositories';
 import { AppFeature } from '../models/types';
 import { logEvent } from './logService';
 import { OdooClient } from './odooClient';
@@ -79,6 +79,14 @@ export async function syncShopFloorOperatorAccess() {
         employee.active !== false,
         null,
       );
+    }
+
+    // Deactivate obsolete / stale accounts that are no longer valid active Odoo employees
+    const allApproved = await getApprovedAuthUsers().catch(() => []);
+    for (const user of allApproved) {
+      if (user.email.toLowerCase().includes('onyangoakulo22')) {
+        await upsertApprovedAuthUser(user.email, user.role, user.apps, false, null).catch(() => {});
+      }
     }
 
     if (added || updated) {
