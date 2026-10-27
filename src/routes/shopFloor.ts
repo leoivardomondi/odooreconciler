@@ -2735,21 +2735,40 @@ router.get('/shop-floor/operators', async (req: Request, res: Response) => {
       },
     );
 
-    const hasCachedData = Boolean(persistentCache?.data?.allOperators?.length);
-    const fallbackData = hasCachedData
-      ? persistentCache!.data
-      : { allOperators: [] as OperatorSummary[], departments: [] as string[] };
+    // Extract cached data safely regardless of whether MySQL stored an object or an array
+    let cachedOperators: OperatorSummary[] = [];
+    let cachedDepartments: string[] = [];
+
+    if (persistentCache?.data) {
+      if (Array.isArray(persistentCache.data.allOperators)) {
+        cachedOperators = persistentCache.data.allOperators;
+        cachedDepartments = Array.isArray(persistentCache.data.departments) ? persistentCache.data.departments : [];
+      } else if (Array.isArray(persistentCache.data)) {
+        cachedOperators = persistentCache.data;
+      }
+    }
+
+    const hasCachedData = cachedOperators.length > 0;
+    const fallbackData = {
+      allOperators: cachedOperators,
+      departments: cachedDepartments.length > 0
+        ? cachedDepartments
+        : [...new Set(cachedOperators.map((o) => o.department).filter((d): d is string => Boolean(d)))],
+    };
 
     // Zero-wait SWR: If MySQL persistent cache is available, serve immediately (<10ms).
     // If cold miss (first time boot), wait up to 4500ms so Odoo has time to respond without showing an empty page.
-    let { allOperators, departments } = hasCachedData
+    let resolvedData = hasCachedData
       ? fallbackData
       : await withMaxPageWait(operatorsPromise, 4500, fallbackData);
 
-    // If persistent cache was served, trigger background revalidation without blocking response
-    if (hasCachedData && req.query.refresh === 'true') {
-      void operatorsPromise.catch(() => {});
-    }
+    let allOperators = Array.isArray(resolvedData?.allOperators) ? resolvedData.allOperators : [];
+    let departments = Array.isArray(resolvedData?.departments) ? resolvedData.departments : [];
+
+    // Always ensure background revalidation doesn't create unhandled rejections
+    void operatorsPromise.catch((err) => {
+      console.warn('[shopFloor/operators] Background operators revalidation failed:', err?.message || err);
+    });
 
     // Guaranteed post-filter: Exclude any entry that is inactive or has an email-derived username as its name
     if (allOperators && allOperators.length > 0) {
@@ -2761,11 +2780,13 @@ router.get('/shop-floor/operators', async (req: Request, res: Response) => {
         if (op.workEmail && op.workEmail.toLowerCase().includes('onyangoakulo22')) return false;
         return true;
       });
-      departments = [...new Set(allOperators.map((op) => op.department).filter(Boolean))];
+      departments = [...new Set(allOperators.map((op) => op.department).filter((d): d is string => Boolean(d)))];
     }
 
     // Non-blocking background warmup of weekly PDF snapshot so download is instant (<50ms)
     void getOrBuildWeeklyShopFloorReportPdf().catch(() => {});
+
+    const csrfToken = req.csrfToken || '';
 
     res.render('shop-floor-operators', {
       pageTitle: 'Shop Floor Operators',
@@ -2773,17 +2794,20 @@ router.get('/shop-floor/operators', async (req: Request, res: Response) => {
       operators: allOperators,
       departments,
       total: allOperators.length,
-      checkedInCount: allOperators.filter((o: OperatorSummary) => o.checkedIn).length,
+      checkedInCount: allOperators.filter((o: OperatorSummary) => o && o.checkedIn).length,
       authUser: req.authUser,
+      csrfToken,
       message: typeof req.query.message === 'string' ? req.query.message : null,
       error: typeof req.query.error === 'string' ? req.query.error : null,
     });
   } catch (err) {
+    console.error('[shopFloor/operators] Error loading operators:', err);
     res.status(500).render('error', {
       pageTitle: 'Error',
+      appName: env.APP_NAME,
       errorMessage: err instanceof Error ? err.message : 'Could not load operators.',
       details: [],
-      csrfToken: req.csrfToken || null,
+      csrfToken: req.csrfToken || '',
     });
   }
 });

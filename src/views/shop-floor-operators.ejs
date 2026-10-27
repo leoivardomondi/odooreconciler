@@ -25,7 +25,7 @@
           <span class="operators-page__status-pill">Synced from Odoo</span>
         </div>
         <p class="operators-page__subtitle text-muted mb-0">
-          Synced from Odoo &mdash; <strong><%= departments.join(', ') %></strong>
+          Synced from Odoo &mdash; <strong><%= (Array.isArray(departments) && departments.length) ? departments.join(', ') : 'Operations' %></strong>
         </p>
       </div>
 
