@@ -2122,29 +2122,23 @@ router.get('/shop-floor/operators', async (req, res) => {
         void (0, repositories_1.deleteShopFloorSharedCache)('shop-floor:operators-list:v1').catch(() => { });
         // 1. Read persistent MySQL shared cache immediately (<5ms)
         let persistentCache = await (0, repositories_1.getShopFloorSharedCache)(operatorCacheKey).catch(() => null);
-        // Validate cached data: if ANY operator has name derived from email prefix, single-word username, or is inactive/unlinked, discard cache!
+        // Sanitize cached data in-memory: filter out entries with email-derived names or inactive/corrupt tags without nuking the cache
         if (persistentCache?.data?.allOperators && Array.isArray(persistentCache.data.allOperators)) {
-            const hasCorruptNames = persistentCache.data.allOperators.some((op) => {
+            persistentCache.data.allOperators = persistentCache.data.allOperators.filter((op) => {
                 if (!op || !op.name || typeof op.name !== 'string')
-                    return true;
+                    return false;
                 const n = op.name.trim();
                 const emailPrefix = String(op.workEmail || '').split('@')[0].trim().toLowerCase();
                 if (n.toLowerCase() === emailPrefix)
-                    return true;
+                    return false;
                 if (op.workEmail && op.workEmail.toLowerCase().includes('onyangoakulo22'))
-                    return true;
-                if (!n.includes(' ') && (n.toLowerCase() === 'dbadmin' || n.toLowerCase().startsWith('okoth') || n.toLowerCase().startsWith('joel')))
-                    return true;
-                return false;
+                    return false;
+                return true;
             });
-            if (hasCorruptNames) {
-                persistentCache = null;
-                void (0, repositories_1.deleteShopFloorSharedCache)(operatorCacheKey).catch(() => { });
-                exports.shopFloorCache.delete(operatorCacheKey);
-            }
+            persistentCache.data.departments = [...new Set(persistentCache.data.allOperators.map((op) => op.department).filter((d) => Boolean(d)))];
         }
-        const operatorsPromise = exports.shopFloorCache.getOrFetchTieredSWR(operatorCacheKey, req.query.refresh === 'true' ? 0 : 5 * 60 * 1000, // Non-blocking serve with background revalidation on refresh
-        60 * 60 * 1000, // 60 minutes max stale
+        const operatorsPromise = exports.shopFloorCache.getOrFetchTieredSWR(operatorCacheKey, req.query.refresh === 'true' ? 0 : 15 * 60 * 1000, // Non-blocking serve with background revalidation on refresh (15m fresh TTL)
+        2 * 60 * 60 * 1000, // 2 hours max stale
         async () => {
             const client = new odooClient_1.OdooClient(settings.odoo);
             const targetCompanyId = await client.getTargetCompanyIdValue();
@@ -2275,28 +2269,28 @@ router.get('/shop-floor/operators', async (req, res) => {
                     return aPriority - bPriority;
                 return a.name.localeCompare(b.name);
             });
-            // Get today's attendance for verified operators
+            // Get today's attendance and assigned equipment concurrently in parallel!
             if (operators.length > 0) {
-                try {
-                    const operatorIds = operators.map((op) => op.id);
-                    const attendanceRecords = await client.getBulkAttendance(operatorIds);
-                    for (const rec of attendanceRecords) {
-                        const empId = Array.isArray(rec.employee_id) ? rec.employee_id[0] : rec.employee_id;
-                        const op = operators.find((o) => o.id === empId);
-                        if (op) {
-                            op.checkedIn = Boolean(rec.check_in && !rec.check_out);
-                            op.checkedOut = Boolean(rec.check_out);
-                            op.checkInTime = toEAT(rec.check_in) || rec.check_in;
-                        }
+                const operatorIds = operators.map((op) => op.id);
+                const [attendanceRecords, allEquipments] = await Promise.all([
+                    client.getBulkAttendance(operatorIds).catch((err) => {
+                        console.warn('[shopFloor] Failed to fetch bulk attendance:', err);
+                        return [];
+                    }),
+                    client.getBulkAssignedEquipment().catch((err) => {
+                        console.warn('[shopFloor] Failed to fetch bulk assigned equipment:', err);
+                        return [];
+                    }),
+                ]);
+                for (const rec of attendanceRecords) {
+                    const empId = Array.isArray(rec.employee_id) ? rec.employee_id[0] : rec.employee_id;
+                    const op = operators.find((o) => o.id === empId);
+                    if (op) {
+                        op.checkedIn = Boolean(rec.check_in && !rec.check_out);
+                        op.checkedOut = Boolean(rec.check_out);
+                        op.checkInTime = toEAT(rec.check_in) || rec.check_in;
                     }
                 }
-                catch (err) {
-                    console.warn('[shopFloor] Failed to fetch bulk attendance:', err);
-                }
-            }
-            // Get assigned items for all operators in bulk from Odoo!
-            try {
-                const allEquipments = await client.getBulkAssignedEquipment();
                 const equipByEmployeeId = new Map();
                 for (const eq of allEquipments) {
                     if (eq.employee_id) {
@@ -2317,12 +2311,6 @@ router.get('/shop-floor/operators', async (req, res) => {
                     }));
                 }
             }
-            catch (err) {
-                console.warn('[shopFloor] Failed to fetch bulk assigned equipment:', err);
-                for (const op of operators) {
-                    op.assignedItems = [];
-                }
-            }
             const departmentsList = [...new Set(operators.map((op) => op.department).filter(Boolean))];
             const freshData = { allOperators: operators, departments: departmentsList };
             if (operators.length > 0) {
@@ -2330,10 +2318,19 @@ router.get('/shop-floor/operators', async (req, res) => {
             }
             return freshData;
         });
-        const fallbackData = persistentCache?.data?.allOperators?.length
+        const hasCachedData = Boolean(persistentCache?.data?.allOperators?.length);
+        const fallbackData = hasCachedData
             ? persistentCache.data
             : { allOperators: [], departments: [] };
-        let { allOperators, departments } = await withMaxPageWait(operatorsPromise, persistentCache?.data?.allOperators?.length ? 400 : 1200, fallbackData);
+        // Zero-wait SWR: If MySQL persistent cache is available, serve immediately (<10ms).
+        // If cold miss (first time boot), wait up to 4500ms so Odoo has time to respond without showing an empty page.
+        let { allOperators, departments } = hasCachedData
+            ? fallbackData
+            : await withMaxPageWait(operatorsPromise, 4500, fallbackData);
+        // If persistent cache was served, trigger background revalidation without blocking response
+        if (hasCachedData && req.query.refresh === 'true') {
+            void operatorsPromise.catch(() => { });
+        }
         // Guaranteed post-filter: Exclude any entry that is inactive or has an email-derived username as its name
         if (allOperators && allOperators.length > 0) {
             allOperators = allOperators.filter((op) => {
