@@ -2450,6 +2450,8 @@ async function findJournalByNameOrCode(
     return journalCache.get(cacheKey) || null;
   }
 
+  const targetCompanyId = await client.getTargetCompanyIdValue().catch(() => 1);
+
   for (const term of searchTerms) {
     if (journalCache.has(term)) {
       const cached = journalCache.get(term);
@@ -2459,16 +2461,35 @@ async function findJournalByNameOrCode(
       }
     }
     const journals = await client
-      .searchReadRecords<{ id: number; name: string; code: string }>('account.journal', {
-        domain: ['|', ['name', 'ilike', term], ['code', 'ilike', term]],
-        fields: ['id', 'name', 'code'],
-        limit: 1,
-      })
+      .searchReadRecords<{ id: number; name: string; code: string; bank_acc_number?: string }>(
+        'account.journal',
+        {
+          domain: [
+            ['company_id', '=', targetCompanyId],
+            ['type', 'in', ['bank', 'cash']],
+            '|', '|',
+            ['name', 'ilike', term],
+            ['code', 'ilike', term],
+            ['bank_acc_number', 'ilike', term],
+          ],
+          fields: ['id', 'name', 'code', 'bank_acc_number'],
+          limit: 10,
+        },
+      )
       .catch(() => []);
-    if (journals[0]) {
-      journalCache.set(term, journals[0]);
-      journalCache.set(cacheKey, journals[0]);
-      return journals[0];
+
+    const exact = journals.find(
+      (j) =>
+        j.name.trim().toLowerCase() === term.trim().toLowerCase() ||
+        j.code.trim().toLowerCase() === term.trim().toLowerCase() ||
+        String(j.bank_acc_number || '').trim() === term.trim(),
+    );
+    const chosen = exact || journals[0];
+    if (chosen) {
+      const res = { id: chosen.id, name: chosen.name, code: chosen.code };
+      journalCache.set(term, res);
+      journalCache.set(cacheKey, res);
+      return res;
     }
   }
   journalCache.set(cacheKey, null);
@@ -2492,7 +2513,7 @@ async function registerPaymentForVendorBill(
   if (pinNote === 'NO PIN') {
     targetJournal = await findJournalByNameOrCode(client, 'MPESA', 'M-PESA');
   } else if (pinNote === 'ETR') {
-    targetJournal = await findJournalByNameOrCode(client, '001215001007459');
+    targetJournal = await findJournalByNameOrCode(client, '001215001007459', 'ABC BANK', 'BNK2');
   }
 
   if (!targetJournal) {

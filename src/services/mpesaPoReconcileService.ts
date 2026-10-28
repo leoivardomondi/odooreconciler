@@ -39,16 +39,31 @@ async function findJournalByNameOrCode(
   client: OdooClient,
   ...searchTerms: string[]
 ): Promise<{ id: number; name: string; code: string } | null> {
+  const targetCompanyId = await client.getTargetCompanyIdValue().catch(() => 1);
   for (const term of searchTerms) {
-    const journals = await client.searchReadRecords<{ id: number; name: string; code: string }>(
+    const journals = await client.searchReadRecords<{ id: number; name: string; code: string; bank_acc_number?: string }>(
       'account.journal',
       {
-        domain: ['|', ['name', '=', term], ['code', '=', term]],
-        fields: ['id', 'name', 'code'],
-        limit: 1,
+        domain: [
+          ['company_id', '=', targetCompanyId],
+          ['type', 'in', ['bank', 'cash']],
+          '|', '|',
+          ['name', 'ilike', term],
+          ['code', 'ilike', term],
+          ['bank_acc_number', 'ilike', term],
+        ],
+        fields: ['id', 'name', 'code', 'bank_acc_number'],
+        limit: 10,
       },
     );
-    if (journals[0]) return journals[0];
+    const exact = journals.find(
+      (j) =>
+        j.name.trim().toLowerCase() === term.trim().toLowerCase() ||
+        j.code.trim().toLowerCase() === term.trim().toLowerCase() ||
+        String(j.bank_acc_number || '').trim() === term.trim(),
+    );
+    const chosen = exact || journals[0];
+    if (chosen) return chosen;
   }
   return null;
 }
@@ -114,7 +129,7 @@ async function resolvePaymentJournal(
   }
 
   if (pinNote === 'ETR') {
-    const etrJournal = await findJournalByNameOrCode(client, '001215001007459');
+    const etrJournal = await findJournalByNameOrCode(client, '001215001007459', 'ABC BANK', 'BNK2');
     if (etrJournal) {
       return { journalId: etrJournal.id, journalLabel: `001215001007459 (${etrJournal.name})` };
     }
