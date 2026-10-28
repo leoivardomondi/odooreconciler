@@ -39,6 +39,12 @@ import {
   finishBoardIntakeRevert,
   releaseBoardIntakeRevert,
   unmarkPendingShopFloorProcessesLoaded,
+  getBoardIntakeQueueDateCounts,
+  getShopFloorOperatorsFromDb,
+  upsertShopFloorOperators,
+  updateShopFloorOperatorPhoto,
+  invalidateShopFloorOperatorsRamCache,
+  ShopFloorOperatorEntry,
 } from '../models/repositories';
 import { ShopFloorFeatureFlags, ShopFloorFeatureKey } from '../models/types';
 import { wakeShopFloorValidationJobWorker } from '../services/shopFloorValidationJobService';
@@ -67,7 +73,7 @@ import {
 import { getStockMirrorForPage, recordOptimisticStockAddition, refreshStockMirror, recordExactStockQuantity } from '../services/stockMirrorService';
 import { getCustomersForPage, searchCustomers } from '../services/customerMirrorService';
 import { revertBoardIntakeEntry, syncBoardIntakeEntry } from '../services/boardIntakeSyncService';
-import { syncShopFloorOperatorAccess } from '../services/shopFloorOperatorAccessSyncService';
+import { syncShopFloorOperatorAccess, syncShopFloorOperatorsData } from '../services/shopFloorOperatorAccessSyncService';
 import { syncPendingProcessesFromOdoo } from '../services/shopFloorPendingSyncService';
 import { extractSoNameFromOrigin } from '../services/poJobSummaryAuditService';
 import { isAllowedAttendanceIp, normalizeIpAddress } from '../utils/siteAttendanceAccess';
@@ -1083,8 +1089,13 @@ function manufacturingReportDay() {
 }
 
 function isStockExemptEdgeBandingService(productName: string | null | undefined): boolean {
-  const normalized = String(productName || '').trim().toLowerCase();
-  return normalized.includes('edge banding service') || normalized.includes('edging banding service');
+  const normalized = String(productName || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  return (
+    normalized.includes('edge banding service') ||
+    normalized.includes('edge band service') ||
+    normalized.includes('edging banding service') ||
+    normalized.includes('edging band service')
+  );
 }
 
 function getDailyManufacturingAnalytics<T>(key: string, loader: () => Promise<T>): Promise<T> {
@@ -2556,286 +2567,41 @@ router.get('/shop-floor/operators', async (req: Request, res: Response) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
 
   try {
-    const settings = await getSettings();
-    const operatorCacheKey = 'shop-floor:operators-list:v2';
+    const isRefresh = req.query.refresh === 'true';
 
-    // Purge obsolete v1 cache key to ensure any old fallback with truncated email names is cleared
-    void deleteShopFloorSharedCache('shop-floor:operators-list:v1').catch(() => {});
+    // 1. Read persistent operators directly from MySQL table `shop_floor_operators` (and 30s RAM cache)
+    let allOperators: OperatorSummary[] = (await getShopFloorOperatorsFromDb()) as any[];
 
-    // 1. Read persistent MySQL shared cache immediately (<5ms)
-    let persistentCache = await getShopFloorSharedCache<{
-      allOperators: OperatorSummary[];
-      departments: string[];
-    }>(operatorCacheKey).catch(() => null);
-
-    // Sanitize cached data in-memory: filter out entries with email-derived names or inactive/corrupt tags without nuking the cache
-    if (persistentCache?.data?.allOperators && Array.isArray(persistentCache.data.allOperators)) {
-      persistentCache.data.allOperators = persistentCache.data.allOperators.filter((op) => {
-        if (!op || !op.name || typeof op.name !== 'string') return false;
-        const n = op.name.trim();
-        const emailPrefix = String(op.workEmail || '').split('@')[0].trim().toLowerCase();
-        if (n.toLowerCase() === emailPrefix) return false;
-        if (op.workEmail && op.workEmail.toLowerCase().includes('onyangoakulo22')) return false;
-        return true;
+    // 2. Trigger fresh background sync if explicit refresh or if DB is empty, without blocking rendering
+    if (isRefresh || allOperators.length === 0) {
+      void syncShopFloorOperatorsData(true).catch((err) => {
+        console.warn('[shopFloor/operators] Background operators sync failed:', err?.message || err);
       });
-      persistentCache.data.departments = [...new Set(persistentCache.data.allOperators.map((op) => op.department).filter((d): d is string => Boolean(d)))];
     }
 
-    const operatorsPromise = shopFloorCache.getOrFetchTieredSWR(
-      operatorCacheKey,
-      req.query.refresh === 'true' ? 0 : 15 * 60 * 1000,   // Non-blocking serve with background revalidation on refresh (15m fresh TTL)
-      2 * 60 * 60 * 1000,  // 2 hours max stale
-      async () => {
-        const client = new OdooClient(settings.odoo);
-        const targetCompanyId = await client.getTargetCompanyIdValue();
+    // 3. Fallback if table was empty on cold start before background sync finished
+    if (allOperators.length === 0) {
+      const persistentCache = await getShopFloorSharedCache<{
+        allOperators: OperatorSummary[];
+        departments: string[];
+      }>('shop-floor:operators-list:v2').catch(() => null);
 
-        // 1. Fetch active approved accounts from the database
-        const allApprovedUsers = await getApprovedAuthUsers().catch(() => []);
-        // Strictly only active accounts that have shop-floor access or are admin (exclude deactivated accounts and obsolete emails)
-        const activeAccounts = (allApprovedUsers || []).filter((u) => {
-          if (!u || !u.email) return false;
-          if (isAccountDeactivated(u.active)) return false;
-          if (u.email.toLowerCase().includes('onyangoakulo22')) return false;
-          const apps = Array.isArray(u.apps) ? u.apps : [];
-          return apps.includes('shop-floor') || u.role === 'admin';
-        });
-
-        // 2. Fetch active Odoo employees and active users in target company
-        const [workcenters, allOdooEmployees, allOdooUsers] = await Promise.all([
-          client.searchReadRecords<{ id: number; employee_ids: number[] }>('mrp.workcenter', {
-            domain: [['company_id', '=', targetCompanyId]],
-            fields: ['id', 'employee_ids'],
-          }).catch(() => []),
-          client.searchReadRecords<any>('hr.employee', {
-            domain: [
-              ['company_id', '=', targetCompanyId],
-              ['active', '=', true],
-            ],
-            fields: ['id', 'name', 'job_title', 'department_id', 'work_email', 'mobile_phone', 'user_id', 'active'],
-          }).catch(() => []),
-          client.searchReadRecords<any>('res.users', {
-            domain: [
-              ['company_id', '=', targetCompanyId],
-              ['active', '=', true],
-            ],
-            fields: ['id', 'name', 'login', 'email', 'active'],
-          }).catch(() => []),
-        ]);
-
-        const workcenterOperatorIds = new Set<number>(workcenters.flatMap((w) => w.employee_ids || []));
-
-        // 3. Match active accounts strictly to active Odoo employees
-        const operators: OperatorSummary[] = [];
-        const seenEmpIds = new Set<number>();
-
-        for (const account of activeAccounts) {
-          const userEmail = String(account.email || '').trim().toLowerCase();
-          if (!userEmail) continue;
-
-          // Find matching active Odoo employee by work_email, user login, user email, or director name
-          const linkedEmp = allOdooEmployees.find((e) => {
-            if (e.active === false) return false;
-            const empEmail = String(e.work_email || '').trim().toLowerCase();
-            if (empEmail && empEmail === userEmail) return true;
-
-            if (Array.isArray(e.user_id) && e.user_id[0]) {
-              const u = allOdooUsers.find((user: any) => user.id === e.user_id[0]);
-              if (u) {
-                const uLogin = String(u.login || '').trim().toLowerCase();
-                const uEmail = String(u.email || '').trim().toLowerCase();
-                if (uLogin === userEmail || uEmail === userEmail) return true;
-              }
-            }
-
-            const localPart = userEmail.split('@')[0].replace(/[._-]/g, ' ').trim().toLowerCase();
-            const eName = String(e.name || '').trim().toLowerCase();
-            if (localPart.length >= 3 && eName.includes(localPart)) {
-              return true;
-            }
-            return false;
-          });
-
-          // STRICT REQUIREMENT: Only accounts linked to an active Odoo employee in company 1!
-          if (!linkedEmp) continue;
-          if (seenEmpIds.has(linkedEmp.id)) continue;
-          seenEmpIds.add(linkedEmp.id);
-
-          // Full name strictly from Odoo employee record! NEVER derived from email address.
-          const odooFullName = String(linkedEmp.name || '').trim();
-          if (!odooFullName || odooFullName.toLowerCase() === userEmail.split('@')[0].toLowerCase()) {
-            continue;
-          }
-
-          operators.push({
-            id: linkedEmp.id,
-            name: odooFullName,
-            jobTitle: cleanOdooJobTitle(linkedEmp),
-            department: cleanOdooDepartment(linkedEmp),
-            workEmail: account.email || linkedEmp.work_email,
-            mobilePhone: linkedEmp.mobile_phone || null,
-            userId: Array.isArray(linkedEmp.user_id) ? linkedEmp.user_id[0] : null,
-            userName: Array.isArray(linkedEmp.user_id) ? linkedEmp.user_id[1] : odooFullName,
-            checkedIn: false,
-            checkedOut: false,
-            checkInTime: null,
-            assignedItems: [],
-          });
-        }
-
-        // Also include any active workcenter operators or operations / management employees from Odoo
-        for (const emp of allOdooEmployees) {
-          if (emp.active === false) continue;
-          if (seenEmpIds.has(emp.id)) continue;
-          const isWc = workcenterOperatorIds.has(emp.id);
-          const dept = cleanOdooDepartment(emp);
-          if (!isWc && dept !== 'Operations' && dept !== 'Management') continue;
-
-          seenEmpIds.add(emp.id);
-          const odooFullName = String(emp.name || '').trim();
-          const email = String(emp.work_email || '').trim().toLowerCase();
-
-          operators.push({
-            id: emp.id,
-            name: odooFullName,
-            jobTitle: cleanOdooJobTitle(emp),
-            department: dept,
-            workEmail: email && email !== 'false' ? email : null,
-            mobilePhone: emp.mobile_phone || null,
-            userId: Array.isArray(emp.user_id) ? emp.user_id[0] : null,
-            userName: Array.isArray(emp.user_id) ? emp.user_id[1] : odooFullName,
-            checkedIn: false,
-            checkedOut: false,
-            checkInTime: null,
-            assignedItems: [],
-          });
-        }
-
-        // Sort: Management & workcenter operators first, then alphabetically by Odoo full name
-        operators.sort((a, b) => {
-          const aPriority = a.department === 'Management' ? 0 : workcenterOperatorIds.has(a.id) ? 1 : 2;
-          const bPriority = b.department === 'Management' ? 0 : workcenterOperatorIds.has(b.id) ? 1 : 2;
-          if (aPriority !== bPriority) return aPriority - bPriority;
-          return a.name.localeCompare(b.name);
-        });
-
-        // Get today's attendance and assigned equipment concurrently in parallel!
-        if (operators.length > 0) {
-          const operatorIds = operators.map((op) => op.id);
-          const [attendanceRecords, allEquipments] = await Promise.all([
-            client.getBulkAttendance(operatorIds).catch((err) => {
-              console.warn('[shopFloor] Failed to fetch bulk attendance:', err);
-              return [];
-            }),
-            client.getBulkAssignedEquipment().catch((err) => {
-              console.warn('[shopFloor] Failed to fetch bulk assigned equipment:', err);
-              return [];
-            }),
-          ]);
-
-          for (const rec of attendanceRecords) {
-            const empId = Array.isArray(rec.employee_id) ? rec.employee_id[0] : rec.employee_id;
-            const op = operators.find((o) => o.id === empId);
-            if (op) {
-              op.checkedIn = Boolean(rec.check_in && !rec.check_out);
-              op.checkedOut = Boolean(rec.check_out);
-              op.checkInTime = toEAT(rec.check_in) || rec.check_in;
-            }
-          }
-
-          const equipByEmployeeId = new Map<number, Array<(typeof allEquipments)[number]>>();
-          for (const eq of allEquipments) {
-            if (eq.employee_id) {
-              const empId = eq.employee_id[0];
-              if (!equipByEmployeeId.has(empId)) {
-                equipByEmployeeId.set(empId, []);
-              }
-              equipByEmployeeId.get(empId)!.push(eq);
-            }
-          }
-
-          for (const op of operators) {
-            const items = equipByEmployeeId.get(op.id) || [];
-            op.assignedItems = items.map((i) => ({
-              id: String(i.id),
-              itemName: i.name || '',
-              assignedDate: i.assign_date || '',
-              quantity: 1,
-            }));
-          }
-        }
-
-        const departmentsList = [...new Set(operators.map((op) => op.department).filter(Boolean))];
-        const freshData = { allOperators: operators, departments: departmentsList };
-        if (operators.length > 0) {
-          await saveShopFloorSharedCache(operatorCacheKey, freshData).catch(() => {});
-        }
-        return freshData;
-      },
-    );
-
-    // Extract cached data safely regardless of whether MySQL stored an object or an array
-    let cachedOperators: OperatorSummary[] = [];
-    let cachedDepartments: string[] = [];
-
-    if (persistentCache?.data) {
-      if (Array.isArray(persistentCache.data.allOperators)) {
-        cachedOperators = persistentCache.data.allOperators;
-        cachedDepartments = Array.isArray(persistentCache.data.departments) ? persistentCache.data.departments : [];
-      } else if (Array.isArray(persistentCache.data)) {
-        cachedOperators = persistentCache.data;
+      if (persistentCache?.data?.allOperators && Array.isArray(persistentCache.data.allOperators)) {
+        allOperators = persistentCache.data.allOperators;
       }
     }
 
-    const hasCachedData = cachedOperators.length > 0;
-    const fallbackData = {
-      allOperators: cachedOperators,
-      departments: cachedDepartments.length > 0
-        ? cachedDepartments
-        : [...new Set(cachedOperators.map((o) => o.department).filter((d): d is string => Boolean(d)))],
-    };
-
-    // Zero-wait SWR: If MySQL persistent cache is available, serve immediately (<10ms).
-    // If cold miss (first time boot), wait up to 4500ms so Odoo has time to respond without showing an empty page.
-    let resolvedData = hasCachedData
-      ? fallbackData
-      : await withMaxPageWait(operatorsPromise, 4500, fallbackData);
-
-    let allOperators = Array.isArray(resolvedData?.allOperators) ? resolvedData.allOperators : [];
-    let departments = Array.isArray(resolvedData?.departments) ? resolvedData.departments : [];
-
-    // Always ensure background revalidation doesn't create unhandled rejections
-    void operatorsPromise.catch((err) => {
-      console.warn('[shopFloor/operators] Background operators revalidation failed:', err?.message || err);
+    // Clean / filter inactive or corrupted entries
+    allOperators = allOperators.filter((op) => {
+      if (!op || !op.id || !op.name) return false;
+      const n = op.name.trim();
+      const prefix = String(op.workEmail || '').split('@')[0].trim().toLowerCase();
+      if (n.toLowerCase() === prefix) return false;
+      if (op.workEmail && op.workEmail.toLowerCase().includes('onyangoakulo22')) return false;
+      return true;
     });
 
-    // Guaranteed post-filter: Exclude any entry that is inactive or has an email-derived username as its name
-    if (allOperators && allOperators.length > 0) {
-      allOperators = allOperators.filter((op) => {
-        if (!op || !op.id || !op.name) return false;
-        const n = op.name.trim();
-        const prefix = String(op.workEmail || '').split('@')[0].trim().toLowerCase();
-        if (n.toLowerCase() === prefix) return false;
-        if (op.workEmail && op.workEmail.toLowerCase().includes('onyangoakulo22')) return false;
-        return true;
-      });
-      departments = [...new Set(allOperators.map((op) => op.department).filter((d): d is string => Boolean(d)))];
-    }
-
-    // Enrich operators with custom profile photos and display names from app_user_profiles
-    if (allOperators && allOperators.length > 0) {
-      allOperators = await Promise.all(
-        allOperators.map(async (op) => {
-          const email = String(op.workEmail || '').trim().toLowerCase();
-          if (!email) return op;
-          const profile = await getAppUserProfile(email).catch(() => null);
-          return {
-            ...op,
-            name: profile?.displayName || op.name,
-            photoUrl: profile?.photoUrl || null,
-          };
-        })
-      );
-    }
+    const departments = [...new Set(allOperators.map((op) => op.department).filter((d): d is string => Boolean(d)))];
 
     // Non-blocking background warmup of weekly PDF snapshot so download is instant (<50ms)
     void getOrBuildWeeklyShopFloorReportPdf().catch(() => {});
@@ -3098,11 +2864,12 @@ router.post('/shop-floor/operators/photo', (req: Request, res: Response, next) =
   }
 
   const email = String(req.body.email || '').trim().toLowerCase();
-  if (!email) {
+  const opId = Number(req.body.opId || 0);
+  if (!email && !opId) {
     if (req.xhr || req.headers.accept?.includes('application/json')) {
-      return res.status(400).json({ ok: false, error: 'Operator email is required' });
+      return res.status(400).json({ ok: false, error: 'Operator email or ID is required' });
     }
-    return res.redirect('/shop-floor/operators?error=Email+is+required');
+    return res.redirect('/shop-floor/operators?error=Operator+identifier+is+required');
   }
 
   try {
@@ -3113,22 +2880,31 @@ router.post('/shop-floor/operators/photo', (req: Request, res: Response, next) =
       photoUrl = `/avatars/${req.file.filename}`;
     }
 
-    await updateUserPhoto(email, photoUrl);
+    if (email) {
+      await updateUserPhoto(email, photoUrl);
+    }
+    if (opId) {
+      await updateShopFloorOperatorPhoto(opId, photoUrl);
+    }
+    invalidateShopFloorOperatorsRamCache();
 
     // Invalidate caches
     shopFloorCache.delete('shop-floor:operators-list:v1');
     shopFloorCache.delete('shop-floor:operators-list:v2');
-    shopFloorCache.delete(`shop-floor-dashboard:v3:${email}`);
+    if (email) {
+      shopFloorCache.delete(`shop-floor-dashboard:v3:${email}`);
+    }
     void Promise.allSettled([
       deleteShopFloorSharedCache('shop-floor:operators-list:v1'),
       deleteShopFloorSharedCache('shop-floor:operators-list:v2'),
-      deleteShopFloorSharedCache(`shop-floor-dashboard:v3:${email}`),
+      email ? deleteShopFloorSharedCache(`shop-floor-dashboard:v3:${email}`) : Promise.resolve(),
     ]);
 
     if (req.xhr || req.headers.accept?.includes('application/json')) {
       return res.json({
         ok: true,
         email,
+        opId,
         photoUrl,
         message: isRemove ? 'Photo removed successfully' : 'Photo updated successfully',
       });
@@ -3388,16 +3164,15 @@ router.get('/shop-floor/boards', async (req: Request, res: Response) => {
       void syncPendingProcessesFromOdoo(true).catch(() => null);
     }
 
-    const [settings, stockMirror, recentIntakeRows, pendingProcesses, customers, todayLogsCount, yesterdayLogsCount, selectedDateLogsCount] = await Promise.all([
+    const [settings, stockMirror, recentIntakeRows, pendingProcesses, customers, dateCounts] = await Promise.all([
       getSettings(),
       getStockMirrorForPage(isRefresh),
       getRecentBoardIntakeQueueEntries(boardLogPageSize + 1, (boardLogPage - 1) * boardLogPageSize, selectedDate),
       getPendingShopFloorProcesses({ status: 'pending' }),
       getCustomersForPage(200),
-      countBoardIntakeQueueEntries(todayDate),
-      countBoardIntakeQueueEntries(yesterdayDate),
-      countBoardIntakeQueueEntries(selectedDate),
+      getBoardIntakeQueueDateCounts(todayDate, yesterdayDate, selectedDate),
     ]);
+    const { todayLogsCount, yesterdayLogsCount, selectedDateLogsCount } = dateCounts;
 
     const hasNextBoardLogPage = recentIntakeRows.length > boardLogPageSize;
     const recentIntakes = recentIntakeRows.slice(0, boardLogPageSize);
@@ -3851,9 +3626,10 @@ async function handlePauseMo(req: Request, res: Response) {
     const client = new OdooClient(settings.odoo);
     const viewedEmail = getViewedUserEmail(req);
     const employee = await resolveShopFloorEmployeeRecord(viewedEmail, client);
-    if (!employee) throw new Error('Your account is not linked to an Odoo employee.');
+    const actorName = employee?.name || req.authUser?.displayName || req.authUser?.email || emailDisplayName(viewedEmail) || 'Supervisor';
+    const employeeId = employee?.id;
 
-    await optimisticallyUpdateSharedWorkOrderState(moId, 'paused', employee.name, viewedEmail);
+    await optimisticallyUpdateSharedWorkOrderState(moId, 'paused', actorName, viewedEmail);
     shopFloorCache.clearPrefix('shop-floor-dashboard:');
 
     if (wantsJson) {
@@ -3869,14 +3645,14 @@ async function handlePauseMo(req: Request, res: Response) {
     // Execute pause in background
     void (async () => {
       try {
-        await client.pauseManufacturingOrder(moId, { createBackorder, qtyProduced }, employee.id);
-        await optimisticallyUpdateSharedWorkOrderState(moId, 'paused', employee.name, viewedEmail);
+        await client.pauseManufacturingOrder(moId, { createBackorder, qtyProduced }, employeeId);
+        await optimisticallyUpdateSharedWorkOrderState(moId, 'paused', actorName, viewedEmail);
         const sharedMoEntry = shopFloorCache.getEntry('shop-floor:shared-work-orders:v1');
         if (sharedMoEntry) {
           sharedMoEntry.freshUntil = 0;
         }
         shopFloorCache.clearPrefix('shop-floor-dashboard:');
-        await logEvent('info', 'Manufacturing order paused', { moId, actor: employee.name, createBackorder });
+        await logEvent('info', 'Manufacturing order paused', { moId, actor: actorName, createBackorder });
       } catch (bgErr) {
         void logEvent('error', 'Background pauseManufacturingOrder failed in Odoo', {
           moId,

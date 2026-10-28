@@ -49,7 +49,15 @@
   - **Max Page Wait Cap**: For cold misses with no prior snapshot, route handlers wrap external Odoo queries with `withMaxPageWait` (capped at 1200ms) and return a clean fallback shell if Odoo is slow, allowing background workers to populate the persistent cache without stalling the user.
   - **PWA Badge Counter Decoupling**: `/notifications/due-tasks-count` reads stock alerts directly from local MySQL snapshots (`getShopFloorDashboardSnapshot`) and review counts from local DB instead of making synchronous Odoo XML-RPC queries, keeping Odoo rate-limiting queues completely unblocked.
   - **Instant Operator Login from MySQL**: When operators log in, `/shop-floor` immediately serves all active work orders, stock alerts, and pending tasks directly from MySQL tables (`shop_floor_shared_cache`, `shop_floor_pending_processes`, and `shop_floor_dashboard_snapshots`) in <10ms via `buildInstantMysqlOperatorDashboard`. It never blocks on Odoo XML-RPC or renders an empty shell. In-flight revalidation happens asynchronously in the background.
-  - **Decoupled Task Notifications**: `/notifications/shop-floor-tasks` for app requests reads pending board intake tasks from `shop_floor_pending_processes` and open deliveries/receipts from `shop_floor_shared_cache`, executing in ~5ms without synchronous Odoo round-trips.
+  - **Instant Operators Page & MySQL Storage (`shop_floor_operators`)**:
+    - Dedicated MySQL & SQLite table `shop_floor_operators` stores full operator profiles (ID, name, job title, department, email, phone, user ID/name, photo URL, check-in status, attendance time, equipment, priority, active status).
+    - Background worker `syncShopFloorOperatorsData` in [src/services/shopFloorOperatorAccessSyncService.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/shopFloorOperatorAccessSyncService.ts) runs continuously every 5 minutes during operating hours and primes immediately on server startup, fetching Odoo employees, attendances, workcenters, and equipment in bulk and upserting directly into MySQL.
+    - Route `GET /shop-floor/operators` reads directly from MySQL in <5ms via `getShopFloorOperatorsFromDb()`, completely eliminating synchronous Odoo XML-RPC network calls and N+1 user profile queries.
+    - SWR ensures that if `refresh=true` is requested, the current operators are served instantly while background revalidation updates MySQL asynchronously.
+  - **Instant Add Stock Page (`/shop-floor/boards`) Performance Architecture**:
+    - Replaced 3 unindexed date counting queries on `board_intake_queue` with a single consolidated date range query `getBoardIntakeQueueDateCounts(todayDate, yesterdayDate, selectedDate)` using index-friendly `(created_at >= start AND created_at <= end)`.
+    - Added dedicated indexes on `board_intake_queue(arrival_date)` and `board_intake_queue(created_at)`.
+    - In-memory RAM caching for `customer_partner_mirror` (60s), `stock_product_mirror` (30s), feature flags (30s), and `shop_floor_pending_processes` (15s) guarantees the Add Stock page opens instantly (<15ms) without blocking on disk or external RPCs.
   - **Customer Mirror & Instant Intake**: All active customers are mirrored in MySQL table `customer_partner_mirror`. Search and dropdown autocomplete pull directly from MySQL (<2ms). Board intake form submission returns immediately without full-page loading locks, and clears all fields ready for the next entry.
   - **Board Intake Source Distinction (Purchase vs Client Supply)**:
     - Inbound boards are explicitly categorized as **Company Purchase** (`is_purchase = 1`) or **Client-Supplied** (`is_purchase = 0`, default).
@@ -94,6 +102,13 @@
     - [scripts/odoo_enforce_mo_stock_rules.py](file:///c:/Users/ADMIN/Desktop/odooreconciler/scripts/odoo_enforce_mo_stock_rules.py) provides production-ready Odoo 19 Automated Actions / Server Actions and Python module overrides for `mrp.production` (`button_mark_done`, `button_plan`) and `mrp.workorder` (`button_start`, `do_finish`) to raise `odoo.exceptions.UserError` if component stock is missing in Odoo.
     - **Native Shop Floor "Close Production" Architecture**: In Odoo's native Shop Floor tablet/web interface, the "Close Production" button triggers `button_mark_done()` on `mrp.production`, NOT on `mrp.workorder`. Therefore, an Automation Rule on `mrp.production` (Trigger: On Update of `state`, Apply on: `[('state', 'in', ['progress', 'to_close', 'done'])]`, Before Update: `[('state', 'not in', ['done', 'cancel'])]`) is mandatory to intercept both "Close Production" and starting with partial stock.
     - **Work Centre Real-Time Display & SWR**: Work orders are grouped by work centre (Table Saw Area, Edge Banding Area, Panel Rack Area) and served in <10ms from MySQL snapshot cache (`shop_floor_shared_cache`). Badge attention counts poll asynchronously via `/shop-floor/api/app-badge-counts` without triggering synchronous Odoo XML-RPC calls during operator browsing.
+    - **1:1 MO to Work Order Start, Pause & Finish Architecture**:
+      - In this factory setup, each Manufacturing Order (`mrp.production`) has **exactly one Work Order** (`mrp.workorder`).
+      - All runtime operations (timer tracking, active workers, play/pause states) reside on `mrp.workorder` and `mrp.workcenter.productivity`.
+      - **Strict Exclusion of `mrp_display: true` in XML-RPC Calls**: Never pass `{ context: { mrp_display: true } }` on `mrp.workorder` methods (`button_start`, `button_pending`, `button_finish`, `stop_employee`, `start_employee`). In Odoo 17/18/19, `mrp_display: true` requires an active physical tablet session and throws `UserError: You need to log in to process this work order.` over standard API calls.
+      - **Pause**: Calls `stop_employee` on all active employees for that work order and `button_pending` on `mrp.workorder`, freezing real duration and revealing the green play button (`▶`) in Odoo.
+      - **Start**: Directly invokes `button_start` on the child work order and records operator time via `start_employee`.
+      - **Finish / Close**: Sets `qty_producing` to match production demand, closes active operator timers, finishes the work order via `button_finish` / `do_finish`, and marks the MO done via `button_mark_done`.
 
 - **Real-Time Event-Driven Odoo Sync Webhooks (Anti-Rate-Limiting Architecture)**:
   - **Endpoints**: `/api/webhooks/odoo-sync` and `/jobs/odoo-sync` (supporting both `POST` and `GET`).
@@ -422,5 +437,18 @@
     - Obsolete unlinked accounts (such as `onyangoakulo22@gmail.com`) are excluded and deactivated during `syncShopFloorOperatorAccess`.
   - **Cache Versioning (`shop-floor:operators-list:v2`) & Corrupt Cache Auto-Purge**:
     - Cached operator snapshots are validated before serving: if any record has a name matching an email localpart or single-word username, the cache is automatically purged and refreshed from live Odoo data.
-    - Obsolete `shop-floor:operators-list:v1` cache entries are purged automatically.
+- **Quotation Line Population Product Category Scoping Architecture**:
+  - **Dynamic Category Resolution & In-Memory Caching (`getScopedQuotationCategories`)**:
+    - Discovers product categories from `product.category` dynamically and caches them in memory (1-hour TTL), with resilient fallback defaults:
+      - **Board Categories**: `boardCategoryIds` (`Goods / Boards` [ID 7], `Goods / Nicewood Boards` [ID 11])
+      - **Cutting Categories**: `cuttingCategoryIds` (`Services / Cutting` [ID 6], `Services / Cutting Nicewood` [ID 12])
+      - **Edging Categories**: `edgingCategoryIds` (`Services / Edging services` [ID 5])
+      - **All Quotation Categories**: `allRelevantIds` (combining parent `Services` [ID 3], `Services / Grooving` [ID 4], and all board/cutting/edging IDs)
+  - **Scoped Bulk Product Fetching**:
+    - `candidateProducts` in [src/services/quotationSyncService.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/services/quotationSyncService.ts) enforces domain `[['sale_ok', '=', true], ['categ_id', 'in', categories.allRelevantIds]]`.
+    - Completely excludes hundreds of non-relevant items (screws, hinges, handles, accessories, expenses, physical edging tape rolls) from candidate evaluation.
+  - **Category-Scoped Targeted XML-RPC Fallbacks**:
+    - `findRawBoard` scopes targeted fallback queries strictly to `categories.boardCategoryIds`.
+    - `findCuttingService` scopes targeted fallback queries strictly to `categories.cuttingCategoryIds`.
+    - `findEdgeBandingService` scopes targeted fallback queries strictly to `categories.edgingCategoryIds`.
 

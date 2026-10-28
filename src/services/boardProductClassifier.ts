@@ -48,8 +48,13 @@ export interface BoardMismatchResult {
 }
 
 export function isStockExemptEdgeBandingService(value: string | null | undefined): boolean {
-  const normalized = String(value || '').trim().toLowerCase();
-  return normalized.includes('edge banding service') || normalized.includes('edging banding service');
+  const normalized = String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  return (
+    normalized.includes('edge banding service') ||
+    normalized.includes('edge band service') ||
+    normalized.includes('edging banding service') ||
+    normalized.includes('edging band service')
+  );
 }
 
 export function extractThicknessMm(text?: string | null): number | null {

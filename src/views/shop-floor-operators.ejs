@@ -159,12 +159,15 @@
                 <% if (authUser && (authUser.role === 'admin' || (authUser.apps && authUser.apps.includes('shop-floor-admin')))) { %>
                   <button type="button" class="btn btn-sm btn-light rounded-circle shadow-sm p-0 d-flex align-items-center justify-content-center edit-photo-btn"
                     title="Change Photo"
+                    aria-label="Change Photo"
                     data-op-id="<%= op.id %>"
                     data-op-name="<%= op.name %>"
                     data-op-email="<%= op.workEmail || '' %>"
                     data-op-photo="<%= op.photoUrl || '' %>"
-                    style="position:absolute;top:-4px;right:-4px;width:22px;height:22px;font-size:11px;border:1px solid #cbd5e1;background:#ffffff;z-index:2;line-height:1;cursor:pointer;">
-                    📷
+                    data-bs-toggle="modal"
+                    data-bs-target="#editOperatorPhotoModal"
+                    style="position:absolute;top:-4px;right:-4px;width:24px;height:24px;font-size:12px;border:1px solid #cbd5e1;background:#ffffff;z-index:5;line-height:1;cursor:pointer;">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#334155" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
                   </button>
                 <% } %>
               </div>
@@ -403,61 +406,156 @@ document.querySelector('.operators-page__download-form')?.addEventListener('subm
 
 // Photo modal handling
 (function() {
-  var photoModalEl = document.getElementById('editOperatorPhotoModal');
-  var photoModal = photoModalEl && typeof bootstrap !== 'undefined' ? new bootstrap.Modal(photoModalEl) : null;
-  var photoModalForm = document.getElementById('editOperatorPhotoForm');
-  var photoModalEmail = document.getElementById('photoModalEmail');
-  var photoModalOpId = document.getElementById('photoModalOpId');
-  var photoModalName = document.getElementById('photoModalName');
-  var photoModalEmailLabel = document.getElementById('photoModalEmailLabel');
-  var photoModalLetter = document.getElementById('photoModalLetter');
-  var photoModalImg = document.getElementById('photoModalImg');
-  var photoModalInput = document.getElementById('photoModalInput');
-  var photoModalSaveBtn = document.getElementById('photoModalSaveBtn');
-  var photoModalRemoveBtn = document.getElementById('photoModalRemoveBtn');
-  var photoModalAlert = document.getElementById('photoModalAlert');
-  var photoModalAction = document.getElementById('photoModalAction');
+  function getPhotoModal() {
+    var el = document.getElementById('editOperatorPhotoModal');
+    if (!el) return null;
+    var bs = window.bootstrap || (typeof bootstrap !== 'undefined' ? bootstrap : null);
+    if (bs && bs.Modal) {
+      if (typeof bs.Modal.getOrCreateInstance === 'function') {
+        return bs.Modal.getOrCreateInstance(el);
+      }
+      return new bs.Modal(el);
+    }
+    return null;
+  }
 
-  document.querySelectorAll('.edit-photo-btn').forEach(function(btn) {
-    btn.addEventListener('click', function(e) {
+  function showFallbackModal(el) {
+    if (!el) return;
+    el.classList.add('show');
+    el.style.display = 'block';
+    el.removeAttribute('aria-hidden');
+    el.setAttribute('aria-modal', 'true');
+    var backdrop = document.getElementById('photoModalFallbackBackdrop');
+    if (!backdrop) {
+      backdrop = document.createElement('div');
+      backdrop.id = 'photoModalFallbackBackdrop';
+      backdrop.className = 'modal-backdrop fade show';
+      document.body.appendChild(backdrop);
+    }
+    document.body.classList.add('modal-open');
+  }
+
+  function hideFallbackModal(el) {
+    if (!el) el = document.getElementById('editOperatorPhotoModal');
+    if (el) {
+      el.classList.remove('show');
+      el.style.display = 'none';
+      el.setAttribute('aria-hidden', 'true');
+      el.removeAttribute('aria-modal');
+    }
+    var backdrop = document.getElementById('photoModalFallbackBackdrop');
+    if (backdrop) backdrop.remove();
+    document.querySelectorAll('.modal-backdrop').forEach(function(b) { b.remove(); });
+    document.body.classList.remove('modal-open');
+    document.body.style.removeProperty('overflow');
+    document.body.style.removeProperty('padding-right');
+  }
+
+  function closePhotoModal() {
+    var modal = getPhotoModal();
+    if (modal) {
+      try { modal.hide(); } catch (_e) {}
+    }
+    hideFallbackModal(document.getElementById('editOperatorPhotoModal'));
+  }
+
+  function populatePhotoModal(btn) {
+    if (!btn) return;
+    var opId = btn.getAttribute('data-op-id') || '';
+    var opName = btn.getAttribute('data-op-name') || 'Operator';
+    var opEmail = btn.getAttribute('data-op-email') || '';
+    var opPhoto = btn.getAttribute('data-op-photo') || '';
+
+    var photoModalOpId = document.getElementById('photoModalOpId');
+    var photoModalEmail = document.getElementById('photoModalEmail');
+    var photoModalName = document.getElementById('photoModalName');
+    var photoModalEmailLabel = document.getElementById('photoModalEmailLabel');
+    var photoModalLetter = document.getElementById('photoModalLetter');
+    var photoModalImg = document.getElementById('photoModalImg');
+    var photoModalInput = document.getElementById('photoModalInput');
+    var photoModalAlert = document.getElementById('photoModalAlert');
+    var photoModalAction = document.getElementById('photoModalAction');
+    var photoModalRemoveBtn = document.getElementById('photoModalRemoveBtn');
+
+    if (photoModalOpId) photoModalOpId.value = opId;
+    if (photoModalEmail) photoModalEmail.value = opEmail;
+    if (photoModalName) photoModalName.textContent = opName;
+    if (photoModalEmailLabel) photoModalEmailLabel.textContent = opEmail || ('ID: ' + opId);
+    if (photoModalInput) photoModalInput.value = '';
+    if (photoModalAlert) { photoModalAlert.classList.add('d-none'); photoModalAlert.textContent = ''; }
+    if (photoModalAction) photoModalAction.value = 'upload';
+
+    if (opPhoto) {
+      if (photoModalImg) {
+        photoModalImg.src = opPhoto;
+        photoModalImg.style.display = 'block';
+      }
+      if (photoModalLetter) photoModalLetter.style.display = 'none';
+      if (photoModalRemoveBtn) photoModalRemoveBtn.classList.remove('d-none');
+    } else {
+      if (photoModalImg) photoModalImg.style.display = 'none';
+      if (photoModalLetter) {
+        photoModalLetter.textContent = opName.charAt(0).toUpperCase();
+        photoModalLetter.style.display = 'inline';
+      }
+      if (photoModalRemoveBtn) photoModalRemoveBtn.classList.add('d-none');
+    }
+  }
+
+  // Delegated click handler on document to guarantee clicks on camera button always open modal
+  document.addEventListener('click', function(e) {
+    var btn = e.target.closest('.edit-photo-btn');
+    if (btn) {
       e.preventDefault();
       e.stopPropagation();
-      var opId = btn.getAttribute('data-op-id') || '';
-      var opName = btn.getAttribute('data-op-name') || 'Operator';
-      var opEmail = btn.getAttribute('data-op-email') || '';
-      var opPhoto = btn.getAttribute('data-op-photo') || '';
-
-      if (photoModalOpId) photoModalOpId.value = opId;
-      if (photoModalEmail) photoModalEmail.value = opEmail;
-      if (photoModalName) photoModalName.textContent = opName;
-      if (photoModalEmailLabel) photoModalEmailLabel.textContent = opEmail || 'No email attached';
-      if (photoModalInput) photoModalInput.value = '';
-      if (photoModalAlert) { photoModalAlert.classList.add('d-none'); photoModalAlert.textContent = ''; }
-      if (photoModalAction) photoModalAction.value = 'upload';
-
-      if (opPhoto) {
-        if (photoModalImg) {
-          photoModalImg.src = opPhoto;
-          photoModalImg.style.display = 'block';
-        }
-        if (photoModalLetter) photoModalLetter.style.display = 'none';
-        if (photoModalRemoveBtn) photoModalRemoveBtn.classList.remove('d-none');
+      populatePhotoModal(btn);
+      var modal = getPhotoModal();
+      if (modal) {
+        modal.show();
       } else {
-        if (photoModalImg) photoModalImg.style.display = 'none';
-        if (photoModalLetter) {
-          photoModalLetter.textContent = opName.charAt(0).toUpperCase();
-          photoModalLetter.style.display = 'inline';
-        }
-        if (photoModalRemoveBtn) photoModalRemoveBtn.classList.add('d-none');
+        showFallbackModal(document.getElementById('editOperatorPhotoModal'));
       }
+      return;
+    }
 
-      if (photoModal) photoModal.show();
-    });
+    var dismissBtn = e.target.closest('[data-bs-dismiss="modal"]');
+    if (dismissBtn && dismissBtn.closest('#editOperatorPhotoModal')) {
+      e.preventDefault();
+      closePhotoModal();
+    }
   });
 
+  // Bootstrap native event hook when opened via data-bs-toggle
+  var photoModalEl = document.getElementById('editOperatorPhotoModal');
+  if (photoModalEl) {
+    photoModalEl.addEventListener('show.bs.modal', function(event) {
+      var btn = event.relatedTarget;
+      if (btn && btn.classList && btn.classList.contains('edit-photo-btn')) {
+        populatePhotoModal(btn);
+      }
+    });
+  }
+
+  // File input preview
+  var photoModalInput = document.getElementById('photoModalInput');
   if (photoModalInput) {
     photoModalInput.addEventListener('change', function() {
+      var photoModalAlert = document.getElementById('photoModalAlert');
+      var photoModalImg = document.getElementById('photoModalImg');
+      var photoModalLetter = document.getElementById('photoModalLetter');
+
       if (this.files && this.files[0]) {
+        var file = this.files[0];
+        if (file.size > 5 * 1024 * 1024) {
+          if (photoModalAlert) {
+            photoModalAlert.textContent = 'Photo must be under 5MB.';
+            photoModalAlert.classList.remove('d-none');
+          }
+          this.value = '';
+          return;
+        }
+        if (photoModalAlert) photoModalAlert.classList.add('d-none');
+
         var reader = new FileReader();
         reader.onload = function(e) {
           if (photoModalImg) {
@@ -466,37 +564,53 @@ document.querySelector('.operators-page__download-form')?.addEventListener('subm
           }
           if (photoModalLetter) photoModalLetter.style.display = 'none';
         };
-        reader.readAsDataURL(this.files[0]);
+        reader.readAsDataURL(file);
       }
     });
   }
 
+  // Remove photo button
+  var photoModalRemoveBtn = document.getElementById('photoModalRemoveBtn');
   if (photoModalRemoveBtn) {
     photoModalRemoveBtn.addEventListener('click', async function() {
       if (!confirm('Are you sure you want to remove this photo?')) return;
+      var photoModalAction = document.getElementById('photoModalAction');
       if (photoModalAction) photoModalAction.value = 'remove';
       await submitPhotoForm(true);
     });
   }
 
+  // Submit form (upload or remove)
+  var photoModalForm = document.getElementById('editOperatorPhotoForm');
   if (photoModalForm) {
     photoModalForm.addEventListener('submit', async function(e) {
       e.preventDefault();
-      if (photoModalAction) photoModalAction.value = 'upload';
+      var photoModalAction = document.getElementById('photoModalAction');
+      if (photoModalAction && photoModalAction.value !== 'remove') {
+        photoModalAction.value = 'upload';
+      }
       await submitPhotoForm(false);
     });
   }
 
   async function submitPhotoForm(isRemove) {
-    if (!photoModalForm) return;
+    var form = document.getElementById('editOperatorPhotoForm');
+    var photoModalAlert = document.getElementById('photoModalAlert');
+    var photoModalSaveBtn = document.getElementById('photoModalSaveBtn');
+    var photoModalRemoveBtn = document.getElementById('photoModalRemoveBtn');
+    var photoModalOpId = document.getElementById('photoModalOpId');
+    var photoModalName = document.getElementById('photoModalName');
+
+    if (!form) return;
     if (photoModalAlert) photoModalAlert.classList.add('d-none');
     var btn = isRemove ? photoModalRemoveBtn : photoModalSaveBtn;
+    if (!btn) return;
     var origText = btn.innerHTML;
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm me-1"></span> ' + (isRemove ? 'Removing...' : 'Saving...');
 
     try {
-      var formData = new FormData(photoModalForm);
+      var formData = new FormData(form);
       if (isRemove) {
         formData.set('action', 'remove');
       }
@@ -510,7 +624,7 @@ document.querySelector('.operators-page__download-form')?.addEventListener('subm
         throw new Error(data.error || 'Failed to update photo');
       }
 
-      // Success: update the card on the page
+      // Success: update card on the page
       var opId = photoModalOpId ? photoModalOpId.value : '';
       var cardCircle = document.getElementById('operatorAvatarCircle-' + opId);
       var triggerBtn = document.querySelector('.edit-photo-btn[data-op-id="' + opId + '"]');
@@ -527,7 +641,7 @@ document.querySelector('.operators-page__download-form')?.addEventListener('subm
         }
       }
 
-      if (photoModal) photoModal.hide();
+      closePhotoModal();
     } catch (err) {
       if (photoModalAlert) {
         photoModalAlert.textContent = err.message || 'Error updating photo';

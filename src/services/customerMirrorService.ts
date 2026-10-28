@@ -97,6 +97,7 @@ export async function refreshCustomerMirror(): Promise<CustomerPartnerMirrorEntr
         }));
 
       await upsertCustomerPartnerMirror(entries);
+      invalidateCustomerMirrorPageCache();
       await logEvent('info', 'Customer mirror synced from Odoo', {
         count: entries.length,
       }).catch(() => undefined);
@@ -164,17 +165,29 @@ export async function searchCustomers(searchTerm: string, limit = 40): Promise<A
   return [];
 }
 
+let cachedCustomersForPage: { data: Array<{ id: number; name: string }>; freshUntil: number } | null = null;
+
+export function invalidateCustomerMirrorPageCache() {
+  cachedCustomersForPage = null;
+}
+
 /**
  * Get customers for initial page rendering (e.g. top active clients).
  */
 export async function getCustomersForPage(limit = 100): Promise<Array<{ id: number; name: string }>> {
+  const now = Date.now();
+  if (cachedCustomersForPage && cachedCustomersForPage.freshUntil > now) {
+    return cachedCustomersForPage.data.slice(0, limit);
+  }
   const count = await getCustomerPartnerMirrorCount();
   if (count === 0) {
     void refreshCustomerMirror().catch(() => undefined);
     return [];
   }
-  const rows = await getCustomerPartnerMirror(limit);
-  return rows.map((r) => ({ id: r.partnerId, name: r.name }));
+  const rows = await getCustomerPartnerMirror(Math.max(limit, 200));
+  const result = rows.map((r) => ({ id: r.partnerId, name: r.name }));
+  cachedCustomersForPage = { data: result, freshUntil: now + 60 * 1000 };
+  return result.slice(0, limit);
 }
 
 /**

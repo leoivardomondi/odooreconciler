@@ -2,7 +2,11 @@ import {
   ParsedJobSummaryResult,
   ParsedSheetMaterial,
 } from '../models/types';
-import { getLatestExtractedResultByOrderId, deleteShopFloorSharedCachePrefix } from '../models/repositories';
+import {
+  getLatestExtractedResultByOrderId,
+  deleteShopFloorSharedCachePrefix,
+  invalidatePendingShopFloorProcessesCache,
+} from '../models/repositories';
 import { queryAll, execute } from '../models/db';
 import { shopFloorCache } from '../routes/shopFloor';
 import { syncPendingProcessesFromOdoo } from './shopFloorPendingSyncService';
@@ -659,6 +663,7 @@ export async function reconcileWorkOrderQuantitiesForMo(
 
     // Invalidate shop-floor RAM and shared snapshots
     try {
+      invalidatePendingShopFloorProcessesCache();
       shopFloorCache.clearPrefix('shop-floor-dashboard:');
       await deleteShopFloorSharedCachePrefix('shop-floor:').catch(() => null);
     } catch (_cacheErr) {

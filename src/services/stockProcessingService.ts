@@ -318,7 +318,7 @@ function aggregateItems(items: ParsedEdgingItem[]): AggregatedStockItem[] {
   return [...byColor.values()];
 }
 
-function normalizeServiceProductName(value: string): string {
+export function normalizeServiceProductName(value: string): string {
   const trimmed = value.replace(/\s+/g, ' ').trim();
   const lower = trimmed.toLowerCase();
   // Odoo can prefix a product display name with an internal reference, for
@@ -339,14 +339,14 @@ function normalizeServiceProductName(value: string): string {
   return lower;
 }
 
-function getLineDescriptionCandidates(value: string): string[] {
+export function getLineDescriptionCandidates(value: string): string[] {
   return value
     .split(/\r?\n/)
     .map((part) => part.trim())
     .filter(Boolean);
 }
 
-function extractServiceColor(value: string): string | null {
+export function extractServiceColor(value: string): string | null {
   const normalized = normalizeServiceProductName(value);
   const prefix = 'edge banding service ';
   return normalized.startsWith(prefix) ? normalized.slice(prefix.length).trim() || null : null;

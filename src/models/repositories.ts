@@ -4903,6 +4903,22 @@ export async function saveAppUserProfile(input: { email: string; displayName: st
   }
 }
 
+export async function getAllAppUserProfiles(): Promise<Map<string, { displayName: string; photoUrl: string | null }>> {
+  const rows = await queryAll<{ email: string; display_name: string; photo_url: string | null }>(
+    'SELECT email, display_name, photo_url FROM app_user_profiles',
+  );
+  const map = new Map<string, { displayName: string; photoUrl: string | null }>();
+  for (const r of rows) {
+    if (r.email) {
+      map.set(r.email.trim().toLowerCase(), {
+        displayName: r.display_name,
+        photoUrl: r.photo_url || null,
+      });
+    }
+  }
+  return map;
+}
+
 export async function updateUserPhoto(email: string, photoUrl: string | null) {
   const cleanEmail = email.trim().toLowerCase();
   const existing = await getAppUserProfile(cleanEmail);
@@ -4911,6 +4927,180 @@ export async function updateUserPhoto(email: string, photoUrl: string | null) {
   } else {
     const displayName = cleanEmail.split('@')[0].replace(/[._-]+/g, ' ').replace(/\d+/g, ' ').trim().replace(/\b\w/g, (c) => c.toUpperCase()) || cleanEmail;
     await saveAppUserProfile({ email: cleanEmail, displayName, photoUrl });
+  }
+  await updateShopFloorOperatorPhoto(cleanEmail, photoUrl).catch(() => {});
+}
+
+export interface ShopFloorOperatorEntry {
+  id: number;
+  name: string;
+  jobTitle: string | null;
+  department: string | null;
+  workEmail: string | null;
+  mobilePhone: string | null;
+  userId: number | null;
+  userName: string | null;
+  photoUrl: string | null;
+  checkedIn: boolean;
+  checkedOut: boolean;
+  checkInTime: string | null;
+  assignedItems: Array<{
+    id: string;
+    itemName: string;
+    assignedDate: string;
+    quantity: number;
+  }>;
+  priority: number;
+  active: boolean;
+  syncedAt?: string | null;
+}
+
+let shopFloorOperatorsRamCache: { data: ShopFloorOperatorEntry[]; freshUntil: number } | null = null;
+
+export function invalidateShopFloorOperatorsRamCache() {
+  shopFloorOperatorsRamCache = null;
+}
+
+export async function getShopFloorOperatorsFromDb(): Promise<ShopFloorOperatorEntry[]> {
+  const now = Date.now();
+  if (shopFloorOperatorsRamCache && shopFloorOperatorsRamCache.freshUntil > now) {
+    return shopFloorOperatorsRamCache.data;
+  }
+  try {
+    const rows = await queryAll<any>(`
+      SELECT id, name, job_title, department, work_email, mobile_phone, user_id, user_name, photo_url,
+             checked_in, checked_out, check_in_time, assigned_items_json, priority, active, synced_at
+      FROM shop_floor_operators
+      WHERE active = 1
+      ORDER BY priority ASC, name ASC
+    `);
+    const result: ShopFloorOperatorEntry[] = rows.map((r) => ({
+      id: Number(r.id),
+      name: String(r.name || ''),
+      jobTitle: r.job_title ? String(r.job_title) : null,
+      department: r.department ? String(r.department) : null,
+      workEmail: r.work_email ? String(r.work_email) : null,
+      mobilePhone: r.mobile_phone ? String(r.mobile_phone) : null,
+      userId: r.user_id ? Number(r.user_id) : null,
+      userName: r.user_name ? String(r.user_name) : (r.name || ''),
+      photoUrl: r.photo_url ? String(r.photo_url) : null,
+      checkedIn: Boolean(r.checked_in),
+      checkedOut: Boolean(r.checked_out),
+      checkInTime: r.check_in_time ? String(r.check_in_time) : null,
+      assignedItems: (() => {
+        try {
+          return r.assigned_items_json ? JSON.parse(r.assigned_items_json) : [];
+        } catch {
+          return [];
+        }
+      })(),
+      priority: Number(r.priority || 2),
+      active: Boolean(r.active),
+      syncedAt: formatDbDateString(r.synced_at),
+    }));
+    shopFloorOperatorsRamCache = { data: result, freshUntil: now + 30 * 1000 };
+    return result;
+  } catch (_err) {
+    return [];
+  }
+}
+
+export async function upsertShopFloorOperators(operators: ShopFloorOperatorEntry[]) {
+  if (!operators.length) return;
+  invalidateShopFloorOperatorsRamCache();
+  for (const op of operators) {
+    const params = [
+      op.id,
+      op.name,
+      op.jobTitle || null,
+      op.department || null,
+      op.workEmail ? op.workEmail.trim().toLowerCase() : null,
+      op.mobilePhone || null,
+      op.userId || null,
+      op.userName || op.name,
+      op.photoUrl || null,
+      op.checkedIn ? 1 : 0,
+      op.checkedOut ? 1 : 0,
+      op.checkInTime || null,
+      JSON.stringify(op.assignedItems || []),
+      op.priority ?? 2,
+      op.active !== false ? 1 : 0,
+    ];
+    if (getDatabaseDialect() === 'mysql') {
+      await execute(`
+        INSERT INTO shop_floor_operators (
+          id, name, job_title, department, work_email, mobile_phone, user_id, user_name, photo_url,
+          checked_in, checked_out, check_in_time, assigned_items_json, priority, active, synced_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON DUPLICATE KEY UPDATE
+          name = VALUES(name),
+          job_title = VALUES(job_title),
+          department = VALUES(department),
+          work_email = VALUES(work_email),
+          mobile_phone = VALUES(mobile_phone),
+          user_id = VALUES(user_id),
+          user_name = VALUES(user_name),
+          photo_url = COALESCE(VALUES(photo_url), photo_url),
+          checked_in = VALUES(checked_in),
+          checked_out = VALUES(checked_out),
+          check_in_time = VALUES(check_in_time),
+          assigned_items_json = VALUES(assigned_items_json),
+          priority = VALUES(priority),
+          active = VALUES(active),
+          synced_at = CURRENT_TIMESTAMP
+      `, params);
+    } else {
+      await execute(`
+        INSERT INTO shop_floor_operators (
+          id, name, job_title, department, work_email, mobile_phone, user_id, user_name, photo_url,
+          checked_in, checked_out, check_in_time, assigned_items_json, priority, active, synced_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(id) DO UPDATE SET
+          name = excluded.name,
+          job_title = excluded.job_title,
+          department = excluded.department,
+          work_email = excluded.work_email,
+          mobile_phone = excluded.mobile_phone,
+          user_id = excluded.user_id,
+          user_name = excluded.user_name,
+          photo_url = COALESCE(excluded.photo_url, photo_url),
+          checked_in = excluded.checked_in,
+          checked_out = excluded.checked_out,
+          check_in_time = excluded.check_in_time,
+          assigned_items_json = excluded.assigned_items_json,
+          priority = excluded.priority,
+          active = excluded.active,
+          synced_at = CURRENT_TIMESTAMP,
+          updated_at = CURRENT_TIMESTAMP
+      `, params);
+    }
+  }
+}
+
+export async function deactivateShopFloorOperatorsNotIn(activeIds: number[]) {
+  invalidateShopFloorOperatorsRamCache();
+  if (!activeIds.length) {
+    await execute('UPDATE shop_floor_operators SET active = 0, updated_at = CURRENT_TIMESTAMP');
+    return;
+  }
+  const placeholders = activeIds.map(() => '?').join(', ');
+  await execute(`UPDATE shop_floor_operators SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE id NOT IN (${placeholders})`, activeIds);
+}
+
+export async function updateShopFloorOperatorPhoto(emailOrId: string | number, photoUrl: string | null) {
+  invalidateShopFloorOperatorsRamCache();
+  if (typeof emailOrId === 'number' || /^\d+$/.test(String(emailOrId).trim())) {
+    const id = Number(emailOrId);
+    await execute(
+      'UPDATE shop_floor_operators SET photo_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+      [photoUrl || null, id],
+    );
+  } else {
+    const cleanEmail = String(emailOrId).trim().toLowerCase();
+    await execute(
+      'UPDATE shop_floor_operators SET photo_url = ?, updated_at = CURRENT_TIMESTAMP WHERE LOWER(work_email) = ?',
+      [photoUrl || null, cleanEmail],
+    );
   }
 }
 
@@ -5192,10 +5382,26 @@ export async function updateBoardIntakeQueueEntry(id: string, input: {
   await execute(`UPDATE board_intake_queue SET ${sets.join(', ')} WHERE id = ?`, params);
 }
 
+function buildBoardIntakeDateCondition(filterDate?: string | null): { whereClause: string; filterParams: any[] } {
+  if (!filterDate || filterDate === 'all') {
+    return { whereClause: '', filterParams: [] };
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(filterDate)) {
+    const start = `${filterDate} 00:00:00`;
+    const end = `${filterDate} 23:59:59`;
+    return {
+      whereClause: 'WHERE (arrival_date = ? OR (created_at >= ? AND created_at <= ?))',
+      filterParams: [filterDate, start, end],
+    };
+  }
+  return {
+    whereClause: 'WHERE (arrival_date = ? OR substr(created_at, 1, 10) = ?)',
+    filterParams: [filterDate, filterDate],
+  };
+}
+
 export async function getRecentBoardIntakeQueueEntries(limit = 12, offset = 0, filterDate?: string | null) {
-  const hasFilter = Boolean(filterDate && filterDate !== 'all');
-  const whereClause = hasFilter ? 'WHERE (arrival_date = ? OR substr(created_at, 1, 10) = ?)' : '';
-  const filterParams: string[] = hasFilter && filterDate ? [filterDate, filterDate] : [];
+  const { whereClause, filterParams } = buildBoardIntakeDateCondition(filterDate);
   const query = `SELECT id, product_name, customer_name, quantity, vehicle_registration, arrival_date, arrival_time, gate, is_purchase, purchase_order_reference, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at, reverted_at, reverted_by, actor_name, actor_email
     FROM board_intake_queue 
     ${whereClause}
@@ -5217,14 +5423,50 @@ export async function getRecentBoardIntakeQueueEntries(limit = 12, offset = 0, f
 }
 
 export async function countBoardIntakeQueueEntries(filterDate?: string | null): Promise<number> {
-  const hasFilter = Boolean(filterDate && filterDate !== 'all');
-  const whereClause = hasFilter ? 'WHERE (arrival_date = ? OR substr(created_at, 1, 10) = ?)' : '';
-  const filterParams: string[] = hasFilter && filterDate ? [filterDate, filterDate] : [];
+  const { whereClause, filterParams } = buildBoardIntakeDateCondition(filterDate);
   try {
     const row = await queryOne<{ total: number }>(`SELECT COUNT(*) as total FROM board_intake_queue ${whereClause}`, filterParams);
     return Number(row?.total || 0);
   } catch {
     return 0;
+  }
+}
+
+export async function getBoardIntakeQueueDateCounts(todayDate: string, yesterdayDate: string, selectedDate?: string): Promise<{
+  todayLogsCount: number;
+  yesterdayLogsCount: number;
+  selectedDateLogsCount: number;
+}> {
+  const todayStart = `${todayDate} 00:00:00`;
+  const todayEnd = `${todayDate} 23:59:59`;
+  const yestStart = `${yesterdayDate} 00:00:00`;
+  const yestEnd = `${yesterdayDate} 23:59:59`;
+
+  try {
+    const row = await queryOne<any>(`
+      SELECT 
+        COUNT(CASE WHEN arrival_date = ? OR (created_at >= ? AND created_at <= ?) THEN 1 END) as today_count,
+        COUNT(CASE WHEN arrival_date = ? OR (created_at >= ? AND created_at <= ?) THEN 1 END) as yest_count,
+        COUNT(*) as all_count
+      FROM board_intake_queue
+    `, [todayDate, todayStart, todayEnd, yesterdayDate, yestStart, yestEnd]);
+
+    const todayLogsCount = Number(row?.today_count || 0);
+    const yesterdayLogsCount = Number(row?.yest_count || 0);
+    const allCount = Number(row?.all_count || 0);
+
+    let selectedDateLogsCount = todayLogsCount;
+    if (selectedDate === 'all') {
+      selectedDateLogsCount = allCount;
+    } else if (selectedDate === yesterdayDate) {
+      selectedDateLogsCount = yesterdayLogsCount;
+    } else if (selectedDate && selectedDate !== todayDate) {
+      selectedDateLogsCount = await countBoardIntakeQueueEntries(selectedDate);
+    }
+
+    return { todayLogsCount, yesterdayLogsCount, selectedDateLogsCount };
+  } catch {
+    return { todayLogsCount: 0, yesterdayLogsCount: 0, selectedDateLogsCount: 0 };
   }
 }
 
@@ -5506,7 +5748,13 @@ const DEFAULT_SHOP_FLOOR_FEATURE_FLAGS: ShopFloorFeatureFlags = {
   'panel-rack': true,
 };
 
+let cachedFeatureFlags: { data: ShopFloorFeatureFlags; freshUntil: number } | null = null;
+
 export async function getShopFloorFeatureFlags(): Promise<ShopFloorFeatureFlags> {
+  const now = Date.now();
+  if (cachedFeatureFlags && cachedFeatureFlags.freshUntil > now) {
+    return cachedFeatureFlags.data;
+  }
   const rows = await queryAll<{ feature_key: string; enabled: number | boolean }>(
     'SELECT feature_key, enabled FROM shop_floor_feature_flags',
   );
@@ -5516,10 +5764,12 @@ export async function getShopFloorFeatureFlags(): Promise<ShopFloorFeatureFlags>
       flags[row.feature_key as ShopFloorFeatureKey] = Boolean(row.enabled);
     }
   });
+  cachedFeatureFlags = { data: flags, freshUntil: now + 30 * 1000 };
   return flags;
 }
 
 export async function saveShopFloorFeatureFlags(flags: ShopFloorFeatureFlags): Promise<void> {
+  cachedFeatureFlags = null;
   for (const [featureKey, enabled] of Object.entries(flags)) {
     const existing = await queryOne<{ feature_key: string }>(
       'SELECT feature_key FROM shop_floor_feature_flags WHERE feature_key = ?',
@@ -5644,11 +5894,23 @@ export async function deleteShopFloorDashboardSnapshot(email?: string): Promise<
   }
 }
 
+let cachedPendingProcesses: { data: PendingShopFloorProcess[]; freshUntil: number } | null = null;
+
+export function invalidatePendingShopFloorProcessesCache() {
+  cachedPendingProcesses = null;
+}
+
 export async function getPendingShopFloorProcesses(filters?: {
   partnerId?: number;
   processType?: string;
   status?: PendingShopFloorProcessStatus;
 }): Promise<PendingShopFloorProcess[]> {
+  const isDefaultQuery = !filters?.partnerId && !filters?.processType && (!filters?.status || filters?.status === 'pending');
+  const now = Date.now();
+  if (isDefaultQuery && cachedPendingProcesses && cachedPendingProcesses.freshUntil > now) {
+    return cachedPendingProcesses.data;
+  }
+
   const conditions: string[] = [
     "mo_name NOT LIKE 'VA/%'",
     "partner_name != 'URBAN VIBE 2'",
@@ -5676,13 +5938,18 @@ export async function getPendingShopFloorProcesses(filters?: {
     `SELECT * FROM shop_floor_pending_processes ${whereClause} ORDER BY created_at DESC`,
     params,
   );
-  return rows.map((r) => ({
+  const result = rows.map((r) => ({
     ...r,
     qty_needed: Number(r.qty_needed || 0),
     qty_reserved: Number(r.qty_reserved || 0),
     qty_missing: Number(r.qty_missing || 0),
     is_mo_closed: Boolean(r.is_mo_closed),
   }));
+
+  if (isDefaultQuery) {
+    cachedPendingProcesses = { data: result, freshUntil: now + 15 * 1000 };
+  }
+  return result;
 }
 
 export async function getPendingShopFloorProcessesCount(status: PendingShopFloorProcessStatus = 'pending'): Promise<number> {
@@ -5698,6 +5965,7 @@ export async function upsertPendingShopFloorProcesses(
   records: PendingShopFloorProcess[],
 ): Promise<void> {
   if (!records.length) return;
+  invalidatePendingShopFloorProcessesCache();
   const now = appDateTime();
 
   for (const rec of records) {
@@ -5801,6 +6069,7 @@ export async function markPendingShopFloorProcessesLoaded(filters: {
   moId?: number;
   moName?: string;
 }): Promise<PendingShopFloorProcess[]> {
+  invalidatePendingShopFloorProcessesCache();
   let pendingRows: PendingShopFloorProcess[] = [];
 
   if (filters.moId) {
@@ -5907,6 +6176,7 @@ export async function unmarkPendingShopFloorProcessesLoaded(filters: {
   productName?: string;
   quantity: number;
 }): Promise<PendingShopFloorProcess[]> {
+  invalidatePendingShopFloorProcessesCache();
   let loadedRows = await queryAll<PendingShopFloorProcess>(
     `SELECT * FROM shop_floor_pending_processes
      WHERE partner_id = ? AND product_id = ? AND (status = 'loaded' OR qty_reserved > 0)
@@ -6015,6 +6285,7 @@ export async function pruneStalePendingProcessesForActiveMos(
   validKeys: string[],
   poCoveredKeys: string[] = [],
 ): Promise<void> {
+  invalidatePendingShopFloorProcessesCache();
   await execute(
     `DELETE FROM shop_floor_pending_processes WHERE mo_name LIKE 'VA/%' OR partner_name = 'URBAN VIBE 2' OR partner_id = 350`,
     [],

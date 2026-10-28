@@ -5,6 +5,8 @@ import { MoMissingComponent, MoStockAvailabilityResult } from '../models/types';
 
 test('isStockExemptEdgeBandingService correctly identifies service products', () => {
   assert.equal(isStockExemptEdgeBandingService('Edge Banding Service'), true);
+  assert.equal(isStockExemptEdgeBandingService('Edge Banding  Service American Walnut'), true);
+  assert.equal(isStockExemptEdgeBandingService('Edge Band Service Gloss White'), true);
   assert.equal(isStockExemptEdgeBandingService('edging banding service 1mm'), true);
   assert.equal(isStockExemptEdgeBandingService('Custom Edge Banding Services'), true);
   assert.equal(isStockExemptEdgeBandingService('18mm MDF White Board'), false);

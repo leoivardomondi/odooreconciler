@@ -783,7 +783,15 @@
                              : wo.state === 'confirmed' ? 'background:#fef9c3;color:#854d0e' 
                              : 'background:#f1f5f9;color:#475569';
                   %>
-                  <span class="badge rounded-pill" data-mo-state-badge style="<%= sb %>;font-weight:600;font-size:0.68rem"><%= wo.state %></span>
+                  <%
+                    const stateLabel = wo.state === 'progress' ? 'In Progress'
+                                     : wo.state === 'confirmed' ? 'Confirmed'
+                                     : wo.state === 'paused' ? 'Paused'
+                                     : wo.state === 'done' ? 'Done'
+                                     : wo.state === 'to_close' ? 'To Close'
+                                     : wo.state;
+                  %>
+                  <span class="badge rounded-pill" data-mo-state-badge style="<%= sb %>;font-weight:600;font-size:0.68rem"><%= stateLabel %></span>
                   
                   <!-- Overdue Badge -->
                   <% if (isOverdue) { %>
@@ -2323,7 +2331,7 @@
     });
 
     if (stateBadge) {
-      stateBadge.textContent = targetState;
+      stateBadge.textContent = targetState === 'progress' ? 'In Progress' : targetState === 'paused' ? 'Paused' : targetState === 'done' ? 'Done' : 'Confirmed';
       if (targetState === 'progress') {
         stateBadge.style.cssText = 'background:#dbeafe;color:#1e40af;font-weight:600;font-size:0.68rem';
       } else if (targetState === 'done') {
@@ -3362,10 +3370,11 @@ document.addEventListener('click', function(e) {
       // Dynamically synchronize on-screen work order rows if present
       if (Array.isArray(json.workOrders) && json.workOrders.length > 0) {
         var stateStyles = {
-          done: { bg: 'background:#dcfce7;color:#166534', label: 'done' },
-          progress: { bg: 'background:#dbeafe;color:#1e40af', label: 'progress' },
-          paused: { bg: 'background:#fff7ed;color:#c2410c;border:1px solid #ffedd5', label: 'paused' },
-          confirmed: { bg: 'background:#fef9c3;color:#854d0e', label: 'confirmed' }
+          done: { bg: 'background:#dcfce7;color:#166534', label: 'Done' },
+          progress: { bg: 'background:#dbeafe;color:#1e40af', label: 'In Progress' },
+          paused: { bg: 'background:#fff7ed;color:#c2410c;border:1px solid #ffedd5', label: 'Paused' },
+          confirmed: { bg: 'background:#fef9c3;color:#854d0e', label: 'Confirmed' },
+          to_close: { bg: 'background:#e0e7ff;color:#3730a3', label: 'To Close' }
         };
 
         json.workOrders.forEach(function (wo) {

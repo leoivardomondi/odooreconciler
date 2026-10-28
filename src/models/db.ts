@@ -442,6 +442,33 @@ async function ensureColumnMysql(
   }
 }
 
+async function ensureIndexMysql(
+  pool: Pool,
+  tableName: string,
+  indexName: string,
+  columnDefinitions: string,
+  schemaName: string,
+) {
+  const [rows] = await mysqlQuery(
+    pool,
+    `Checking MySQL index ${tableName}.${indexName}`,
+    `
+      SELECT index_name
+      FROM information_schema.statistics
+      WHERE table_schema = ? AND table_name = ? AND index_name = ?
+      LIMIT 1
+    `,
+    [schemaName, tableName, indexName],
+  );
+  if (!Array.isArray(rows) || rows.length === 0) {
+    await mysqlExecute(
+      pool,
+      `Adding MySQL index ${tableName}.${indexName}`,
+      `ALTER TABLE \`${tableName}\` ADD INDEX \`${indexName}\` (${columnDefinitions})`,
+    );
+  }
+}
+
 async function ensureSqliteDatabase(config: RuntimeDatabaseConfig) {
   const db = await getSqliteDb(config);
   await sqliteExec(db, `
@@ -936,11 +963,35 @@ async function ensureSqliteDatabase(config: RuntimeDatabaseConfig) {
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS shop_floor_operators (
+      id INTEGER PRIMARY KEY,
+      name TEXT NOT NULL,
+      job_title TEXT,
+      department TEXT,
+      work_email TEXT,
+      mobile_phone TEXT,
+      user_id INTEGER,
+      user_name TEXT,
+      photo_url TEXT,
+      checked_in INTEGER NOT NULL DEFAULT 0,
+      checked_out INTEGER NOT NULL DEFAULT 0,
+      check_in_time TEXT,
+      assigned_items_json TEXT,
+      priority INTEGER NOT NULL DEFAULT 2,
+      active INTEGER NOT NULL DEFAULT 1,
+      synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_sf_operators_active ON shop_floor_operators(active, priority, name);
+    CREATE INDEX IF NOT EXISTS idx_sf_operators_email ON shop_floor_operators(work_email);
     CREATE INDEX IF NOT EXISTS idx_sf_snapshots_synced ON shop_floor_dashboard_snapshots(synced_at);
     CREATE INDEX IF NOT EXISTS idx_sf_pending_status_partner ON shop_floor_pending_processes(status, partner_id);
     CREATE INDEX IF NOT EXISTS idx_sf_pending_mo_product ON shop_floor_pending_processes(mo_id, product_id);
 
     CREATE INDEX IF NOT EXISTS idx_board_intake_queue_status ON board_intake_queue(status, created_at);
+    CREATE INDEX IF NOT EXISTS idx_board_intake_arrival ON board_intake_queue(arrival_date);
+    CREATE INDEX IF NOT EXISTS idx_board_intake_created ON board_intake_queue(created_at);
 
     CREATE INDEX IF NOT EXISTS idx_staff_onboarding_status
       ON staff_onboarding_applications(status, submitted_at);
@@ -1583,6 +1634,30 @@ async function ensureMysqlDatabase(config: RuntimeDatabaseConfig) {
     )
   `);
 
+  await query('create shop floor operators table', `
+    CREATE TABLE IF NOT EXISTS shop_floor_operators (
+      id INT PRIMARY KEY,
+      name VARCHAR(255) NOT NULL,
+      job_title VARCHAR(255) NULL,
+      department VARCHAR(255) NULL,
+      work_email VARCHAR(255) NULL,
+      mobile_phone VARCHAR(100) NULL,
+      user_id INT NULL,
+      user_name VARCHAR(255) NULL,
+      photo_url VARCHAR(500) NULL,
+      checked_in TINYINT(1) NOT NULL DEFAULT 0,
+      checked_out TINYINT(1) NOT NULL DEFAULT 0,
+      check_in_time VARCHAR(100) NULL,
+      assigned_items_json LONGTEXT NULL,
+      priority INT NOT NULL DEFAULT 2,
+      active TINYINT(1) NOT NULL DEFAULT 1,
+      synced_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      KEY idx_sf_operators_active (active, priority, name),
+      KEY idx_sf_operators_email (work_email)
+    )
+  `);
+
   await query('create mpesa extraction jobs table', `
     CREATE TABLE IF NOT EXISTS mpesa_extraction_jobs (
       id VARCHAR(64) PRIMARY KEY,
@@ -1686,6 +1761,8 @@ async function ensureMysqlDatabase(config: RuntimeDatabaseConfig) {
   await ensureColumnMysql(pool, 'invoice_extraction_jobs', 'next_retry_at', 'DATETIME NULL', config.mysqlDatabase);
   await ensureColumnMysql(pool, 'app_user_profiles', 'photo_url', 'VARCHAR(500) NULL', config.mysqlDatabase);
   await ensureColumnMysql(pool, 'shop_floor_pending_processes', 'is_mo_closed', 'TINYINT(1) NOT NULL DEFAULT 0', config.mysqlDatabase);
+  await ensureIndexMysql(pool, 'board_intake_queue', 'idx_board_intake_arrival', '`arrival_date`', config.mysqlDatabase).catch(() => undefined);
+  await ensureIndexMysql(pool, 'board_intake_queue', 'idx_board_intake_created', '`created_at`', config.mysqlDatabase).catch(() => undefined);
 
   await query('migrate weekly report default hour', `
     UPDATE settings

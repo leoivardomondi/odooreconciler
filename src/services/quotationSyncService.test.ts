@@ -333,6 +333,57 @@ test('compareQuotationLinesWithJobSummary correctly distinguishes multiple board
   assert.equal(result.boardDetails[1].requiredSheets, 4);
 });
 
+test('compareQuotationLinesWithJobSummary accurately matches edge banding service colors without false positives', () => {
+  const parsedJobSummary: ParsedJobSummaryResult = {
+    items: [
+      {
+        color: 'White',
+        thickness_mm: 1,
+        length_mm: 17000, // 17m
+        roll_length_mm: 15000,
+      },
+    ],
+    sectionFound: true,
+    sectionText: '',
+    rawText: '',
+    logs: [],
+    clientName: 'TEST CLIENT',
+    optimizedSheets: 0,
+    totalPanels: 0,
+    sheetMaterials: [],
+  };
+
+  // Case 1: Quotation only has "Edge Banding Service Off-white" -> Should NOT match "White"
+  const offWhiteOnlyLines: SaleOrderLine[] = [
+    {
+      id: 1,
+      name: 'Edge Banding Service Off-white',
+      product_id: [932, 'Edge Banding Service Off-white'],
+      product_uom_qty: 17,
+      display_type: false,
+    },
+  ];
+  const offWhiteResult = compareQuotationLinesWithJobSummary(offWhiteOnlyLines, parsedJobSummary);
+  assert.equal(offWhiteResult.hasShortfall, true);
+  assert.equal(offWhiteResult.edgingDetails[0].quotedMeters, 0);
+  assert.equal(offWhiteResult.edgingDetails[0].isSufficient, false);
+
+  // Case 2: Quotation has "Edge Banding Service White" -> Matches exactly
+  const whiteLines: SaleOrderLine[] = [
+    {
+      id: 2,
+      name: 'Edge Banding Service White',
+      product_id: [115, 'Edge Banding Service White'],
+      product_uom_qty: 17,
+      display_type: false,
+    },
+  ];
+  const whiteResult = compareQuotationLinesWithJobSummary(whiteLines, parsedJobSummary);
+  assert.equal(whiteResult.hasShortfall, false);
+  assert.equal(whiteResult.edgingDetails[0].quotedMeters, 17);
+  assert.equal(whiteResult.edgingDetails[0].isSufficient, true);
+});
+
 test('parseJobSummaryPdf extracts sheet materials and header metrics from user PDF', async () => {
   const samplePdfPath = 'C:/Users/ADMIN/.gemini/antigravity-ide/brain/4bbdfaaa-f3d6-4738-b235-1c89d579bcb5/.user_uploaded/media_1792362774320.pdf';
   if (!fs.existsSync(samplePdfPath)) {
@@ -353,4 +404,38 @@ test('parseJobSummaryPdf extracts sheet materials and header metrics from user P
   assert.equal(parsed.items.length, 1);
   assert.equal(parsed.items[0].color, 'White');
   assert.equal(parsed.items[0].length_mm, 16200);
+});
+
+test('getScopedQuotationCategories correctly groups categories into boards and services', async () => {
+  const { getScopedQuotationCategories } = await import('./quotationSyncService');
+
+  const mockClient = {
+    searchReadRecords: async (model: string) => {
+      if (model === 'product.category') {
+        return [
+          { id: 1, name: 'Goods', complete_name: 'Goods' },
+          { id: 7, name: 'Boards', complete_name: 'Goods / Boards' },
+          { id: 11, name: 'Nicewood Boards', complete_name: 'Goods / Nicewood Boards' },
+          { id: 3, name: 'Services', complete_name: 'Services' },
+          { id: 6, name: 'Cutting', complete_name: 'Services / Cutting' },
+          { id: 12, name: 'Cutting Nicewood', complete_name: 'Services / Cutting Nicewood' },
+          { id: 5, name: 'Edging services', complete_name: 'Services / Edging services' },
+          { id: 4, name: 'Grooving', complete_name: 'Services / Grooving' },
+          { id: 8, name: 'Accessories', complete_name: 'Accessories' },
+        ];
+      }
+      return [];
+    },
+  } as any;
+
+  const result = await getScopedQuotationCategories(mockClient);
+  assert.deepEqual(result.boardCategoryIds.sort(), [7, 11].sort());
+  assert.deepEqual(result.cuttingCategoryIds.sort(), [6, 12].sort());
+  assert.deepEqual(result.edgingCategoryIds, [5]);
+  assert.ok(result.allRelevantIds.includes(5));
+  assert.ok(result.allRelevantIds.includes(6));
+  assert.ok(result.allRelevantIds.includes(7));
+  // Non-relevant categories like Accessories (8) and Goods parent (1) must NOT be in allRelevantIds
+  assert.equal(result.allRelevantIds.includes(8), false);
+  assert.equal(result.allRelevantIds.includes(1), false);
 });

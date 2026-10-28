@@ -51,6 +51,7 @@ export async function refreshStockMirror() {
       // Remove records left behind by the former broad name-based product
       // search so they cannot continue appearing in the cached picker.
       await removeStockProductsNotIn(products.map((product) => product.id));
+      invalidateStockMirrorCache();
       return getStockProductMirror();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -64,7 +65,18 @@ export async function refreshStockMirror() {
   return refreshPromise;
 }
 
+let cachedStockMirrorPage: { data: any; freshUntil: number } | null = null;
+
+export function invalidateStockMirrorCache() {
+  cachedStockMirrorPage = null;
+}
+
 export async function getStockMirrorForPage(forceRefresh = false) {
+  const now = Date.now();
+  if (!forceRefresh && cachedStockMirrorPage && cachedStockMirrorPage.freshUntil > now) {
+    return cachedStockMirrorPage.data;
+  }
+
   let entries = await getStockProductMirror();
   const ageMs = stockMirrorAgeMs(entries);
   if (!entries.length || forceRefresh || ageMs > FRESH_MS) {
@@ -74,7 +86,7 @@ export async function getStockMirrorForPage(forceRefresh = false) {
     });
   }
   const finalAgeMs = stockMirrorAgeMs(entries);
-  return {
+  const result = {
     products: entries.map((entry) => ({
       id: entry.productId, name: entry.productName, qty_available: entry.availableQty,
       free_qty: entry.freeQty, virtual_available: entry.forecastQty,
@@ -86,9 +98,12 @@ export async function getStockMirrorForPage(forceRefresh = false) {
     isFresh: finalAgeMs <= FRESH_MS && entries.every((entry) => entry.syncStatus !== 'failed'),
     isRefreshing: Boolean(refreshPromise),
   };
+  cachedStockMirrorPage = { data: result, freshUntil: now + 30 * 1000 };
+  return result;
 }
 
 export async function recordExactStockQuantity(productId: number, productName: string, quantity: number, addedQuantity = 0) {
+  invalidateStockMirrorCache();
   const existing = (await getStockProductMirror()).find((entry) => entry.productId === productId);
   if (existing) {
     await upsertStockProductMirror([{
@@ -107,6 +122,7 @@ export async function recordExactStockQuantity(productId: number, productName: s
 }
 
 export async function recordOptimisticStockAddition(productId: number, productName: string, quantity: number) {
+  invalidateStockMirrorCache();
   const existing = (await getStockProductMirror()).find((entry) => entry.productId === productId);
   await upsertStockProductMirror([{
     productId, productName,
