@@ -26,7 +26,8 @@ import {
   hasOdooConfiguration,
   toBoolean,
 } from './src/utils/helpers';
-import { publicPath, viewsPath } from './src/utils/paths';
+import path from 'path';
+import { publicPath, storageDirectoryPath, viewsPath } from './src/utils/paths';
 import { getStartupState, markStartupFailedIfStale } from './src/services/startupState';
 import { getInvoiceExtractionJobWorkerStatus } from './src/services/invoiceExtractionJobService';
 import { getMpesaExtractionJobWorkerStatus } from './src/services/mpesaExtractionJobService';
@@ -83,6 +84,11 @@ app.use((req: Request, res: Response, next: NextFunction) => {
 });
 app.use(morgan(env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 app.use('/public', express.static(publicPath, {
+  etag: true,
+  lastModified: true,
+  maxAge: '1h',
+}));
+app.use('/avatars', express.static(path.join(storageDirectoryPath, 'avatars'), {
   etag: true,
   lastModified: true,
   maxAge: '1h',

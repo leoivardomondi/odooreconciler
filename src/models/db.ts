@@ -821,6 +821,7 @@ async function ensureSqliteDatabase(config: RuntimeDatabaseConfig) {
       email TEXT PRIMARY KEY,
       display_name TEXT NOT NULL,
       odoo_employee_id INTEGER,
+      photo_url TEXT,
       synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
@@ -1018,6 +1019,7 @@ async function ensureSqliteDatabase(config: RuntimeDatabaseConfig) {
   await ensureColumnSqlite(db, 'mpesa_extraction_jobs', 'next_retry_at', 'TEXT');
   await ensureColumnSqlite(db, 'invoice_extraction_jobs', 'retry_count', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumnSqlite(db, 'invoice_extraction_jobs', 'next_retry_at', 'TEXT');
+  await ensureColumnSqlite(db, 'app_user_profiles', 'photo_url', 'TEXT');
   await ensureColumnSqlite(db, 'shop_floor_pending_processes', 'is_mo_closed', 'INTEGER NOT NULL DEFAULT 0');
 
   await sqliteExec(db, `
@@ -1436,6 +1438,7 @@ async function ensureMysqlDatabase(config: RuntimeDatabaseConfig) {
       email VARCHAR(255) PRIMARY KEY,
       display_name VARCHAR(255) NOT NULL,
       odoo_employee_id INT NULL,
+      photo_url VARCHAR(500) NULL,
       synced_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     )
@@ -1681,6 +1684,7 @@ async function ensureMysqlDatabase(config: RuntimeDatabaseConfig) {
   await ensureColumnMysql(pool, 'mpesa_extraction_jobs', 'next_retry_at', 'DATETIME NULL', config.mysqlDatabase);
   await ensureColumnMysql(pool, 'invoice_extraction_jobs', 'retry_count', 'INT NOT NULL DEFAULT 0', config.mysqlDatabase);
   await ensureColumnMysql(pool, 'invoice_extraction_jobs', 'next_retry_at', 'DATETIME NULL', config.mysqlDatabase);
+  await ensureColumnMysql(pool, 'app_user_profiles', 'photo_url', 'VARCHAR(500) NULL', config.mysqlDatabase);
   await ensureColumnMysql(pool, 'shop_floor_pending_processes', 'is_mo_closed', 'TINYINT(1) NOT NULL DEFAULT 0', config.mysqlDatabase);
 
   await query('migrate weekly report default hour', `

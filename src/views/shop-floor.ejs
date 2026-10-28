@@ -148,16 +148,40 @@
     </div>
   <% } %>
 
-  <% const currentOperatorName = (data.employee && data.employee.name) || (authUser && authUser.email ? authUser.email.split('@')[0] : 'Operator'); %>
-  <% const currentOperatorJob = (data.employee && data.employee.jobTitle) || 'Operator'; %>
-  <% const currentOperatorDept = data.employee && data.employee.department; %>
-  <% const isCurrentlyCheckedIn = Boolean(data.attendance && data.attendance.checkedIn); %>
-  <% const isCurrentlyCheckedOut = Boolean(data.attendance && data.attendance.checkedOut); %>
+  <%
+    const currentOperatorEmail = (data.employee && data.employee.workEmail) || (authUser && authUser.email) || '';
+    const emailPrefix = currentOperatorEmail.split('@')[0];
+    const rawName = (data.employee && data.employee.name) || '';
+    let currentOperatorName = (authUser && authUser.displayName && (!rawName || rawName === emailPrefix))
+      ? authUser.displayName
+      : (rawName && rawName !== emailPrefix
+          ? rawName
+          : (authUser && authUser.displayName
+              ? authUser.displayName
+              : (rawName || 'Operator')));
+    if (currentOperatorName === emailPrefix && !currentOperatorName.includes(' ')) {
+      currentOperatorName = currentOperatorName
+        .replace(/([a-z])([A-Z])/g, '$1 $2')
+        .replace(/\d+/g, '')
+        .replace(/[._-]+/g, ' ')
+        .trim()
+        .replace(/\b\w/g, (c) => c.toUpperCase()) || 'Operator';
+    }
+    const currentOperatorPhoto = (data.employee && data.employee.photoUrl) || (authUser && authUser.photoUrl) || null;
+    const currentOperatorJob = (data.employee && data.employee.jobTitle) || 'Operator';
+    const currentOperatorDept = data.employee && data.employee.department;
+    const isCurrentlyCheckedIn = Boolean(data.attendance && data.attendance.checkedIn);
+    const isCurrentlyCheckedOut = Boolean(data.attendance && data.attendance.checkedOut);
+  %>
 
   <!-- Profile Banner -->
   <div class="rounded-4 p-4 mb-4 d-flex flex-wrap align-items-center gap-3" style="background: linear-gradient(135deg, #1e3a5f 0%, #2563eb 100%); color: #fff;">
-    <div class="rounded-circle d-flex align-items-center justify-content-center fw-bold flex-shrink-0 shadow-sm" style="width:3.5rem;height:3.5rem;background:rgba(255,255,255,0.2);font-size:1.4rem">
-      <%= currentOperatorName.charAt(0).toUpperCase() %>
+    <div class="rounded-circle d-flex align-items-center justify-content-center fw-bold flex-shrink-0 shadow-sm overflow-hidden" style="width:3.5rem;height:3.5rem;background:rgba(255,255,255,0.2);font-size:1.4rem">
+      <% if (currentOperatorPhoto) { %>
+        <img src="<%= currentOperatorPhoto %>" alt="<%= currentOperatorName %>" style="width:100%;height:100%;object-fit:cover;" />
+      <% } else { %>
+        <%= currentOperatorName.charAt(0).toUpperCase() %>
+      <% } %>
     </div>
     <div class="flex-grow-1 min-w-0">
       <h1 class="h5 mb-1 text-truncate"><%= currentOperatorName %></h1>

@@ -145,7 +145,13 @@
               data-bs-toggle="dropdown"
               aria-expanded="false"
             >
-              <span class="profile-avatar"><%= profileDisplayName.charAt(0).toUpperCase() %></span>
+              <span class="profile-avatar overflow-hidden" style="padding:0;">
+                <% if (displayUser && displayUser.photoUrl) { %>
+                  <img src="<%= displayUser.photoUrl %>" alt="<%= profileDisplayName %>" style="width:100%;height:100%;object-fit:cover;border-radius:50%;display:block;" />
+                <% } else { %>
+                  <%= profileDisplayName.charAt(0).toUpperCase() %>
+                <% } %>
+              </span>
               <span class="profile-trigger-label"><%= profileDisplayName %></span>
             </button>
             <div class="dropdown-menu dropdown-menu-end profile-dropdown shadow-sm border-0">

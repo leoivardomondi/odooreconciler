@@ -1,6 +1,9 @@
 import { Request, Response, Router } from 'express';
 import { randomUUID } from 'crypto';
 import dayjs from 'dayjs';
+import fs from 'fs';
+import path from 'path';
+import multer from 'multer';
 import {
   countBoardIntakeQueueEntries,
   createBoardIntakeQueueEntry,
@@ -11,6 +14,8 @@ import {
   getShopFloorFeatureFlags,
   saveShopFloorFeatureFlags,
   upsertApprovedAuthUser,
+  getAppUserProfile,
+  updateUserPhoto,
   getShopFloorDashboardSnapshot,
   saveShopFloorDashboardSnapshot,
   getShopFloorSharedCache,
@@ -44,6 +49,8 @@ import { sendMailWithConfig } from '../services/mailTransport';
 import { logEvent } from '../services/logService';
 import { isValidMachineComponent, MACHINE_BREAKDOWN_CATALOG } from '../services/machineBreakdownCatalog';
 import { env } from '../utils/env';
+import { storageDirectoryPath } from '../utils/paths';
+import { emailDisplayName } from '../services/userIdentityService';
 import {
   sendWeeklyShopFloorReport,
   getOrBuildWeeklyShopFloorReportPdf,
@@ -329,6 +336,7 @@ interface OperatorSummary {
   checkedOut: boolean;
   checkInTime: string | null;
   assignedItems: Array<{ id: string; itemName: string; assignedDate: string; quantity: number }>;
+  photoUrl?: string | null;
 }
 
 interface OperatorDashboardData {
@@ -340,6 +348,7 @@ interface OperatorDashboardData {
     workEmail: string | null;
     mobilePhone: string | null;
     manager: string | null;
+    photoUrl?: string | null;
   } | null;
   attendance: {
     checkedIn: boolean;
@@ -888,12 +897,13 @@ function emptyOperatorDashboardShell(userEmail: string): OperatorDashboardData {
   return {
     employee: {
       id: 0,
-      name: userEmail.split('@')[0] || 'Operator',
+      name: emailDisplayName(userEmail) || 'Operator',
       jobTitle: 'Operator',
       department: null,
       workEmail: userEmail,
       mobilePhone: null,
       manager: null,
+      photoUrl: null,
     },
     attendance: null,
     workOrders: sharedMo?.workOrders || [],
@@ -925,7 +935,7 @@ function emptyOperatorDashboardShell(userEmail: string): OperatorDashboardData {
 export async function buildInstantMysqlOperatorDashboard(userEmail: string): Promise<OperatorDashboardData> {
   const normalizedEmail = (userEmail || '').trim().toLowerCase();
 
-  const [sharedMoEntry, pendingProcesses, sharedIncidentsEntry, userSnapshot, receiptsEntry, deliveriesEntry, operatorsListEntry] = await Promise.all([
+  const [sharedMoEntry, pendingProcesses, sharedIncidentsEntry, userSnapshot, receiptsEntry, deliveriesEntry, operatorsListEntry, userProfile] = await Promise.all([
     getShopFloorSharedCache<{
       workOrders: any[];
       rawStockAlerts: StockAlert[];
@@ -938,6 +948,7 @@ export async function buildInstantMysqlOperatorDashboard(userEmail: string): Pro
     getShopFloorSharedCache<any[]>('shop-floor:receipts:1').catch(() => null),
     getShopFloorSharedCache<any[]>('shop-floor:deliveries:1').catch(() => null),
     getShopFloorSharedCache<any[]>('shop-floor:operators-list:v2').catch(() => null),
+    getAppUserProfile(normalizedEmail).catch(() => null),
   ]);
 
   const sharedMo = sharedMoEntry?.data;
@@ -986,19 +997,32 @@ export async function buildInstantMysqlOperatorDashboard(userEmail: string): Pro
   });
 
   const cachedOp = Array.isArray(operatorsListEntry?.data)
-    ? operatorsListEntry.data.find((o: any) => o.email && String(o.email).trim().toLowerCase() === normalizedEmail)
+    ? operatorsListEntry.data.find((o: any) => {
+        const em = o.workEmail || o.email;
+        return em && String(em).trim().toLowerCase() === normalizedEmail;
+      })
     : null;
 
+  const resolvedName = cachedOp?.name || userProfile?.displayName || emailDisplayName(normalizedEmail) || 'Operator';
+  const resolvedPhoto = userProfile?.photoUrl || null;
+
   const employee = (userSnapshot?.data?.employee && userSnapshot.data.employee.id > 0)
-    ? userSnapshot.data.employee
+    ? {
+        ...userSnapshot.data.employee,
+        name: (userSnapshot.data.employee.name && userSnapshot.data.employee.name !== normalizedEmail.split('@')[0])
+          ? userSnapshot.data.employee.name
+          : resolvedName,
+        photoUrl: resolvedPhoto || userSnapshot.data.employee.photoUrl || null,
+      }
     : {
         id: cachedOp?.id || 0,
-        name: cachedOp?.name || normalizedEmail.split('@')[0] || 'Operator',
+        name: resolvedName,
         jobTitle: cachedOp?.jobTitle || 'Operator',
         department: cachedOp?.department || null,
         workEmail: normalizedEmail,
         mobilePhone: cachedOp?.phone || null,
         manager: cachedOp?.manager || null,
+        photoUrl: resolvedPhoto,
       };
 
   const attendance = userSnapshot?.data?.attendance || null;
@@ -1404,11 +1428,16 @@ export async function fetchFastOperatorProfile(client: OdooClient, userEmail: st
     workEmail: string | null;
     mobilePhone: string | null;
     manager: string | null;
+    photoUrl?: string | null;
   };
   attendance: any;
   payslips: any[];
 }> {
   const normalizedEmail = (userEmail || '').trim().toLowerCase();
+  const userProfile = await getAppUserProfile(normalizedEmail).catch(() => null);
+  const resolvedName = userProfile?.displayName || emailDisplayName(normalizedEmail) || 'Operator';
+  const resolvedPhoto = userProfile?.photoUrl || null;
+
   let employee = await client.findEmployeeForShopFloorEmail(userEmail).catch(() => null);
   if (!employee) {
     employee = await client.findEmployeeByUserEmail(userEmail).catch(() => null);
@@ -1421,12 +1450,13 @@ export async function fetchFastOperatorProfile(client: OdooClient, userEmail: st
     return {
       employee: {
         id: 0,
-        name: userEmail ? userEmail.split('@')[0] : 'Operator',
+        name: resolvedName,
         jobTitle: 'Operator',
         department: null,
         workEmail: userEmail,
         mobilePhone: null,
         manager: null,
+        photoUrl: resolvedPhoto,
       },
       attendance: null,
       payslips: [],
@@ -1476,12 +1506,13 @@ export async function fetchFastOperatorProfile(client: OdooClient, userEmail: st
 
   const employeeData = {
     id: employee.id,
-    name: employee.name,
+    name: (employee.name && employee.name !== normalizedEmail.split('@')[0]) ? employee.name : resolvedName,
     jobTitle: employee.job_title || null,
     department: Array.isArray(employee.department_id) ? employee.department_id[1] : null,
     workEmail: employee.work_email || null,
     mobilePhone: employee.mobile_phone || null,
     manager: Array.isArray(employee.parent_id) ? employee.parent_id[1] : null,
+    photoUrl: resolvedPhoto,
   };
 
   return {
@@ -1529,26 +1560,33 @@ export async function buildOperatorDashboard(
     if (!employee) {
       employee = await client.findEmployeeByWorkEmail(userEmail).catch(() => null);
     }
+    const normalizedEmail = (userEmail || '').trim().toLowerCase();
+    const userProfile = await getAppUserProfile(normalizedEmail).catch(() => null);
+    const resolvedName = userProfile?.displayName || emailDisplayName(normalizedEmail) || 'Shop Floor User';
+    const resolvedPhoto = userProfile?.photoUrl || null;
+
     if (!employee) {
       result.employee = {
         id: 0,
-        name: userEmail ? userEmail.split('@')[0] : 'Shop Floor User',
+        name: resolvedName,
         jobTitle: 'Operator',
         department: null,
         workEmail: userEmail || null,
         mobilePhone: null,
         manager: null,
+        photoUrl: resolvedPhoto,
       };
       result.isLimitedDashboard = false;
     } else {
       result.employee = {
         id: employee.id,
-        name: employee.name,
+        name: (employee.name && employee.name !== normalizedEmail.split('@')[0]) ? employee.name : resolvedName,
         jobTitle: employee.job_title || null,
         department: Array.isArray(employee.department_id) ? employee.department_id[1] : null,
         workEmail: employee.work_email || null,
         mobilePhone: employee.mobile_phone || null,
         manager: Array.isArray(employee.parent_id) ? employee.parent_id[1] : null,
+        photoUrl: resolvedPhoto,
       };
     }
     const limitedDashboardEmail = 'janetamollo01@gmail.com';
@@ -2783,6 +2821,22 @@ router.get('/shop-floor/operators', async (req: Request, res: Response) => {
       departments = [...new Set(allOperators.map((op) => op.department).filter((d): d is string => Boolean(d)))];
     }
 
+    // Enrich operators with custom profile photos and display names from app_user_profiles
+    if (allOperators && allOperators.length > 0) {
+      allOperators = await Promise.all(
+        allOperators.map(async (op) => {
+          const email = String(op.workEmail || '').trim().toLowerCase();
+          if (!email) return op;
+          const profile = await getAppUserProfile(email).catch(() => null);
+          return {
+            ...op,
+            name: profile?.displayName || op.name,
+            photoUrl: profile?.photoUrl || null,
+          };
+        })
+      );
+    }
+
     // Non-blocking background warmup of weekly PDF snapshot so download is instant (<50ms)
     void getOrBuildWeeklyShopFloorReportPdf().catch(() => {});
 
@@ -2978,6 +3032,115 @@ router.post('/shop-floor/operators/sync-access', async (req: Request, res: Respo
     res.redirect(`/shop-floor/operators?message=${encodeURIComponent(`Synced ${result.operators} operator(s): ${result.added} added and ${result.updated} updated with Shop Floor access.`)}`);
   } catch (err) {
     res.redirect(`/shop-floor/operators?error=${encodeURIComponent(err instanceof Error ? err.message : 'Failed to sync operators.')}`);
+  }
+});
+
+const avatarUploadDir = path.join(storageDirectoryPath, 'avatars');
+
+const avatarStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    try {
+      if (!fs.existsSync(avatarUploadDir)) {
+        fs.mkdirSync(avatarUploadDir, { recursive: true });
+      }
+      cb(null, avatarUploadDir);
+    } catch (err) {
+      cb(err instanceof Error ? err : new Error(String(err)), avatarUploadDir);
+    }
+  },
+  filename: (req, file, cb) => {
+    const rawEmail = String(req.body.email || 'operator').trim().toLowerCase();
+    const cleanEmail = rawEmail.replace(/[^a-z0-9]/g, '_');
+    const ext = path.extname(file.originalname).toLowerCase() || '.jpg';
+    cb(null, `avatar_${cleanEmail}_${Date.now()}${ext}`);
+  },
+});
+
+const avatarUpload = multer({
+  storage: avatarStorage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const ext = path.extname(file.originalname).toLowerCase();
+    const allowed = ['.jpg', '.jpeg', '.png', '.webp', '.gif'];
+    if (allowed.includes(ext)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Please upload an image file (JPG, PNG, WEBP, or GIF).'));
+    }
+  },
+});
+
+/**
+ * POST /shop-floor/operators/photo — Upload or remove operator profile photo.
+ */
+router.post('/shop-floor/operators/photo', (req: Request, res: Response, next) => {
+  avatarUpload.single('photo')(req, res, (err) => {
+    if (err) {
+      const msg = err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE'
+        ? 'Photo must be under 5MB.'
+        : (err.message || 'Error uploading photo.');
+      if (req.xhr || req.headers.accept?.includes('application/json')) {
+        return res.status(400).json({ ok: false, error: msg });
+      }
+      return res.redirect(`/shop-floor/operators?error=${encodeURIComponent(msg)}`);
+    }
+    next();
+  });
+}, async (req: Request, res: Response) => {
+  const isAdmin = req.authUser?.role === 'admin';
+  const isShopFloorAdmin = Boolean(req.authUser?.apps?.includes('shop-floor-admin'));
+
+  if (!req.authUser || (!isAdmin && !isShopFloorAdmin)) {
+    if (req.xhr || req.headers.accept?.includes('application/json')) {
+      return res.status(403).json({ ok: false, error: 'Unauthorized to update operator photos' });
+    }
+    return res.status(403).redirect('/dashboard');
+  }
+
+  const email = String(req.body.email || '').trim().toLowerCase();
+  if (!email) {
+    if (req.xhr || req.headers.accept?.includes('application/json')) {
+      return res.status(400).json({ ok: false, error: 'Operator email is required' });
+    }
+    return res.redirect('/shop-floor/operators?error=Email+is+required');
+  }
+
+  try {
+    const isRemove = req.body.action === 'remove';
+    let photoUrl: string | null = null;
+
+    if (!isRemove && req.file) {
+      photoUrl = `/avatars/${req.file.filename}`;
+    }
+
+    await updateUserPhoto(email, photoUrl);
+
+    // Invalidate caches
+    shopFloorCache.delete('shop-floor:operators-list:v1');
+    shopFloorCache.delete('shop-floor:operators-list:v2');
+    shopFloorCache.delete(`shop-floor-dashboard:v3:${email}`);
+    void Promise.allSettled([
+      deleteShopFloorSharedCache('shop-floor:operators-list:v1'),
+      deleteShopFloorSharedCache('shop-floor:operators-list:v2'),
+      deleteShopFloorSharedCache(`shop-floor-dashboard:v3:${email}`),
+    ]);
+
+    if (req.xhr || req.headers.accept?.includes('application/json')) {
+      return res.json({
+        ok: true,
+        email,
+        photoUrl,
+        message: isRemove ? 'Photo removed successfully' : 'Photo updated successfully',
+      });
+    }
+
+    return res.redirect(`/shop-floor/operators?message=${encodeURIComponent(isRemove ? 'Photo removed' : 'Photo updated successfully')}`);
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : 'Failed to update photo';
+    if (req.xhr || req.headers.accept?.includes('application/json')) {
+      return res.status(500).json({ ok: false, error: msg });
+    }
+    return res.redirect(`/shop-floor/operators?error=${encodeURIComponent(msg)}`);
   }
 });
 

@@ -354,6 +354,7 @@ body {
   color: #fff;
   font-size: 0.8rem;
   font-weight: 700;
+  overflow: hidden;
 }
 
 .profile-trigger-label {

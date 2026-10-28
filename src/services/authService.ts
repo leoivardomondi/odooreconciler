@@ -5,6 +5,7 @@ import {
   countRecentAuthAttempts,
   getSettings,
   getApprovedAuthUserByEmail,
+  getAppUserProfile,
   getAuthSession,
   getLatestActiveAuthLoginChallenge,
   insertAuthAttempt,
@@ -22,6 +23,7 @@ import { env } from '../utils/env';
 import { appDateTimeFromNow } from '../utils/dateTime';
 import { sendMailWithConfig } from './mailTransport';
 import { isAccountDeactivated } from '../utils/accountStatus';
+import { emailDisplayName } from './userIdentityService';
 
 const AUTH_COOKIE_NAME = 'oj_auth';
 const OTP_LENGTH = 6;
@@ -430,12 +432,16 @@ async function createAuthenticatedSession(input: {
     expiresAt,
   });
 
+  const profile = await getAppUserProfile(input.email).catch(() => null);
+
   return {
     sessionCookie: buildSessionCookie(signCookieValue(sessionId), expiresAt),
     user: {
       email: input.email,
       role: normalizeAuthRole(input.role),
       apps: input.apps,
+      displayName: profile?.displayName || emailDisplayName(input.email),
+      photoUrl: profile?.photoUrl || null,
     } satisfies AuthSessionUser,
   };
 }
@@ -789,7 +795,7 @@ export async function getAuthenticationStateAsync(req: Request): Promise<{
   const accountDeactivated = Boolean(
     currentAccess && isAccountDeactivated(currentAccess.active, isConfiguredLocalAdmin(session.user.email)),
   );
-  const currentUser = accountDeactivated
+  let currentUser = accountDeactivated
     ? null
     : currentAccess?.active
     ? {
@@ -798,6 +804,15 @@ export async function getAuthenticationStateAsync(req: Request): Promise<{
         apps: currentAccess.apps || [],
       }
     : session.user;
+
+  if (currentUser) {
+    const profile = await getAppUserProfile(currentUser.email).catch(() => null);
+    currentUser = {
+      ...currentUser,
+      displayName: profile?.displayName || emailDisplayName(currentUser.email),
+      photoUrl: profile?.photoUrl || null,
+    };
+  }
 
   return {
     user: currentUser,
@@ -835,10 +850,13 @@ export async function attachAuthState(req: Request, res: Response, next: NextFun
           res.clearCookie('oj_impersonate', { path: '/' });
           return next();
         }
+        const profile = await getAppUserProfile(String(imp.email)).catch(() => null);
         const impersonatedUser: AuthSessionUser = {
           email: imp.email,
           role: currentImpersonatedAccess.role,
           apps: currentImpersonatedAccess.apps || [],
+          displayName: profile?.displayName || emailDisplayName(String(imp.email)),
+          photoUrl: profile?.photoUrl || null,
         };
         req.impersonatedBy = state.user;
         req.viewingAsUser = impersonatedUser;

@@ -4884,22 +4884,33 @@ export async function countApprovedAuthUsers(): Promise<number> {
   return Number(row?.total_count || 0);
 }
 
-export async function getAppUserProfile(email: string): Promise<{ email: string; displayName: string; odooEmployeeId: number | null; syncedAt: string } | null> {
-  const row = await queryOne<{ email: string; display_name: string; odoo_employee_id: number | null; synced_at: string }>(
-    'SELECT email, display_name, odoo_employee_id, synced_at FROM app_user_profiles WHERE email = ?',
+export async function getAppUserProfile(email: string): Promise<{ email: string; displayName: string; odooEmployeeId: number | null; photoUrl: string | null; syncedAt: string } | null> {
+  const row = await queryOne<{ email: string; display_name: string; odoo_employee_id: number | null; photo_url?: string | null; synced_at: string }>(
+    'SELECT email, display_name, odoo_employee_id, photo_url, synced_at FROM app_user_profiles WHERE email = ?',
     [email.trim().toLowerCase()],
   );
-  return row ? { email: row.email, displayName: row.display_name, odooEmployeeId: row.odoo_employee_id, syncedAt: row.synced_at } : null;
+  return row ? { email: row.email, displayName: row.display_name, odooEmployeeId: row.odoo_employee_id, photoUrl: row.photo_url || null, syncedAt: row.synced_at } : null;
 }
 
-export async function saveAppUserProfile(input: { email: string; displayName: string; odooEmployeeId?: number | null }) {
-  const params = [input.email.trim().toLowerCase(), input.displayName.trim(), input.odooEmployeeId || null];
+export async function saveAppUserProfile(input: { email: string; displayName: string; odooEmployeeId?: number | null; photoUrl?: string | null }) {
+  const params = [input.email.trim().toLowerCase(), input.displayName.trim(), input.odooEmployeeId || null, input.photoUrl || null];
   if (getDatabaseDialect() === 'mysql') {
-    await execute(`INSERT INTO app_user_profiles (email, display_name, odoo_employee_id, synced_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-      ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), odoo_employee_id = VALUES(odoo_employee_id), synced_at = CURRENT_TIMESTAMP`, params);
+    await execute(`INSERT INTO app_user_profiles (email, display_name, odoo_employee_id, photo_url, synced_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), odoo_employee_id = COALESCE(VALUES(odoo_employee_id), odoo_employee_id), photo_url = COALESCE(VALUES(photo_url), photo_url), synced_at = CURRENT_TIMESTAMP`, params);
   } else {
-    await execute(`INSERT INTO app_user_profiles (email, display_name, odoo_employee_id, synced_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-      ON CONFLICT(email) DO UPDATE SET display_name = excluded.display_name, odoo_employee_id = excluded.odoo_employee_id, synced_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP`, params);
+    await execute(`INSERT INTO app_user_profiles (email, display_name, odoo_employee_id, photo_url, synced_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(email) DO UPDATE SET display_name = excluded.display_name, odoo_employee_id = COALESCE(excluded.odoo_employee_id, odoo_employee_id), photo_url = COALESCE(excluded.photo_url, photo_url), synced_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP`, params);
+  }
+}
+
+export async function updateUserPhoto(email: string, photoUrl: string | null) {
+  const cleanEmail = email.trim().toLowerCase();
+  const existing = await getAppUserProfile(cleanEmail);
+  if (existing) {
+    await execute('UPDATE app_user_profiles SET photo_url = ?, updated_at = CURRENT_TIMESTAMP WHERE email = ?', [photoUrl || null, cleanEmail]);
+  } else {
+    const displayName = cleanEmail.split('@')[0].replace(/[._-]+/g, ' ').replace(/\d+/g, ' ').trim().replace(/\b\w/g, (c) => c.toUpperCase()) || cleanEmail;
+    await saveAppUserProfile({ email: cleanEmail, displayName, photoUrl });
   }
 }
 

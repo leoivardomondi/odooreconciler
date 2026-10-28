@@ -204,6 +204,7 @@ export type AppFeature =
 export interface AuthSessionUser {
   email: string;
   displayName?: string;
+  photoUrl?: string | null;
   role?: AuthRole;
   apps?: AppFeature[];
 }
