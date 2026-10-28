@@ -604,14 +604,10 @@ function providerHasConfiguredCredential(
   provider: AiInvoiceExtractionConfig['provider'],
   model?: string,
 ) {
-  if (provider === 'gemini' && process.env.DISABLE_GEMINI === 'true') {
+  if (provider === 'gemini') {
     return false;
   }
-  return Boolean(
-    provider === 'gemini'
-      ? config.geminiOAuth?.connected || resolveConfiguredApiKey(config, provider, model)
-      : resolveConfiguredApiKey(config, provider, model),
-  );
+  return Boolean(resolveConfiguredApiKey(config, provider, model));
 }
 
 function isTextOnlyNvidiaModel(model: string) {
@@ -697,7 +693,7 @@ async function callOpenAiCompatibleInvoiceAi(input: {
     };
   }
 
-  const requestTimeoutMs = isGemmaVision ? 300000 : 60000;
+  const requestTimeoutMs = input.provider === 'nvidia' ? 300000 : 90000;
   const headers = {
     Authorization: `Bearer ${input.apiKey}`,
     'Content-Type': 'application/json',
@@ -1014,23 +1010,19 @@ async function extractInvoiceWithConfiguredAi(input: {
   const fullPageImagePaths = input.imagePaths.filter((p) => /-page-\d+\.[a-z]+$/i.test(p));
   const aiImagePaths = fullPageImagePaths.length > 0 ? fullPageImagePaths : input.imagePaths;
 
-  const isGeminiDisabled = process.env.DISABLE_GEMINI === 'true';
-
-  const allSupportedProviders: Array<'openai' | 'openrouter' | 'nvidia' | 'anthropic' | 'gemini'> = [
+  const allSupportedProviders: Array<'openai' | 'openrouter' | 'nvidia' | 'anthropic'> = [
     'nvidia',
     'openai',
     'openrouter',
     'anthropic',
-    ...(isGeminiDisabled ? [] : ['gemini' as const]),
   ];
 
-  const candidateProviders: Array<'gemini' | 'openai' | 'openrouter' | 'nvidia' | 'anthropic'> = [];
-  if (providerHasConfiguredCredential(input.config, primaryProvider) && !(isGeminiDisabled && primaryProvider === 'gemini')) {
+  const candidateProviders: Array<'openai' | 'openrouter' | 'nvidia' | 'anthropic'> = [];
+  if (primaryProvider !== 'gemini' && providerHasConfiguredCredential(input.config, primaryProvider)) {
     candidateProviders.push(primaryProvider);
   }
   for (const p of allSupportedProviders) {
     if (p !== primaryProvider && providerHasConfiguredCredential(input.config, p)) {
-      if (isGeminiDisabled && p === 'gemini') continue;
       candidateProviders.push(p);
     }
   }
@@ -1039,8 +1031,8 @@ async function extractInvoiceWithConfiguredAi(input: {
     return {
       extraction: null,
       warnings: [
-        isGeminiDisabled && primaryProvider === 'gemini'
-          ? 'AI invoice extraction skipped: Google Gemini is temporarily disabled (DISABLE_GEMINI=true). Please select NVIDIA NIM or another provider in Settings.'
+        primaryProvider === 'gemini'
+          ? 'AI invoice extraction skipped: Google Gemini is currently disabled. Please select NVIDIA NIM or another provider in Settings.'
           : `AI invoice extraction skipped because no API key or OAuth connection is configured for selected provider "${primaryProvider}".`,
       ],
     };
@@ -1135,17 +1127,6 @@ async function extractInvoiceWithConfiguredAi(input: {
             prompt,
           });
         }
-      } else if (provider === 'gemini') {
-        const images = await readImagesForAi(imagePaths);
-        outputText = await callGeminiInvoiceAi({
-          apiKey: credential.apiKey,
-          accessToken: credential.accessToken,
-          projectId: credential.projectId,
-          model,
-          baseUrl: input.config.baseUrl,
-          images,
-          prompt,
-        });
       } else if (provider === 'anthropic') {
         const images = await readImagesForAi(imagePaths);
         outputText = await callAnthropicInvoiceAi({

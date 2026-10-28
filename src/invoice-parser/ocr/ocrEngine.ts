@@ -63,38 +63,14 @@ export function shouldUseGeminiVisionFallback(text: string) {
 
 async function maybeRunGeminiVisionFallback(
   pages: OcrPageResult[],
-  imagePaths: Array<{ pageNumber: number; imagePath: string }>,
-  ocrConfig: AiInvoiceExtractionConfig['ocr'] | undefined,
-  geminiApiKey: string | undefined,
-  geminiOAuthConnected: boolean | undefined,
-  warnings: string[],
+  _imagePaths: Array<{ pageNumber: number; imagePath: string }>,
+  _ocrConfig: AiInvoiceExtractionConfig['ocr'] | undefined,
+  _geminiApiKey: string | undefined,
+  _geminiOAuthConnected: boolean | undefined,
+  _warnings: string[],
 ) {
-  if (
-    process.env.DISABLE_GEMINI === 'true' ||
-    !ocrConfig?.geminiFallbackEnabled ||
-    ocrConfig.provider === 'gemini_vision'
-  ) {
-    return pages;
-  }
-
-  const text = pages.map((page) => page.text).join('\n\n');
-  if (!shouldUseGeminiVisionFallback(text)) return pages;
-
-  warnings.push(
-    'Gemini Vision OCR second pass started because the primary OCR result was fragmented, duplicated, or incomplete.',
-  );
-  const gemini = await geminiVisionOcr(imagePaths, ocrConfig, geminiApiKey, geminiOAuthConnected);
-  warnings.push(...gemini.warnings);
-  if (gemini.pages.length === 0) return pages;
-
-  warnings.push(
-    `Gemini Vision OCR second pass extracted text from ${gemini.pages.length}/${imagePaths.length} page/crop image(s).`,
-  );
-  const geminiPageNumbers = new Set(gemini.pages.map((page) => page.pageNumber));
-  const primaryPagesWithoutGeminiResult = pages.filter(
-    (page) => !geminiPageNumbers.has(page.pageNumber),
-  );
-  return mergeOcrPages([...primaryPagesWithoutGeminiResult, ...gemini.pages]);
+  // Gemini is disabled for now
+  return pages;
 }
 
 export async function runOcr(
@@ -106,9 +82,7 @@ export async function runOcr(
 ): Promise<{ pages: OcrPageResult[]; warnings: string[] }> {
   const warnings: string[] = [];
 
-  const useGemini =
-    process.env.DISABLE_GEMINI !== 'true' &&
-    (preferredOcr === 'gemini_vision' || ocrConfig?.provider === 'gemini_vision');
+  const useGemini = false;
 
   if (useGemini) {
     const gemini = await geminiVisionOcr(imagePaths, ocrConfig, geminiApiKey, geminiOAuthConnected);

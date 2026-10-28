@@ -134,11 +134,14 @@ function assessHandwriting(input: { ocrText: string; invoice: ParsedInvoice }) {
 }
 
 function isGemmaVisionConfigured(config?: ParseSupplierInvoiceInput['aiConfig']) {
+  if (!config?.enabled || config.provider !== 'nvidia') return false;
+  const model = config.model?.trim();
+  const isVision = model === 'google/gemma-4-31b-it' || model === 'minimaxai/minimax-m3.1-flash';
+  if (!isVision) return false;
   return Boolean(
-    config?.enabled &&
-    config.provider === 'nvidia' &&
-    config.model.trim() === 'google/gemma-4-31b-it' &&
-    (config.apiKeys?.nvidia || process.env.NVIDIA_API_KEY),
+    config.apiKeys?.nvidia ||
+    process.env.NVIDIA_API_KEY ||
+    (model && config.nvidiaModelKeys?.[model]),
   );
 }
 
