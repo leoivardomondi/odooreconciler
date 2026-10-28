@@ -241,13 +241,19 @@ export async function nvidiaNemoretrieverOcr(
       }
       if (page) {
         pages.push(page);
-      } else {
-        warnings.push(`NVIDIA Nemotron OCR failed on page ${image.pageNumber}: ${lastFailure || 'no readable text returned'}`);
       }
     }
 
     const physicalPageCount = new Set(images.map((image) => image.pageNumber)).size;
-    const extractedPhysicalPageCount = new Set(pages.map((page) => page.pageNumber)).size;
+    const extractedPhysicalPageNumbers = new Set(pages.map((page) => page.pageNumber));
+    const extractedPhysicalPageCount = extractedPhysicalPageNumbers.size;
+
+    const allPhysicalPageNumbers = [...new Set(images.map((image) => image.pageNumber))];
+    for (const pageNum of allPhysicalPageNumbers) {
+      if (!extractedPhysicalPageNumbers.has(pageNum)) {
+        warnings.push(`NVIDIA Nemotron OCR failed on page ${pageNum}: no readable text returned.`);
+      }
+    }
 
     return {
       pages,

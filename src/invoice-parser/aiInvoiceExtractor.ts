@@ -604,6 +604,9 @@ function providerHasConfiguredCredential(
   provider: AiInvoiceExtractionConfig['provider'],
   model?: string,
 ) {
+  if (provider === 'gemini' && process.env.DISABLE_GEMINI === 'true') {
+    return false;
+  }
   return Boolean(
     provider === 'gemini'
       ? config.geminiOAuth?.connected || resolveConfiguredApiKey(config, provider, model)
@@ -777,6 +780,9 @@ async function callGeminiInvoiceAi(input: {
   images: Array<{ mediaType: string; base64: string }>;
   prompt: string;
 }) {
+  if (process.env.DISABLE_GEMINI === 'true') {
+    throw new Error('Google Gemini API is currently disabled (DISABLE_GEMINI=true).');
+  }
   let model = input.model.trim();
   if (!model || model === 'gemini-2.0-flash' || model === 'models/gemini-2.0-flash' || model === 'gemini-2.0-flash-lite') {
     model = 'gemini-3.8-flash';
@@ -1008,20 +1014,23 @@ async function extractInvoiceWithConfiguredAi(input: {
   const fullPageImagePaths = input.imagePaths.filter((p) => /-page-\d+\.[a-z]+$/i.test(p));
   const aiImagePaths = fullPageImagePaths.length > 0 ? fullPageImagePaths : input.imagePaths;
 
-  const allSupportedProviders: Array<'gemini' | 'openai' | 'openrouter' | 'nvidia' | 'anthropic'> = [
-    'gemini',
+  const isGeminiDisabled = process.env.DISABLE_GEMINI === 'true';
+
+  const allSupportedProviders: Array<'openai' | 'openrouter' | 'nvidia' | 'anthropic' | 'gemini'> = [
+    'nvidia',
     'openai',
     'openrouter',
-    'nvidia',
     'anthropic',
+    ...(isGeminiDisabled ? [] : ['gemini' as const]),
   ];
 
   const candidateProviders: Array<'gemini' | 'openai' | 'openrouter' | 'nvidia' | 'anthropic'> = [];
-  if (providerHasConfiguredCredential(input.config, primaryProvider)) {
+  if (providerHasConfiguredCredential(input.config, primaryProvider) && !(isGeminiDisabled && primaryProvider === 'gemini')) {
     candidateProviders.push(primaryProvider);
   }
   for (const p of allSupportedProviders) {
     if (p !== primaryProvider && providerHasConfiguredCredential(input.config, p)) {
+      if (isGeminiDisabled && p === 'gemini') continue;
       candidateProviders.push(p);
     }
   }
@@ -1029,7 +1038,11 @@ async function extractInvoiceWithConfiguredAi(input: {
   if (candidateProviders.length === 0) {
     return {
       extraction: null,
-      warnings: [`AI invoice extraction skipped because no API key or OAuth connection is configured for selected provider "${primaryProvider}".`],
+      warnings: [
+        isGeminiDisabled && primaryProvider === 'gemini'
+          ? 'AI invoice extraction skipped: Google Gemini is temporarily disabled (DISABLE_GEMINI=true). Please select NVIDIA NIM or another provider in Settings.'
+          : `AI invoice extraction skipped because no API key or OAuth connection is configured for selected provider "${primaryProvider}".`,
+      ],
     };
   }
 

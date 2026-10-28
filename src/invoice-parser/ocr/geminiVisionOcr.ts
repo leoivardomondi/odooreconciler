@@ -10,6 +10,12 @@ export async function geminiVisionOcr(
   geminiApiKey?: string,
   geminiOAuthConnected?: boolean,
 ): Promise<{ pages: OcrPageResult[]; warnings: string[] }> {
+  if (process.env.DISABLE_GEMINI === 'true') {
+    return {
+      pages: [],
+      warnings: ['Google Gemini Vision OCR skipped because Gemini is disabled (DISABLE_GEMINI=true).'],
+    };
+  }
   const warnings: string[] = [];
 
   let oauth: { accessToken: string; projectId: string } | null = null;

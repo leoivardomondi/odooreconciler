@@ -1236,6 +1236,9 @@ async function callGeminiCategoryApi(input: {
   baseUrl: string;
   prompt: string;
 }): Promise<string> {
+  if (process.env.DISABLE_GEMINI === 'true') {
+    throw new Error('Google Gemini API is currently disabled (DISABLE_GEMINI=true).');
+  }
   let model = input.model.trim();
   if (!model || model === 'gemini-2.0-flash' || model === 'models/gemini-2.0-flash' || model === 'gemini-2.0-flash-lite') {
     model = 'gemini-3.8-flash';

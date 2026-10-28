@@ -69,7 +69,11 @@ async function maybeRunGeminiVisionFallback(
   geminiOAuthConnected: boolean | undefined,
   warnings: string[],
 ) {
-  if (!ocrConfig?.geminiFallbackEnabled || ocrConfig.provider === 'gemini_vision') {
+  if (
+    process.env.DISABLE_GEMINI === 'true' ||
+    !ocrConfig?.geminiFallbackEnabled ||
+    ocrConfig.provider === 'gemini_vision'
+  ) {
     return pages;
   }
 
@@ -103,8 +107,8 @@ export async function runOcr(
   const warnings: string[] = [];
 
   const useGemini =
-    preferredOcr === 'gemini_vision' ||
-    ocrConfig?.provider === 'gemini_vision';
+    process.env.DISABLE_GEMINI !== 'true' &&
+    (preferredOcr === 'gemini_vision' || ocrConfig?.provider === 'gemini_vision');
 
   if (useGemini) {
     const gemini = await geminiVisionOcr(imagePaths, ocrConfig, geminiApiKey, geminiOAuthConnected);
