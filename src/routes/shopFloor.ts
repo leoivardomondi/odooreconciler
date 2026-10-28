@@ -2101,7 +2101,7 @@ router.get('/shop-floor', async (req: Request, res: Response) => {
   }
 });
 
-async function resolveShopFloorEmployeeRecord(email: string, client: OdooClient): Promise<{ id: number; name: string } | null> {
+async function resolveShopFloorEmployeeRecord(email: string, client?: OdooClient): Promise<{ id: number; name: string } | null> {
   const norm = (email || '').trim().toLowerCase();
   if (!norm) return null;
   const cacheKey = `shop-floor-dashboard:v3:${norm}`;
@@ -2116,14 +2116,27 @@ async function resolveShopFloorEmployeeRecord(email: string, client: OdooClient)
     }
   } catch (_e) {}
 
-  const found = await client.findEmployeeForShopFloorEmail(email).catch(() => null);
-  if (found && found.id > 0) return { id: found.id, name: found.name };
+  // Check persistent MySQL shop_floor_operators table (<2ms)
+  try {
+    const dbOperators = await getShopFloorOperatorsFromDb();
+    const match = dbOperators.find(
+      (o) => Boolean(o.workEmail && o.workEmail.toLowerCase() === norm)
+    );
+    if (match && match.id > 0) {
+      return { id: match.id, name: match.name };
+    }
+  } catch (_e) {}
 
-  const byUser = await client.findEmployeeByUserEmail(email).catch(() => null);
-  if (byUser && byUser.id > 0) return { id: byUser.id, name: byUser.name };
+  if (client) {
+    const found = await client.findEmployeeForShopFloorEmail(email).catch(() => null);
+    if (found && found.id > 0) return { id: found.id, name: found.name };
 
-  const byWork = await client.findEmployeeByWorkEmail(email).catch(() => null);
-  if (byWork && byWork.id > 0) return { id: byWork.id, name: byWork.name };
+    const byUser = await client.findEmployeeByUserEmail(email).catch(() => null);
+    if (byUser && byUser.id > 0) return { id: byUser.id, name: byUser.name };
+
+    const byWork = await client.findEmployeeByWorkEmail(email).catch(() => null);
+    if (byWork && byWork.id > 0) return { id: byWork.id, name: byWork.name };
+  }
 
   return null;
 }
@@ -3449,69 +3462,76 @@ async function handleAdvanceMo(req: Request, res: Response) {
 
   try {
     const viewedEmail = getViewedUserEmail(req);
-    const settings = await getSettings();
-    const client = new OdooClient(settings.odoo);
-    const employee = await resolveShopFloorEmployeeRecord(viewedEmail, client);
-    if (!employee) {
-      throw new Error('Your signed-in account is not linked to an Odoo employee. Ask an administrator to match your email.');
-    }
+    const employee = await resolveShopFloorEmployeeRecord(viewedEmail);
+    const actorName = employee?.name || req.authUser?.displayName || req.authUser?.email || emailDisplayName(viewedEmail) || 'Operator';
+    const employeeId = employee?.id;
 
-    // Enforce 100% component availability for BOTH start and finish actions
-    const stockCheck = await client.checkManufacturingOrderStockAvailability(moId);
-    if (!stockCheck.isFullyAvailable) {
-      if (stockCheck.hasMissingBoards) {
-        // Run pending PO auto-approval asynchronously in the background so operator gets instant feedback
-        void (async () => {
-          try {
-            const procurement = await client.getManufacturingOrderBoardProcurement(moId);
-            const pendingPurchaseOrders = procurement.purchaseOrders.filter((po) => ['draft', 'sent', 'to approve'].includes(po.state));
-            if (pendingPurchaseOrders.length) {
-              await client.approvePurchaseOrdersForShopFloor(pendingPurchaseOrders);
-            }
-          } catch (_) {}
-        })();
-      }
+    const isResuming = manuallyPausedMoIds.has(moId);
+    const targetState = action === 'finish' ? 'done' : 'progress';
 
-      const missingSummary = stockCheck.missingComponents
-        .slice(0, 5)
-        .map((c) => `${c.productName} (Need ${c.missingQty} ${c.uom})`)
-        .join(', ') + (stockCheck.missingComponents.length > 5 ? ` and ${stockCheck.missingComponents.length - 5} more` : '');
-      const actionVerb = action === 'finish' ? 'finish or close' : 'start';
-      const message = `Cannot ${actionVerb} ${stockCheck.moName}: Missing required components in stock (${missingSummary}). Add or receive the required stock before proceeding.`;
+    // If resuming a paused MO, components were already verified and allocated upon initial start.
+    // Skip slow synchronous re-checking to ensure instantaneous resume (<10ms).
+    let stockCheck: any = null;
+    if (!isResuming) {
+      const settings = await getSettings();
+      const client = new OdooClient(settings.odoo);
+      stockCheck = await client.checkManufacturingOrderStockAvailability(moId);
+      if (!stockCheck.isFullyAvailable) {
+        if (stockCheck.hasMissingBoards) {
+          // Run pending PO auto-approval asynchronously in the background so operator gets instant feedback
+          void (async () => {
+            try {
+              const procurement = await client.getManufacturingOrderBoardProcurement(moId);
+              const pendingPurchaseOrders = procurement.purchaseOrders.filter((po) => ['draft', 'sent', 'to approve'].includes(po.state));
+              if (pendingPurchaseOrders.length) {
+                await client.approvePurchaseOrdersForShopFloor(pendingPurchaseOrders);
+              }
+            } catch (_) {}
+          })();
+        }
 
-      let redirectTo = '/shop-floor';
-      if (stockCheck.hasMissingBoards) {
-        redirectTo = `/shop-floor/boards?message=${encodeURIComponent(message)}`;
-      } else if (stockCheck.hasMissingHardware) {
-        redirectTo = `/shop-floor/receipts?message=${encodeURIComponent(message)}`;
-      }
+        const missingSummary = stockCheck.missingComponents
+          .slice(0, 5)
+          .map((c: any) => `${c.productName} (Need ${c.missingQty} ${c.uom})`)
+          .join(', ') + (stockCheck.missingComponents.length > 5 ? ` and ${stockCheck.missingComponents.length - 5} more` : '');
+        const actionVerb = action === 'finish' ? 'finish or close' : 'start';
+        const message = `Cannot ${actionVerb} ${stockCheck.moName}: Missing required components in stock (${missingSummary}). Add or receive the required stock before proceeding.`;
 
-      if (wantsJson) {
-        res.status(409).json({
-          ok: false,
-          code: 'stock_missing',
-          action,
-          moId,
-          moName: stockCheck.moName,
-          message,
-          missingComponents: stockCheck.missingComponents,
-          hasMissingBoards: stockCheck.hasMissingBoards,
-          hasMissingHardware: stockCheck.hasMissingHardware,
-          redirectTo,
-        });
+        let redirectTo = '/shop-floor';
+        if (stockCheck.hasMissingBoards) {
+          redirectTo = `/shop-floor/boards?message=${encodeURIComponent(message)}`;
+        } else if (stockCheck.hasMissingHardware) {
+          redirectTo = `/shop-floor/receipts?message=${encodeURIComponent(message)}`;
+        }
+
+        if (wantsJson) {
+          res.status(409).json({
+            ok: false,
+            code: 'stock_missing',
+            action,
+            moId,
+            moName: stockCheck.moName,
+            message,
+            missingComponents: stockCheck.missingComponents,
+            hasMissingBoards: stockCheck.hasMissingBoards,
+            hasMissingHardware: stockCheck.hasMissingHardware,
+            redirectTo,
+          });
+          return;
+        }
+        res.redirect(redirectTo);
         return;
       }
-      res.redirect(redirectTo);
-      return;
     }
 
-    // Stock check passed - Respond instantly for immediate operator feedback
-    const targetState = action === 'finish' ? 'done' : 'progress';
-    await optimisticallyUpdateSharedWorkOrderState(moId, targetState, employee.name, viewedEmail);
+    // Stock check passed or resuming: Respond instantly for zero-wait operator feedback (<15ms)
+    await optimisticallyUpdateSharedWorkOrderState(moId, targetState, actorName, viewedEmail);
     shopFloorCache.clearPrefix('shop-floor-dashboard:');
     const message = action === 'finish'
       ? 'Current operation finished.'
-      : `Manufacturing operation started for ${employee.name}.`;
+      : isResuming
+        ? `Manufacturing operation resumed.`
+        : `Manufacturing operation started for ${actorName}.`;
 
     if (wantsJson) {
       res.setHeader('Cache-Control', 'no-store');
@@ -3519,7 +3539,7 @@ async function handleAdvanceMo(req: Request, res: Response) {
         ok: true,
         state: targetState,
         message,
-        employeeName: employee.name,
+        employeeName: actorName,
       });
     } else {
       res.redirect('/shop-floor?message=' + encodeURIComponent(message) + '#manufacturing-orders');
@@ -3528,8 +3548,10 @@ async function handleAdvanceMo(req: Request, res: Response) {
     // Execute Odoo work order transition asynchronously in background
     void (async () => {
       try {
-        const advanceResult = await client.advanceManufacturingOrder(moId, action, employee.id, stockCheck);
-        await optimisticallyUpdateSharedWorkOrderState(moId, targetState, employee.name, viewedEmail);
+        const settings = await getSettings();
+        const client = new OdooClient(settings.odoo);
+        const advanceResult = await client.advanceManufacturingOrder(moId, action, employeeId, stockCheck);
+        await optimisticallyUpdateSharedWorkOrderState(moId, targetState, actorName, viewedEmail);
         const sharedMoEntry = shopFloorCache.getEntry('shop-floor:shared-work-orders:v1');
         if (sharedMoEntry) {
           sharedMoEntry.freshUntil = 0;
@@ -3545,8 +3567,8 @@ async function handleAdvanceMo(req: Request, res: Response) {
         if (operatorTrackingWarning) {
           void logEvent('warn', 'Odoo work order started without employee tracking attribution', {
             moId,
-            employeeId: employee.id,
-            employeeName: employee.name,
+            employeeId,
+            employeeName: actorName,
             operatorEmail: viewedEmail,
           });
         }

@@ -2205,8 +2205,8 @@ export class OdooClient {
       };
     }
 
-    // Attempt to allocate/reserve any recently received stock to this MO
-    if (!['cancel'].includes(production.state)) {
+    // Attempt to allocate/reserve any recently received stock to this MO (only if not already in progress or completed)
+    if (!['cancel', 'done', 'progress'].includes(production.state)) {
       try {
         await this.callRecordMethod('mrp.production', 'action_assign', [moId]);
       } catch (_) { }
@@ -5350,13 +5350,15 @@ export class OdooClient {
     };
 
     if (action === 'start') {
-      const workorder = workorders.find((item) => item.state === 'ready' || item.state === 'pending') || workorders.find((item) => item.state !== 'progress');
+      const workorder =
+        workorders.find((item) => item.state === 'ready' || item.state === 'pending') ||
+        workorders.find((item) => item.state === 'progress') ||
+        workorders[0];
       if (!workorder) {
-        if (workorders.some((item) => item.state === 'progress')) return;
         throw new OdooClientError('No work operation is available to start for this manufacturing order.');
       }
       await assertEmployeeMayUseWorkcenter(workorder);
-      // Directly start the work order in Odoo
+      // Directly start/resume the work order in Odoo
       try {
         await this.callRecordMethod('mrp.workorder', 'button_start', [workorder.id]);
       } catch (_) { }
