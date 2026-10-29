@@ -959,7 +959,11 @@ export async function buildInstantMysqlOperatorDashboard(userEmail: string): Pro
 
   const sharedMo = sharedMoEntry?.data;
   const workOrders = (sharedMo?.workOrders || []).map((wo: any) => {
-    if (manuallyPausedMoIds.has(wo.id) && wo.state !== 'done') {
+    if (wo.state === 'done' || wo.state === 'cancel') {
+      manuallyPausedMoIds.delete(wo.id);
+      return wo;
+    }
+    if (manuallyPausedMoIds.has(wo.id)) {
       return { ...wo, state: 'paused' };
     }
     return wo;
@@ -1267,11 +1271,25 @@ export async function fetchLiveSharedWorkOrders(client: OdooClient): Promise<Sha
     const queueTiming = confirmedQueueSchedule.get(o.id);
     const rawWoState = workOrderStateMap.get(o.id);
     const isManuallyPaused = manuallyPausedMoIds.has(o.id);
-    const effectiveState = isManuallyPaused || rawWoState === 'pending'
-      ? 'paused'
-      : rawWoState === 'progress' || o.state === 'progress'
-        ? 'progress'
-        : o.state || 'draft';
+    let effectiveState: string;
+
+    if (o.state === 'done' || o.state === 'cancel' || o.state === 'to_close' || rawWoState === 'done') {
+      effectiveState = o.state === 'cancel' ? 'cancel' : 'done';
+      manuallyPausedMoIds.delete(o.id);
+    } else if (rawWoState === 'progress') {
+      effectiveState = 'progress';
+      manuallyPausedMoIds.delete(o.id);
+    } else if (rawWoState === 'paused' || rawWoState === 'pending') {
+      effectiveState = 'paused';
+      manuallyPausedMoIds.add(o.id);
+    } else if (isManuallyPaused) {
+      effectiveState = 'paused';
+    } else if (o.state === 'progress') {
+      effectiveState = 'progress';
+    } else {
+      effectiveState = o.state || 'draft';
+      manuallyPausedMoIds.delete(o.id);
+    }
     return {
       ...baseTiming,
       ...queueTiming,

@@ -1902,30 +1902,58 @@ export class OdooClient {
   }
 
   async getBulkWorkOrderStates(moIds: number[]) {
-    if (!moIds.length) return new Map<number, 'progress' | 'pending' | 'ready'>();
+    if (!moIds.length) return new Map<number, 'progress' | 'pending' | 'ready' | 'paused' | 'done'>();
     const workorders = await this.searchReadRecords<{
       id: number;
       production_id: [number, string] | false;
       state: string;
+      duration?: number;
     }>('mrp.workorder', {
-      domain: [['production_id', 'in', moIds], ['state', 'not in', ['done', 'cancel']]],
-      fields: ['id', 'production_id', 'state'],
+      domain: [['production_id', 'in', moIds], ['state', 'not in', ['cancel']]],
+      fields: ['id', 'production_id', 'state', 'duration'],
       limit: 500,
     });
 
-    const stateMap = new Map<number, 'progress' | 'pending' | 'ready'>();
+    const woIds = workorders.map((w) => w.id);
+    const activeProductivity = woIds.length
+      ? await this.searchReadRecords<{ id: number; workorder_id: [number, string] }>(
+          'mrp.workcenter.productivity',
+          {
+            domain: [['workorder_id', 'in', woIds], ['date_end', '=', false]],
+            fields: ['id', 'workorder_id'],
+            limit: 500,
+          },
+        ).catch(() => [])
+      : [];
+    const activeWoIds = new Set(activeProductivity.map((p) => p.workorder_id[0]));
+
+    const stateMap = new Map<number, 'progress' | 'pending' | 'ready' | 'paused' | 'done'>();
     for (const wo of workorders) {
       if (wo.production_id) {
         const moId = wo.production_id[0];
         const existing = stateMap.get(moId);
-        if (wo.state === 'progress') {
-          stateMap.set(moId, 'progress');
+        let resolvedState: 'progress' | 'pending' | 'ready' | 'paused' | 'done' = 'ready';
+
+        if (wo.state === 'done') {
+          resolvedState = 'done';
+        } else if (wo.state === 'progress') {
+          // In Odoo, an active operator running on the work order has an open productivity record (date_end = False).
+          // If no active operator is working, Odoo Shop Floor displays the green Play button (paused).
+          resolvedState = activeWoIds.has(wo.id) ? 'progress' : 'paused';
         } else if (wo.state === 'pending') {
-          if (existing !== 'progress') {
-            stateMap.set(moId, 'pending');
-          }
-        } else if (!existing && (wo.state === 'ready' || wo.state === 'progress' || wo.state === 'pending')) {
-          stateMap.set(moId, wo.state as 'progress' | 'pending' | 'ready');
+          resolvedState = 'paused';
+        } else if (wo.state === 'ready') {
+          resolvedState = 'ready';
+        }
+
+        if (resolvedState === 'progress') {
+          stateMap.set(moId, 'progress');
+        } else if (resolvedState === 'paused' && existing !== 'progress') {
+          stateMap.set(moId, 'paused');
+        } else if (resolvedState === 'done' && !existing) {
+          stateMap.set(moId, 'done');
+        } else if (!existing) {
+          stateMap.set(moId, resolvedState);
         }
       }
     }
