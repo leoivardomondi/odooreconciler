@@ -36,6 +36,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.fastAutoOrientImage = fastAutoOrientImage;
 exports.preprocessImage = preprocessImage;
 const promises_1 = __importDefault(require("fs/promises"));
 const path_1 = __importDefault(require("path"));
@@ -47,69 +48,76 @@ const ORIENTATION_ANGLES = [0, 90, 180, 270];
 function orientationTextScore(text, confidence) {
     const normalized = text.toLowerCase();
     const readableCharacters = (normalized.match(/[a-z0-9]/g) || []).length;
-    const invoiceTerms = (normalized.match(/\b(invoice|receipt|total|amount|vat|tax|date|quantity|price|description|supplier)\b/g) || []).length;
+    const invoiceTerms = (normalized.match(/\b(invoice|receipt|total|amount|vat|tax|date|quantity|price|description|supplier|comply|mdf|boards)\b/g) || []).length;
     return confidence + Math.min(35, readableCharacters / 12) + Math.min(30, invoiceTerms * 5);
 }
-async function writeRotatedImage(sourcePath, angle, outputPath) {
-    const canvasModule = await Promise.resolve().then(() => __importStar(require('@napi-rs/canvas')));
-    const image = await canvasModule.loadImage(sourcePath);
-    const swapsDimensions = angle === 90 || angle === 270;
-    const canvas = canvasModule.createCanvas(swapsDimensions ? image.height : image.width, swapsDimensions ? image.width : image.height);
-    const context = canvas.getContext('2d');
-    context.translate(canvas.width / 2, canvas.height / 2);
-    context.rotate((angle * Math.PI) / 180);
-    context.drawImage(image, -image.width / 2, -image.height / 2);
-    await promises_1.default.writeFile(outputPath, await canvas.encode('png'));
-}
-async function autoOrientImage(imagePath) {
+async function fastAutoOrientImage(imagePath) {
     const warnings = [];
-    // Crops inherit the rendered page orientation and do not contain enough text
-    // for reliable independent orientation detection.
-    if (process.env.OCR_AUTO_ORIENT === 'false' || /-page-\d+-(header|items|totals)-ocr\.png$/i.test(imagePath)) {
-        return { imagePath, warnings };
+    if (process.env.OCR_AUTO_ORIENT === 'false' ||
+        /-page-\d+-(header|items|totals)-ocr\.png$/i.test(imagePath)) {
+        return { imagePath, angle: 0, warnings };
     }
-    const parsed = path_1.default.parse(imagePath);
-    const candidatePaths = new Map([[0, imagePath]]);
-    let worker = null;
-    let selectedPath = imagePath;
     try {
+        const canvasModule = await Promise.resolve().then(() => __importStar(require('@napi-rs/canvas')));
+        const imageBuffer = await promises_1.default.readFile(imagePath);
+        const image = await canvasModule.loadImage(imageBuffer);
+        // Use a small 600px thumbnail for rapid orientation detection (completes in ~3s instead of 5 minutes)
+        const scale = Math.min(1, 600 / Math.max(image.width, image.height));
+        const thumbWidth = Math.round(image.width * scale);
+        const thumbHeight = Math.round(image.height * scale);
         const tesseract = await Promise.resolve().then(() => __importStar(require('tesseract.js')));
-        worker = await tesseract.createWorker('eng', undefined, (0, tesseractData_1.getBundledTesseractOptions)());
-        let best = { angle: 0, imagePath, score: Number.NEGATIVE_INFINITY };
-        for (const angle of ORIENTATION_ANGLES) {
-            let candidatePath = imagePath;
-            if (angle !== 0) {
-                candidatePath = path_1.default.join(parsed.dir, `${parsed.name}-rotate-${angle}.png`);
-                await writeRotatedImage(imagePath, angle, candidatePath);
-                candidatePaths.set(angle, candidatePath);
-            }
-            const result = await worker.recognize(candidatePath);
-            const text = result.data.text || '';
-            const confidence = typeof result.data.confidence === 'number' ? result.data.confidence : 0;
-            const score = orientationTextScore(text, confidence);
-            if (score > best.score) {
-                best = { angle, imagePath: candidatePath, score };
+        const worker = await tesseract.createWorker('eng', undefined, (0, tesseractData_1.getBundledTesseractOptions)());
+        let best = { angle: 0, score: Number.NEGATIVE_INFINITY };
+        let angle0Score = Number.NEGATIVE_INFINITY;
+        try {
+            for (const angle of ORIENTATION_ANGLES) {
+                const swaps = angle === 90 || angle === 270;
+                const canvas = canvasModule.createCanvas(swaps ? thumbHeight : thumbWidth, swaps ? thumbWidth : thumbHeight);
+                const ctx = canvas.getContext('2d');
+                ctx.translate(canvas.width / 2, canvas.height / 2);
+                ctx.rotate((angle * Math.PI) / 180);
+                ctx.drawImage(image, -thumbWidth / 2, -thumbHeight / 2, thumbWidth, thumbHeight);
+                const buffer = await canvas.encode('png');
+                const result = await worker.recognize(buffer);
+                const text = result.data.text || '';
+                const confidence = typeof result.data.confidence === 'number' ? result.data.confidence : 0;
+                const score = orientationTextScore(text, confidence);
+                if (angle === 0) {
+                    angle0Score = score;
+                }
+                if (score > best.score) {
+                    best = { angle, score };
+                }
             }
         }
-        if (best.angle !== 0) {
-            warnings.push(`Auto-oriented ${path_1.default.basename(imagePath)} by ${best.angle} degrees for OCR.`);
+        finally {
+            await worker.terminate().catch(() => undefined);
         }
-        selectedPath = best.imagePath;
-        return { imagePath: best.imagePath, warnings };
+        // Only rotate if another angle is meaningfully better than angle 0 (margin of at least 4 points)
+        if (best.angle === 0 || best.score < angle0Score + 4) {
+            return { imagePath, angle: 0, warnings };
+        }
+        // Rotate full-resolution image once and save to a new file
+        const parsed = path_1.default.parse(imagePath);
+        const rotatedPath = path_1.default.join(parsed.dir, `${parsed.name}-oriented-${best.angle}.png`);
+        const swaps = best.angle === 90 || best.angle === 270;
+        const fullCanvas = canvasModule.createCanvas(swaps ? image.height : image.width, swaps ? image.width : image.height);
+        const fullCtx = fullCanvas.getContext('2d');
+        fullCtx.translate(fullCanvas.width / 2, fullCanvas.height / 2);
+        fullCtx.rotate((best.angle * Math.PI) / 180);
+        fullCtx.drawImage(image, -image.width / 2, -image.height / 2);
+        await promises_1.default.writeFile(rotatedPath, await fullCanvas.encode('png'));
+        warnings.push(`Auto-oriented ${path_1.default.basename(imagePath)} by ${best.angle} degrees for OCR.`);
+        return { imagePath: rotatedPath, angle: best.angle, warnings };
     }
     catch (error) {
         warnings.push(`Automatic image orientation failed for ${path_1.default.basename(imagePath)}: ${error instanceof Error ? error.message : String(error)}`);
-        return { imagePath, warnings };
+        return { imagePath, angle: 0, warnings };
     }
-    finally {
-        await worker?.terminate().catch(() => undefined);
-        // Keep the selected candidate only; the caller owns its normal temp-file cleanup.
-        for (const candidatePath of candidatePaths.values()) {
-            if (candidatePath !== selectedPath) {
-                await promises_1.default.unlink(candidatePath).catch(() => undefined);
-            }
-        }
-    }
+}
+async function autoOrientImage(imagePath) {
+    const result = await fastAutoOrientImage(imagePath);
+    return { imagePath: result.imagePath, warnings: result.warnings };
 }
 async function preprocessImage(imagePath, options) {
     const warnings = [];
@@ -118,7 +126,8 @@ async function preprocessImage(imagePath, options) {
     }
     try {
         const canvasModule = await Promise.resolve().then(() => __importStar(require('@napi-rs/canvas')));
-        const image = await canvasModule.loadImage(imagePath);
+        const imageBuffer = await promises_1.default.readFile(imagePath);
+        const image = await canvasModule.loadImage(imageBuffer);
         const canvas = canvasModule.createCanvas(image.width, image.height);
         const context = canvas.getContext('2d');
         context.drawImage(image, 0, 0);

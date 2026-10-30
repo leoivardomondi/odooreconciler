@@ -10,7 +10,7 @@ import { validateInvoice } from './core/validateInvoice';
 import { extractPdfText } from './extractPdfText';
 import { renderPdfToImages } from './renderPdfToImages';
 import { runOcr } from './ocr/ocrEngine';
-import { preprocessImage } from './preprocess/imagePreprocess';
+import { fastAutoOrientImage, preprocessImage } from './preprocess/imagePreprocess';
 import { parseComplyInvoice } from './parsers/comply.parser';
 import { parseGenericInvoice } from './parsers/generic.parser';
 import { parseJoinbenInvoice } from './parsers/joinben.parser';
@@ -229,8 +229,21 @@ export async function parseSupplierInvoice(input: ParseSupplierInvoiceInput): Pr
       const fullPageImages = rendered.images.filter((image) =>
         /-page-\d+\.png$/i.test(image.imagePath) || rendered.images.length === 1,
       );
-      const visionImages = fullPageImages.map((image) => image.imagePath);
-      rawPages = fullPageImages.map((image) => ({
+      const orientedVisionImages = await Promise.all(
+        fullPageImages.map(async (image) => {
+          const oriented = await fastAutoOrientImage(image.imagePath);
+          warnings.push(...oriented.warnings);
+          if (oriented.imagePath !== image.imagePath) {
+            tempFilesToClean.add(oriented.imagePath);
+          }
+          return {
+            pageNumber: image.pageNumber,
+            imagePath: oriented.imagePath,
+          };
+        }),
+      );
+      const visionImages = orientedVisionImages.map((image) => image.imagePath);
+      rawPages = orientedVisionImages.map((image) => ({
         page_number: image.pageNumber,
         text: '',
         ocr_used: false,
@@ -251,8 +264,16 @@ export async function parseSupplierInvoice(input: ParseSupplierInvoiceInput): Pr
       if (visionResult.extraction && visionConfidence >= confidenceThreshold) {
         let visionInvoice = mergeAiInvoiceExtraction(emptyInvoice(input, warnings), visionResult.extraction);
         visionInvoice = normalizeInvoiceTotals(visionInvoice);
+        const filenameDate = extractIsoDateFromFilename(input.originalFilename);
         if (!visionInvoice.invoice_date) {
-          visionInvoice.invoice_date = extractIsoDateFromFilename(input.originalFilename);
+          visionInvoice.invoice_date = filenameDate;
+        } else if (filenameDate && visionInvoice.invoice_date) {
+          const fileYear = Number(filenameDate.slice(0, 4));
+          const invYear = Number(visionInvoice.invoice_date.slice(0, 4));
+          if (Math.abs(fileYear - invYear) >= 2) {
+            visionInvoice.warnings.push(`Extracted invoice year ${invYear} conflicted significantly with scan filename date ${filenameDate}; corrected to filename date.`);
+            visionInvoice.invoice_date = filenameDate;
+          }
         }
         if (!visionInvoice.supplier_key || visionInvoice.supplier_key === 'UNKNOWN') {
           const detected = detectSupplier(visionInvoice.supplier || '');
@@ -366,6 +387,15 @@ export async function parseSupplierInvoice(input: ParseSupplierInvoiceInput): Pr
         pages: rawPages,
       },
     };
+    const fallbackFilenameDate = extractIsoDateFromFilename(input.originalFilename);
+    if (fallbackFilenameDate && withSupplier.invoice_date) {
+      const fileYear = Number(fallbackFilenameDate.slice(0, 4));
+      const invYear = Number(withSupplier.invoice_date.slice(0, 4));
+      if (Math.abs(fileYear - invYear) >= 2) {
+        withSupplier.warnings.push(`Extracted invoice year ${invYear} conflicted significantly with scan filename date ${fallbackFilenameDate}; corrected to filename date.`);
+        withSupplier.invoice_date = fallbackFilenameDate;
+      }
+    }
     let finalInvoice = normalizeInvoiceTotals(withSupplier);
     finalInvoice = recoverHandwrittenInvoiceItems(finalInvoice);
     finalInvoice = normalizeInvoiceTotals(finalInvoice);

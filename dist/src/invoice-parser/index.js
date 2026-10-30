@@ -224,8 +224,19 @@ async function parseSupplierInvoice(input) {
             warnings.push(...rendered.warnings);
             rendered.images.forEach((image) => tempFilesToClean.add(image.imagePath));
             const fullPageImages = rendered.images.filter((image) => /-page-\d+\.png$/i.test(image.imagePath) || rendered.images.length === 1);
-            const visionImages = fullPageImages.map((image) => image.imagePath);
-            rawPages = fullPageImages.map((image) => ({
+            const orientedVisionImages = await Promise.all(fullPageImages.map(async (image) => {
+                const oriented = await (0, imagePreprocess_1.fastAutoOrientImage)(image.imagePath);
+                warnings.push(...oriented.warnings);
+                if (oriented.imagePath !== image.imagePath) {
+                    tempFilesToClean.add(oriented.imagePath);
+                }
+                return {
+                    pageNumber: image.pageNumber,
+                    imagePath: oriented.imagePath,
+                };
+            }));
+            const visionImages = orientedVisionImages.map((image) => image.imagePath);
+            rawPages = orientedVisionImages.map((image) => ({
                 page_number: image.pageNumber,
                 text: '',
                 ocr_used: false,
@@ -244,8 +255,17 @@ async function parseSupplierInvoice(input) {
             if (visionResult.extraction && visionConfidence >= confidenceThreshold) {
                 let visionInvoice = (0, aiInvoiceExtractor_1.mergeAiInvoiceExtraction)(emptyInvoice(input, warnings), visionResult.extraction);
                 visionInvoice = (0, normalizeTotals_1.normalizeInvoiceTotals)(visionInvoice);
+                const filenameDate = (0, extractDates_1.extractIsoDateFromFilename)(input.originalFilename);
                 if (!visionInvoice.invoice_date) {
-                    visionInvoice.invoice_date = (0, extractDates_1.extractIsoDateFromFilename)(input.originalFilename);
+                    visionInvoice.invoice_date = filenameDate;
+                }
+                else if (filenameDate && visionInvoice.invoice_date) {
+                    const fileYear = Number(filenameDate.slice(0, 4));
+                    const invYear = Number(visionInvoice.invoice_date.slice(0, 4));
+                    if (Math.abs(fileYear - invYear) >= 2) {
+                        visionInvoice.warnings.push(`Extracted invoice year ${invYear} conflicted significantly with scan filename date ${filenameDate}; corrected to filename date.`);
+                        visionInvoice.invoice_date = filenameDate;
+                    }
                 }
                 if (!visionInvoice.supplier_key || visionInvoice.supplier_key === 'UNKNOWN') {
                     const detected = (0, detectSupplier_1.detectSupplier)(visionInvoice.supplier || '');
@@ -337,6 +357,15 @@ async function parseSupplierInvoice(input) {
                 pages: rawPages,
             },
         };
+        const fallbackFilenameDate = (0, extractDates_1.extractIsoDateFromFilename)(input.originalFilename);
+        if (fallbackFilenameDate && withSupplier.invoice_date) {
+            const fileYear = Number(fallbackFilenameDate.slice(0, 4));
+            const invYear = Number(withSupplier.invoice_date.slice(0, 4));
+            if (Math.abs(fileYear - invYear) >= 2) {
+                withSupplier.warnings.push(`Extracted invoice year ${invYear} conflicted significantly with scan filename date ${fallbackFilenameDate}; corrected to filename date.`);
+                withSupplier.invoice_date = fallbackFilenameDate;
+            }
+        }
         let finalInvoice = (0, normalizeTotals_1.normalizeInvoiceTotals)(withSupplier);
         finalInvoice = (0, recoverHandwrittenItems_1.recoverHandwrittenInvoiceItems)(finalInvoice);
         finalInvoice = (0, normalizeTotals_1.normalizeInvoiceTotals)(finalInvoice);
