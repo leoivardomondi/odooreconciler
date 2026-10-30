@@ -452,3 +452,10 @@
     - `findCuttingService` scopes targeted fallback queries strictly to `categories.cuttingCategoryIds`.
     - `findEdgeBandingService` scopes targeted fallback queries strictly to `categories.edgingCategoryIds`.
 
+
+
+- **Tesseract OCR Disabled by Default (AI Vision Only)**:
+  - Tesseract OCR (`tesseractOcr`) and Tesseract-based auto-orientation (`fastAutoOrientImage`) are disabled unless `TESSERACT_ENABLED=true` is set. The gate is `isTesseractEnabled()` in [src/utils/tesseractData.ts](file:///c:/Users/ADMIN/Desktop/odooreconciler/src/utils/tesseractData.ts).
+  - Reason: Tesseract was slow on the shared cPanel host (a cause of timeouts) and misread handwriting (e.g. Tiptop `4,100` read as `ZI IOD` / `21100`), which put wrong totals into PO matching.
+  - Invoice extraction relies on the configured AI vision provider (OpenAI GPT-4o). If vision fails, the remaining OCR fallbacks are NVIDIA NeMo Retriever or Google Vision (if configured). Otherwise no OCR text is produced and the document goes to review/fails instead of using guessed values.
+  - This also affects the OCR fallback in M-Pesa statement reconciliation (`mpesaReconciliationService` → `runOcr`).
