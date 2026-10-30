@@ -1,5 +1,5 @@
 import { OcrPageResult } from '../types';
-import { getBundledTesseractOptions } from '../../utils/tesseractData';
+import { getBundledTesseractOptions, isTesseractEnabled } from '../../utils/tesseractData';
 
 function withTimeout<T>(operation: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   let timeoutHandle: NodeJS.Timeout | null = null;
@@ -20,6 +20,13 @@ export async function tesseractOcr(
   imagePaths: Array<{ pageNumber: number; imagePath: string }>,
 ): Promise<{ pages: OcrPageResult[]; warnings: string[] }> {
   const warnings: string[] = [];
+
+  if (!isTesseractEnabled()) {
+    return {
+      pages: [],
+      warnings: ['Tesseract OCR is disabled (set TESSERACT_ENABLED=true to re-enable); relying on AI vision extraction.'],
+    };
+  }
 
   try {
     const tesseract = await import('tesseract.js');

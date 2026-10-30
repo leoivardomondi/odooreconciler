@@ -1,6 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
-import { getBundledTesseractOptions } from '../../utils/tesseractData';
+import { getBundledTesseractOptions, isTesseractEnabled } from '../../utils/tesseractData';
 
 function clamp(value: number) {
   return Math.max(0, Math.min(255, value));
@@ -23,7 +23,10 @@ export async function fastAutoOrientImage(
   imagePath: string,
 ): Promise<{ imagePath: string; angle: number; warnings: string[] }> {
   const warnings: string[] = [];
+  // Orientation detection runs Tesseract; skip it when Tesseract is disabled.
+  // GPT-4o and other vision models read rotated scans directly.
   if (
+    !isTesseractEnabled() ||
     process.env.OCR_AUTO_ORIENT === 'false' ||
     /-page-\d+-(header|items|totals)-ocr\.png$/i.test(imagePath)
   ) {

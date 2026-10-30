@@ -50,6 +50,12 @@ function withTimeout(operation, timeoutMs, label) {
 }
 async function tesseractOcr(imagePaths) {
     const warnings = [];
+    if (!(0, tesseractData_1.isTesseractEnabled)()) {
+        return {
+            pages: [],
+            warnings: ['Tesseract OCR is disabled (set TESSERACT_ENABLED=true to re-enable); relying on AI vision extraction.'],
+        };
+    }
     try {
         const tesseract = await Promise.resolve().then(() => __importStar(require('tesseract.js')));
         const recognizer = tesseract.default?.recognize || tesseract.recognize;

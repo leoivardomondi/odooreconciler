@@ -57,7 +57,10 @@ function orientationTextScore(text, confidence) {
 }
 async function fastAutoOrientImage(imagePath) {
     const warnings = [];
-    if (process.env.OCR_AUTO_ORIENT === 'false' ||
+    // Orientation detection runs Tesseract; skip it when Tesseract is disabled.
+    // GPT-4o and other vision models read rotated scans directly.
+    if (!(0, tesseractData_1.isTesseractEnabled)() ||
+        process.env.OCR_AUTO_ORIENT === 'false' ||
         /-page-\d+-(header|items|totals)-ocr\.png$/i.test(imagePath)) {
         return { imagePath, angle: 0, warnings };
     }
