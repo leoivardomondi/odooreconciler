@@ -223,7 +223,7 @@ async function parseSupplierInvoice(input) {
             const rendered = await (0, renderPdfToImages_1.renderPdfToImages)(input.filePath);
             warnings.push(...rendered.warnings);
             rendered.images.forEach((image) => tempFilesToClean.add(image.imagePath));
-            const fullPageImages = rendered.images.filter((image) => /-page-\d+\.png$/i.test(image.imagePath) || rendered.images.length === 1);
+            const fullPageImages = rendered.images.filter((image) => /-page-\d+\.(?:png|jpe?g|webp)$/i.test(image.imagePath) || rendered.images.length === 1);
             const orientedVisionImages = await Promise.all(fullPageImages.map(async (image) => {
                 const oriented = await (0, imagePreprocess_1.fastAutoOrientImage)(image.imagePath);
                 warnings.push(...oriented.warnings);

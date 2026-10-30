@@ -227,7 +227,7 @@ export async function parseSupplierInvoice(input: ParseSupplierInvoiceInput): Pr
       rendered.images.forEach((image) => tempFilesToClean.add(image.imagePath));
 
       const fullPageImages = rendered.images.filter((image) =>
-        /-page-\d+\.png$/i.test(image.imagePath) || rendered.images.length === 1,
+        /-page-\d+\.(?:png|jpe?g|webp)$/i.test(image.imagePath) || rendered.images.length === 1,
       );
       const orientedVisionImages = await Promise.all(
         fullPageImages.map(async (image) => {
