@@ -1,3 +1,4 @@
+import './src/utils/polyfills';
 import compression from 'compression';
 import { randomUUID } from 'crypto';
 import express, { NextFunction, Request, Response } from 'express';

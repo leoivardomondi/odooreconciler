@@ -112,15 +112,8 @@ export async function renderPdfToImages(filePath: string): Promise<{
   let pdf: any = null;
   try {
     const canvasModule = await import('@napi-rs/canvas');
-    if (!(globalThis as any).ImageData) {
-      (globalThis as any).ImageData = canvasModule.ImageData;
-    }
-    if (!(globalThis as any).DOMMatrix) {
-      (globalThis as any).DOMMatrix = canvasModule.DOMMatrix;
-    }
-    if (!(globalThis as any).Path2D) {
-      (globalThis as any).Path2D = canvasModule.Path2D;
-    }
+    const { ensurePdfjsGlobals } = await import('../utils/polyfills');
+    ensurePdfjsGlobals(canvasModule);
 
     const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
     const data = new Uint8Array(await fs.readFile(filePath));
