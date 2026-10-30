@@ -2,7 +2,7 @@ import { normalizeMoney } from './normalizeMoney';
 
 function findMoneyAfter(text: string, labels: string[]): number | null {
   for (const label of labels) {
-    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
     const match = text.match(new RegExp(`${escaped}\\s*(?:KSH|KES)?\\s*:?\\s*([\\d,]+(?:\\.\\d{1,2})?)`, 'i'));
     const value = normalizeMoney(match?.[1]);
     if (value !== null) {
@@ -244,10 +244,10 @@ export function extractTotals(text: string) {
     .filter((value): value is number => value !== null);
   const amount_due =
     taxTableTotals?.amount_due ||
+    amountDueFromLabel ||
     labelledTotal ||
     standaloneDueTotal ||
     receiptPayableTotal ||
-    amountDueFromLabel ||
     kshMatches.at(-1) ||
     shMatches.at(-1) ||
     findMoneyAfter(text, ['total']);
