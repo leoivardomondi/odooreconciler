@@ -1,6 +1,7 @@
 import path from 'path';
 import { Response, Router } from 'express';
 import {
+  completePoBillManualJob,
   createPoBillManualJob,
   getPoBillManualJobById,
   getSchedulerRuntimeState,
@@ -137,6 +138,13 @@ router.get('/po-bill-automation', async (req, res) => {
       }
     : null;
 
+  if (manualJob && manualJob.status === 'running' && manualJobView && Date.now() - manualJobView.startedAt > 180_000) {
+    manualJob.status = 'failed';
+    manualJob.errorMessage = 'PO bill check timed out after exceeding 3 minutes.';
+    manualJobView.status = 'failed';
+    void completePoBillManualJob({ id: manualJob.id, status: 'failed', errorMessage: manualJob.errorMessage }).catch(() => undefined);
+  }
+
   try {
     await renderPage(res, {
       status: manualJob?.status === 'failed'
@@ -245,6 +253,12 @@ router.post('/po-bill-automation/run', async (req, res) => {
 router.get('/po-bill-automation/manual-jobs/:jobId', async (req, res) => {
   try {
     const job = await getPoBillManualJobById(req.params.jobId);
+    const startedAt = Date.parse(job.startedAt || job.createdAt) || Date.now();
+    if (job.status === 'running' && Date.now() - startedAt > 180_000) {
+      job.status = 'failed';
+      job.errorMessage = 'PO bill check timed out after exceeding 3 minutes.';
+      void completePoBillManualJob({ id: job.id, status: 'failed', errorMessage: job.errorMessage }).catch(() => undefined);
+    }
     res.json({ ok: true, job });
   } catch (error) {
     res.status(404).json({ ok: false, error: error instanceof Error ? error.message : 'PO bill job not found.' });

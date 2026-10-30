@@ -1,5 +1,6 @@
 import {
   claimNextPoBillManualJob,
+  cleanupOrphanedPoBillManualJobs,
   completePoBillManualJob,
   getSettings,
   reclaimStalePoBillManualJobs,
@@ -80,6 +81,7 @@ async function processNextPoBillManualJob() {
 
 export function startPoBillManualJobWorker() {
   if (workerTimer) return;
+  void cleanupOrphanedPoBillManualJobs().catch(reportWorkerError);
   workerTimer = setInterval(() => void processNextPoBillManualJob().catch(reportWorkerError), 2000);
   void processNextPoBillManualJob().catch(reportWorkerError);
 }

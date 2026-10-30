@@ -224,26 +224,13 @@ async function parseSupplierInvoice(input) {
             warnings.push(...rendered.warnings);
             rendered.images.forEach((image) => tempFilesToClean.add(image.imagePath));
             const fullPageImages = rendered.images.filter((image) => /-page-\d+\.png$/i.test(image.imagePath) || rendered.images.length === 1);
-            const preprocessed = await Promise.all(fullPageImages.map(async (image) => {
-                const processed = await (0, imagePreprocess_1.preprocessImage)(image.imagePath);
-                warnings.push(...processed.warnings);
-                tempFilesToClean.add(processed.imagePath);
-                for (const variantPath of processed.variantPaths || [])
-                    tempFilesToClean.add(variantPath);
-                return { pageNumber: image.pageNumber, imagePath: processed.imagePath, imageVariants: processed.variantPaths || [] };
-            }));
-            rawPages = fullPageImages.map((image, index) => ({
+            const visionImages = fullPageImages.map((image) => image.imagePath);
+            rawPages = fullPageImages.map((image) => ({
                 page_number: image.pageNumber,
                 text: '',
                 ocr_used: false,
                 image_path: image.imagePath,
-                image_variants: preprocessed[index]?.imageVariants,
             }));
-            // Put one original image for every physical PDF page first, followed by preprocessed/variant views.
-            const visionImages = Array.from(new Set([
-                ...fullPageImages.map((image) => image.imagePath),
-                ...preprocessed.flatMap((page) => [page.imagePath, ...(page.imageVariants || [])]),
-            ]));
             const visionResult = await (0, aiInvoiceExtractor_1.extractInvoiceWithAi)({
                 imagePaths: visionImages,
                 ocrText: '',

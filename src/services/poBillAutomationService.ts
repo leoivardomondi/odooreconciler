@@ -4099,13 +4099,25 @@ export async function runPoBillAutomation(
   input: Parameters<typeof runPoBillAutomationInternal>[1],
 ): Promise<PoBillAutomationResult> {
   const startedAt = Date.now();
-  const result = await runPoBillAutomationInternal(client, input);
-  const runDurationMs = Math.max(0, Date.now() - startedAt);
+  const TIMEOUT_MS = 90_000;
+  let timer: NodeJS.Timeout;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('PO bill automation timed out after 90 seconds.')), TIMEOUT_MS);
+  });
+  try {
+    const result = await Promise.race([
+      runPoBillAutomationInternal(client, input),
+      timeoutPromise,
+    ]);
+    const runDurationMs = Math.max(0, Date.now() - startedAt);
 
-  return {
-    ...result,
-    runDurationMs,
-    runDurationSeconds: Number((runDurationMs / 1000).toFixed(3)),
-  };
+    return {
+      ...result,
+      runDurationMs,
+      runDurationSeconds: Number((runDurationMs / 1000).toFixed(3)),
+    };
+  } finally {
+    clearTimeout(timer!);
+  }
 }
 

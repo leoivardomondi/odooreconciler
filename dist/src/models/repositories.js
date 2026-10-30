@@ -56,6 +56,7 @@ exports.createPoBillManualJob = createPoBillManualJob;
 exports.getPoBillManualJobById = getPoBillManualJobById;
 exports.claimNextPoBillManualJob = claimNextPoBillManualJob;
 exports.completePoBillManualJob = completePoBillManualJob;
+exports.cleanupOrphanedPoBillManualJobs = cleanupOrphanedPoBillManualJobs;
 exports.reclaimStalePoBillManualJobs = reclaimStalePoBillManualJobs;
 exports.touchPoBillManualJob = touchPoBillManualJob;
 exports.enqueueShopFloorValidationJob = enqueueShopFloorValidationJob;
@@ -2010,8 +2011,11 @@ async function claimNextPoBillManualJob() {
 async function completePoBillManualJob(input) {
     await (0, db_1.execute)(`UPDATE po_bill_manual_jobs SET status = ?, result_json = ?, error_message = ?, completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [input.status, input.result ? JSON.stringify(input.result) : null, input.errorMessage || null, input.id]);
 }
-async function reclaimStalePoBillManualJobs(minutes = 30) {
-    await (0, db_1.execute)(`UPDATE po_bill_manual_jobs SET status = 'pending', started_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE status = 'running' AND updated_at < ?`, [staleJobCutoff(minutes)]);
+async function cleanupOrphanedPoBillManualJobs() {
+    await (0, db_1.execute)(`UPDATE po_bill_manual_jobs SET status = 'failed', error_message = 'Job was interrupted by a server restart or timeout.', completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE status = 'running'`);
+}
+async function reclaimStalePoBillManualJobs(minutes = 2) {
+    await (0, db_1.execute)(`UPDATE po_bill_manual_jobs SET status = 'failed', error_message = 'Job timed out after exceeding maximum duration.', completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE status = 'running' AND updated_at < ?`, [staleJobCutoff(minutes)]);
 }
 async function touchPoBillManualJob(id) {
     await (0, db_1.execute)(`UPDATE po_bill_manual_jobs SET updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'running'`, [id]);

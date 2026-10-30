@@ -81,6 +81,7 @@ async function processNextPoBillManualJob() {
 function startPoBillManualJobWorker() {
     if (workerTimer)
         return;
+    void (0, repositories_1.cleanupOrphanedPoBillManualJobs)().catch(reportWorkerError);
     workerTimer = setInterval(() => void processNextPoBillManualJob().catch(reportWorkerError), 2000);
     void processNextPoBillManualJob().catch(reportWorkerError);
 }
