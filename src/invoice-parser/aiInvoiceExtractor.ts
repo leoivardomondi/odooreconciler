@@ -1089,20 +1089,17 @@ async function extractInvoiceWithConfiguredAi(input: {
   const fullPageImagePaths = input.imagePaths.filter((p) => /-page-\d+\.[a-z]+$/i.test(p));
   const aiImagePaths = fullPageImagePaths.length > 0 ? fullPageImagePaths : input.imagePaths;
 
-  const allSupportedProviders: Array<'openai' | 'openrouter' | 'nvidia' | 'anthropic'> = [
-    'nvidia',
-    'openai',
-    'openrouter',
-    'anthropic',
-  ];
-
   const candidateProviders: Array<'openai' | 'openrouter' | 'nvidia' | 'anthropic'> = [];
-  if (primaryProvider !== 'gemini' && providerHasConfiguredCredential(input.config, primaryProvider)) {
-    candidateProviders.push(primaryProvider);
-  }
-  for (const p of allSupportedProviders) {
-    if (p !== primaryProvider && providerHasConfiguredCredential(input.config, p)) {
-      candidateProviders.push(p);
+  // Strictly use the primary provider chosen in Settings. Do not auto-fall back to NVIDIA or other providers
+  // unless the user explicitly selected them as their primary provider.
+  if (
+    primaryProvider === 'openai' ||
+    primaryProvider === 'openrouter' ||
+    primaryProvider === 'nvidia' ||
+    primaryProvider === 'anthropic'
+  ) {
+    if (providerHasConfiguredCredential(input.config, primaryProvider)) {
+      candidateProviders.push(primaryProvider);
     }
   }
 

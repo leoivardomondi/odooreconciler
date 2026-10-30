@@ -952,19 +952,15 @@ async function extractInvoiceWithConfiguredAi(input) {
     // accuracy only and would cause redundant sequential API calls for a single PDF page.
     const fullPageImagePaths = input.imagePaths.filter((p) => /-page-\d+\.[a-z]+$/i.test(p));
     const aiImagePaths = fullPageImagePaths.length > 0 ? fullPageImagePaths : input.imagePaths;
-    const allSupportedProviders = [
-        'nvidia',
-        'openai',
-        'openrouter',
-        'anthropic',
-    ];
     const candidateProviders = [];
-    if (primaryProvider !== 'gemini' && providerHasConfiguredCredential(input.config, primaryProvider)) {
-        candidateProviders.push(primaryProvider);
-    }
-    for (const p of allSupportedProviders) {
-        if (p !== primaryProvider && providerHasConfiguredCredential(input.config, p)) {
-            candidateProviders.push(p);
+    // Strictly use the primary provider chosen in Settings. Do not auto-fall back to NVIDIA or other providers
+    // unless the user explicitly selected them as their primary provider.
+    if (primaryProvider === 'openai' ||
+        primaryProvider === 'openrouter' ||
+        primaryProvider === 'nvidia' ||
+        primaryProvider === 'anthropic') {
+        if (providerHasConfiguredCredential(input.config, primaryProvider)) {
+            candidateProviders.push(primaryProvider);
         }
     }
     if (candidateProviders.length === 0) {
