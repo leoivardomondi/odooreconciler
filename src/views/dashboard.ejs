@@ -361,12 +361,13 @@
             <% const exhaustedCount = Number(run.context.exhaustedCount || 0); %>
             <% const cooldownBlockedCount = Number(run.context.cooldownBlockedCount || 0); %>
             <% const eligibleCount = Number(run.context.candidateFinancePdfCount || 0); %>
-            <% const runHealth = isPoBillRun && run.scannedCount === 0
+            <% const runHealth = run.status === 'started'
+              ? { label: 'In progress', tone: 'primary', note: run.summary || 'Processing documents in background...' }
+              : isPoBillRun && run.scannedCount === 0
               ? (exhaustedCount > 0 ? { label: 'Manual review needed', tone: 'danger', note: `${exhaustedCount} document(s) exhausted their automatic retry limit.` }
                 : cooldownBlockedCount > 0 ? { label: 'Waiting for retry window', tone: 'warning', note: `${cooldownBlockedCount} document(s) are cooling down before the next automatic check.` }
                 : eligibleCount === 0 ? { label: 'No Finance documents found', tone: 'secondary', note: 'The scheduler completed normally, but there were no candidate Finance documents in its lookback window.' }
                 : { label: 'No documents scanned', tone: 'info', note: 'Candidates were found, but none were eligible for this batch.' })
-              : run.status === 'started' ? { label: 'In progress', tone: 'primary', note: run.summary || 'Processing documents...' }
               : run.failedCount > 0 ? { label: 'Attention required', tone: 'danger', note: `${run.failedCount} document(s) failed during this run.` }
               : run.processedCount > 0 ? { label: 'Work completed', tone: 'success', note: `${run.processedCount} document(s) were processed successfully.` }
               : null; %>
@@ -804,5 +805,13 @@
     </section>
   <% } %>
 </main>
+
+<% if (scheduler && scheduler.recentRuns && scheduler.recentRuns.some(r => r.status === 'started')) { %>
+  <script>
+    window.setTimeout(() => {
+      window.location.reload();
+    }, 4000);
+  </script>
+<% } %>
 
 <%- include('partials/footer') %>
