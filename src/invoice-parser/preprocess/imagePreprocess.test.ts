@@ -19,3 +19,4 @@ test('fastAutoOrientImage skips orientation on cropped invoice sections', async 
   assert.equal(result.angle, 0);
   assert.equal(result.imagePath, 'tmp/inv-page-1-header-ocr.png');
 });
+

@@ -12,7 +12,11 @@ function orientationTextScore(text: string, confidence: number) {
   const normalized = text.toLowerCase();
   const readableCharacters = (normalized.match(/[a-z0-9]/g) || []).length;
   const invoiceTerms = (normalized.match(/\b(invoice|receipt|total|amount|vat|tax|date|quantity|price|description|supplier|comply|mdf|boards)\b/g) || []).length;
-  return confidence + Math.min(35, readableCharacters / 12) + Math.min(30, invoiceTerms * 5);
+  return {
+    score: confidence + Math.min(35, readableCharacters / 12) + Math.min(30, invoiceTerms * 5),
+    invoiceTerms,
+    readableCharacters,
+  };
 }
 
 export async function fastAutoOrientImage(
@@ -26,78 +30,124 @@ export async function fastAutoOrientImage(
     return { imagePath, angle: 0, warnings };
   }
 
-  try {
-    const canvasModule = await import('@napi-rs/canvas');
-    const imageBuffer = await fs.readFile(imagePath);
-    const image = await canvasModule.loadImage(imageBuffer);
+  const MAX_DETECT_TIMEOUT_MS = 15_000;
+  let timer: NodeJS.Timeout;
+  const timeoutPromise = new Promise<{ imagePath: string; angle: number; warnings: string[] }>((resolve) => {
+    timer = setTimeout(() => {
+      warnings.push(`Auto-orientation timed out after ${MAX_DETECT_TIMEOUT_MS / 1000}s; retaining original orientation.`);
+      resolve({ imagePath, angle: 0, warnings });
+    }, MAX_DETECT_TIMEOUT_MS);
+  });
 
-    // Use a small 600px thumbnail for rapid orientation detection (completes in ~3s instead of 5 minutes)
-    const scale = Math.min(1, 600 / Math.max(image.width, image.height));
-    const thumbWidth = Math.round(image.width * scale);
-    const thumbHeight = Math.round(image.height * scale);
-
-    const tesseract = await import('tesseract.js');
-    const worker = await tesseract.createWorker('eng', undefined, getBundledTesseractOptions());
-
-    let best = { angle: 0, score: Number.NEGATIVE_INFINITY };
-    let angle0Score = Number.NEGATIVE_INFINITY;
-
+  const detectionPromise = (async () => {
     try {
-      for (const angle of ORIENTATION_ANGLES) {
-        const swaps = angle === 90 || angle === 270;
-        const canvas = canvasModule.createCanvas(
-          swaps ? thumbHeight : thumbWidth,
-          swaps ? thumbWidth : thumbHeight,
+      const canvasModule = await import('@napi-rs/canvas');
+      const imageBuffer = await fs.readFile(imagePath);
+      const image = await canvasModule.loadImage(imageBuffer);
+
+      // Use a small 600px thumbnail for rapid orientation detection (completes in ~1-2s instead of 5 minutes)
+      const scale = Math.min(1, 600 / Math.max(image.width, image.height));
+      const thumbWidth = Math.round(image.width * scale);
+      const thumbHeight = Math.round(image.height * scale);
+
+      const tesseract = await import('tesseract.js');
+      const worker = await tesseract.createWorker('eng', undefined, getBundledTesseractOptions());
+
+      try {
+        // Step 1: Test Angle 0 first
+        const canvas0 = canvasModule.createCanvas(thumbWidth, thumbHeight);
+        const ctx0 = canvas0.getContext('2d');
+        ctx0.drawImage(image, 0, 0, thumbWidth, thumbHeight);
+        const buffer0 = await canvas0.encode('png');
+        const res0 = await worker.recognize(buffer0);
+        const score0 = orientationTextScore(res0.data.text || '', res0.data.confidence || 0);
+
+        // If Angle 0 is already upright with recognized invoice keywords, short-circuit immediately
+        if (score0.score >= 45 && score0.invoiceTerms >= 2) {
+          return { imagePath, angle: 0, warnings };
+        }
+
+        // Step 2: Test Angle 90 (the most common scanner/mobile orientation)
+        const canvas90 = canvasModule.createCanvas(thumbHeight, thumbWidth);
+        const ctx90 = canvas90.getContext('2d');
+        ctx90.translate(canvas90.width / 2, canvas90.height / 2);
+        ctx90.rotate((90 * Math.PI) / 180);
+        ctx90.drawImage(image, -thumbWidth / 2, -thumbHeight / 2, thumbWidth, thumbHeight);
+        const buffer90 = await canvas90.encode('png');
+        const res90 = await worker.recognize(buffer90);
+        const score90 = orientationTextScore(res90.data.text || '', res90.data.confidence || 0);
+
+        if (score90.score >= 45 && score90.invoiceTerms >= 2 && score90.score > score0.score + 4) {
+          // Angle 90 is decisively upright; rotate full-res image once and return immediately
+          const parsed = path.parse(imagePath);
+          const rotatedPath = path.join(parsed.dir, `${parsed.name}-oriented-90.png`);
+          const fullCanvas = canvasModule.createCanvas(image.height, image.width);
+          const fullCtx = fullCanvas.getContext('2d');
+          fullCtx.translate(fullCanvas.width / 2, fullCanvas.height / 2);
+          fullCtx.rotate((90 * Math.PI) / 180);
+          fullCtx.drawImage(image, -image.width / 2, -image.height / 2);
+          await fs.writeFile(rotatedPath, await fullCanvas.encode('png'));
+
+          warnings.push(`Auto-oriented ${path.basename(imagePath)} by 90 degrees for OCR.`);
+          return { imagePath: rotatedPath, angle: 90, warnings };
+        }
+
+        // Step 3: Test remaining orientations (180, 270) only if 0 and 90 are both inconclusive
+        let best = score90.score > score0.score ? { angle: 90, score: score90.score } : { angle: 0, score: score0.score };
+        for (const angle of [180, 270] as const) {
+          const swaps = angle === 270;
+          const canvas = canvasModule.createCanvas(
+            swaps ? thumbHeight : thumbWidth,
+            swaps ? thumbWidth : thumbHeight,
+          );
+          const ctx = canvas.getContext('2d');
+          ctx.translate(canvas.width / 2, canvas.height / 2);
+          ctx.rotate((angle * Math.PI) / 180);
+          ctx.drawImage(image, -thumbWidth / 2, -thumbHeight / 2, thumbWidth, thumbHeight);
+          const buffer = await canvas.encode('png');
+          const result = await worker.recognize(buffer);
+          const current = orientationTextScore(result.data.text || '', result.data.confidence || 0);
+          if (current.score > best.score) {
+            best = { angle, score: current.score };
+          }
+        }
+
+        if (best.angle === 0 || best.score < score0.score + 4) {
+          return { imagePath, angle: 0, warnings };
+        }
+
+        const parsed = path.parse(imagePath);
+        const rotatedPath = path.join(parsed.dir, `${parsed.name}-oriented-${best.angle}.png`);
+        const swaps = best.angle === 90 || best.angle === 270;
+        const fullCanvas = canvasModule.createCanvas(
+          swaps ? image.height : image.width,
+          swaps ? image.width : image.height,
         );
-        const ctx = canvas.getContext('2d');
-        ctx.translate(canvas.width / 2, canvas.height / 2);
-        ctx.rotate((angle * Math.PI) / 180);
-        ctx.drawImage(image, -thumbWidth / 2, -thumbHeight / 2, thumbWidth, thumbHeight);
-        const buffer = await canvas.encode('png');
+        const fullCtx = fullCanvas.getContext('2d');
+        fullCtx.translate(fullCanvas.width / 2, fullCanvas.height / 2);
+        fullCtx.rotate((best.angle * Math.PI) / 180);
+        fullCtx.drawImage(image, -image.width / 2, -image.height / 2);
+        await fs.writeFile(rotatedPath, await fullCanvas.encode('png'));
 
-        const result = await worker.recognize(buffer);
-        const text = result.data.text || '';
-        const confidence = typeof result.data.confidence === 'number' ? result.data.confidence : 0;
-        const score = orientationTextScore(text, confidence);
-        if (angle === 0) {
-          angle0Score = score;
-        }
-        if (score > best.score) {
-          best = { angle, score };
-        }
+        warnings.push(`Auto-oriented ${path.basename(imagePath)} by ${best.angle} degrees for OCR.`);
+        return { imagePath: rotatedPath, angle: best.angle, warnings };
+      } finally {
+        await worker.terminate().catch(() => undefined);
       }
-    } finally {
-      await worker.terminate().catch(() => undefined);
-    }
-
-    // Only rotate if another angle is meaningfully better than angle 0 (margin of at least 4 points)
-    if (best.angle === 0 || best.score < angle0Score + 4) {
+    } catch (error) {
+      warnings.push(
+        `Automatic image orientation failed for ${path.basename(imagePath)}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
       return { imagePath, angle: 0, warnings };
     }
+  })();
 
-    // Rotate full-resolution image once and save to a new file
-    const parsed = path.parse(imagePath);
-    const rotatedPath = path.join(parsed.dir, `${parsed.name}-oriented-${best.angle}.png`);
-    const swaps = best.angle === 90 || best.angle === 270;
-    const fullCanvas = canvasModule.createCanvas(
-      swaps ? image.height : image.width,
-      swaps ? image.width : image.height,
-    );
-    const fullCtx = fullCanvas.getContext('2d');
-    fullCtx.translate(fullCanvas.width / 2, fullCanvas.height / 2);
-    fullCtx.rotate((best.angle * Math.PI) / 180);
-    fullCtx.drawImage(image, -image.width / 2, -image.height / 2);
-    await fs.writeFile(rotatedPath, await fullCanvas.encode('png'));
-
-    warnings.push(`Auto-oriented ${path.basename(imagePath)} by ${best.angle} degrees for OCR.`);
-    return { imagePath: rotatedPath, angle: best.angle, warnings };
-  } catch (error) {
-    warnings.push(
-      `Automatic image orientation failed for ${path.basename(imagePath)}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
-    return { imagePath, angle: 0, warnings };
+  try {
+    return await Promise.race([detectionPromise, timeoutPromise]);
+  } finally {
+    clearTimeout(timer!);
   }
 }
 

@@ -3203,10 +3203,10 @@ async function runPoBillAutomationInternal(client, input) {
 }
 async function runPoBillAutomation(client, input) {
     const startedAt = Date.now();
-    const TIMEOUT_MS = 90_000;
+    const TIMEOUT_MS = 300_000;
     let timer;
     const timeoutPromise = new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error('PO bill automation timed out after 90 seconds.')), TIMEOUT_MS);
+        timer = setTimeout(() => reject(new Error('PO bill automation timed out after 5 minutes.')), TIMEOUT_MS);
     });
     try {
         const result = await Promise.race([
