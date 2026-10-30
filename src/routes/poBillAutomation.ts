@@ -138,9 +138,9 @@ router.get('/po-bill-automation', async (req, res) => {
       }
     : null;
 
-  if (manualJob && manualJob.status === 'running' && manualJobView && Date.now() - manualJobView.startedAt > 180_000) {
+  if (manualJob && manualJob.status === 'running' && manualJobView && Date.now() - manualJobView.startedAt > 300_000) {
     manualJob.status = 'failed';
-    manualJob.errorMessage = 'PO bill check timed out after exceeding 3 minutes.';
+    manualJob.errorMessage = 'PO bill check timed out after exceeding 5 minutes.';
     manualJobView.status = 'failed';
     void completePoBillManualJob({ id: manualJob.id, status: 'failed', errorMessage: manualJob.errorMessage }).catch(() => undefined);
   }
@@ -254,9 +254,9 @@ router.get('/po-bill-automation/manual-jobs/:jobId', async (req, res) => {
   try {
     const job = await getPoBillManualJobById(req.params.jobId);
     const startedAt = Date.parse(job.startedAt || job.createdAt) || Date.now();
-    if (job.status === 'running' && Date.now() - startedAt > 180_000) {
+    if (job.status === 'running' && Date.now() - startedAt > 300_000) {
       job.status = 'failed';
-      job.errorMessage = 'PO bill check timed out after exceeding 3 minutes.';
+      job.errorMessage = 'PO bill check timed out after exceeding 5 minutes.';
       void completePoBillManualJob({ id: job.id, status: 'failed', errorMessage: job.errorMessage }).catch(() => undefined);
     }
     res.json({ ok: true, job });

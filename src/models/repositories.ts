@@ -2586,7 +2586,7 @@ export async function cleanupOrphanedPoBillManualJobs() {
   );
 }
 
-export async function reclaimStalePoBillManualJobs(minutes = 2) {
+export async function reclaimStalePoBillManualJobs(minutes = 5) {
   await execute(
     `UPDATE po_bill_manual_jobs SET status = 'failed', error_message = 'Job timed out after exceeding maximum duration.', completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE status = 'running' AND updated_at < ?`,
     [staleJobCutoff(minutes)],

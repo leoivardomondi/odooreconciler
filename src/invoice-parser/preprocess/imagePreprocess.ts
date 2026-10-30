@@ -11,7 +11,7 @@ const ORIENTATION_ANGLES = [0, 90, 180, 270] as const;
 function orientationTextScore(text: string, confidence: number) {
   const normalized = text.toLowerCase();
   const readableCharacters = (normalized.match(/[a-z0-9]/g) || []).length;
-  const invoiceTerms = (normalized.match(/\b(invoice|receipt|total|amount|vat|tax|date|quantity|price|description|supplier|comply|mdf|boards)\b/g) || []).length;
+  const invoiceTerms = (normalized.match(/\b(invoice|receipt|total|amount|vat|tax|date|quantity|price|description|supplier|buyer|goods|order|delivery|comply|mdf|boards|laboratories|supply|limited)\b/g) || []).length;
   return {
     score: confidence + Math.min(35, readableCharacters / 12) + Math.min(30, invoiceTerms * 5),
     invoiceTerms,
@@ -45,8 +45,8 @@ export async function fastAutoOrientImage(
       const imageBuffer = await fs.readFile(imagePath);
       const image = await canvasModule.loadImage(imageBuffer);
 
-      // Use a small 600px thumbnail for rapid orientation detection (completes in ~1-2s instead of 5 minutes)
-      const scale = Math.min(1, 600 / Math.max(image.width, image.height));
+      // Rapid orientation detection using a small 800px thumbnail (<1s per test)
+      const scale = Math.min(1, 800 / Math.max(image.width, image.height));
       const thumbWidth = Math.round(image.width * scale);
       const thumbHeight = Math.round(image.height * scale);
 
@@ -62,12 +62,12 @@ export async function fastAutoOrientImage(
         const res0 = await worker.recognize(buffer0);
         const score0 = orientationTextScore(res0.data.text || '', res0.data.confidence || 0);
 
-        // If Angle 0 is already upright with recognized invoice keywords, short-circuit immediately
+        // If Angle 0 is already upright with recognized invoice keywords, short-circuit immediately in <1s
         if (score0.score >= 45 && score0.invoiceTerms >= 2) {
           return { imagePath, angle: 0, warnings };
         }
 
-        // Step 2: Test Angle 90 (the most common scanner/mobile orientation)
+        // Step 2: Test Angle 90 (the standard clockwise orientation for sideways scans)
         const canvas90 = canvasModule.createCanvas(thumbHeight, thumbWidth);
         const ctx90 = canvas90.getContext('2d');
         ctx90.translate(canvas90.width / 2, canvas90.height / 2);
@@ -77,8 +77,8 @@ export async function fastAutoOrientImage(
         const res90 = await worker.recognize(buffer90);
         const score90 = orientationTextScore(res90.data.text || '', res90.data.confidence || 0);
 
-        if (score90.score >= 45 && score90.invoiceTerms >= 2 && score90.score > score0.score + 4) {
-          // Angle 90 is decisively upright; rotate full-res image once and return immediately
+        if (score90.invoiceTerms >= 1 && score90.score > score0.score + 5) {
+          // Angle 90 is upright and readable
           const parsed = path.parse(imagePath);
           const rotatedPath = path.join(parsed.dir, `${parsed.name}-oriented-90.png`);
           const fullCanvas = canvasModule.createCanvas(image.height, image.width);
@@ -93,7 +93,11 @@ export async function fastAutoOrientImage(
         }
 
         // Step 3: Test remaining orientations (180, 270) only if 0 and 90 are both inconclusive
-        let best = score90.score > score0.score ? { angle: 90, score: score90.score } : { angle: 0, score: score0.score };
+        let best =
+          score90.score > score0.score
+            ? { angle: 90, score: score90.score, terms: score90.invoiceTerms }
+            : { angle: 0, score: score0.score, terms: score0.invoiceTerms };
+
         for (const angle of [180, 270] as const) {
           const swaps = angle === 270;
           const canvas = canvasModule.createCanvas(
@@ -104,15 +108,19 @@ export async function fastAutoOrientImage(
           ctx.translate(canvas.width / 2, canvas.height / 2);
           ctx.rotate((angle * Math.PI) / 180);
           ctx.drawImage(image, -thumbWidth / 2, -thumbHeight / 2, thumbWidth, thumbHeight);
-          const buffer = await canvas.encode('png');
-          const result = await worker.recognize(buffer);
-          const current = orientationTextScore(result.data.text || '', result.data.confidence || 0);
-          if (current.score > best.score) {
-            best = { angle, score: current.score };
+          const buf = await canvas.encode('png');
+          const res = await worker.recognize(buf);
+          const score = orientationTextScore(res.data.text || '', res.data.confidence || 0);
+
+          if (
+            score.invoiceTerms > best.terms ||
+            (score.invoiceTerms === best.terms && score.score > best.score + 5)
+          ) {
+            best = { angle, score: score.score, terms: score.invoiceTerms };
           }
         }
 
-        if (best.angle === 0 || best.score < score0.score + 4) {
+        if (best.angle === 0) {
           return { imagePath, angle: 0, warnings };
         }
 

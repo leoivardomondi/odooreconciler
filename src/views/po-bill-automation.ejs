@@ -613,13 +613,20 @@
       };
       updateElapsed();
       if (!finishedAt) {
-        window.setInterval(updateElapsed, 1000);
+        const timerId = window.setInterval(updateElapsed, 1000);
+        const nextUrl = new URL(window.location.href);
+        nextUrl.pathname = '/po-bill-automation';
+        nextUrl.searchParams.set('jobId', manualJobCard.dataset.manualJobId || '');
+        window.history.replaceState({}, '', nextUrl);
+        if (Date.now() - startedAt < 305_000) {
+          window.setTimeout(() => window.location.reload(), 5000);
+        } else {
+          window.clearInterval(timerId);
+          if (elapsed) elapsed.textContent = 'Elapsed: timed out after 5 minutes.';
+          const badge = manualJobCard.querySelector('.badge');
+          if (badge) { badge.className = 'badge bg-danger text-white'; badge.textContent = 'Timed Out'; }
+        }
       }
-      const nextUrl = new URL(window.location.href);
-      nextUrl.pathname = '/po-bill-automation';
-      nextUrl.searchParams.set('jobId', manualJobCard.dataset.manualJobId || '');
-      window.history.replaceState({}, '', nextUrl);
-      window.setTimeout(() => window.location.reload(), 5000);
     }
   <% } %>
 </script>

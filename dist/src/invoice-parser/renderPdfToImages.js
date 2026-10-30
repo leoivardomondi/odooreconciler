@@ -52,16 +52,81 @@ async function writeCrop(input) {
     cropContext.drawImage(input.canvas, input.x, input.y, input.width, input.height, 0, 0, input.width, input.height);
     await promises_1.default.writeFile(input.imagePath, await cropCanvas.encode('png'));
 }
+async function extractEmbeddedJpegsFromPdf(buffer, tempDir, baseName) {
+    const images = [];
+    let searchOffset = 0;
+    let pageNumber = 1;
+    while (searchOffset < buffer.length) {
+        const streamStart = buffer.indexOf(Buffer.from('stream'), searchOffset);
+        if (streamStart === -1)
+            break;
+        let dataStart = streamStart + 6;
+        while (dataStart < buffer.length && (buffer[dataStart] === 0x0d || buffer[dataStart] === 0x0a)) {
+            dataStart += 1;
+        }
+        if (dataStart + 3 < buffer.length &&
+            buffer[dataStart] === 0xff &&
+            buffer[dataStart + 1] === 0xd8 &&
+            buffer[dataStart + 2] === 0xff) {
+            const streamEnd = buffer.indexOf(Buffer.from('endstream'), dataStart);
+            if (streamEnd !== -1) {
+                let eoiIndex = -1;
+                for (let i = streamEnd - 1; i >= dataStart; i -= 1) {
+                    if (buffer[i] === 0xff && buffer[i + 1] === 0xd9) {
+                        eoiIndex = i + 2;
+                        break;
+                    }
+                }
+                if (eoiIndex > dataStart) {
+                    const jpegData = buffer.subarray(dataStart, eoiIndex);
+                    // High-res scanned page JPEGs are typically > 40KB
+                    if (jpegData.length > 40_000) {
+                        const imagePath = path_1.default.join(tempDir, `${baseName}-page-${pageNumber}.jpg`);
+                        await promises_1.default.writeFile(imagePath, jpegData);
+                        images.push({ pageNumber, imagePath });
+                        pageNumber += 1;
+                    }
+                }
+            }
+        }
+        searchOffset = streamStart + 6;
+    }
+    return images;
+}
 async function renderPdfToImages(filePath) {
     const extension = path_1.default.extname(filePath).toLowerCase();
     if (IMAGE_EXTENSIONS.has(extension)) {
         return { images: [{ pageNumber: 1, imagePath: filePath }], warnings: [] };
     }
     const warnings = [];
+    const tempDir = await ensureTempDir();
+    const baseName = `${path_1.default.basename(filePath, extension)}-${Date.now()}`;
+    // Step 1: For scanned PDFs (CamScanner, HP, Canon, mobile scanners), directly extract
+    // embedded raw JPEGs. This is instantaneous (<10ms), preserves full scanner DPI,
+    // and prevents heavy PDF.js canvas allocation crashes on huge bitmaps.
+    try {
+        const fileBuffer = await promises_1.default.readFile(filePath);
+        const embeddedImages = await extractEmbeddedJpegsFromPdf(fileBuffer, tempDir, baseName);
+        if (embeddedImages.length > 0) {
+            return { images: embeddedImages, warnings };
+        }
+    }
+    catch (extractError) {
+        // Non-fatal: proceed to standard PDF.js canvas rendering
+    }
     let pdf = null;
     try {
-        const pdfjs = await Promise.resolve().then(() => __importStar(require('pdfjs-dist/legacy/build/pdf.mjs')));
         const canvasModule = await Promise.resolve().then(() => __importStar(require('@napi-rs/canvas')));
+        if (!globalThis.ImageData) {
+            globalThis.ImageData = canvasModule.ImageData;
+        }
+        if (!globalThis.DOMMatrix) {
+            globalThis.DOMMatrix = canvasModule.DOMMatrix;
+        }
+        if (!globalThis.Path2D) {
+            globalThis.Path2D = canvasModule.Path2D;
+        }
+        const pdfjs = await Promise.resolve().then(() => __importStar(require('pdfjs-dist/legacy/build/pdf.mjs')));
         const data = new Uint8Array(await promises_1.default.readFile(filePath));
         const documentTask = pdfjs.getDocument({
             data,
@@ -69,8 +134,6 @@ async function renderPdfToImages(filePath) {
             isEvalSupported: false,
         });
         pdf = await documentTask.promise;
-        const tempDir = await ensureTempDir();
-        const baseName = `${path_1.default.basename(filePath, extension)}-${Date.now()}`;
         const images = [];
         for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
             const page = await pdf.getPage(pageNumber);
@@ -124,8 +187,6 @@ async function renderPdfToImages(filePath) {
     }
     finally {
         if (pdf) {
-            // Some pdfjs/pdf-parse implementations do not expose destroy(). Cleanup
-            // must never turn an otherwise successful PDF render into a failed job.
             if (typeof pdf.destroy === 'function') {
                 await pdf.destroy().catch(() => undefined);
             }

@@ -30,6 +30,59 @@ async function writeCrop(input: {
   await fs.writeFile(input.imagePath, await cropCanvas.encode('png'));
 }
 
+async function extractEmbeddedJpegsFromPdf(
+  buffer: Buffer,
+  tempDir: string,
+  baseName: string,
+): Promise<RenderedPageImage[]> {
+  const images: RenderedPageImage[] = [];
+  let searchOffset = 0;
+  let pageNumber = 1;
+
+  while (searchOffset < buffer.length) {
+    const streamStart = buffer.indexOf(Buffer.from('stream'), searchOffset);
+    if (streamStart === -1) break;
+
+    let dataStart = streamStart + 6;
+    while (dataStart < buffer.length && (buffer[dataStart] === 0x0d || buffer[dataStart] === 0x0a)) {
+      dataStart += 1;
+    }
+
+    if (
+      dataStart + 3 < buffer.length &&
+      buffer[dataStart] === 0xff &&
+      buffer[dataStart + 1] === 0xd8 &&
+      buffer[dataStart + 2] === 0xff
+    ) {
+      const streamEnd = buffer.indexOf(Buffer.from('endstream'), dataStart);
+      if (streamEnd !== -1) {
+        let eoiIndex = -1;
+        for (let i = streamEnd - 1; i >= dataStart; i -= 1) {
+          if (buffer[i] === 0xff && buffer[i + 1] === 0xd9) {
+            eoiIndex = i + 2;
+            break;
+          }
+        }
+
+        if (eoiIndex > dataStart) {
+          const jpegData = buffer.subarray(dataStart, eoiIndex);
+          // High-res scanned page JPEGs are typically > 40KB
+          if (jpegData.length > 40_000) {
+            const imagePath = path.join(tempDir, `${baseName}-page-${pageNumber}.jpg`);
+            await fs.writeFile(imagePath, jpegData);
+            images.push({ pageNumber, imagePath });
+            pageNumber += 1;
+          }
+        }
+      }
+    }
+
+    searchOffset = streamStart + 6;
+  }
+
+  return images;
+}
+
 export async function renderPdfToImages(filePath: string): Promise<{
   images: RenderedPageImage[];
   warnings: string[];
@@ -40,10 +93,36 @@ export async function renderPdfToImages(filePath: string): Promise<{
   }
 
   const warnings: string[] = [];
+  const tempDir = await ensureTempDir();
+  const baseName = `${path.basename(filePath, extension)}-${Date.now()}`;
+
+  // Step 1: For scanned PDFs (CamScanner, HP, Canon, mobile scanners), directly extract
+  // embedded raw JPEGs. This is instantaneous (<10ms), preserves full scanner DPI,
+  // and prevents heavy PDF.js canvas allocation crashes on huge bitmaps.
+  try {
+    const fileBuffer = await fs.readFile(filePath);
+    const embeddedImages = await extractEmbeddedJpegsFromPdf(fileBuffer, tempDir, baseName);
+    if (embeddedImages.length > 0) {
+      return { images: embeddedImages, warnings };
+    }
+  } catch (extractError) {
+    // Non-fatal: proceed to standard PDF.js canvas rendering
+  }
+
   let pdf: any = null;
   try {
-    const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
     const canvasModule = await import('@napi-rs/canvas');
+    if (!(globalThis as any).ImageData) {
+      (globalThis as any).ImageData = canvasModule.ImageData;
+    }
+    if (!(globalThis as any).DOMMatrix) {
+      (globalThis as any).DOMMatrix = canvasModule.DOMMatrix;
+    }
+    if (!(globalThis as any).Path2D) {
+      (globalThis as any).Path2D = canvasModule.Path2D;
+    }
+
+    const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
     const data = new Uint8Array(await fs.readFile(filePath));
     const documentTask = pdfjs.getDocument({
       data,
@@ -51,8 +130,6 @@ export async function renderPdfToImages(filePath: string): Promise<{
       isEvalSupported: false,
     } as unknown as Parameters<typeof pdfjs.getDocument>[0]);
     pdf = await documentTask.promise;
-    const tempDir = await ensureTempDir();
-    const baseName = `${path.basename(filePath, extension)}-${Date.now()}`;
     const images: RenderedPageImage[] = [];
 
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
@@ -110,11 +187,9 @@ export async function renderPdfToImages(filePath: string): Promise<{
     return { images: [], warnings };
   } finally {
     if (pdf) {
-    // Some pdfjs/pdf-parse implementations do not expose destroy(). Cleanup
-    // must never turn an otherwise successful PDF render into a failed job.
-    if (typeof (pdf as any).destroy === 'function') {
-      await (pdf as any).destroy().catch(() => undefined);
-    }
+      if (typeof (pdf as any).destroy === 'function') {
+        await (pdf as any).destroy().catch(() => undefined);
+      }
     }
   }
 }
