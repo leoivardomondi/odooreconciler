@@ -55,27 +55,13 @@ function shouldUseGeminiVisionFallback(text) {
         repeatedInvoiceSignals >= 8 ||
         fragmentedSignals >= 2;
 }
-async function maybeRunGeminiVisionFallback(pages, imagePaths, ocrConfig, geminiApiKey, geminiOAuthConnected, warnings) {
-    if (!ocrConfig?.geminiFallbackEnabled || ocrConfig.provider === 'gemini_vision') {
-        return pages;
-    }
-    const text = pages.map((page) => page.text).join('\n\n');
-    if (!shouldUseGeminiVisionFallback(text))
-        return pages;
-    warnings.push('Gemini Vision OCR second pass started because the primary OCR result was fragmented, duplicated, or incomplete.');
-    const gemini = await (0, geminiVisionOcr_1.geminiVisionOcr)(imagePaths, ocrConfig, geminiApiKey, geminiOAuthConnected);
-    warnings.push(...gemini.warnings);
-    if (gemini.pages.length === 0)
-        return pages;
-    warnings.push(`Gemini Vision OCR second pass extracted text from ${gemini.pages.length}/${imagePaths.length} page/crop image(s).`);
-    const geminiPageNumbers = new Set(gemini.pages.map((page) => page.pageNumber));
-    const primaryPagesWithoutGeminiResult = pages.filter((page) => !geminiPageNumbers.has(page.pageNumber));
-    return mergeOcrPages([...primaryPagesWithoutGeminiResult, ...gemini.pages]);
+async function maybeRunGeminiVisionFallback(pages, _imagePaths, _ocrConfig, _geminiApiKey, _geminiOAuthConnected, _warnings) {
+    // Gemini is disabled for now
+    return pages;
 }
 async function runOcr(imagePaths, preferredOcr, ocrConfig, geminiApiKey, geminiOAuthConnected) {
     const warnings = [];
-    const useGemini = preferredOcr === 'gemini_vision' ||
-        ocrConfig?.provider === 'gemini_vision';
+    const useGemini = false;
     if (useGemini) {
         const gemini = await (0, geminiVisionOcr_1.geminiVisionOcr)(imagePaths, ocrConfig, geminiApiKey, geminiOAuthConnected);
         warnings.push(...gemini.warnings);

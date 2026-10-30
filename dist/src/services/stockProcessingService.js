@@ -1,6 +1,9 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.normalizeColor = normalizeColor;
+exports.normalizeServiceProductName = normalizeServiceProductName;
+exports.getLineDescriptionCandidates = getLineDescriptionCandidates;
+exports.extractServiceColor = extractServiceColor;
 exports.matchSoLine = matchSoLine;
 exports.matchSoLines = matchSoLines;
 exports.computeExtractedMeters = computeExtractedMeters;

@@ -2,6 +2,7 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.refreshCustomerMirror = refreshCustomerMirror;
 exports.searchCustomers = searchCustomers;
+exports.invalidateCustomerMirrorPageCache = invalidateCustomerMirrorPageCache;
 exports.getCustomersForPage = getCustomersForPage;
 exports.startCustomerMirrorInterval = startCustomerMirrorInterval;
 const repositories_1 = require("../models/repositories");
@@ -86,6 +87,7 @@ async function refreshCustomerMirror() {
                 syncedAt,
             }));
             await (0, repositories_1.upsertCustomerPartnerMirror)(entries);
+            invalidateCustomerMirrorPageCache();
             await (0, logService_1.logEvent)('info', 'Customer mirror synced from Odoo', {
                 count: entries.length,
             }).catch(() => undefined);
@@ -142,17 +144,27 @@ async function searchCustomers(searchTerm, limit = 40) {
     }
     return [];
 }
+let cachedCustomersForPage = null;
+function invalidateCustomerMirrorPageCache() {
+    cachedCustomersForPage = null;
+}
 /**
  * Get customers for initial page rendering (e.g. top active clients).
  */
 async function getCustomersForPage(limit = 100) {
+    const now = Date.now();
+    if (cachedCustomersForPage && cachedCustomersForPage.freshUntil > now) {
+        return cachedCustomersForPage.data.slice(0, limit);
+    }
     const count = await (0, repositories_1.getCustomerPartnerMirrorCount)();
     if (count === 0) {
         void refreshCustomerMirror().catch(() => undefined);
         return [];
     }
-    const rows = await (0, repositories_1.getCustomerPartnerMirror)(limit);
-    return rows.map((r) => ({ id: r.partnerId, name: r.name }));
+    const rows = await (0, repositories_1.getCustomerPartnerMirror)(Math.max(limit, 200));
+    const result = rows.map((r) => ({ id: r.partnerId, name: r.name }));
+    cachedCustomersForPage = { data: result, freshUntil: now + 60 * 1000 };
+    return result.slice(0, limit);
 }
 /**
  * Start recurring background customer mirror interval.

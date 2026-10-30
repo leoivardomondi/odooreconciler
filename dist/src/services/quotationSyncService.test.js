@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -313,6 +346,54 @@ const helpers_1 = require("../utils/helpers");
     strict_1.default.equal(result.boardDetails[1].quotedSheets, 4);
     strict_1.default.equal(result.boardDetails[1].requiredSheets, 4);
 });
+(0, node_test_1.default)('compareQuotationLinesWithJobSummary accurately matches edge banding service colors without false positives', () => {
+    const parsedJobSummary = {
+        items: [
+            {
+                color: 'White',
+                thickness_mm: 1,
+                length_mm: 17000, // 17m
+                roll_length_mm: 15000,
+            },
+        ],
+        sectionFound: true,
+        sectionText: '',
+        rawText: '',
+        logs: [],
+        clientName: 'TEST CLIENT',
+        optimizedSheets: 0,
+        totalPanels: 0,
+        sheetMaterials: [],
+    };
+    // Case 1: Quotation only has "Edge Banding Service Off-white" -> Should NOT match "White"
+    const offWhiteOnlyLines = [
+        {
+            id: 1,
+            name: 'Edge Banding Service Off-white',
+            product_id: [932, 'Edge Banding Service Off-white'],
+            product_uom_qty: 17,
+            display_type: false,
+        },
+    ];
+    const offWhiteResult = (0, quotationSyncService_1.compareQuotationLinesWithJobSummary)(offWhiteOnlyLines, parsedJobSummary);
+    strict_1.default.equal(offWhiteResult.hasShortfall, true);
+    strict_1.default.equal(offWhiteResult.edgingDetails[0].quotedMeters, 0);
+    strict_1.default.equal(offWhiteResult.edgingDetails[0].isSufficient, false);
+    // Case 2: Quotation has "Edge Banding Service White" -> Matches exactly
+    const whiteLines = [
+        {
+            id: 2,
+            name: 'Edge Banding Service White',
+            product_id: [115, 'Edge Banding Service White'],
+            product_uom_qty: 17,
+            display_type: false,
+        },
+    ];
+    const whiteResult = (0, quotationSyncService_1.compareQuotationLinesWithJobSummary)(whiteLines, parsedJobSummary);
+    strict_1.default.equal(whiteResult.hasShortfall, false);
+    strict_1.default.equal(whiteResult.edgingDetails[0].quotedMeters, 17);
+    strict_1.default.equal(whiteResult.edgingDetails[0].isSufficient, true);
+});
 (0, node_test_1.default)('parseJobSummaryPdf extracts sheet materials and header metrics from user PDF', async () => {
     const samplePdfPath = 'C:/Users/ADMIN/.gemini/antigravity-ide/brain/4bbdfaaa-f3d6-4738-b235-1c89d579bcb5/.user_uploaded/media_1792362774320.pdf';
     if (!fs_1.default.existsSync(samplePdfPath)) {
@@ -331,4 +412,35 @@ const helpers_1 = require("../utils/helpers");
     strict_1.default.equal(parsed.items.length, 1);
     strict_1.default.equal(parsed.items[0].color, 'White');
     strict_1.default.equal(parsed.items[0].length_mm, 16200);
+});
+(0, node_test_1.default)('getScopedQuotationCategories correctly groups categories into boards and services', async () => {
+    const { getScopedQuotationCategories } = await Promise.resolve().then(() => __importStar(require('./quotationSyncService')));
+    const mockClient = {
+        searchReadRecords: async (model) => {
+            if (model === 'product.category') {
+                return [
+                    { id: 1, name: 'Goods', complete_name: 'Goods' },
+                    { id: 7, name: 'Boards', complete_name: 'Goods / Boards' },
+                    { id: 11, name: 'Nicewood Boards', complete_name: 'Goods / Nicewood Boards' },
+                    { id: 3, name: 'Services', complete_name: 'Services' },
+                    { id: 6, name: 'Cutting', complete_name: 'Services / Cutting' },
+                    { id: 12, name: 'Cutting Nicewood', complete_name: 'Services / Cutting Nicewood' },
+                    { id: 5, name: 'Edging services', complete_name: 'Services / Edging services' },
+                    { id: 4, name: 'Grooving', complete_name: 'Services / Grooving' },
+                    { id: 8, name: 'Accessories', complete_name: 'Accessories' },
+                ];
+            }
+            return [];
+        },
+    };
+    const result = await getScopedQuotationCategories(mockClient);
+    strict_1.default.deepEqual(result.boardCategoryIds.sort(), [7, 11].sort());
+    strict_1.default.deepEqual(result.cuttingCategoryIds.sort(), [6, 12].sort());
+    strict_1.default.deepEqual(result.edgingCategoryIds, [5]);
+    strict_1.default.ok(result.allRelevantIds.includes(5));
+    strict_1.default.ok(result.allRelevantIds.includes(6));
+    strict_1.default.ok(result.allRelevantIds.includes(7));
+    // Non-relevant categories like Accessories (8) and Goods parent (1) must NOT be in allRelevantIds
+    strict_1.default.equal(result.allRelevantIds.includes(8), false);
+    strict_1.default.equal(result.allRelevantIds.includes(1), false);
 });

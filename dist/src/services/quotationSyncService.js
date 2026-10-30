@@ -4,6 +4,7 @@ exports.QUOTATION_BOARD_SELECTION_ACTIVITY_SUMMARY = exports.QUOTATION_DISCREPAN
 exports.lineDisplayName = lineDisplayName;
 exports.isTemplateOnlyQuotation = isTemplateOnlyQuotation;
 exports.compareQuotationLinesWithJobSummary = compareQuotationLinesWithJobSummary;
+exports.getScopedQuotationCategories = getScopedQuotationCategories;
 exports.syncQuotationWithJobSummary = syncQuotationWithJobSummary;
 const boardProductClassifier_1 = require("./boardProductClassifier");
 const logService_1 = require("./logService");
@@ -89,12 +90,17 @@ function compareQuotationLinesWithJobSummary(lines, parsed) {
     for (const item of parsed.items || []) {
         const requiredMeters = Math.round((item.length_mm || 0) / 1000);
         const normalizedItemColor = (0, stockProcessingService_1.normalizeColor)(item.color);
+        const colorRegex = new RegExp(`\\b${normalizedItemColor.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')}\\b`, 'i');
         const matchingEdgingLines = productLines.filter((line) => {
-            const name = lineDisplayName(line).toLowerCase();
-            if (!name.includes('edge band') && !name.includes('edging band'))
+            const name = lineDisplayName(line);
+            if (!(0, boardProductClassifier_1.isStockExemptEdgeBandingService)(name))
                 return false;
+            const extractedColor = (0, stockProcessingService_1.extractServiceColor)(name);
+            if (extractedColor) {
+                return extractedColor === normalizedItemColor;
+            }
             const normalizedLineName = (0, stockProcessingService_1.normalizeColor)(name);
-            return normalizedLineName.includes(normalizedItemColor);
+            return colorRegex.test(normalizedLineName);
         });
         const quotedMeters = matchingEdgingLines.reduce((sum, l) => sum + (Number(l.product_uom_qty) || 0), 0);
         const isSufficient = quotedMeters >= requiredMeters;
@@ -122,6 +128,65 @@ function compareQuotationLinesWithJobSummary(lines, parsed) {
 }
 function resolveSalespersonUserId(order) {
     return relationId(order.user_id) || relationId(order.create_uid);
+}
+let cachedQuotationCategories = null;
+async function getScopedQuotationCategories(client) {
+    const now = Date.now();
+    if (cachedQuotationCategories && now - cachedQuotationCategories.timestamp < 3600_000) {
+        return cachedQuotationCategories.categories;
+    }
+    try {
+        const categories = await client.searchReadRecords('product.category', {
+            domain: [],
+            fields: ['id', 'name', 'complete_name'],
+            limit: 100,
+        });
+        const boardCategoryIds = [];
+        const cuttingCategoryIds = [];
+        const edgingCategoryIds = [];
+        const allRelevantIds = [];
+        for (const c of categories) {
+            const complete = (c.complete_name || c.name || '').toLowerCase();
+            let matched = false;
+            if (complete.includes('board')) {
+                boardCategoryIds.push(c.id);
+                matched = true;
+            }
+            if (complete.includes('cutting')) {
+                cuttingCategoryIds.push(c.id);
+                matched = true;
+            }
+            if (complete.includes('edging service')) {
+                edgingCategoryIds.push(c.id);
+                matched = true;
+            }
+            if (complete.startsWith('services') || complete === 'services') {
+                matched = true;
+            }
+            if (matched) {
+                allRelevantIds.push(c.id);
+            }
+        }
+        if (allRelevantIds.length > 0) {
+            const result = {
+                allRelevantIds: [...new Set(allRelevantIds)],
+                boardCategoryIds: boardCategoryIds.length > 0 ? [...new Set(boardCategoryIds)] : [7, 11],
+                cuttingCategoryIds: cuttingCategoryIds.length > 0 ? [...new Set(cuttingCategoryIds)] : [6, 12],
+                edgingCategoryIds: edgingCategoryIds.length > 0 ? [...new Set(edgingCategoryIds)] : [5],
+            };
+            cachedQuotationCategories = { categories: result, timestamp: now };
+            return result;
+        }
+    }
+    catch {
+        // If fetching categories fails, fallback to known defaults
+    }
+    return {
+        allRelevantIds: [3, 4, 5, 6, 7, 11, 12],
+        boardCategoryIds: [7, 11],
+        cuttingCategoryIds: [6, 12],
+        edgingCategoryIds: [5],
+    };
 }
 /**
  * Main synchronizer:
@@ -181,23 +246,26 @@ async function syncQuotationWithJobSummary(client, orderId, parsed) {
         let serviceSequence = 21;
         const exampleBoardLine = lines.find((l) => !l.display_type && /example\s+board/i.test(lineDisplayName(l)));
         const optimisedPanelsLine = lines.find((l) => !l.display_type && /optimis?ed\s+panels?/i.test(lineDisplayName(l)));
-        // Fetch candidate products in bulk (lightning-fast single RPC call)
+        // Fetch relevant category IDs (Goods/Boards, Services/Cutting, Services/Edging)
+        const categories = await getScopedQuotationCategories(client);
+        // Fetch candidate products in bulk (scoped strictly to Boards & Services categories)
         const candidateProducts = await client.searchReadRecords('product.product', {
             domain: [
                 ['sale_ok', '=', true],
+                ['categ_id', 'in', categories.allRelevantIds],
             ],
             fields: ['id', 'name', 'display_name'],
-            limit: 500,
+            limit: 5000,
         });
         const sheetMaterials = parsed.sheetMaterials || [];
         let exampleBoardUsed = false;
-        // Helper to find raw board product in candidateProducts
-        function findRawBoard(matName, thicknessMm) {
+        // Helper to find raw board product in candidateProducts with targeted RPC fallback
+        async function findRawBoard(matName, thicknessMm) {
             const cleanName = matName.replace(/^cutting\s+/i, '').trim();
             const normClean = (0, boardProductClassifier_1.normalizeBoardProductName)(cleanName);
             const matWords = normClean.split(/[\s_\-/]+/).filter((w) => w.length > 2 && !['board', 'boards', 'sheet', 'sheets'].includes(w));
-            return candidateProducts.find((p) => {
-                const prodName = (p.display_name || p.name || '');
+            const matchInList = (list) => list.find((p) => {
+                const prodName = p.display_name || p.name || '';
                 if (!(0, boardProductClassifier_1.isRawBoardProductName)(prodName))
                     return false;
                 const normProd = (0, boardProductClassifier_1.normalizeBoardProductName)(prodName);
@@ -209,14 +277,38 @@ async function syncQuotationWithJobSummary(client, orderId, parsed) {
                 }
                 return matWords.length > 0 && matWords.every((w) => normProd.includes(w));
             });
+            const existing = matchInList(candidateProducts);
+            if (existing)
+                return existing;
+            if (matWords.length > 0) {
+                try {
+                    const domain = [
+                        ['sale_ok', '=', true],
+                        ['categ_id', 'in', categories.boardCategoryIds],
+                    ];
+                    for (const word of matWords.slice(0, 3)) {
+                        domain.push(['name', 'ilike', word]);
+                    }
+                    const targeted = await client.searchReadRecords('product.product', { domain, fields: ['id', 'name', 'display_name'], limit: 30 });
+                    const targetedMatch = matchInList(targeted);
+                    if (targetedMatch) {
+                        candidateProducts.push(targetedMatch);
+                        return targetedMatch;
+                    }
+                }
+                catch {
+                    // Ignore RPC errors and fallback
+                }
+            }
+            return undefined;
         }
-        // Helper to find cutting service product in candidateProducts
-        function findCuttingService(matName, thicknessMm) {
+        // Helper to find cutting service product in candidateProducts with targeted RPC fallback
+        async function findCuttingService(matName, thicknessMm) {
             const cleanName = matName.replace(/^cutting\s+/i, '').trim();
             const normClean = (0, boardProductClassifier_1.normalizeBoardProductName)(cleanName);
             const matWords = normClean.split(/[\s_\-/]+/).filter((w) => w.length > 2 && !['board', 'boards', 'sheet', 'sheets', 'cutting'].includes(w));
-            return candidateProducts.find((p) => {
-                const prodName = (p.display_name || p.name || '');
+            const matchInList = (list) => list.find((p) => {
+                const prodName = p.display_name || p.name || '';
                 if (!(0, boardProductClassifier_1.isCuttingServiceProductName)(prodName))
                     return false;
                 const normProd = (0, boardProductClassifier_1.normalizeBoardProductName)(prodName);
@@ -228,22 +320,104 @@ async function syncQuotationWithJobSummary(client, orderId, parsed) {
                 }
                 return matWords.length > 0 && matWords.every((w) => normProd.includes(w));
             });
+            const existing = matchInList(candidateProducts);
+            if (existing)
+                return existing;
+            if (matWords.length > 0) {
+                try {
+                    const domain = [
+                        ['sale_ok', '=', true],
+                        ['categ_id', 'in', categories.cuttingCategoryIds],
+                        ['name', 'ilike', 'Cutting'],
+                    ];
+                    for (const word of matWords.slice(0, 3)) {
+                        domain.push(['name', 'ilike', word]);
+                    }
+                    const targeted = await client.searchReadRecords('product.product', { domain, fields: ['id', 'name', 'display_name'], limit: 30 });
+                    const targetedMatch = matchInList(targeted);
+                    if (targetedMatch) {
+                        candidateProducts.push(targetedMatch);
+                        return targetedMatch;
+                    }
+                }
+                catch {
+                    // Ignore RPC errors and fallback
+                }
+            }
+            return undefined;
         }
-        // Helper to find edge banding service product in candidateProducts
-        function findEdgeBandingService(color) {
+        // Helper to find edge banding service product in candidateProducts with targeted RPC fallback
+        async function findEdgeBandingService(color) {
             const colorNorm = (0, stockProcessingService_1.normalizeColor)(color);
-            return candidateProducts.find((p) => {
-                const prodName = (p.display_name || p.name || '');
-                if (!(0, boardProductClassifier_1.isStockExemptEdgeBandingService)(prodName))
-                    return false;
-                const normProd = (0, stockProcessingService_1.normalizeColor)(prodName);
-                return normProd.includes(colorNorm);
-            });
+            const matchInList = (list) => {
+                const validServices = list.filter((p) => {
+                    const prodName = p.display_name || p.name || '';
+                    return (0, boardProductClassifier_1.isStockExemptEdgeBandingService)(prodName);
+                });
+                // 1. Exact match on extracted service color (preferring standard non-36mm over 36mm)
+                const exactMatches = validServices.filter((p) => {
+                    const prodName = p.display_name || p.name || '';
+                    const extracted = (0, stockProcessingService_1.extractServiceColor)(prodName);
+                    return extracted === colorNorm;
+                });
+                if (exactMatches.length > 0) {
+                    const non36 = exactMatches.find((p) => !/\b36mm\b/i.test(p.display_name || p.name || ''));
+                    return non36 || exactMatches[0];
+                }
+                // 2. Word boundary match on colorNorm (to avoid 'off-white' matching 'white')
+                const colorRegex = new RegExp(`\\b${colorNorm.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&')}\\b`, 'i');
+                const wordMatches = validServices.filter((p) => {
+                    const prodName = p.display_name || p.name || '';
+                    const extracted = (0, stockProcessingService_1.extractServiceColor)(prodName) || (0, stockProcessingService_1.normalizeColor)(prodName);
+                    return colorRegex.test(extracted);
+                });
+                if (wordMatches.length > 0) {
+                    wordMatches.sort((a, b) => {
+                        const aLen = ((0, stockProcessingService_1.extractServiceColor)(a.display_name || a.name) || '').length;
+                        const bLen = ((0, stockProcessingService_1.extractServiceColor)(b.display_name || b.name) || '').length;
+                        return aLen - bLen;
+                    });
+                    const non36 = wordMatches.find((p) => !/\b36mm\b/i.test(p.display_name || p.name || ''));
+                    return non36 || wordMatches[0];
+                }
+                // 3. Fallback to substring include
+                return validServices.find((p) => {
+                    const prodName = p.display_name || p.name || '';
+                    const normProd = (0, stockProcessingService_1.normalizeColor)(prodName);
+                    return normProd.includes(colorNorm);
+                });
+            };
+            const existing = matchInList(candidateProducts);
+            if (existing)
+                return existing;
+            // Targeted fallback to Odoo XML-RPC if not found in bulk candidates
+            try {
+                const targeted = await client.searchReadRecords('product.product', {
+                    domain: [
+                        ['sale_ok', '=', true],
+                        ['categ_id', 'in', categories.edgingCategoryIds],
+                        '|',
+                        ['name', 'ilike', `Edge Banding%${color}`],
+                        ['name', 'ilike', `Edge Band%${color}`],
+                    ],
+                    fields: ['id', 'name', 'display_name'],
+                    limit: 20,
+                });
+                const targetedMatch = matchInList(targeted);
+                if (targetedMatch) {
+                    candidateProducts.push(targetedMatch);
+                    return targetedMatch;
+                }
+            }
+            catch {
+                // Ignore RPC errors and fallback
+            }
+            return undefined;
         }
         // A. Populate Boards under BOARDS section
         for (const material of sheetMaterials) {
             const sheets = material.sheets || 1;
-            const rawBoard = findRawBoard(material.name, material.thickness_mm);
+            const rawBoard = await findRawBoard(material.name, material.thickness_mm);
             if (rawBoard) {
                 if (exampleBoardLine && !exampleBoardUsed) {
                     await client.writeRecord('sale.order.line', [exampleBoardLine.id], {
@@ -301,7 +475,7 @@ async function syncQuotationWithJobSummary(client, orderId, parsed) {
         // 2. Cutting Services (for each sheet material)
         for (const material of sheetMaterials) {
             const sheets = material.sheets || 1;
-            const cuttingProduct = findCuttingService(material.name, material.thickness_mm);
+            const cuttingProduct = await findCuttingService(material.name, material.thickness_mm);
             if (cuttingProduct) {
                 await client.createRecord('sale.order.line', {
                     order_id: orderId,
@@ -324,7 +498,7 @@ async function syncQuotationWithJobSummary(client, orderId, parsed) {
         // 3. Edge Banding Services (for each edging item)
         for (const item of parsed.items || []) {
             const meters = Math.round((item.length_mm || 0) / 1000);
-            const edgeService = findEdgeBandingService(item.color);
+            const edgeService = await findEdgeBandingService(item.color);
             if (edgeService) {
                 await client.createRecord('sale.order.line', {
                     order_id: orderId,

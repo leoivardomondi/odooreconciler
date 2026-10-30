@@ -15,6 +15,7 @@ const routes_1 = __importDefault(require("./src/routes"));
 const authService_1 = require("./src/services/authService");
 const env_1 = require("./src/utils/env");
 const helpers_1 = require("./src/utils/helpers");
+const path_1 = __importDefault(require("path"));
 const paths_1 = require("./src/utils/paths");
 const startupState_1 = require("./src/services/startupState");
 const invoiceExtractionJobService_1 = require("./src/services/invoiceExtractionJobService");
@@ -64,6 +65,11 @@ app.use((req, res, next) => {
 });
 app.use((0, morgan_1.default)(env_1.env.NODE_ENV === 'production' ? 'combined' : 'dev'));
 app.use('/public', express_1.default.static(paths_1.publicPath, {
+    etag: true,
+    lastModified: true,
+    maxAge: '1h',
+}));
+app.use('/avatars', express_1.default.static(path_1.default.join(paths_1.storageDirectoryPath, 'avatars'), {
     etag: true,
     lastModified: true,
     maxAge: '1h',

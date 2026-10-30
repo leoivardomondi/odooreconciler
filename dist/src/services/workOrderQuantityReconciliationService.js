@@ -502,6 +502,7 @@ async function reconcileWorkOrderQuantitiesForMo(client, moId, options) {
         }
         // Invalidate shop-floor RAM and shared snapshots
         try {
+            (0, repositories_1.invalidatePendingShopFloorProcessesCache)();
             shopFloor_1.shopFloorCache.clearPrefix('shop-floor-dashboard:');
             await (0, repositories_1.deleteShopFloorSharedCachePrefix)('shop-floor:').catch(() => null);
         }

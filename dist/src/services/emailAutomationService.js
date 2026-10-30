@@ -12,6 +12,7 @@ const moOvertimeSuggestionService_1 = require("./moOvertimeSuggestionService");
 const shopFloorTaskReminderService_1 = require("./shopFloorTaskReminderService");
 const weeklyShopFloorReportService_1 = require("./weeklyShopFloorReportService");
 const moStockShortageReportService_1 = require("./moStockShortageReportService");
+const nvidiaApiKeyExpirationReminderService_1 = require("./nvidiaApiKeyExpirationReminderService");
 let timer = null;
 let running = false;
 let lastSentWeeklyReportDateKey = '';
@@ -156,6 +157,12 @@ async function runEmailAutomations(now = new Date()) {
                 }).catch(() => undefined);
             }
         }
+        // Check and dispatch 3-stage expiration reminders for NVIDIA API key (30d, 7d, 1d)
+        await (0, nvidiaApiKeyExpirationReminderService_1.checkAndSendNvidiaApiKeyExpirationReminders)(now).catch((err) => {
+            (0, logService_1.logEvent)('error', 'Failed running NVIDIA API key expiration reminder check', {
+                error: err instanceof Error ? err.message : String(err),
+            }).catch(() => undefined);
+        });
     }
     finally {
         running = false;

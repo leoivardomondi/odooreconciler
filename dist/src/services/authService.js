@@ -31,6 +31,7 @@ const env_1 = require("../utils/env");
 const dateTime_1 = require("../utils/dateTime");
 const mailTransport_1 = require("./mailTransport");
 const accountStatus_1 = require("../utils/accountStatus");
+const userIdentityService_1 = require("./userIdentityService");
 const AUTH_COOKIE_NAME = 'oj_auth';
 const OTP_LENGTH = 6;
 const OTP_ATTEMPTS = 5;
@@ -358,12 +359,15 @@ async function createAuthenticatedSession(input) {
         ipAddress: input.ipAddress,
         expiresAt,
     });
+    const profile = await (0, repositories_1.getAppUserProfile)(input.email).catch(() => null);
     return {
         sessionCookie: buildSessionCookie(signCookieValue(sessionId), expiresAt),
         user: {
             email: input.email,
             role: normalizeAuthRole(input.role),
             apps: input.apps,
+            displayName: profile?.displayName || (0, userIdentityService_1.emailDisplayName)(input.email),
+            photoUrl: profile?.photoUrl || null,
         },
     };
 }
@@ -630,7 +634,7 @@ async function getAuthenticationStateAsync(req) {
     await (0, repositories_1.touchAuthSession)(sessionId, getSessionExpiryIso());
     const currentAccess = await (0, repositories_1.getApprovedAuthUserByEmail)(session.user.email);
     const accountDeactivated = Boolean(currentAccess && (0, accountStatus_1.isAccountDeactivated)(currentAccess.active, isConfiguredLocalAdmin(session.user.email)));
-    const currentUser = accountDeactivated
+    let currentUser = accountDeactivated
         ? null
         : currentAccess?.active
             ? {
@@ -639,6 +643,14 @@ async function getAuthenticationStateAsync(req) {
                 apps: currentAccess.apps || [],
             }
             : session.user;
+    if (currentUser) {
+        const profile = await (0, repositories_1.getAppUserProfile)(currentUser.email).catch(() => null);
+        currentUser = {
+            ...currentUser,
+            displayName: profile?.displayName || (0, userIdentityService_1.emailDisplayName)(currentUser.email),
+            photoUrl: profile?.photoUrl || null,
+        };
+    }
     return {
         user: currentUser,
         csrfToken: session.csrfToken,
@@ -674,10 +686,13 @@ async function attachAuthState(req, res, next) {
                     res.clearCookie('oj_impersonate', { path: '/' });
                     return next();
                 }
+                const profile = await (0, repositories_1.getAppUserProfile)(String(imp.email)).catch(() => null);
                 const impersonatedUser = {
                     email: imp.email,
                     role: currentImpersonatedAccess.role,
                     apps: currentImpersonatedAccess.apps || [],
+                    displayName: profile?.displayName || (0, userIdentityService_1.emailDisplayName)(String(imp.email)),
+                    photoUrl: profile?.photoUrl || null,
                 };
                 req.impersonatedBy = state.user;
                 req.viewingAsUser = impersonatedUser;

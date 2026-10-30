@@ -8,6 +8,8 @@ const strict_1 = __importDefault(require("node:assert/strict"));
 const boardProductClassifier_1 = require("./boardProductClassifier");
 (0, node_test_1.default)('isStockExemptEdgeBandingService correctly identifies service products', () => {
     strict_1.default.equal((0, boardProductClassifier_1.isStockExemptEdgeBandingService)('Edge Banding Service'), true);
+    strict_1.default.equal((0, boardProductClassifier_1.isStockExemptEdgeBandingService)('Edge Banding  Service American Walnut'), true);
+    strict_1.default.equal((0, boardProductClassifier_1.isStockExemptEdgeBandingService)('Edge Band Service Gloss White'), true);
     strict_1.default.equal((0, boardProductClassifier_1.isStockExemptEdgeBandingService)('edging banding service 1mm'), true);
     strict_1.default.equal((0, boardProductClassifier_1.isStockExemptEdgeBandingService)('Custom Edge Banding Services'), true);
     strict_1.default.equal((0, boardProductClassifier_1.isStockExemptEdgeBandingService)('18mm MDF White Board'), false);

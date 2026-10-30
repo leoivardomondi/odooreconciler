@@ -98,12 +98,30 @@ function totalSupportedByArithmetic(total, totals, itemTotal) {
     if (typeof total !== 'number') {
         return false;
     }
-    if (typeof totals.goods_total === 'number' &&
-        typeof totals.vat === 'number' &&
-        nearlyEqual(roundMoney(totals.goods_total + totals.vat), total, Math.max(2, Math.abs(total) * 0.03))) {
+    // Matches line items directly
+    if (typeof itemTotal === 'number' && itemTotal > 0 && nearlyEqual(itemTotal, total, Math.max(2, Math.abs(total) * 0.03))) {
         return true;
     }
-    return typeof itemTotal === 'number' && nearlyEqual(itemTotal, total, Math.max(2, Math.abs(total) * 0.03));
+    // Matches line items plus VAT
+    if (typeof itemTotal === 'number' &&
+        itemTotal > 0 &&
+        typeof totals.vat === 'number' &&
+        totals.vat > 0 &&
+        nearlyEqual(roundMoney(itemTotal + totals.vat), total, Math.max(2, Math.abs(total) * 0.03))) {
+        return true;
+    }
+    // Matches goods_total + vat, but only if goods_total is consistent with itemTotal
+    if (typeof totals.goods_total === 'number' &&
+        typeof totals.vat === 'number' &&
+        totals.goods_total > 0 &&
+        totals.vat > 0 &&
+        nearlyEqual(roundMoney(totals.goods_total + totals.vat), total, Math.max(2, Math.abs(total) * 0.03))) {
+        if (typeof itemTotal === 'number' && itemTotal > 0) {
+            return nearlyEqual(totals.goods_total, itemTotal, Math.max(2, Math.abs(itemTotal) * 0.05));
+        }
+        return true;
+    }
+    return false;
 }
 function shouldUseAiInvoiceExtraction(invoice) {
     if (!asBoolean(process.env.AI_INVOICE_EXTRACTION_ENABLED) || !process.env.OPENAI_API_KEY) {
@@ -453,7 +471,7 @@ function buildExtractionPrompt(input) {
         'JSON shape:',
         JSON.stringify(extractionSchema()),
         `Original filename (vendor hint only; never use for invoice number or date): ${input.originalFilename || ''}`,
-        `OCR text:\n${input.ocrText.slice(0, 5000)}`,
+        `OCR text:\n${input.ocrText ? input.ocrText.slice(0, 5000) : '(None - perform direct end-to-end vision character reading and extraction directly from invoice image)'}`,
         `Embedded PDF text:\n${input.pdfText.slice(0, 2500)}`,
     ].join('\n\n');
 }
@@ -485,7 +503,23 @@ function resolveConfiguredApiKey(config, provider, model) {
     }
     if (provider === 'disabled')
         return '';
-    return config.apiKeys?.[provider] || (provider === 'nvidia' ? process.env.NVIDIA_API_KEY || '' : '');
+    const configured = config.apiKeys?.[provider];
+    if (configured)
+        return configured;
+    switch (provider) {
+        case 'openai':
+            return process.env.OPENAI_API_KEY || '';
+        case 'nvidia':
+            return process.env.NVIDIA_API_KEY || '';
+        case 'gemini':
+            return process.env.GEMINI_API_KEY || '';
+        case 'anthropic':
+            return process.env.ANTHROPIC_API_KEY || '';
+        case 'openrouter':
+            return process.env.OPENROUTER_API_KEY || '';
+        default:
+            return '';
+    }
 }
 async function resolveConfiguredCredential(config, provider, model) {
     if (provider !== 'gemini') {
@@ -509,9 +543,10 @@ async function resolveConfiguredCredential(config, provider, model) {
     return {};
 }
 function providerHasConfiguredCredential(config, provider, model) {
-    return Boolean(provider === 'gemini'
-        ? config.geminiOAuth?.connected || resolveConfiguredApiKey(config, provider, model)
-        : resolveConfiguredApiKey(config, provider, model));
+    if (provider === 'gemini') {
+        return Boolean(config.geminiOAuth?.connected || resolveConfiguredApiKey(config, provider, model));
+    }
+    return Boolean(resolveConfiguredApiKey(config, provider, model));
 }
 function isTextOnlyNvidiaModel(model) {
     const m = model.trim();
@@ -553,10 +588,9 @@ async function callOpenAiCompatibleInvoiceAi(input) {
         })),
         { type: 'text', text: input.prompt },
     ];
+    const isReasoningModel = /^(o1|o3)/i.test(input.model);
     const body = {
         model: input.model,
-        temperature: isGemmaVision ? 1.0 : 0,
-        max_tokens: isGemmaVision ? 4096 : 4000,
         stream: false,
         messages: [
             {
@@ -567,6 +601,13 @@ async function callOpenAiCompatibleInvoiceAi(input) {
             },
         ],
     };
+    if (!isReasoningModel) {
+        body.temperature = isGemmaVision ? 1.0 : 0;
+        body.max_tokens = isGemmaVision ? 4096 : 4000;
+    }
+    else {
+        body.max_completion_tokens = 4000;
+    }
     // NVIDIA's Gemma endpoint documents the OpenAI-compatible chat fields but
     // does not document response_format. Keep the strict JSON instruction in
     // the prompt and let the parser handle a fenced/annotated response.
@@ -581,7 +622,7 @@ async function callOpenAiCompatibleInvoiceAi(input) {
             visual_token_budget: 1120,
         };
     }
-    const requestTimeoutMs = isGemmaVision ? 300000 : 60000;
+    const requestTimeoutMs = input.provider === 'nvidia' ? 300000 : 90000;
     const headers = {
         Authorization: `Bearer ${input.apiKey}`,
         'Content-Type': 'application/json',
@@ -648,6 +689,9 @@ async function callOpenAiCompatibleInvoiceAi(input) {
     return input.provider === 'nvidia' ? stripNvidiaControlTokens(outputText) : outputText;
 }
 async function callGeminiInvoiceAi(input) {
+    if (process.env.DISABLE_GEMINI === 'true') {
+        throw new Error('Google Gemini API is currently disabled (DISABLE_GEMINI=true).');
+    }
     let model = input.model.trim();
     if (!model || model === 'gemini-2.0-flash' || model === 'models/gemini-2.0-flash' || model === 'gemini-2.0-flash-lite') {
         model = 'gemini-3.8-flash';
@@ -840,14 +884,13 @@ async function extractInvoiceWithConfiguredAi(input) {
     const fullPageImagePaths = input.imagePaths.filter((p) => /-page-\d+\.[a-z]+$/i.test(p));
     const aiImagePaths = fullPageImagePaths.length > 0 ? fullPageImagePaths : input.imagePaths;
     const allSupportedProviders = [
-        'gemini',
+        'nvidia',
         'openai',
         'openrouter',
-        'nvidia',
         'anthropic',
     ];
     const candidateProviders = [];
-    if (providerHasConfiguredCredential(input.config, primaryProvider)) {
+    if (primaryProvider !== 'gemini' && providerHasConfiguredCredential(input.config, primaryProvider)) {
         candidateProviders.push(primaryProvider);
     }
     for (const p of allSupportedProviders) {
@@ -858,7 +901,11 @@ async function extractInvoiceWithConfiguredAi(input) {
     if (candidateProviders.length === 0) {
         return {
             extraction: null,
-            warnings: [`AI invoice extraction skipped because no API key or OAuth connection is configured for selected provider "${primaryProvider}".`],
+            warnings: [
+                primaryProvider === 'gemini'
+                    ? 'AI invoice extraction skipped: Google Gemini is currently disabled. Please select NVIDIA NIM or another provider in Settings.'
+                    : `AI invoice extraction skipped because no API key or OAuth connection is configured for selected provider "${primaryProvider}".`,
+            ],
         };
     }
     const overallWarnings = [];
@@ -943,18 +990,6 @@ async function extractInvoiceWithConfiguredAi(input) {
                         prompt,
                     });
                 }
-            }
-            else if (provider === 'gemini') {
-                const images = await readImagesForAi(imagePaths);
-                outputText = await callGeminiInvoiceAi({
-                    apiKey: credential.apiKey,
-                    accessToken: credential.accessToken,
-                    projectId: credential.projectId,
-                    model,
-                    baseUrl: input.config.baseUrl,
-                    images,
-                    prompt,
-                });
             }
             else if (provider === 'anthropic') {
                 const images = await readImagesForAi(imagePaths);
@@ -1052,13 +1087,13 @@ function mergeAiInvoiceExtraction(invoice, ai) {
     const aiTotalSupported = totalSupportedByArithmetic(aiTotal, safeAi.totals, aiItemTotal ?? invoiceItemTotal);
     const parserTotalLooksLikeSubtotal = typeof existingTotal === 'number' &&
         typeof invoiceItemTotal === 'number' &&
-        typeof safeInvoiceTotals.vat === 'number' &&
-        safeInvoiceTotals.vat > 0 &&
+        typeof knownVat === 'number' &&
+        knownVat > 0 &&
         nearlyEqual(existingTotal, invoiceItemTotal, Math.max(2, Math.abs(invoiceItemTotal) * 0.03));
     const parserTotalLooksLikeGoodsSubtotal = typeof existingTotal === 'number' &&
         typeof safeInvoiceTotals.goods_total === 'number' &&
-        typeof safeInvoiceTotals.vat === 'number' &&
-        safeInvoiceTotals.vat > 0 &&
+        typeof knownVat === 'number' &&
+        knownVat > 0 &&
         nearlyEqual(existingTotal, safeInvoiceTotals.goods_total, Math.max(2, Math.abs(existingTotal) * 0.03));
     const aiTotalMatchesItemsPlusVat = typeof aiTotal === 'number' &&
         typeof invoiceItemTotal === 'number' &&
@@ -1079,13 +1114,16 @@ function mergeAiInvoiceExtraction(invoice, ai) {
         typeof existingTotal === 'number' &&
         aiTotal > existingTotal &&
         (aiTotalMatchesItemsPlusVat || aiTotalMatchesGoodsPlusVat || aiTotalsMatchParserLineItems);
+    const isImplausibleExistingTotal = typeof existingTotal === 'number' && (existingTotal > 50_000_000 || existingTotal <= 0);
     const shouldTrustAiTotals = existingTotal === null ||
+        isImplausibleExistingTotal ||
         hasTotalProblem(invoice) ||
         shouldTrustAiSubtotalCorrection ||
+        (aiTotalSupported && !existingTotalSupported) ||
         (typeof existingTotal === 'number' &&
             typeof aiTotal === 'number' &&
             !existingTotalSupported &&
-            aiTotalSupported) ||
+            (aiTotalSupported || (typeof aiTotal === 'number' && aiTotal > 0 && aiTotal <= 50_000_000))) ||
         (aiTotalsConsistent &&
             typeof existingTotal === 'number' &&
             typeof aiTotal === 'number' &&

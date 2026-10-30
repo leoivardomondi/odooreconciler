@@ -116,12 +116,14 @@ test('ignores telephone numbers, serial numbers, and VAT registration numbers in
       {
         description: 'PRE-LAM MDF 3MM WHITE 1/S',
         quantity: 1,
+        unit: 'item',
         unit_price: 1293.1,
         net_amount: 1293.1,
       },
       {
         description: 'PRE-LAM MDF 3MM WHITE 1/S',
         quantity: 2,
+        unit: 'item',
         unit_price: 1293.1,
         net_amount: 2586.21,
       },

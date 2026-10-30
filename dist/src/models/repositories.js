@@ -125,6 +125,13 @@ exports.getApprovedAuthUsers = getApprovedAuthUsers;
 exports.countApprovedAuthUsers = countApprovedAuthUsers;
 exports.getAppUserProfile = getAppUserProfile;
 exports.saveAppUserProfile = saveAppUserProfile;
+exports.getAllAppUserProfiles = getAllAppUserProfiles;
+exports.updateUserPhoto = updateUserPhoto;
+exports.invalidateShopFloorOperatorsRamCache = invalidateShopFloorOperatorsRamCache;
+exports.getShopFloorOperatorsFromDb = getShopFloorOperatorsFromDb;
+exports.upsertShopFloorOperators = upsertShopFloorOperators;
+exports.deactivateShopFloorOperatorsNotIn = deactivateShopFloorOperatorsNotIn;
+exports.updateShopFloorOperatorPhoto = updateShopFloorOperatorPhoto;
 exports.getStockProductMirror = getStockProductMirror;
 exports.upsertStockProductMirror = upsertStockProductMirror;
 exports.removeStockProductsNotIn = removeStockProductsNotIn;
@@ -146,6 +153,7 @@ exports.createBoardIntakeQueueEntry = createBoardIntakeQueueEntry;
 exports.updateBoardIntakeQueueEntry = updateBoardIntakeQueueEntry;
 exports.getRecentBoardIntakeQueueEntries = getRecentBoardIntakeQueueEntries;
 exports.countBoardIntakeQueueEntries = countBoardIntakeQueueEntries;
+exports.getBoardIntakeQueueDateCounts = getBoardIntakeQueueDateCounts;
 exports.getBoardIntakeQueueEntry = getBoardIntakeQueueEntry;
 exports.findActiveBoardIntakeLogsByPartnerOrProduct = findActiveBoardIntakeLogsByPartnerOrProduct;
 exports.claimBoardIntakeRevert = claimBoardIntakeRevert;
@@ -170,6 +178,7 @@ exports.saveShopFloorSharedCache = saveShopFloorSharedCache;
 exports.deleteShopFloorSharedCache = deleteShopFloorSharedCache;
 exports.deleteShopFloorSharedCachePrefix = deleteShopFloorSharedCachePrefix;
 exports.deleteShopFloorDashboardSnapshot = deleteShopFloorDashboardSnapshot;
+exports.invalidatePendingShopFloorProcessesCache = invalidatePendingShopFloorProcessesCache;
 exports.getPendingShopFloorProcesses = getPendingShopFloorProcesses;
 exports.getPendingShopFloorProcessesCount = getPendingShopFloorProcessesCount;
 exports.upsertPendingShopFloorProcesses = upsertPendingShopFloorProcesses;
@@ -3602,18 +3611,185 @@ async function countApprovedAuthUsers() {
     return Number(row?.total_count || 0);
 }
 async function getAppUserProfile(email) {
-    const row = await (0, db_1.queryOne)('SELECT email, display_name, odoo_employee_id, synced_at FROM app_user_profiles WHERE email = ?', [email.trim().toLowerCase()]);
-    return row ? { email: row.email, displayName: row.display_name, odooEmployeeId: row.odoo_employee_id, syncedAt: row.synced_at } : null;
+    const row = await (0, db_1.queryOne)('SELECT email, display_name, odoo_employee_id, photo_url, synced_at FROM app_user_profiles WHERE email = ?', [email.trim().toLowerCase()]);
+    return row ? { email: row.email, displayName: row.display_name, odooEmployeeId: row.odoo_employee_id, photoUrl: row.photo_url || null, syncedAt: row.synced_at } : null;
 }
 async function saveAppUserProfile(input) {
-    const params = [input.email.trim().toLowerCase(), input.displayName.trim(), input.odooEmployeeId || null];
+    const params = [input.email.trim().toLowerCase(), input.displayName.trim(), input.odooEmployeeId || null, input.photoUrl || null];
     if ((0, db_1.getDatabaseDialect)() === 'mysql') {
-        await (0, db_1.execute)(`INSERT INTO app_user_profiles (email, display_name, odoo_employee_id, synced_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-      ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), odoo_employee_id = VALUES(odoo_employee_id), synced_at = CURRENT_TIMESTAMP`, params);
+        await (0, db_1.execute)(`INSERT INTO app_user_profiles (email, display_name, odoo_employee_id, photo_url, synced_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ON DUPLICATE KEY UPDATE display_name = VALUES(display_name), odoo_employee_id = COALESCE(VALUES(odoo_employee_id), odoo_employee_id), photo_url = COALESCE(VALUES(photo_url), photo_url), synced_at = CURRENT_TIMESTAMP`, params);
     }
     else {
-        await (0, db_1.execute)(`INSERT INTO app_user_profiles (email, display_name, odoo_employee_id, synced_at) VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-      ON CONFLICT(email) DO UPDATE SET display_name = excluded.display_name, odoo_employee_id = excluded.odoo_employee_id, synced_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP`, params);
+        await (0, db_1.execute)(`INSERT INTO app_user_profiles (email, display_name, odoo_employee_id, photo_url, synced_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(email) DO UPDATE SET display_name = excluded.display_name, odoo_employee_id = COALESCE(excluded.odoo_employee_id, odoo_employee_id), photo_url = COALESCE(excluded.photo_url, photo_url), synced_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP`, params);
+    }
+}
+async function getAllAppUserProfiles() {
+    const rows = await (0, db_1.queryAll)('SELECT email, display_name, photo_url FROM app_user_profiles');
+    const map = new Map();
+    for (const r of rows) {
+        if (r.email) {
+            map.set(r.email.trim().toLowerCase(), {
+                displayName: r.display_name,
+                photoUrl: r.photo_url || null,
+            });
+        }
+    }
+    return map;
+}
+async function updateUserPhoto(email, photoUrl) {
+    const cleanEmail = email.trim().toLowerCase();
+    const existing = await getAppUserProfile(cleanEmail);
+    if (existing) {
+        await (0, db_1.execute)('UPDATE app_user_profiles SET photo_url = ?, updated_at = CURRENT_TIMESTAMP WHERE email = ?', [photoUrl || null, cleanEmail]);
+    }
+    else {
+        const displayName = cleanEmail.split('@')[0].replace(/[._-]+/g, ' ').replace(/\d+/g, ' ').trim().replace(/\b\w/g, (c) => c.toUpperCase()) || cleanEmail;
+        await saveAppUserProfile({ email: cleanEmail, displayName, photoUrl });
+    }
+    await updateShopFloorOperatorPhoto(cleanEmail, photoUrl).catch(() => { });
+}
+let shopFloorOperatorsRamCache = null;
+function invalidateShopFloorOperatorsRamCache() {
+    shopFloorOperatorsRamCache = null;
+}
+async function getShopFloorOperatorsFromDb() {
+    const now = Date.now();
+    if (shopFloorOperatorsRamCache && shopFloorOperatorsRamCache.freshUntil > now) {
+        return shopFloorOperatorsRamCache.data;
+    }
+    try {
+        const rows = await (0, db_1.queryAll)(`
+      SELECT id, name, job_title, department, work_email, mobile_phone, user_id, user_name, photo_url,
+             checked_in, checked_out, check_in_time, assigned_items_json, priority, active, synced_at
+      FROM shop_floor_operators
+      WHERE active = 1
+      ORDER BY priority ASC, name ASC
+    `);
+        const result = rows.map((r) => ({
+            id: Number(r.id),
+            name: String(r.name || ''),
+            jobTitle: r.job_title ? String(r.job_title) : null,
+            department: r.department ? String(r.department) : null,
+            workEmail: r.work_email ? String(r.work_email) : null,
+            mobilePhone: r.mobile_phone ? String(r.mobile_phone) : null,
+            userId: r.user_id ? Number(r.user_id) : null,
+            userName: r.user_name ? String(r.user_name) : (r.name || ''),
+            photoUrl: r.photo_url ? String(r.photo_url) : null,
+            checkedIn: Boolean(r.checked_in),
+            checkedOut: Boolean(r.checked_out),
+            checkInTime: r.check_in_time ? String(r.check_in_time) : null,
+            assignedItems: (() => {
+                try {
+                    return r.assigned_items_json ? JSON.parse(r.assigned_items_json) : [];
+                }
+                catch {
+                    return [];
+                }
+            })(),
+            priority: Number(r.priority || 2),
+            active: Boolean(r.active),
+            syncedAt: formatDbDateString(r.synced_at),
+        }));
+        shopFloorOperatorsRamCache = { data: result, freshUntil: now + 30 * 1000 };
+        return result;
+    }
+    catch (_err) {
+        return [];
+    }
+}
+async function upsertShopFloorOperators(operators) {
+    if (!operators.length)
+        return;
+    invalidateShopFloorOperatorsRamCache();
+    for (const op of operators) {
+        const params = [
+            op.id,
+            op.name,
+            op.jobTitle || null,
+            op.department || null,
+            op.workEmail ? op.workEmail.trim().toLowerCase() : null,
+            op.mobilePhone || null,
+            op.userId || null,
+            op.userName || op.name,
+            op.photoUrl || null,
+            op.checkedIn ? 1 : 0,
+            op.checkedOut ? 1 : 0,
+            op.checkInTime || null,
+            JSON.stringify(op.assignedItems || []),
+            op.priority ?? 2,
+            op.active !== false ? 1 : 0,
+        ];
+        if ((0, db_1.getDatabaseDialect)() === 'mysql') {
+            await (0, db_1.execute)(`
+        INSERT INTO shop_floor_operators (
+          id, name, job_title, department, work_email, mobile_phone, user_id, user_name, photo_url,
+          checked_in, checked_out, check_in_time, assigned_items_json, priority, active, synced_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON DUPLICATE KEY UPDATE
+          name = VALUES(name),
+          job_title = VALUES(job_title),
+          department = VALUES(department),
+          work_email = VALUES(work_email),
+          mobile_phone = VALUES(mobile_phone),
+          user_id = VALUES(user_id),
+          user_name = VALUES(user_name),
+          photo_url = COALESCE(VALUES(photo_url), photo_url),
+          checked_in = VALUES(checked_in),
+          checked_out = VALUES(checked_out),
+          check_in_time = VALUES(check_in_time),
+          assigned_items_json = VALUES(assigned_items_json),
+          priority = VALUES(priority),
+          active = VALUES(active),
+          synced_at = CURRENT_TIMESTAMP
+      `, params);
+        }
+        else {
+            await (0, db_1.execute)(`
+        INSERT INTO shop_floor_operators (
+          id, name, job_title, department, work_email, mobile_phone, user_id, user_name, photo_url,
+          checked_in, checked_out, check_in_time, assigned_items_json, priority, active, synced_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(id) DO UPDATE SET
+          name = excluded.name,
+          job_title = excluded.job_title,
+          department = excluded.department,
+          work_email = excluded.work_email,
+          mobile_phone = excluded.mobile_phone,
+          user_id = excluded.user_id,
+          user_name = excluded.user_name,
+          photo_url = COALESCE(excluded.photo_url, photo_url),
+          checked_in = excluded.checked_in,
+          checked_out = excluded.checked_out,
+          check_in_time = excluded.check_in_time,
+          assigned_items_json = excluded.assigned_items_json,
+          priority = excluded.priority,
+          active = excluded.active,
+          synced_at = CURRENT_TIMESTAMP,
+          updated_at = CURRENT_TIMESTAMP
+      `, params);
+        }
+    }
+}
+async function deactivateShopFloorOperatorsNotIn(activeIds) {
+    invalidateShopFloorOperatorsRamCache();
+    if (!activeIds.length) {
+        await (0, db_1.execute)('UPDATE shop_floor_operators SET active = 0, updated_at = CURRENT_TIMESTAMP');
+        return;
+    }
+    const placeholders = activeIds.map(() => '?').join(', ');
+    await (0, db_1.execute)(`UPDATE shop_floor_operators SET active = 0, updated_at = CURRENT_TIMESTAMP WHERE id NOT IN (${placeholders})`, activeIds);
+}
+async function updateShopFloorOperatorPhoto(emailOrId, photoUrl) {
+    invalidateShopFloorOperatorsRamCache();
+    if (typeof emailOrId === 'number' || /^\d+$/.test(String(emailOrId).trim())) {
+        const id = Number(emailOrId);
+        await (0, db_1.execute)('UPDATE shop_floor_operators SET photo_url = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [photoUrl || null, id]);
+    }
+    else {
+        const cleanEmail = String(emailOrId).trim().toLowerCase();
+        await (0, db_1.execute)('UPDATE shop_floor_operators SET photo_url = ?, updated_at = CURRENT_TIMESTAMP WHERE LOWER(work_email) = ?', [photoUrl || null, cleanEmail]);
     }
 }
 async function getStockProductMirror() {
@@ -3816,10 +3992,25 @@ async function updateBoardIntakeQueueEntry(id, input) {
     params.push(id);
     await (0, db_1.execute)(`UPDATE board_intake_queue SET ${sets.join(', ')} WHERE id = ?`, params);
 }
+function buildBoardIntakeDateCondition(filterDate) {
+    if (!filterDate || filterDate === 'all') {
+        return { whereClause: '', filterParams: [] };
+    }
+    if (/^\d{4}-\d{2}-\d{2}$/.test(filterDate)) {
+        const start = `${filterDate} 00:00:00`;
+        const end = `${filterDate} 23:59:59`;
+        return {
+            whereClause: 'WHERE (arrival_date = ? OR (created_at >= ? AND created_at <= ?))',
+            filterParams: [filterDate, start, end],
+        };
+    }
+    return {
+        whereClause: 'WHERE (arrival_date = ? OR substr(created_at, 1, 10) = ?)',
+        filterParams: [filterDate, filterDate],
+    };
+}
 async function getRecentBoardIntakeQueueEntries(limit = 12, offset = 0, filterDate) {
-    const hasFilter = Boolean(filterDate && filterDate !== 'all');
-    const whereClause = hasFilter ? 'WHERE (arrival_date = ? OR substr(created_at, 1, 10) = ?)' : '';
-    const filterParams = hasFilter && filterDate ? [filterDate, filterDate] : [];
+    const { whereClause, filterParams } = buildBoardIntakeDateCondition(filterDate);
     const query = `SELECT id, product_name, customer_name, quantity, vehicle_registration, arrival_date, arrival_time, gate, is_purchase, purchase_order_reference, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at, reverted_at, reverted_by, actor_name, actor_email
     FROM board_intake_queue 
     ${whereClause}
@@ -3841,15 +4032,45 @@ async function getRecentBoardIntakeQueueEntries(limit = 12, offset = 0, filterDa
     }
 }
 async function countBoardIntakeQueueEntries(filterDate) {
-    const hasFilter = Boolean(filterDate && filterDate !== 'all');
-    const whereClause = hasFilter ? 'WHERE (arrival_date = ? OR substr(created_at, 1, 10) = ?)' : '';
-    const filterParams = hasFilter && filterDate ? [filterDate, filterDate] : [];
+    const { whereClause, filterParams } = buildBoardIntakeDateCondition(filterDate);
     try {
         const row = await (0, db_1.queryOne)(`SELECT COUNT(*) as total FROM board_intake_queue ${whereClause}`, filterParams);
         return Number(row?.total || 0);
     }
     catch {
         return 0;
+    }
+}
+async function getBoardIntakeQueueDateCounts(todayDate, yesterdayDate, selectedDate) {
+    const todayStart = `${todayDate} 00:00:00`;
+    const todayEnd = `${todayDate} 23:59:59`;
+    const yestStart = `${yesterdayDate} 00:00:00`;
+    const yestEnd = `${yesterdayDate} 23:59:59`;
+    try {
+        const row = await (0, db_1.queryOne)(`
+      SELECT 
+        COUNT(CASE WHEN arrival_date = ? OR (created_at >= ? AND created_at <= ?) THEN 1 END) as today_count,
+        COUNT(CASE WHEN arrival_date = ? OR (created_at >= ? AND created_at <= ?) THEN 1 END) as yest_count,
+        COUNT(*) as all_count
+      FROM board_intake_queue
+    `, [todayDate, todayStart, todayEnd, yesterdayDate, yestStart, yestEnd]);
+        const todayLogsCount = Number(row?.today_count || 0);
+        const yesterdayLogsCount = Number(row?.yest_count || 0);
+        const allCount = Number(row?.all_count || 0);
+        let selectedDateLogsCount = todayLogsCount;
+        if (selectedDate === 'all') {
+            selectedDateLogsCount = allCount;
+        }
+        else if (selectedDate === yesterdayDate) {
+            selectedDateLogsCount = yesterdayLogsCount;
+        }
+        else if (selectedDate && selectedDate !== todayDate) {
+            selectedDateLogsCount = await countBoardIntakeQueueEntries(selectedDate);
+        }
+        return { todayLogsCount, yesterdayLogsCount, selectedDateLogsCount };
+    }
+    catch {
+        return { todayLogsCount: 0, yesterdayLogsCount: 0, selectedDateLogsCount: 0 };
     }
 }
 async function getBoardIntakeQueueEntry(id) {
@@ -4030,7 +4251,12 @@ const DEFAULT_SHOP_FLOOR_FEATURE_FLAGS = {
     'edge-banding': true,
     'panel-rack': true,
 };
+let cachedFeatureFlags = null;
 async function getShopFloorFeatureFlags() {
+    const now = Date.now();
+    if (cachedFeatureFlags && cachedFeatureFlags.freshUntil > now) {
+        return cachedFeatureFlags.data;
+    }
     const rows = await (0, db_1.queryAll)('SELECT feature_key, enabled FROM shop_floor_feature_flags');
     const flags = { ...DEFAULT_SHOP_FLOOR_FEATURE_FLAGS };
     rows.forEach((row) => {
@@ -4038,9 +4264,11 @@ async function getShopFloorFeatureFlags() {
             flags[row.feature_key] = Boolean(row.enabled);
         }
     });
+    cachedFeatureFlags = { data: flags, freshUntil: now + 30 * 1000 };
     return flags;
 }
 async function saveShopFloorFeatureFlags(flags) {
+    cachedFeatureFlags = null;
     for (const [featureKey, enabled] of Object.entries(flags)) {
         const existing = await (0, db_1.queryOne)('SELECT feature_key FROM shop_floor_feature_flags WHERE feature_key = ?', [featureKey]);
         if (existing) {
@@ -4142,7 +4370,16 @@ async function deleteShopFloorDashboardSnapshot(email) {
         await (0, db_1.execute)('DELETE FROM shop_floor_dashboard_snapshots', []);
     }
 }
+let cachedPendingProcesses = null;
+function invalidatePendingShopFloorProcessesCache() {
+    cachedPendingProcesses = null;
+}
 async function getPendingShopFloorProcesses(filters) {
+    const isDefaultQuery = !filters?.partnerId && !filters?.processType && (!filters?.status || filters?.status === 'pending');
+    const now = Date.now();
+    if (isDefaultQuery && cachedPendingProcesses && cachedPendingProcesses.freshUntil > now) {
+        return cachedPendingProcesses.data;
+    }
     const conditions = [
         "mo_name NOT LIKE 'VA/%'",
         "partner_name != 'URBAN VIBE 2'",
@@ -4166,13 +4403,17 @@ async function getPendingShopFloorProcesses(filters) {
     }
     const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
     const rows = await (0, db_1.queryAll)(`SELECT * FROM shop_floor_pending_processes ${whereClause} ORDER BY created_at DESC`, params);
-    return rows.map((r) => ({
+    const result = rows.map((r) => ({
         ...r,
         qty_needed: Number(r.qty_needed || 0),
         qty_reserved: Number(r.qty_reserved || 0),
         qty_missing: Number(r.qty_missing || 0),
         is_mo_closed: Boolean(r.is_mo_closed),
     }));
+    if (isDefaultQuery) {
+        cachedPendingProcesses = { data: result, freshUntil: now + 15 * 1000 };
+    }
+    return result;
 }
 async function getPendingShopFloorProcessesCount(status = 'pending') {
     const row = await (0, db_1.queryOne)(`SELECT COUNT(*) as count FROM shop_floor_pending_processes 
@@ -4182,6 +4423,7 @@ async function getPendingShopFloorProcessesCount(status = 'pending') {
 async function upsertPendingShopFloorProcesses(records) {
     if (!records.length)
         return;
+    invalidatePendingShopFloorProcessesCache();
     const now = (0, dateTime_1.appDateTime)();
     for (const rec of records) {
         const existing = await (0, db_1.queryOne)('SELECT id, status, qty_missing, loaded_at, partner_id, partner_name FROM shop_floor_pending_processes WHERE mo_id = ? AND product_id = ?', [rec.mo_id, rec.product_id]);
@@ -4258,6 +4500,7 @@ async function upsertPendingShopFloorProcesses(records) {
     }
 }
 async function markPendingShopFloorProcessesLoaded(filters) {
+    invalidatePendingShopFloorProcessesCache();
     let pendingRows = [];
     if (filters.moId) {
         pendingRows = await (0, db_1.queryAll)(`SELECT * FROM shop_floor_pending_processes
@@ -4331,6 +4574,7 @@ async function deleteStaleCompletedProcesses(olderThanDays = 7) {
      WHERE status IN ('loaded', 'synced') AND updated_at < ?`, [cutoff]);
 }
 async function unmarkPendingShopFloorProcessesLoaded(filters) {
+    invalidatePendingShopFloorProcessesCache();
     let loadedRows = await (0, db_1.queryAll)(`SELECT * FROM shop_floor_pending_processes
      WHERE partner_id = ? AND product_id = ? AND (status = 'loaded' OR qty_reserved > 0)
      ORDER BY updated_at DESC`, [filters.partnerId, filters.productId]);
@@ -4387,6 +4631,7 @@ async function getActiveBoardIntakeLogs() {
        AND status NOT IN ('reverted', 'reverting')`, []);
 }
 async function pruneStalePendingProcessesForActiveMos(activeMoIds, validKeys, poCoveredKeys = []) {
+    invalidatePendingShopFloorProcessesCache();
     await (0, db_1.execute)(`DELETE FROM shop_floor_pending_processes WHERE mo_name LIKE 'VA/%' OR partner_name = 'URBAN VIBE 2' OR partner_id = 350`, []);
     const existingPending = await (0, db_1.queryAll)(`SELECT id, mo_id, mo_name, origin, product_id, partner_id, partner_name, product_name, qty_needed, is_mo_closed
      FROM shop_floor_pending_processes WHERE status = 'pending'`);

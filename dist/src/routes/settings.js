@@ -10,9 +10,11 @@ const payrollBridgeService_1 = require("../services/payrollBridgeService");
 const helpers_1 = require("../utils/helpers");
 const shopFloorReporting_1 = require("../utils/shopFloorReporting");
 const geminiOAuthService_1 = require("../services/geminiOAuthService");
+const nvidiaApiKeyExpirationReminderService_1 = require("../services/nvidiaApiKeyExpirationReminderService");
 const router = (0, express_1.Router)();
 const DEFAULT_GEMINI_MODEL = 'gemini-3.8-flash';
 const NVIDIA_AI_MODELS = [
+    'minimaxai/minimax-m3.1-flash',
     'google/gemma-4-31b-it',
     'z-ai/glm-5.2',
     'openai/gpt-oss-20b',
@@ -1082,6 +1084,40 @@ router.post('/settings/test-mail', mailValidators, async (req, res) => {
         return renderSettingsPage(res.status(502), {
             existing: currentSettings,
             source: req.body,
+            status: { type: 'danger', message },
+        });
+    }
+});
+router.post('/settings/test-nvidia-expiration-reminder', async (req, res) => {
+    try {
+        const stage = req.body?.stage === '7d' || req.body?.stage === '1d' ? req.body.stage : '30d';
+        const recipient = req.body?.recipient ? String(req.body.recipient).trim() : undefined;
+        const result = await (0, nvidiaApiKeyExpirationReminderService_1.sendTestNvidiaExpirationReminder)(recipient, stage);
+        if (req.xhr || req.headers.accept?.includes('application/json')) {
+            return res.json({
+                success: true,
+                message: `Test NVIDIA API expiration reminder (${result.stage}) successfully sent to ${result.recipient}.`,
+                stage: result.stage,
+                recipient: result.recipient,
+            });
+        }
+        const currentSettings = await (0, repositories_1.getSettings)();
+        return renderSettingsPage(res, {
+            existing: currentSettings,
+            status: {
+                type: 'success',
+                message: `Test NVIDIA API expiration reminder (${result.stage}) sent to ${result.recipient}.`,
+            },
+        });
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : 'Failed to send test expiration reminder.';
+        if (req.xhr || req.headers.accept?.includes('application/json')) {
+            return res.status(500).json({ success: false, error: message });
+        }
+        const currentSettings = await (0, repositories_1.getSettings)();
+        return renderSettingsPage(res.status(500), {
+            existing: currentSettings,
             status: { type: 'danger', message },
         });
     }

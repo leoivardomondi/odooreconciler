@@ -1251,25 +1251,50 @@ class OdooClient {
         if (!moIds.length)
             return new Map();
         const workorders = await this.searchReadRecords('mrp.workorder', {
-            domain: [['production_id', 'in', moIds], ['state', 'not in', ['done', 'cancel']]],
-            fields: ['id', 'production_id', 'state'],
+            domain: [['production_id', 'in', moIds], ['state', 'not in', ['cancel']]],
+            fields: ['id', 'production_id', 'state', 'duration'],
             limit: 500,
         });
+        const woIds = workorders.map((w) => w.id);
+        const activeProductivity = woIds.length
+            ? await this.searchReadRecords('mrp.workcenter.productivity', {
+                domain: [['workorder_id', 'in', woIds], ['date_end', '=', false]],
+                fields: ['id', 'workorder_id'],
+                limit: 500,
+            }).catch(() => [])
+            : [];
+        const activeWoIds = new Set(activeProductivity.map((p) => p.workorder_id[0]));
         const stateMap = new Map();
         for (const wo of workorders) {
             if (wo.production_id) {
                 const moId = wo.production_id[0];
                 const existing = stateMap.get(moId);
-                if (wo.state === 'progress') {
-                    stateMap.set(moId, 'progress');
+                let resolvedState = 'ready';
+                if (wo.state === 'done') {
+                    resolvedState = 'done';
+                }
+                else if (wo.state === 'progress') {
+                    // In Odoo, an active operator running on the work order has an open productivity record (date_end = False).
+                    // If no active operator is working, Odoo Shop Floor displays the green Play button (paused).
+                    resolvedState = activeWoIds.has(wo.id) ? 'progress' : 'paused';
                 }
                 else if (wo.state === 'pending') {
-                    if (existing !== 'progress') {
-                        stateMap.set(moId, 'pending');
-                    }
+                    resolvedState = 'paused';
                 }
-                else if (!existing && (wo.state === 'ready' || wo.state === 'progress' || wo.state === 'pending')) {
-                    stateMap.set(moId, wo.state);
+                else if (wo.state === 'ready') {
+                    resolvedState = 'ready';
+                }
+                if (resolvedState === 'progress') {
+                    stateMap.set(moId, 'progress');
+                }
+                else if (resolvedState === 'paused' && existing !== 'progress') {
+                    stateMap.set(moId, 'paused');
+                }
+                else if (resolvedState === 'done' && !existing) {
+                    stateMap.set(moId, 'done');
+                }
+                else if (!existing) {
+                    stateMap.set(moId, resolvedState);
                 }
             }
         }
@@ -1475,8 +1500,8 @@ class OdooClient {
                 hasMissingHardware: false,
             };
         }
-        // Attempt to allocate/reserve any recently received stock to this MO
-        if (!['cancel'].includes(production.state)) {
+        // Attempt to allocate/reserve any recently received stock to this MO (only if not already in progress or completed)
+        if (!['cancel', 'done', 'progress'].includes(production.state)) {
             try {
                 await this.callRecordMethod('mrp.production', 'action_assign', [moId]);
             }
@@ -3889,26 +3914,24 @@ class OdooClient {
             }
         };
         if (action === 'start') {
-            const workorder = workorders.find((item) => item.state === 'ready' || item.state === 'pending') || workorders.find((item) => item.state !== 'progress');
+            const workorder = workorders.find((item) => item.state === 'ready' || item.state === 'pending') ||
+                workorders.find((item) => item.state === 'progress') ||
+                workorders[0];
             if (!workorder) {
-                if (workorders.some((item) => item.state === 'progress'))
-                    return;
                 throw new OdooClientError('No work operation is available to start for this manufacturing order.');
             }
             await assertEmployeeMayUseWorkcenter(workorder);
-            if (workorder.state === 'pending') {
+            // Directly start/resume the work order in Odoo
+            try {
+                await this.callRecordMethod('mrp.workorder', 'button_start', [workorder.id]);
+            }
+            catch (_) { }
+            if (employeeId && Number.isSafeInteger(employeeId)) {
                 try {
-                    await this.callRecordMethod('mrp.workorder', 'button_start', [workorder.id]);
+                    await this.callRecordMethod('mrp.workorder', 'start_employee', [workorder.id], { employee_id: employeeId });
                 }
                 catch (_) { }
             }
-            try {
-                await this.callRecordMethod('mrp.workorder', 'start_employee', [workorder.id], {
-                    employee_id: employeeId,
-                    context: { mrp_display: true },
-                });
-            }
-            catch (_) { }
             const verifiedWorkorder = await this.searchReadRecords('mrp.workorder', {
                 domain: [['id', '=', workorder.id]],
                 fields: ['id', 'state', 'employee_ids'],
@@ -3922,7 +3945,7 @@ class OdooClient {
             }
             return { workorderId: workorder.id, state: 'progress', operatorLinked: true };
         }
-        const activeWorkorder = workorders.find((item) => item.state === 'progress');
+        const activeWorkorder = workorders.find((item) => item.state === 'progress') || workorders[0];
         if (!activeWorkorder) {
             // If there is no operation currently in progress, check if operations are already done or MO is ready to close
             const remainingUnfinished = workorders.filter((item) => !['done', 'cancel'].includes(item.state));
@@ -3938,12 +3961,6 @@ class OdooClient {
             throw new OdooClientError('This manufacturing order has no operation in progress.');
         }
         await assertEmployeeMayUseWorkcenter(activeWorkorder);
-        if (!(activeWorkorder.employee_ids || []).includes(employeeId)) {
-            await this.callRecordMethod('mrp.workorder', 'start_employee', [activeWorkorder.id], {
-                employee_id: employeeId,
-                context: { mrp_display: true },
-            });
-        }
         if (Number(activeWorkorder.qty_producing || 0) <= 0) {
             const quantityToProduce = Number(activeWorkorder.qty_production || 0);
             if (quantityToProduce <= 0) {
@@ -3953,17 +3970,28 @@ class OdooClient {
                 qty_producing: quantityToProduce,
             });
         }
-        await this.callRecordMethod('mrp.workorder', 'stop_employee', [activeWorkorder.id], {
-            employee_ids: [employeeId],
-            context: { mrp_display: true },
-        });
-        await this.callRecordMethod('mrp.workorder', 'do_finish', [activeWorkorder.id], {
-            context: {
-                no_start_next: true,
-                mrp_display: true,
-                employee_id: employeeId,
-            },
-        });
+        // Stop all employees currently running timers on this work order
+        const employeesToStop = [
+            ...new Set([
+                ...(activeWorkorder.employee_ids || []),
+                ...(employeeId && Number.isSafeInteger(employeeId) ? [employeeId] : []),
+            ]),
+        ];
+        if (employeesToStop.length > 0) {
+            await this.callRecordMethod('mrp.workorder', 'stop_employee', [activeWorkorder.id], { employee_ids: employeesToStop }).catch(() => null);
+        }
+        // Finish the work order directly
+        try {
+            await this.callRecordMethod('mrp.workorder', 'button_finish', [activeWorkorder.id]);
+        }
+        catch (_) {
+            try {
+                await this.callRecordMethod('mrp.workorder', 'do_finish', [activeWorkorder.id], {
+                    context: { no_start_next: true },
+                });
+            }
+            catch (_) { }
+        }
         const verification = await this.searchReadRecords('mrp.workorder', {
             domain: [['id', '=', activeWorkorder.id]],
             fields: ['id', 'state'],
@@ -3989,9 +4017,6 @@ class OdooClient {
         return { workorderId: activeWorkorder.id, state: 'done', operatorLinked: true };
     }
     async pauseManufacturingOrder(moId, options, employeeId) {
-        if (!employeeId || !Number.isSafeInteger(employeeId)) {
-            throw new OdooClientError('Your account is not linked to a valid Odoo employee.');
-        }
         const [productions, workorders] = await Promise.all([
             this.searchReadRecords('mrp.production', {
                 domain: [['id', '=', moId]],
@@ -4011,11 +4036,34 @@ class OdooClient {
         }
         const activeWorkorder = workorders.find((item) => item.state === 'progress') || workorders[0];
         if (activeWorkorder) {
-            await this.callRecordMethod('mrp.workorder', 'stop_employee', [activeWorkorder.id], {
-                employee_ids: [employeeId],
-                context: { mrp_display: true },
-            }).catch(() => null);
-            await this.callRecordMethod('mrp.workorder', 'button_pending', [activeWorkorder.id], { context: { mrp_display: true } }).catch(() => null);
+            // 1. Stop all employees currently running timers on this work order
+            const employeesToStop = [
+                ...new Set([
+                    ...(activeWorkorder.employee_ids || []),
+                    ...(employeeId && Number.isSafeInteger(employeeId) ? [employeeId] : []),
+                ]),
+            ];
+            if (employeesToStop.length > 0) {
+                await this.callRecordMethod('mrp.workorder', 'stop_employee', [activeWorkorder.id], {
+                    employee_ids: employeesToStop,
+                }).catch(() => null);
+            }
+            // 2. Call button_pending WITHOUT mrp_display: true so Odoo standard end_previous()
+            // closes active productivity timers without throwing tablet login errors
+            try {
+                await this.callRecordMethod('mrp.workorder', 'button_pending', [activeWorkorder.id]);
+            }
+            catch (pendingErr) {
+                // Fallback: manually close any open productivity records for this workorder
+                const openProductivity = await this.searchReadRecords('mrp.workcenter.productivity', {
+                    domain: [['workorder_id', '=', activeWorkorder.id], ['date_end', '=', false]],
+                    fields: ['id'],
+                }).catch(() => []);
+                if (openProductivity.length > 0) {
+                    const nowStr = new Date().toISOString().replace('T', ' ').slice(0, 19);
+                    await this.writeRecord('mrp.workcenter.productivity', openProductivity.map((p) => p.id), { date_end: nowStr }).catch(() => null);
+                }
+            }
         }
         const backorderNotice = options.createBackorder
             ? ' with backorder requested for remaining units'

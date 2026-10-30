@@ -42,8 +42,11 @@ function isCuttingServiceProductName(value) {
     return name.startsWith('cutting ') || name.startsWith('cutting+');
 }
 function isStockExemptEdgeBandingService(value) {
-    const normalized = String(value || '').trim().toLowerCase();
-    return normalized.includes('edge banding service') || normalized.includes('edging banding service');
+    const normalized = String(value || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    return (normalized.includes('edge banding service') ||
+        normalized.includes('edge band service') ||
+        normalized.includes('edging banding service') ||
+        normalized.includes('edging band service'));
 }
 function extractThicknessMm(text) {
     const str = String(text || '');

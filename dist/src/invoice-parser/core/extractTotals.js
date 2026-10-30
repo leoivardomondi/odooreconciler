@@ -4,7 +4,7 @@ exports.extractTotals = extractTotals;
 const normalizeMoney_1 = require("./normalizeMoney");
 function findMoneyAfter(text, labels) {
     for (const label of labels) {
-        const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
         const match = text.match(new RegExp(`${escaped}\\s*(?:KSH|KES)?\\s*:?\\s*([\\d,]+(?:\\.\\d{1,2})?)`, 'i'));
         const value = (0, normalizeMoney_1.normalizeMoney)(match?.[1]);
         if (value !== null) {
@@ -185,7 +185,9 @@ function extractConcatenatedTaxTableTotals(text) {
 function extractTotals(text) {
     const taxTableTotals = extractConsistentTaxTableTotals(text) || extractConcatenatedTaxTableTotals(text);
     const goodsFromLoosePattern = maxMoneyAfter(text, /\bGOODS\D{0,30}([\d,]+(?:\.\d{1,2})?)/gi, 50);
-    const vatFromLoosePattern = extractLabelledVatTotal(text) || extractVatFromLines(text) || maxMoneyAfter(text, /\bVAT\D{0,20}([\d,]+(?:\.\d{1,2})?)/gi, 10);
+    const vatFromLoosePattern = extractLabelledVatTotal(text) ||
+        extractVatFromLines(text) ||
+        maxMoneyAfter(text, /\bVAT\b(?!\s*(?:reg|pin|no\.?|number|cert|certificate)\b)\D{0,20}([\d,]+(?:\.\d{1,2})?)/gi, 10);
     const labelledTotal = findMoneyAfterLast(text, ['total (kes)', 'total kes']);
     const receiptPayableTotal = findReceiptPayableTotal(text);
     const standaloneDueTotal = findStandaloneDueTotal(text);
@@ -210,10 +212,10 @@ function extractTotals(text) {
         .map((match) => (0, normalizeMoney_1.normalizeMoney)(match[1]))
         .filter((value) => value !== null);
     const amount_due = taxTableTotals?.amount_due ||
+        amountDueFromLabel ||
         labelledTotal ||
         standaloneDueTotal ||
         receiptPayableTotal ||
-        amountDueFromLabel ||
         kshMatches.at(-1) ||
         shMatches.at(-1) ||
         findMoneyAfter(text, ['total']);
