@@ -524,7 +524,7 @@ function buildExtractionPrompt(input: {
     'JSON shape:',
     JSON.stringify(extractionSchema()),
     `Original filename (vendor hint only; never use for invoice number or date): ${input.originalFilename || ''}`,
-    `OCR text:\n${input.ocrText.slice(0, 5000)}`,
+    `OCR text:\n${input.ocrText ? input.ocrText.slice(0, 5000) : '(None - perform direct end-to-end vision character reading and extraction directly from invoice image)'}`,
     `Embedded PDF text:\n${input.pdfText.slice(0, 2500)}`,
   ].join('\n\n');
 }
@@ -564,7 +564,23 @@ function resolveConfiguredApiKey(
     return config.nvidiaModelKeys[model];
   }
   if (provider === 'disabled') return '';
-  return config.apiKeys?.[provider] || (provider === 'nvidia' ? process.env.NVIDIA_API_KEY || '' : '');
+  const configured = config.apiKeys?.[provider];
+  if (configured) return configured;
+
+  switch (provider) {
+    case 'openai':
+      return process.env.OPENAI_API_KEY || '';
+    case 'nvidia':
+      return process.env.NVIDIA_API_KEY || '';
+    case 'gemini':
+      return process.env.GEMINI_API_KEY || '';
+    case 'anthropic':
+      return process.env.ANTHROPIC_API_KEY || '';
+    case 'openrouter':
+      return process.env.OPENROUTER_API_KEY || '';
+    default:
+      return '';
+  }
 }
 
 type GeminiCredential = {
@@ -605,7 +621,7 @@ function providerHasConfiguredCredential(
   model?: string,
 ) {
   if (provider === 'gemini') {
-    return false;
+    return Boolean(config.geminiOAuth?.connected || resolveConfiguredApiKey(config, provider, model));
   }
   return Boolean(resolveConfiguredApiKey(config, provider, model));
 }
@@ -663,10 +679,9 @@ async function callOpenAiCompatibleInvoiceAi(input: {
     })),
     { type: 'text', text: input.prompt },
   ];
+  const isReasoningModel = /^(o1|o3)/i.test(input.model);
   const body: Record<string, unknown> = {
     model: input.model,
-    temperature: isGemmaVision ? 1.0 : 0,
-    max_tokens: isGemmaVision ? 4096 : 4000,
     stream: false,
     messages: [
       {
@@ -677,6 +692,13 @@ async function callOpenAiCompatibleInvoiceAi(input: {
       },
     ],
   };
+
+  if (!isReasoningModel) {
+    body.temperature = isGemmaVision ? 1.0 : 0;
+    body.max_tokens = isGemmaVision ? 4096 : 4000;
+  } else {
+    body.max_completion_tokens = 4000;
+  }
 
   // NVIDIA's Gemma endpoint documents the OpenAI-compatible chat fields but
   // does not document response_format. Keep the strict JSON instruction in

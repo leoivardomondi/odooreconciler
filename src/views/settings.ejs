@@ -1418,7 +1418,7 @@
             </div>
           </div>
           <div class="alert alert-primary border small" role="alert">
-            <strong>Execution order:</strong> PDF/image <span class="mx-1">→</span> <strong>OCR</strong> converts pixels to text <span class="mx-1">→</span> this section uses an AI model to reason over the extracted text, identify invoice fields and totals, and apply supplier/PO safety checks. Vision models such as NVIDIA Gemma may read invoice images directly; that is still AI reasoning, not OCR.
+            <strong>End-to-End Extraction (Recommended — 1 Step):</strong> Multimodal vision models (e.g. OpenAI GPT-4o / GPT-4o Mini, Google Gemini 3.8 Flash, Anthropic Claude, NVIDIA Gemma 4) read invoice images directly, performing character recognition (OCR) and structured JSON extraction in a single pass. Standalone OCR (below) acts as an automatic second-pass fallback only if vision confidence is below threshold.
           </div>
           <div class="row g-3">
             <div class="col-12">

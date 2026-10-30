@@ -133,17 +133,49 @@ function assessHandwriting(input: { ocrText: string; invoice: ParsedInvoice }) {
   return { detected, confidence, reviewRequired: detected && confidence >= 0.55, reasons };
 }
 
-function isGemmaVisionConfigured(config?: ParseSupplierInvoiceInput['aiConfig']) {
-  if (!config?.enabled || config.provider !== 'nvidia') return false;
-  const model = config.model?.trim();
-  const isVision = model === 'google/gemma-4-31b-it' || model === 'minimaxai/minimax-m3.1-flash';
-  if (!isVision) return false;
-  return Boolean(
-    config.apiKeys?.nvidia ||
-    process.env.NVIDIA_API_KEY ||
-    (model && config.nvidiaModelKeys?.[model]),
-  );
+export function isVisionConfigured(config?: ParseSupplierInvoiceInput['aiConfig']): boolean {
+  if (!config?.enabled || config.provider === 'disabled') return false;
+
+  const provider = config.provider;
+  const model = (config.model || '').trim().toLowerCase();
+
+  switch (provider) {
+    case 'openai': {
+      // Exclude text-only or embedding models
+      const isTextOnly = /^(o3-mini|o1-mini|gpt-3\.5|text-embedding)/i.test(model);
+      if (isTextOnly) return false;
+      return Boolean(config.apiKeys?.openai || process.env.OPENAI_API_KEY);
+    }
+    case 'nvidia': {
+      const isVision =
+        model === 'google/gemma-4-31b-it' ||
+        model === 'minimaxai/minimax-m3.1-flash' ||
+        model === 'nvidia/llama-3.1-nemotron-nano-vl-8b-v1' ||
+        model.startsWith('meta/llama-3.2-');
+      if (!isVision) return false;
+      return Boolean(
+        config.apiKeys?.nvidia ||
+        process.env.NVIDIA_API_KEY ||
+        (config.model && config.nvidiaModelKeys?.[config.model]),
+      );
+    }
+    case 'gemini': {
+      return Boolean(config.apiKeys?.gemini || process.env.GEMINI_API_KEY || config.geminiOAuth?.connected);
+    }
+    case 'anthropic': {
+      return Boolean(config.apiKeys?.anthropic || process.env.ANTHROPIC_API_KEY);
+    }
+    case 'openrouter': {
+      const isVision = /(vision|vl|gpt-4o|claude-3|gemini)/i.test(model);
+      if (!isVision) return false;
+      return Boolean(config.apiKeys?.openrouter || process.env.OPENROUTER_API_KEY);
+    }
+    default:
+      return false;
+  }
 }
+
+export const isGemmaVisionConfigured = isVisionConfigured;
 
 function sanitizeInvoiceNumberFromAddress(value: string | null | undefined, text: string) {
   const candidate = String(value || '').trim();
@@ -178,8 +210,8 @@ export async function parseSupplierInvoice(input: ParseSupplierInvoiceInput): Pr
     }
 
     let ocrText = '';
-    let gemmaFirstAttempted = false;
-    let gemmaFirstFailed = false;
+    let visionFirstAttempted = false;
+    let visionFirstFailed = false;
     let rawPages: ParsedInvoice['raw']['pages'] = [
       {
         page_number: 1,
@@ -188,8 +220,8 @@ export async function parseSupplierInvoice(input: ParseSupplierInvoiceInput): Pr
       },
     ];
 
-    if (isGemmaVisionConfigured(input.aiConfig)) {
-      gemmaFirstAttempted = true;
+    if (isVisionConfigured(input.aiConfig)) {
+      visionFirstAttempted = true;
       const rendered = await renderPdfToImages(input.filePath);
       warnings.push(...rendered.warnings);
       rendered.images.forEach((image) => tempFilesToClean.add(image.imagePath));
@@ -214,48 +246,65 @@ export async function parseSupplierInvoice(input: ParseSupplierInvoiceInput): Pr
         image_variants: preprocessed[index]?.imageVariants,
       }));
 
-      // Put one original image for every physical PDF page first. The AI
-      // extractor applies Max Images after this list is built, so a small
-      // budget still covers all pages before spending slots on variants.
-      const gemmaImages = [
+      // Put one original image for every physical PDF page first, followed by preprocessed/variant views.
+      const visionImages = Array.from(new Set([
         ...fullPageImages.map((image) => image.imagePath),
-        ...preprocessed.flatMap((page) => [page.imagePath, ...page.imageVariants]),
-      ];
-      const gemmaResult = await extractInvoiceWithAi({
-        imagePaths: gemmaImages,
+        ...preprocessed.flatMap((page) => [page.imagePath, ...(page.imageVariants || [])]),
+      ]));
+      const visionResult = await extractInvoiceWithAi({
+        imagePaths: visionImages,
         ocrText: '',
         pdfText: pdfTextResult.text,
         originalFilename: input.originalFilename,
         config: input.aiConfig,
       });
-      warnings.push(...gemmaResult.warnings);
+      warnings.push(...visionResult.warnings);
 
       const confidenceThreshold = Number(input.aiConfig?.confidenceThreshold || 0.75);
-      const gemmaConfidence = gemmaResult.extraction?.confidence ?? 0;
-      if (gemmaResult.extraction && gemmaConfidence >= confidenceThreshold) {
-        let gemmaInvoice = mergeAiInvoiceExtraction(emptyInvoice(input, warnings), gemmaResult.extraction);
-        gemmaInvoice = normalizeInvoiceTotals(gemmaInvoice);
-        gemmaInvoice = {
-          ...gemmaInvoice,
-          confidence: computeConfidence(gemmaInvoice),
-          raw: { ...gemmaInvoice.raw, pages: rawPages },
-          warnings: validateInvoice(gemmaInvoice),
+      const visionConfidence = visionResult.extraction?.confidence ?? 0;
+      if (visionResult.extraction && visionConfidence >= confidenceThreshold) {
+        let visionInvoice = mergeAiInvoiceExtraction(emptyInvoice(input, warnings), visionResult.extraction);
+        visionInvoice = normalizeInvoiceTotals(visionInvoice);
+        if (!visionInvoice.invoice_date) {
+          visionInvoice.invoice_date = extractIsoDateFromFilename(input.originalFilename);
+        }
+        if (!visionInvoice.supplier_key || visionInvoice.supplier_key === 'UNKNOWN') {
+          const detected = detectSupplier(visionInvoice.supplier || '');
+          if (detected.key !== 'UNKNOWN') {
+            visionInvoice.supplier_key = detected.key;
+            if (!visionInvoice.supplier) visionInvoice.supplier = detected.supplier;
+          }
+        }
+        const safeInvNum = sanitizeInvoiceNumberFromAddress(
+          visionInvoice.invoice_number,
+          visionResult.extraction.notes?.join(' ') || visionInvoice.supplier || '',
+        );
+        if (visionInvoice.invoice_number && !safeInvNum) {
+          visionInvoice.invoice_number = null;
+          visionInvoice.warnings.push('A PO Box/address value was rejected as an invoice number.');
+        }
+        visionInvoice = {
+          ...visionInvoice,
+          confidence: computeConfidence(visionInvoice),
+          raw: { ...visionInvoice.raw, pages: rawPages },
+          warnings: validateInvoice(visionInvoice),
         };
-        return gemmaInvoice;
+        return visionInvoice;
       }
 
-      gemmaFirstFailed = true;
+      visionFirstFailed = true;
+      const modelLabel = `${input.aiConfig?.provider || 'AI'} ${input.aiConfig?.model || ''}`.trim();
       warnings.push(
-        gemmaResult.extraction
-          ? `Gemma extraction confidence ${gemmaConfidence.toFixed(2)} was below the configured threshold ${confidenceThreshold.toFixed(2)}; OCR fallback started.`
-          : 'Gemma extraction returned no usable structured result; OCR fallback started.',
+        visionResult.extraction
+          ? `End-to-end vision extraction (${modelLabel}) confidence ${visionConfidence.toFixed(2)} was below configured threshold ${confidenceThreshold.toFixed(2)}; OCR fallback started.`
+          : `End-to-end vision extraction (${modelLabel}) returned no usable structured result; OCR fallback started.`,
       );
     }
 
-    if (gemmaFirstFailed || input.alwaysOcr || !looksReadableInvoiceText(pdfTextResult.text)) {
+    if (visionFirstFailed || input.alwaysOcr || !looksReadableInvoiceText(pdfTextResult.text)) {
       warnings.push(
-        gemmaFirstFailed
-          ? 'Primary Gemma vision extraction failed or was below threshold, so OCR fallback was started.'
+        visionFirstFailed
+          ? 'Primary end-to-end vision extraction was below threshold or failed, so OCR fallback was started.'
           : input.alwaysOcr
           ? 'OCR was forced so scanned/garbled invoice pages can be cross-checked against embedded PDF text.'
           : 'Embedded PDF text was unreadable or suspicious, so OCR was attempted.',
@@ -344,7 +393,7 @@ export async function parseSupplierInvoice(input: ParseSupplierInvoiceInput): Pr
     };
 
     if (
-        !gemmaFirstAttempted && (input.forceAi
+        (!visionFirstAttempted || visionFirstFailed) && (input.forceAi
         ? input.aiConfig?.enabled && input.aiConfig.provider !== 'disabled'
         : input.aiConfig
         ? Boolean(finalInvoice.handwriting?.detected) || shouldUseConfiguredAiInvoiceExtraction(finalInvoice, input.aiConfig)
@@ -352,8 +401,8 @@ export async function parseSupplierInvoice(input: ParseSupplierInvoiceInput): Pr
     ) {
       if (input.aiConfig?.enabled && input.aiConfig.provider !== 'disabled') {
         warnings.push(
-          isGemmaVisionConfigured(input.aiConfig)
-            ? `AI interpretation configured: ${input.aiConfig.provider} ${input.aiConfig.model || ''} reads original and enhanced invoice images first; OCR is fallback-only.`
+          isVisionConfigured(input.aiConfig)
+            ? `AI interpretation configured: ${input.aiConfig.provider} ${input.aiConfig.model || ''} retrying with OCR/PDF text after primary vision pass.`
             : `AI interpretation configured: ${input.aiConfig.provider} ${input.aiConfig.model || ''} reads OCR/PDF text after OCR.`,
         );
       }
