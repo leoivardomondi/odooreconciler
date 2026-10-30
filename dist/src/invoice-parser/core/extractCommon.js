@@ -21,12 +21,29 @@ function firstMatch(text, patterns) {
     return null;
 }
 function extractInvoiceNumber(text) {
-    const value = firstMatch(text, [
+    const direct = firstMatch(text, [
         /invoice\s*(?:no|number|#)\.?\s*:?\s*([A-Z0-9/-]+)/i,
         /cash\s*sale\s*(?:no|number|#)?\.?\s*:?\s*([A-Z0-9/-]+)/i,
         /serial\s*(?:no|number)\.?\s*:?\s*([A-Z0-9/-]+)/i,
     ]);
-    return value && value.replace(/\D/g, '').length >= 3 ? value : null;
+    if (direct && direct.replace(/\D/g, '').length >= 3 && !/^(?:dated|date)$/i.test(direct)) {
+        return direct;
+    }
+    const idx = text.search(/invoice\s*(?:no|number|#)/i);
+    if (idx !== -1) {
+        const after = text.slice(idx, idx + 250);
+        const tokens = after.match(/\b([A-Z0-9/-]{3,15})\b/g);
+        if (tokens) {
+            for (const token of tokens) {
+                if (!/invoice|number|dated|date/i.test(token) && token.replace(/\D/g, '').length >= 3) {
+                    if (/^40100|00100$/i.test(token))
+                        continue;
+                    return token;
+                }
+            }
+        }
+    }
+    return null;
 }
 function extractSerialNumber(text) {
     return firstMatch(text, [/serial\s*(?:no|number)\.?\s*:?\s*([A-Z0-9/-]+)/i]);
