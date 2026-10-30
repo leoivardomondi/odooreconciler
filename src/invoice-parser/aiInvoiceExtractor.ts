@@ -1290,15 +1290,17 @@ export function mergeAiInvoiceExtraction(invoice: ParsedInvoice, ai: AiInvoiceEx
     typeof existingTotal === 'number' &&
     aiTotal > existingTotal &&
     (aiTotalMatchesItemsPlusVat || aiTotalMatchesGoodsPlusVat || aiTotalsMatchParserLineItems);
+  const isImplausibleExistingTotal = typeof existingTotal === 'number' && (existingTotal > 50_000_000 || existingTotal <= 0);
   const shouldTrustAiTotals =
     existingTotal === null ||
+    isImplausibleExistingTotal ||
     hasTotalProblem(invoice) ||
     shouldTrustAiSubtotalCorrection ||
     (
       typeof existingTotal === 'number' &&
       typeof aiTotal === 'number' &&
       !existingTotalSupported &&
-      aiTotalSupported
+      (aiTotalSupported || (typeof aiTotal === 'number' && aiTotal > 0 && aiTotal <= 50_000_000))
     ) ||
     (
       aiTotalsConsistent &&

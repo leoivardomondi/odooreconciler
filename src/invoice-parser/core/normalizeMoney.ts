@@ -12,7 +12,18 @@ export function normalizeMoney(value: string | null | undefined): number | null 
   }
 
   const parsed = Number(cleaned);
-  return Number.isFinite(parsed) ? parsed : null;
+  // Guard against non-numeric or absurd values (> 50 million KES)
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 50_000_000) {
+    return null;
+  }
+
+  // Reject strings of more than 8 digits without a decimal point (e.g. barcodes, serial numbers, CU numbers, phone numbers)
+  const digitsOnly = cleaned.replace(/[^0-9]/g, '');
+  if (!cleaned.includes('.') && digitsOnly.length > 8) {
+    return null;
+  }
+
+  return parsed;
 }
 
 export function nearlyEqualMoney(left: number | null, right: number | null, tolerance = 1) {

@@ -378,7 +378,7 @@ export function normalizeInvoiceTotals(invoice: ParsedInvoice): ParsedInvoice {
         nearlyEqualComputedMoney(recoveredAmountDue, lineItemsPlusVat)))
       ? clearLineItemsTotal
       : goodsTotal === null
-      ? inferGoodsFromGrossAndVat(recoveredAmountDue, vat)
+      ? (vat === null || vat === 0 ? recoveredAmountDue : inferGoodsFromGrossAndVat(recoveredAmountDue, vat))
       : vatInferenceLooksBetter && recoveredAmountDue !== null && vat !== null
       ? roundMoney(recoveredAmountDue - vat)
       : goodsTotal;

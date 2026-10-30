@@ -56,6 +56,29 @@ test('preserves the VAT-inclusive receipt total and derives the correct net tota
   });
 });
 
+test('handles non-VAT documents by setting goods_total equal to amount_due', () => {
+  const noVatInvoice = vinylReceipt({
+    goods_total: null,
+    vat: null,
+    amount_due: 2600,
+  });
+  noVatInvoice.items = [
+    {
+      description: 'STEEL RODS',
+      quantity: 2,
+      unit: 'pcs',
+      unit_price: 1300,
+      net_amount: 2600,
+    },
+  ];
+  noVatInvoice.raw.ocr_text = 'OKHA STEEL & HARDWARE TOTAL 2600.00';
+
+  const normalized = normalizeInvoiceTotals(noVatInvoice);
+  assert.equal(normalized.totals.amount_due, 2600);
+  assert.equal(normalized.totals.goods_total, 2600);
+  assert.equal(normalized.totals.vat, null);
+});
+
 test('corrects a parser net subtotal when line net plus VAT matches the payable total', () => {
   const normalized = normalizeInvoiceTotals(vinylReceipt({ amount_due: 10344.83 }));
 
