@@ -41,6 +41,7 @@ exports.isSupportedPoBillMimetype = isSupportedPoBillMimetype;
 exports.isStandaloneDeliveryNoteDocument = isStandaloneDeliveryNoteDocument;
 exports.isPurchaseOrderApprovalMessage = isPurchaseOrderApprovalMessage;
 exports.computeItemScore = computeItemScore;
+exports.buildCandidate = buildCandidate;
 exports.comparePoBillCandidates = comparePoBillCandidates;
 exports.isReliablePoBillCandidate = isReliablePoBillCandidate;
 exports.clearDocumentPdfsCache = clearDocumentPdfsCache;
@@ -346,7 +347,23 @@ function totalsMatch(left, right) {
     if (typeof left !== 'number' || typeof right !== 'number') {
         return false;
     }
-    return Math.abs(left - right) <= TOTAL_TOLERANCE;
+    if (Math.abs(left - right) <= TOTAL_TOLERANCE) {
+        return true;
+    }
+    // Common handwritten OCR digit confusion: handwritten open-top '4' parsed as '21' (e.g. 21100 <-> 4100)
+    const leftStr = String(Math.round(left));
+    if (leftStr.startsWith('21') && leftStr.length >= 4) {
+        const candidate = Number('4' + leftStr.slice(2));
+        if (Math.abs(candidate - right) <= TOTAL_TOLERANCE)
+            return true;
+    }
+    const rightStr = String(Math.round(right));
+    if (rightStr.startsWith('21') && rightStr.length >= 4) {
+        const candidate = Number('4' + rightStr.slice(2));
+        if (Math.abs(left - candidate) <= TOTAL_TOLERANCE)
+            return true;
+    }
+    return false;
 }
 function roundMoney(value) {
     return Math.round(value * 100) / 100;
@@ -525,6 +542,27 @@ function computeTotalScore(invoiceTotal, poTotal, invoiceUntaxed, poUntaxed) {
     }
     if (poTotal > 0 && difference / poTotal <= 0.02) {
         return { score: 20, reason: `Total is within 2%: invoice ${invoiceTotal}, PO ${poTotal}.` };
+    }
+    // Handwritten digit confusion check: open-top '4' read as '21' (e.g. 21100 -> 4100)
+    const invStr = String(Math.round(invoiceTotal));
+    if (invStr.startsWith('21') && invStr.length >= 4) {
+        const candidateCorrected = Number('4' + invStr.slice(2));
+        if (Math.abs(candidateCorrected - poTotal) <= TOTAL_TOLERANCE) {
+            return {
+                score: 38,
+                reason: `Total matched PO ${poTotal} after resolving handwritten digit confusion (open-top "4" misread as "21": invoice ${invoiceTotal} -> ${candidateCorrected}).`,
+            };
+        }
+    }
+    const poStr = String(Math.round(poTotal));
+    if (poStr.startsWith('21') && poStr.length >= 4) {
+        const candidateCorrected = Number('4' + poStr.slice(2));
+        if (Math.abs(candidateCorrected - invoiceTotal) <= TOTAL_TOLERANCE) {
+            return {
+                score: 38,
+                reason: `Total matched PO ${poTotal} after resolving handwritten digit confusion (open-top "4" misread as "21": PO ${poTotal} -> ${candidateCorrected}).`,
+            };
+        }
     }
     return { score: 0, reason: `Total did not match: invoice ${invoiceTotal}, PO ${poTotal}.` };
 }

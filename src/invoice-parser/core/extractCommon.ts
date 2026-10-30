@@ -18,6 +18,7 @@ export function extractInvoiceNumber(text: string) {
     /invoice\s*(?:no|number|#)\.?\s*:?\s*([A-Z0-9/-]+)/i,
     /cash\s*sale\s*(?:no|number|#)?\.?\s*:?\s*([A-Z0-9/-]+)/i,
     /serial\s*(?:no|number)\.?\s*:?\s*([A-Z0-9/-]+)/i,
+    /(?<!(?:box|tel|phone|vat|pin|reg|order|po)\s*)(?:E&O\.?E\s*)?No\.?\s*(\d{2,6})\b/i,
   ]);
   if (direct && direct.replace(/\D/g, '').length >= 3 && !/^(?:dated|date)$/i.test(direct)) {
     return direct;

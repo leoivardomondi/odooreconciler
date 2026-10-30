@@ -537,6 +537,9 @@ function buildExtractionPrompt(input: {
     'Handwritten mode: inspect every handwritten digit and word carefully; do not silently guess. Return null when a field cannot be read, and include the uncertainty in notes.',
     'For handwritten line items, preserve the visible row structure and return quantity, unit price, and net amount independently. Never derive a missing number just to make totals balance.',
     'Use arithmetic only as a validation signal: quantity x unit price should approximately equal net amount, and line totals should approximately reconcile to the invoice total.',
+    'Handwritten numbers and receipt books: Pay close attention to handwritten numbers. In cursive/handwritten Kenyan receipts (e.g. Tiptop Woods, timber and hardware merchants), do NOT confuse an open-top handwritten "4" with "21" (for example, "4,100" is 4100, not 21100). Always check row arithmetic: quantity * unit price = line total (e.g. 2 * 2050 = 4100). The line total must reconcile with the invoice total box.',
+    'Pre-printed receipt book numbers: On receipt books where an invoice/receipt number is pre-printed (often in red ink at the bottom-left or top-right, e.g. "No. 357" or "E&O.E No. 357"), that number is the invoice_number.',
+    'Receipt book columns: Read items from the tabular grid: Quantity column, Description column, Unit price "@" column, and Total amount "KSHS/CTS" column. Distinguish handwritten payment instructions (e.g. "Transfer to Mpesa...") as notes or payment info, not line items.',
     'If this is a text-only model, use the OCR text as the authority and cross-check it against embedded PDF text.',
     'The original filename may come from a scanner or Odoo Documents. Treat it only as a weak corroborating vendor hint: remove labels such as RECEIPT/INVOICE, dates, and scan numbers, and tolerate truncated names such as ENTERPRIS matching ENTERPRISES. Never use the filename to invent the invoice number or invoice/receipt date, and never let it override clearly printed values in the invoice body.',
     'For ETR/receipt documents, final payable amount is usually labelled TOTAL, CASH, PAID, AMOUNT DUE, or GRAND TOTAL. Do not add VAT again when TOTAL/CASH is already VAT-inclusive.',
@@ -737,7 +740,7 @@ async function callOpenAiCompatibleInvoiceAi(input: {
     };
   }
 
-  const requestTimeoutMs = input.provider === 'nvidia' ? 300000 : 90000;
+  const requestTimeoutMs = input.provider === 'nvidia' ? 300000 : 180000;
   const headers = {
     Authorization: `Bearer ${input.apiKey}`,
     'Content-Type': 'application/json',

@@ -1,5 +1,6 @@
 import fs from 'fs/promises';
 import path from 'path';
+import zlib from 'zlib';
 import { resolveProjectFile } from '../utils/paths';
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.tif', '.tiff']);
@@ -48,14 +49,17 @@ async function extractEmbeddedJpegsFromPdf(
       dataStart += 1;
     }
 
-    if (
-      dataStart + 3 < buffer.length &&
-      buffer[dataStart] === 0xff &&
-      buffer[dataStart + 1] === 0xd8 &&
-      buffer[dataStart + 2] === 0xff
-    ) {
-      const streamEnd = buffer.indexOf(Buffer.from('endstream'), dataStart);
-      if (streamEnd !== -1) {
+    const streamEnd = buffer.indexOf(Buffer.from('endstream'), dataStart);
+    if (streamEnd !== -1) {
+      let candidateJpeg: Buffer | null = null;
+
+      // Case A: Raw embedded JPEG stream (FF D8 FF)
+      if (
+        dataStart + 3 < buffer.length &&
+        buffer[dataStart] === 0xff &&
+        buffer[dataStart + 1] === 0xd8 &&
+        buffer[dataStart + 2] === 0xff
+      ) {
         let eoiIndex = -1;
         for (let i = streamEnd - 1; i >= dataStart; i -= 1) {
           if (buffer[i] === 0xff && buffer[i + 1] === 0xd9) {
@@ -65,15 +69,34 @@ async function extractEmbeddedJpegsFromPdf(
         }
 
         if (eoiIndex > dataStart) {
-          const jpegData = buffer.subarray(dataStart, eoiIndex);
-          // High-res scanned page JPEGs are typically > 40KB
-          if (jpegData.length > 40_000) {
-            const imagePath = path.join(tempDir, `${baseName}-page-${pageNumber}.jpg`);
-            await fs.writeFile(imagePath, jpegData);
-            images.push({ pageNumber, imagePath });
-            pageNumber += 1;
-          }
+          candidateJpeg = buffer.subarray(dataStart, eoiIndex);
         }
+      } else if (
+        // Case B: Flate-compressed JPEG stream (/Filter [ /FlateDecode /DCTDecode ]) starting with zlib header 0x78
+        dataStart + 2 < buffer.length &&
+        buffer[dataStart] === 0x78
+      ) {
+        try {
+          const rawStream = buffer.subarray(dataStart, streamEnd);
+          const inflated = zlib.inflateSync(rawStream);
+          if (
+            inflated.length > 40_000 &&
+            inflated[0] === 0xff &&
+            inflated[1] === 0xd8 &&
+            inflated[2] === 0xff
+          ) {
+            candidateJpeg = inflated;
+          }
+        } catch {
+          // Non-fatal: not a zlib stream or inflate failed
+        }
+      }
+
+      if (candidateJpeg && candidateJpeg.length > 40_000) {
+        const imagePath = path.join(tempDir, `${baseName}-page-${pageNumber}.jpg`);
+        await fs.writeFile(imagePath, candidateJpeg);
+        images.push({ pageNumber, imagePath });
+        pageNumber += 1;
       }
     }
 

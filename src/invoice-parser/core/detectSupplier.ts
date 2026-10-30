@@ -66,7 +66,13 @@ export function detectSupplier(text: string): { key: SupplierKey; supplier: stri
   if (normalized.includes('vinyl supreme ceilings')) {
     return { key: 'VINYL_SUPREME', supplier: 'Vinyl Supreme Ceilings & Decor Limited', confidence: 0.98 };
   }
-  if (normalized.includes('tiptop woods')) {
+  if (
+    normalized.includes('tiptop') ||
+    normalized.includes('tip top') ||
+    normalized.includes('tif tof') ||
+    normalized.includes('p052392555g') ||
+    normalized.includes('ziwaniwoodskenya')
+  ) {
     return { key: 'TIPTOP', supplier: 'Tiptop Woods Co. Ltd', confidence: 0.98 };
   }
   if (normalized.includes('joinben company')) {
