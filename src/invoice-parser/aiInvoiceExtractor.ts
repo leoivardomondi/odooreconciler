@@ -107,15 +107,37 @@ function totalSupportedByArithmetic(total: number | null, totals: AiInvoiceExtra
     return false;
   }
 
+  // Matches line items directly
+  if (typeof itemTotal === 'number' && itemTotal > 0 && nearlyEqual(itemTotal, total, Math.max(2, Math.abs(total) * 0.03))) {
+    return true;
+  }
+
+  // Matches line items plus VAT
   if (
-    typeof totals.goods_total === 'number' &&
+    typeof itemTotal === 'number' &&
+    itemTotal > 0 &&
     typeof totals.vat === 'number' &&
-    nearlyEqual(roundMoney(totals.goods_total + totals.vat), total, Math.max(2, Math.abs(total) * 0.03))
+    totals.vat > 0 &&
+    nearlyEqual(roundMoney(itemTotal + totals.vat), total, Math.max(2, Math.abs(total) * 0.03))
   ) {
     return true;
   }
 
-  return typeof itemTotal === 'number' && nearlyEqual(itemTotal, total, Math.max(2, Math.abs(total) * 0.03));
+  // Matches goods_total + vat, but only if goods_total is consistent with itemTotal
+  if (
+    typeof totals.goods_total === 'number' &&
+    typeof totals.vat === 'number' &&
+    totals.goods_total > 0 &&
+    totals.vat > 0 &&
+    nearlyEqual(roundMoney(totals.goods_total + totals.vat), total, Math.max(2, Math.abs(total) * 0.03))
+  ) {
+    if (typeof itemTotal === 'number' && itemTotal > 0) {
+      return nearlyEqual(totals.goods_total, itemTotal, Math.max(2, Math.abs(itemTotal) * 0.05));
+    }
+    return true;
+  }
+
+  return false;
 }
 
 export function shouldUseAiInvoiceExtraction(invoice: ParsedInvoice) {
@@ -1258,14 +1280,14 @@ export function mergeAiInvoiceExtraction(invoice: ParsedInvoice, ai: AiInvoiceEx
   const parserTotalLooksLikeSubtotal =
     typeof existingTotal === 'number' &&
     typeof invoiceItemTotal === 'number' &&
-    typeof safeInvoiceTotals.vat === 'number' &&
-    safeInvoiceTotals.vat > 0 &&
+    typeof knownVat === 'number' &&
+    knownVat > 0 &&
     nearlyEqual(existingTotal, invoiceItemTotal, Math.max(2, Math.abs(invoiceItemTotal) * 0.03));
   const parserTotalLooksLikeGoodsSubtotal =
     typeof existingTotal === 'number' &&
     typeof safeInvoiceTotals.goods_total === 'number' &&
-    typeof safeInvoiceTotals.vat === 'number' &&
-    safeInvoiceTotals.vat > 0 &&
+    typeof knownVat === 'number' &&
+    knownVat > 0 &&
     nearlyEqual(existingTotal, safeInvoiceTotals.goods_total, Math.max(2, Math.abs(existingTotal) * 0.03));
   const aiTotalMatchesItemsPlusVat =
     typeof aiTotal === 'number' &&
@@ -1296,6 +1318,7 @@ export function mergeAiInvoiceExtraction(invoice: ParsedInvoice, ai: AiInvoiceEx
     isImplausibleExistingTotal ||
     hasTotalProblem(invoice) ||
     shouldTrustAiSubtotalCorrection ||
+    (aiTotalSupported && !existingTotalSupported) ||
     (
       typeof existingTotal === 'number' &&
       typeof aiTotal === 'number' &&

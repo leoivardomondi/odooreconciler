@@ -23,6 +23,12 @@ export function normalizeMoney(value: string | null | undefined): number | null 
     return null;
   }
 
+  // Reject strings with leading zeros followed by other digits (e.g. registration numbers, phone numbers, codes)
+  const integerPart = cleaned.split('.')[0].replace(/^-/, '');
+  if (integerPart.length > 1 && integerPart.startsWith('0')) {
+    return null;
+  }
+
   return parsed;
 }
 

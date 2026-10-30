@@ -14,8 +14,16 @@ function nearlyEqualComputedMoney(left: number, right: number): boolean {
   return nearlyEqualMoney(left, right, Math.max(2, Math.abs(right) * 0.03));
 }
 
+function isNonMoneyLine(line: string): boolean {
+  return /\b(?:tel|telephone|phone|mobile|cell|fax|call|branch\s*no|p\.?o\.?\s*box|box\b|pin\s*no|vat\s*reg|reg\s*no|serial\s*no|mw\s*s\/n|m\/w|s\/n|a\/c\s*no|acc(?:ount)?\s*no)\b/i.test(line);
+}
+
 function findLargestMoney(text: string): number | null {
-  const values = [...text.matchAll(/(?:KSH|KES|SH)?\s*([\d,]+(?:\.\d{1,2})?)(?:\/=)?/gi)]
+  const filteredLines = text
+    .split('\n')
+    .filter((line) => !isNonMoneyLine(line));
+
+  const values = [...filteredLines.join('\n').matchAll(/(?:KSH|KES|SH)?\s*([\d,]+(?:\.\d{1,2})?)(?:\/=)?/gi)]
     .map((match) => normalizeMoney(match[1]))
     .filter((value): value is number => typeof value === 'number' && value >= 50);
 
@@ -378,7 +386,11 @@ export function normalizeInvoiceTotals(invoice: ParsedInvoice): ParsedInvoice {
         nearlyEqualComputedMoney(recoveredAmountDue, lineItemsPlusVat)))
       ? clearLineItemsTotal
       : goodsTotal === null
-      ? (vat === null || vat === 0 ? recoveredAmountDue : inferGoodsFromGrossAndVat(recoveredAmountDue, vat))
+      ? (clearLineItemsTotal !== null
+          ? clearLineItemsTotal
+          : vat === null || vat === 0
+          ? recoveredAmountDue
+          : inferGoodsFromGrossAndVat(recoveredAmountDue, vat))
       : vatInferenceLooksBetter && recoveredAmountDue !== null && vat !== null
       ? roundMoney(recoveredAmountDue - vat)
       : goodsTotal;

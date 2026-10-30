@@ -3061,7 +3061,7 @@ async function runPoBillAutomationInternal(
         originalFilename: attachment.name,
         preferredOcr: 'auto',
         aiConfig: input.aiConfig,
-        alwaysOcr: true,
+        alwaysOcr: false,
         forceAi: true,
       });
     } finally {

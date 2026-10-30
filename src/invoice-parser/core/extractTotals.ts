@@ -218,7 +218,10 @@ function extractConcatenatedTaxTableTotals(text: string) {
 export function extractTotals(text: string) {
   const taxTableTotals = extractConsistentTaxTableTotals(text) || extractConcatenatedTaxTableTotals(text);
   const goodsFromLoosePattern = maxMoneyAfter(text, /\bGOODS\D{0,30}([\d,]+(?:\.\d{1,2})?)/gi, 50);
-  const vatFromLoosePattern = extractLabelledVatTotal(text) || extractVatFromLines(text) || maxMoneyAfter(text, /\bVAT\D{0,20}([\d,]+(?:\.\d{1,2})?)/gi, 10);
+  const vatFromLoosePattern =
+    extractLabelledVatTotal(text) ||
+    extractVatFromLines(text) ||
+    maxMoneyAfter(text, /\bVAT\b(?!\s*(?:reg|pin|no\.?|number|cert|certificate)\b)\D{0,20}([\d,]+(?:\.\d{1,2})?)/gi, 10);
   const labelledTotal = findMoneyAfterLast(text, ['total (kes)', 'total kes']);
   const receiptPayableTotal = findReceiptPayableTotal(text);
   const standaloneDueTotal = findStandaloneDueTotal(text);
