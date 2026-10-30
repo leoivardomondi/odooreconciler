@@ -41,6 +41,7 @@ const tiptop_parser_1 = require("./parsers/tiptop.parser");
 const vinyl_parser_1 = require("./parsers/vinyl.parser");
 const aiInvoiceExtractor_1 = require("./aiInvoiceExtractor");
 const confidence_1 = require("./core/confidence");
+const tesseractData_1 = require("../utils/tesseractData");
 function resolveOcrMode(input) {
     if (input === 'google' || input === 'tesseract' || input === 'auto') {
         return input;
@@ -252,7 +253,11 @@ async function parseSupplierInvoice(input) {
             warnings.push(...visionResult.warnings);
             const confidenceThreshold = Number(input.aiConfig?.confidenceThreshold || 0.75);
             const visionConfidence = visionResult.extraction?.confidence ?? 0;
-            if (visionResult.extraction && visionConfidence >= confidenceThreshold) {
+            const hasUsableExtraction = Boolean(visionResult.extraction &&
+                (visionResult.extraction.supplier ||
+                    visionResult.extraction.totals?.amount_due ||
+                    (visionResult.extraction.items && visionResult.extraction.items.length > 0)));
+            if (visionResult.extraction && (visionConfidence >= confidenceThreshold || hasUsableExtraction)) {
                 let visionInvoice = (0, aiInvoiceExtractor_1.mergeAiInvoiceExtraction)(emptyInvoice(input, warnings), visionResult.extraction);
                 visionInvoice = (0, normalizeTotals_1.normalizeInvoiceTotals)(visionInvoice);
                 const filenameDate = (0, extractDates_1.extractIsoDateFromFilename)(input.originalFilename);
@@ -294,7 +299,10 @@ async function parseSupplierInvoice(input) {
                 ? `End-to-end vision extraction (${modelLabel}) confidence ${visionConfidence.toFixed(2)} was below configured threshold ${confidenceThreshold.toFixed(2)}; OCR fallback started.`
                 : `End-to-end vision extraction (${modelLabel}) returned no usable structured result; OCR fallback started.`);
         }
-        if (visionFirstFailed || input.alwaysOcr || !(0, normalizeText_1.looksReadableInvoiceText)(pdfTextResult.text)) {
+        const hasActiveOcrEngine = (0, tesseractData_1.isTesseractEnabled)() ||
+            Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS) ||
+            (input.aiConfig?.ocr?.enabled && input.aiConfig.ocr.provider !== 'disabled');
+        if ((visionFirstFailed || input.alwaysOcr || !(0, normalizeText_1.looksReadableInvoiceText)(pdfTextResult.text)) && hasActiveOcrEngine) {
             warnings.push(visionFirstFailed
                 ? 'Primary end-to-end vision extraction was below threshold or failed, so OCR fallback was started.'
                 : input.alwaysOcr

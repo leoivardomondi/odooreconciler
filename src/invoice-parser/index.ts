@@ -25,6 +25,7 @@ import {
   shouldUseAiInvoiceExtraction,
 } from './aiInvoiceExtractor';
 import { computeConfidence } from './core/confidence';
+import { isTesseractEnabled } from '../utils/tesseractData';
 
 function resolveOcrMode(input?: PreferredOcr): PreferredOcr {
   if (input === 'google' || input === 'tesseract' || input === 'auto') {
@@ -261,7 +262,13 @@ export async function parseSupplierInvoice(input: ParseSupplierInvoiceInput): Pr
 
       const confidenceThreshold = Number(input.aiConfig?.confidenceThreshold || 0.75);
       const visionConfidence = visionResult.extraction?.confidence ?? 0;
-      if (visionResult.extraction && visionConfidence >= confidenceThreshold) {
+      const hasUsableExtraction = Boolean(
+        visionResult.extraction &&
+        (visionResult.extraction.supplier ||
+          visionResult.extraction.totals?.amount_due ||
+          (visionResult.extraction.items && visionResult.extraction.items.length > 0)),
+      );
+      if (visionResult.extraction && (visionConfidence >= confidenceThreshold || hasUsableExtraction)) {
         let visionInvoice = mergeAiInvoiceExtraction(emptyInvoice(input, warnings), visionResult.extraction);
         visionInvoice = normalizeInvoiceTotals(visionInvoice);
         const filenameDate = extractIsoDateFromFilename(input.originalFilename);
@@ -308,7 +315,12 @@ export async function parseSupplierInvoice(input: ParseSupplierInvoiceInput): Pr
       );
     }
 
-    if (visionFirstFailed || input.alwaysOcr || !looksReadableInvoiceText(pdfTextResult.text)) {
+    const hasActiveOcrEngine =
+      isTesseractEnabled() ||
+      Boolean(process.env.GOOGLE_APPLICATION_CREDENTIALS) ||
+      (input.aiConfig?.ocr?.enabled && input.aiConfig.ocr.provider !== 'disabled');
+
+    if ((visionFirstFailed || input.alwaysOcr || !looksReadableInvoiceText(pdfTextResult.text)) && hasActiveOcrEngine) {
       warnings.push(
         visionFirstFailed
           ? 'Primary end-to-end vision extraction was below threshold or failed, so OCR fallback was started.'

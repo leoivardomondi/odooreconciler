@@ -556,11 +556,43 @@ function buildExtractionPrompt(input: {
 
 async function readImagesForAi(imagePaths: string[]) {
   return Promise.all(
-    imagePaths.map(async (imagePath) => ({
-      imagePath,
-      mediaType: mimeTypeForImage(imagePath),
-      base64: (await fs.readFile(imagePath)).toString('base64'),
-    })),
+    imagePaths.map(async (imagePath) => {
+      try {
+        const buffer = await fs.readFile(imagePath);
+        // Downscale large images (> 800KB or > 2048px) to high-detail 2048px JPEG for fast upload & inference
+        if (buffer.length > 800_000) {
+          const canvasModule = await import('@napi-rs/canvas');
+          const img = await canvasModule.loadImage(buffer);
+          const maxDim = 2048;
+          if (img.width > maxDim || img.height > maxDim) {
+            const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+            const targetW = Math.round(img.width * scale);
+            const targetH = Math.round(img.height * scale);
+            const canvas = canvasModule.createCanvas(targetW, targetH);
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, targetW, targetH);
+            const optimizedJpeg = await canvas.encode('jpeg', 85);
+            return {
+              imagePath,
+              mediaType: 'image/jpeg',
+              base64: optimizedJpeg.toString('base64'),
+            };
+          }
+        }
+        return {
+          imagePath,
+          mediaType: mimeTypeForImage(imagePath),
+          base64: buffer.toString('base64'),
+        };
+      } catch {
+        const buffer = await fs.readFile(imagePath);
+        return {
+          imagePath,
+          mediaType: mimeTypeForImage(imagePath),
+          base64: buffer.toString('base64'),
+        };
+      }
+    }),
   );
 }
 
@@ -740,7 +772,7 @@ async function callOpenAiCompatibleInvoiceAi(input: {
     };
   }
 
-  const requestTimeoutMs = input.provider === 'nvidia' ? 300000 : 180000;
+  const requestTimeoutMs = input.provider === 'nvidia' ? 60000 : 45000;
   const headers = {
     Authorization: `Bearer ${input.apiKey}`,
     'Content-Type': 'application/json',

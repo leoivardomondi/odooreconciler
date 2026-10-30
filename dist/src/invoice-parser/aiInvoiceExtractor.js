@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -479,11 +512,44 @@ function buildExtractionPrompt(input) {
     ].join('\n\n');
 }
 async function readImagesForAi(imagePaths) {
-    return Promise.all(imagePaths.map(async (imagePath) => ({
-        imagePath,
-        mediaType: mimeTypeForImage(imagePath),
-        base64: (await promises_1.default.readFile(imagePath)).toString('base64'),
-    })));
+    return Promise.all(imagePaths.map(async (imagePath) => {
+        try {
+            const buffer = await promises_1.default.readFile(imagePath);
+            // Downscale large images (> 800KB or > 2048px) to high-detail 2048px JPEG for fast upload & inference
+            if (buffer.length > 800_000) {
+                const canvasModule = await Promise.resolve().then(() => __importStar(require('@napi-rs/canvas')));
+                const img = await canvasModule.loadImage(buffer);
+                const maxDim = 2048;
+                if (img.width > maxDim || img.height > maxDim) {
+                    const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+                    const targetW = Math.round(img.width * scale);
+                    const targetH = Math.round(img.height * scale);
+                    const canvas = canvasModule.createCanvas(targetW, targetH);
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, targetW, targetH);
+                    const optimizedJpeg = await canvas.encode('jpeg', 85);
+                    return {
+                        imagePath,
+                        mediaType: 'image/jpeg',
+                        base64: optimizedJpeg.toString('base64'),
+                    };
+                }
+            }
+            return {
+                imagePath,
+                mediaType: mimeTypeForImage(imagePath),
+                base64: buffer.toString('base64'),
+            };
+        }
+        catch {
+            const buffer = await promises_1.default.readFile(imagePath);
+            return {
+                imagePath,
+                mediaType: mimeTypeForImage(imagePath),
+                base64: buffer.toString('base64'),
+            };
+        }
+    }));
 }
 function defaultModelForProvider(provider) {
     switch (provider) {
@@ -625,7 +691,7 @@ async function callOpenAiCompatibleInvoiceAi(input) {
             visual_token_budget: 1120,
         };
     }
-    const requestTimeoutMs = input.provider === 'nvidia' ? 300000 : 180000;
+    const requestTimeoutMs = input.provider === 'nvidia' ? 60000 : 45000;
     const headers = {
         Authorization: `Bearer ${input.apiKey}`,
         'Content-Type': 'application/json',
