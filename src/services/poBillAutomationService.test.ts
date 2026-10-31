@@ -4,6 +4,7 @@ import { ParsedVendorInvoiceResult, PurchaseOrderLine, PurchaseOrderSummary } fr
 import {
   computeItemScore,
   comparePoBillCandidates,
+  findPurchaseOrderCandidatesForScheduler,
   isCompletedPoBillActivityNote,
   isPurchaseOrderApprovalMessage,
   isReliablePoBillCandidate,
@@ -265,4 +266,64 @@ test('uses PO creation-date proximity when approval-date distances tie', () => {
   };
 
   assert.ok(comparePoBillCandidates(createdOnInvoiceDate, createdLater) < 0);
+});
+
+test('builds scheduler broad and eligible PO candidates from a single PO search', async () => {
+  const calls: Array<{ model: string; options: any }> = [];
+  const client = {
+    searchReadRecords: async (model: string, options: any) => {
+      calls.push({ model, options });
+      if (model === 'res.partner') {
+        return [{ id: 10, name: 'Tiptop Woods Limited' }];
+      }
+      if (model === 'purchase.order') {
+        return [
+          {
+            id: 101,
+            name: 'P00101',
+            state: 'purchase',
+            date_order: '2026-04-30 08:00:00',
+            amount_total: 1440,
+            amount_untaxed: 1440,
+            partner_id: [10, 'Tiptop Woods Limited'],
+            invoice_status: 'invoiced',
+          },
+          {
+            id: 102,
+            name: 'P00102',
+            state: 'purchase',
+            date_order: '2026-04-30 09:00:00',
+            amount_total: 1440,
+            amount_untaxed: 1440,
+            partner_id: [10, 'Tiptop Woods Limited'],
+            invoice_status: 'no',
+          },
+        ];
+      }
+      if (model === 'mail.message') {
+        return [];
+      }
+      if (model === 'purchase.order.line') {
+        return [];
+      }
+      return [];
+    },
+    searchCountRecords: async () => {
+      throw new Error('scheduler candidate search should not use search_count');
+    },
+  };
+
+  const result = await findPurchaseOrderCandidatesForScheduler(client as any, parsedInvoice({
+    vendorName: 'Tiptop Woods Ltd',
+    filenameVendorHint: 'tiptop woods receipt',
+    invoiceDate: '2026-04-30',
+    grandTotal: 1440,
+    untaxedTotal: 1440,
+  }));
+
+  assert.equal(calls.filter((call) => call.model === 'res.partner').length, 1);
+  assert.equal(calls.filter((call) => call.model === 'purchase.order').length, 1);
+  assert.equal(calls.filter((call) => call.model === 'purchase.order.line').length, 1);
+  assert.deepEqual(result.broadCandidates.map((candidate) => candidate.purchaseOrder.id), [102, 101]);
+  assert.deepEqual(result.eligibleCandidates.map((candidate) => candidate.purchaseOrder.id), [102]);
 });

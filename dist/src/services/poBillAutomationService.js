@@ -51,6 +51,7 @@ exports.markPoBillDocumentSkipped = markPoBillDocumentSkipped;
 exports.markPoBillDocumentAsDeliveryNote = markPoBillDocumentAsDeliveryNote;
 exports.findPurchaseOrder = findPurchaseOrder;
 exports.findPurchaseOrderCandidates = findPurchaseOrderCandidates;
+exports.findPurchaseOrderCandidatesForScheduler = findPurchaseOrderCandidatesForScheduler;
 exports.getBulkPurchaseOrderLines = getBulkPurchaseOrderLines;
 exports.getPurchaseOrderLines = getPurchaseOrderLines;
 exports.vendorBillMatchesParsedInvoice = vendorBillMatchesParsedInvoice;
@@ -168,6 +169,18 @@ function normalizeVendorName(value) {
         name: words.join(' '),
         compact: words.join(''),
     };
+}
+function buildOrDomain(conditions) {
+    if (conditions.length === 0) {
+        return [];
+    }
+    if (conditions.length === 1) {
+        return [conditions[0]];
+    }
+    return [
+        ...Array.from({ length: conditions.length - 1 }, () => '|'),
+        ...conditions,
+    ];
 }
 function extractFilenameVendorHint(value) {
     const withoutExtension = path_1.default.basename(String(value || '')).replace(/\.[a-z0-9]{2,5}$/i, '');
@@ -775,14 +788,14 @@ async function resolveVendorPartnerIds(client, parsedInvoice) {
         .slice(0, 3);
     if (hints.length === 0)
         return [];
-    const partners = await Promise.all(hints.map((hint) => client.searchReadRecords('res.partner', {
-        domain: [['name', 'ilike', hint]],
+    const partners = await client.searchReadRecords('res.partner', {
+        domain: buildOrDomain(hints.map((hint) => ['name', 'ilike', hint])),
         fields: ['id', 'name'],
-        limit: 100,
+        limit: hints.length * 100,
         order: 'id asc',
-    }).catch(() => [])));
+    }).catch(() => []);
     const ids = new Set();
-    for (const partner of partners.flat()) {
+    for (const partner of partners) {
         if (typeof partner.id === 'number' &&
             (vendorNamesMatch(parsedInvoice.vendorName, partner.name || '') ||
                 vendorNamesMatch(parsedInvoice.filenameVendorHint, partner.name || ''))) {
@@ -794,10 +807,8 @@ async function resolveVendorPartnerIds(client, parsedInvoice) {
     return result;
 }
 async function searchPurchaseOrdersAcrossPages(client, domain, fields) {
-    const count = await client.searchCountRecords('purchase.order', domain).catch(() => null);
     const orders = [];
-    const targetCount = typeof count === 'number' && count >= 0 ? count : Number.MAX_SAFE_INTEGER;
-    for (let offset = 0; offset < targetCount; offset += PURCHASE_ORDER_SEARCH_PAGE_SIZE) {
+    for (let offset = 0;; offset += PURCHASE_ORDER_SEARCH_PAGE_SIZE) {
         const page = await client.searchReadRecords('purchase.order', {
             domain,
             fields,
@@ -807,8 +818,6 @@ async function searchPurchaseOrdersAcrossPages(client, domain, fields) {
         });
         orders.push(...page);
         if (page.length < PURCHASE_ORDER_SEARCH_PAGE_SIZE)
-            break;
-        if (typeof count !== 'number' && orders.length >= 1000)
             break;
     }
     return orders;
@@ -1349,6 +1358,31 @@ async function findPurchaseOrder(client, searchTerm) {
     return orders.length === 1 ? orders[0] : null;
 }
 async function findPurchaseOrderCandidates(client, parsedInvoice, options = {}) {
+    const context = await loadPurchaseOrderCandidateSearch(client, parsedInvoice, options);
+    return buildCandidatesFromScoredOrders(client, parsedInvoice, selectViableScoredOrders(context.scoredOrders, context.hasReadableVendor), context.approvalDates, context.hasReadableVendor);
+}
+async function findPurchaseOrderCandidatesForScheduler(client, parsedInvoice, options = {}) {
+    const context = await loadPurchaseOrderCandidateSearch(client, parsedInvoice, {
+        ...options,
+        onlyUnbilled: false,
+    });
+    const broadViableOrders = selectViableScoredOrders(context.scoredOrders, context.hasReadableVendor);
+    const eligibleViableOrders = selectViableScoredOrders(context.scoredOrders.filter((entry) => {
+        const processed = context.processedByPo[entry.order.id];
+        const hasProcessed = Boolean(processed && ['processed', 'processed_with_warnings'].includes(processed.status));
+        return isSchedulerEligiblePurchaseOrder(entry.order, hasProcessed);
+    }), context.hasReadableVendor);
+    const orderIds = [
+        ...broadViableOrders.slice(0, 20).map((entry) => entry.order.id),
+        ...eligibleViableOrders.slice(0, 20).map((entry) => entry.order.id),
+    ];
+    const linesByOrderId = await getBulkPurchaseOrderLines(client, orderIds);
+    return {
+        broadCandidates: buildCandidatesFromScoredOrdersSync(parsedInvoice, broadViableOrders, context.approvalDates, context.hasReadableVendor, linesByOrderId),
+        eligibleCandidates: buildCandidatesFromScoredOrdersSync(parsedInvoice, eligibleViableOrders, context.approvalDates, context.hasReadableVendor, linesByOrderId),
+    };
+}
+async function loadPurchaseOrderCandidateSearch(client, parsedInvoice, options = {}) {
     const invoiceDate = parseLooseDate(parsedInvoice.invoiceDate);
     const domain = [];
     const hasReadableVendor = Boolean(normalizeVendorName(parsedInvoice.vendorName).name || normalizeVendorName(parsedInvoice.filenameVendorHint).name);
@@ -1415,8 +1449,6 @@ async function findPurchaseOrderCandidates(client, parsedInvoice, options = {}) 
         });
     }
     const approvalDates = await findPurchaseOrderApprovalDates(client, filteredOrders.map((order) => order.id));
-    // Pre-filter and rank candidates using vendor, amount, and date scores
-    // before fetching PO lines. This avoids fetching lines for mismatched POs.
     const scoredOrders = filteredOrders.map((order) => {
         const poVendor = (0, helpers_1.getRelationLabel)(order.partner_id);
         const vendor = computeVendorScore(parsedInvoice.vendorName, poVendor, parsedInvoice.filenameVendorHint);
@@ -1432,13 +1464,25 @@ async function findPurchaseOrderCandidates(client, parsedInvoice, options = {}) 
             preliminaryScore,
         };
     });
-    const viableOrders = scoredOrders
+    return {
+        hasReadableVendor,
+        approvalDates,
+        processedByPo,
+        scoredOrders,
+    };
+}
+function selectViableScoredOrders(scoredOrders, hasReadableVendor) {
+    return scoredOrders
         .filter((entry) => (!hasReadableVendor || entry.vendorScore > 0) && entry.preliminaryScore > 0)
         .sort((a, b) => b.preliminaryScore - a.preliminaryScore);
-    // Take top candidates for full line inspection and scoring
-    const topCandidateOrders = viableOrders.slice(0, 20).map((entry) => entry.order);
-    // Bulk fetch lines for all top candidate orders in a single Odoo RPC request
+}
+async function buildCandidatesFromScoredOrders(client, parsedInvoice, scoredOrders, approvalDates, hasReadableVendor) {
+    const topCandidateOrders = scoredOrders.slice(0, 20).map((entry) => entry.order);
     const linesByOrderId = await getBulkPurchaseOrderLines(client, topCandidateOrders.map((order) => order.id));
+    return buildCandidatesFromScoredOrdersSync(parsedInvoice, scoredOrders, approvalDates, hasReadableVendor, linesByOrderId);
+}
+function buildCandidatesFromScoredOrdersSync(parsedInvoice, scoredOrders, approvalDates, hasReadableVendor, linesByOrderId) {
+    const topCandidateOrders = scoredOrders.slice(0, 20).map((entry) => entry.order);
     const candidates = topCandidateOrders.map((order) => {
         const lines = linesByOrderId.get(order.id) || [];
         return buildCandidate(order, lines, parsedInvoice, approvalDates.get(order.id) || null);
@@ -2585,32 +2629,12 @@ async function runPoBillAutomationInternal(client, input) {
     let broadCandidates = null;
     let candidates;
     if (input.onlyUnbilledPurchaseOrders) {
-        broadCandidates = await findPurchaseOrderCandidates(client, parsedInvoice, {
+        const candidateSets = await findPurchaseOrderCandidatesForScheduler(client, parsedInvoice, {
             fromDate: input.matchFromDate,
             toDate: input.matchToDate,
-            onlyUnbilled: false,
         });
-        const orderIds = broadCandidates.map((candidate) => candidate.purchaseOrder.id);
-        const processedByPo = await (0, repositories_1.getLatestPoBillProcessedDocumentsByPurchaseOrderIds)(orderIds).catch(() => ({}));
-        const eligibleInBroad = broadCandidates.filter((candidate) => {
-            const order = candidate.purchaseOrder;
-            if (!(order.state && ['purchase', 'to approve'].includes(order.state) && order.invoice_status !== 'invoiced')) {
-                return false;
-            }
-            const processed = processedByPo[order.id];
-            const hasProcessed = Boolean(processed && ['processed', 'processed_with_warnings'].includes(processed.status));
-            return isSchedulerEligiblePurchaseOrder(order, hasProcessed);
-        });
-        if (eligibleInBroad.length > 0 || (broadCandidates.length > 0 && broadCandidates[0].score >= AUTO_MATCH_THRESHOLD)) {
-            candidates = eligibleInBroad;
-        }
-        else {
-            candidates = await findPurchaseOrderCandidates(client, parsedInvoice, {
-                fromDate: input.matchFromDate,
-                toDate: input.matchToDate,
-                onlyUnbilled: true,
-            });
-        }
+        broadCandidates = candidateSets.broadCandidates;
+        candidates = candidateSets.eligibleCandidates;
     }
     else {
         candidates = await findPurchaseOrderCandidates(client, parsedInvoice, {
