@@ -4,6 +4,10 @@ import zlib from 'zlib';
 import { resolveProjectFile } from '../utils/paths';
 
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.tif', '.tiff']);
+const DEFAULT_PDF_RENDER_SCALE = 1.5;
+const DEFAULT_PDF_RENDER_MAX_PAGES = 2;
+const DEFAULT_PDF_LOAD_TIMEOUT_MS = 15_000;
+const DEFAULT_PDF_PAGE_RENDER_TIMEOUT_MS = 20_000;
 
 export interface RenderedPageImage {
   pageNumber: number;
@@ -14,6 +18,37 @@ async function ensureTempDir() {
   const tempDir = resolveProjectFile(process.env.TEMP_DIR || 'tmp', 'tmp');
   await fs.mkdir(tempDir, { recursive: true });
   return tempDir;
+}
+
+function positiveNumberFromEnv(name: string, fallback: number, min: number, max?: number) {
+  const raw = Number(process.env[name] || fallback);
+  const value = Number.isFinite(raw) && raw > 0 ? raw : fallback;
+  return Math.min(Math.max(value, min), max ?? value);
+}
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+  onTimeout?: () => void,
+): Promise<T> {
+  let timer: NodeJS.Timeout | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          try {
+            onTimeout?.();
+          } finally {
+            reject(new Error(message));
+          }
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 async function writeCrop(input: {
@@ -145,22 +180,64 @@ export async function renderPdfToImages(filePath: string): Promise<{
       disableWorker: true,
       isEvalSupported: false,
     } as unknown as Parameters<typeof pdfjs.getDocument>[0]);
-    pdf = await documentTask.promise;
+    pdf = await withTimeout(
+      documentTask.promise,
+      positiveNumberFromEnv('PDF_RENDER_LOAD_TIMEOUT_MS', DEFAULT_PDF_LOAD_TIMEOUT_MS, 5_000),
+      `PDF.js document load timed out after ${positiveNumberFromEnv('PDF_RENDER_LOAD_TIMEOUT_MS', DEFAULT_PDF_LOAD_TIMEOUT_MS, 5_000)}ms.`,
+      () => {
+        if (typeof (documentTask as any).destroy === 'function') {
+          const destroyed = (documentTask as any).destroy();
+          if (destroyed && typeof destroyed.catch === 'function') {
+            void destroyed.catch(() => undefined);
+          }
+        }
+      },
+    );
     const images: RenderedPageImage[] = [];
+    const maxPages = Math.min(
+      pdf.numPages,
+      Math.floor(positiveNumberFromEnv('PDF_RENDER_MAX_PAGES', DEFAULT_PDF_RENDER_MAX_PAGES, 1, 10)),
+    );
+    if (pdf.numPages > maxPages) {
+      warnings.push(`PDF rendering limited to first ${maxPages} of ${pdf.numPages} page(s).`);
+    }
 
-    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+    for (let pageNumber = 1; pageNumber <= maxPages; pageNumber += 1) {
       const page = await pdf.getPage(pageNumber);
-      const renderScale = Math.max(1.5, Math.min(3, Number(process.env.OCR_RENDER_SCALE || 2.25)));
+      const renderScale = positiveNumberFromEnv('OCR_RENDER_SCALE', DEFAULT_PDF_RENDER_SCALE, 1, 2);
       const viewport = page.getViewport({ scale: renderScale });
       const canvas = canvasModule.createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
       const context = canvas.getContext('2d');
 
-      await page.render({ canvasContext: context, viewport, canvas } as unknown as Parameters<typeof page.render>[0]).promise;
+      const renderTask = page.render({ canvasContext: context, viewport, canvas } as unknown as Parameters<typeof page.render>[0]);
+      try {
+        const pageTimeoutMs = positiveNumberFromEnv(
+          'PDF_RENDER_PAGE_TIMEOUT_MS',
+          DEFAULT_PDF_PAGE_RENDER_TIMEOUT_MS,
+          5_000,
+        );
+        await withTimeout(
+          renderTask.promise,
+          pageTimeoutMs,
+          `PDF.js page ${pageNumber} render timed out after ${pageTimeoutMs}ms.`,
+          () => {
+            if (typeof (renderTask as any).cancel === 'function') {
+              (renderTask as any).cancel();
+            }
+          },
+        );
+      } catch (error) {
+        warnings.push(error instanceof Error ? error.message : String(error));
+        if (typeof (page as any).cleanup === 'function') {
+          (page as any).cleanup();
+        }
+        break;
+      }
       const imagePath = path.join(tempDir, `${baseName}-page-${pageNumber}.png`);
       await fs.writeFile(imagePath, await canvas.encode('png'));
       images.push({ pageNumber, imagePath });
 
-      if (process.env.OCR_INCLUDE_CROPS !== 'false') {
+      if (process.env.OCR_INCLUDE_CROPS === 'true') {
         const crops = [
           {
             suffix: 'header',
