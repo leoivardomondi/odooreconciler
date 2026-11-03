@@ -691,6 +691,9 @@ async function runPoBillSchedulerCycle(trigger = 'manual') {
             if (leftAttempt !== rightAttempt) {
                 return leftAttempt - rightAttempt;
             }
+            if (leftAttempt === 0 && rightAttempt === 0) {
+                return Number(right.id || 0) - Number(left.id || 0);
+            }
             // fallback to attachment id ordering for stability
             return Number(left.id || 0) - Number(right.id || 0);
         })

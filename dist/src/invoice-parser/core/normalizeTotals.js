@@ -228,7 +228,8 @@ function normalizeInvoiceTotals(invoice) {
     const currentAmountDueMatchesLineItemsAndVat = currentAmountDue !== null && lineItemsPlusVat !== null &&
         nearlyEqualComputedMoney(lineItemsPlusVat, currentAmountDue);
     const goodsTotalMatchesLineItems = goodsTotal === null || clearLineItemsTotal === null ||
-        (0, normalizeMoney_1.nearlyEqualMoney)(goodsTotal, clearLineItemsTotal, 2);
+        (0, normalizeMoney_1.nearlyEqualMoney)(goodsTotal, clearLineItemsTotal, 2) ||
+        (currentAmountDue !== null && (0, normalizeMoney_1.nearlyEqualMoney)(currentAmountDue, clearLineItemsTotal, 2));
     const reconciledCurrentAmountDue = currentAmountDueMatchesLineItemsAndVat ||
         (currentAmountDueMatchesGoodsAndVat && goodsTotalMatchesLineItems);
     const labelledAmountDueMatchesComputedTotal = labelledAmountDue !== null && computedAmountDue !== null &&

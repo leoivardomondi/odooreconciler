@@ -3452,37 +3452,44 @@ router.post('/shop-floor/board-intake', async (req, res) => {
         void (async () => {
             let effectiveIsPurchase = isPurchase;
             let effectivePoRef = purchaseOrderReference;
-            // 1. Synchronize board inventory, validate matching PO receipt if connected, and reserve MO in Odoo
-            try {
-                const syncResult = await (0, boardIntakeSyncService_1.syncBoardIntakeEntry)(optimisticId);
-                const refreshed = await (0, repositories_1.getBoardIntakeQueueEntry)(optimisticId);
-                if (refreshed) {
-                    effectiveIsPurchase = Boolean(refreshed.is_purchase);
-                    effectivePoRef = refreshed.purchase_order_reference || null;
+            // 1. Launch Odoo synchronization in background
+            const syncPromise = (async () => {
+                try {
+                    const syncResult = await (0, boardIntakeSyncService_1.syncBoardIntakeEntry)(optimisticId);
+                    const refreshed = await (0, repositories_1.getBoardIntakeQueueEntry)(optimisticId);
+                    if (refreshed) {
+                        effectiveIsPurchase = Boolean(refreshed.is_purchase);
+                        effectivePoRef = refreshed.purchase_order_reference || null;
+                    }
+                    await (0, repositories_1.markPendingShopFloorProcessesLoaded)({
+                        partnerId,
+                        productId,
+                        customerName,
+                        productName,
+                        loadedBy: actorName,
+                        quantity: qty,
+                        moId,
+                        moName,
+                    }).catch(() => 0);
+                    const optimisticIndex = optimisticBoardIntakes.findIndex((entry) => entry.id === optimisticId);
+                    if (optimisticIndex >= 0)
+                        optimisticBoardIntakes.splice(optimisticIndex, 1);
+                    exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
+                    await (0, logService_1.logEvent)('info', 'Board intake background MO reservation completed', {
+                        productId, partnerId, quantity: qty,
+                        matchingMoCount: syncResult.matchingMoCount || 0,
+                    }).catch(() => undefined);
                 }
-                await (0, repositories_1.markPendingShopFloorProcessesLoaded)({
-                    partnerId,
-                    productId,
-                    customerName,
-                    productName,
-                    loadedBy: actorName,
-                    quantity: qty,
-                    moId,
-                    moName,
-                }).catch(() => 0);
-                const optimisticIndex = optimisticBoardIntakes.findIndex((entry) => entry.id === optimisticId);
-                if (optimisticIndex >= 0)
-                    optimisticBoardIntakes.splice(optimisticIndex, 1);
-                exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
-                await (0, logService_1.logEvent)('info', 'Board intake background MO reservation completed', {
-                    productId, partnerId, quantity: qty,
-                    matchingMoCount: syncResult.matchingMoCount || 0,
-                }).catch(() => undefined);
-            }
-            catch (syncErr) {
-                console.warn('[ShopFloor] Board intake sync background error:', syncErr);
-            }
-            // 2. Dispatch email alert with accurate purchase / PO status
+                catch (syncErr) {
+                    console.warn('[ShopFloor] Board intake sync background error:', syncErr);
+                }
+            })();
+            // Wait at most 8 seconds for Odoo PO check before dispatching email so email is never held up by Odoo queue backlogs
+            await Promise.race([
+                syncPromise,
+                new Promise((resolve) => setTimeout(resolve, 8000)),
+            ]);
+            // 2. Dispatch email alert immediately (never blocked beyond 8s even if Odoo is busy)
             try {
                 const settings = await (0, repositories_1.getSettings)();
                 const rawRecipients = (0, helpers_1.normalizeBoardLogRecipients)(settings.stock?.boardLogNotificationEmail);
@@ -3548,6 +3555,14 @@ router.post('/shop-floor/board-intake', async (req, res) => {
                     subject: `${subjectCustomerName} - Board Log${purchaseSubjectTag}${partialSubjectTag} - ${reportDate}`,
                     html: `<p><strong>Board log completed</strong></p><p>Client: ${safeCustomerName}<br>Board: ${safeProductName}<br>Purchase: <strong style="${effectiveIsPurchase ? 'color:#1d4ed8;' : 'color:#475569;'}">${purchaseLabel}</strong><br>Quantity: ${qty} sheet${qty === 1 ? '' : 's'}${reqDetailsHtml}<br>Gate: ${safeGate}<br>Vehicle Reg: ${safeVehicleReg}<br>Arrival Time: ${safeArrivalTime}<br>Date: ${reportDate}<br>Logged by: ${safeActorEmail}</p>${calloutHtml}${buttonHtml}`,
                 });
+                await (0, logService_1.logEvent)('info', 'Board log notification email sent', {
+                    boardIntakeId: optimisticId,
+                    to: toRecipients,
+                    customerName,
+                    productName,
+                    quantity: qty,
+                    actor: actorName,
+                }).catch(() => undefined);
             }
             catch (mailError) {
                 await (0, logService_1.logEvent)('error', `Board log email failed`, {

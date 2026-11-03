@@ -70,6 +70,7 @@ const paths_1 = require("../utils/paths");
 const unreadableDocumentNotificationService_1 = require("./unreadableDocumentNotificationService");
 const aiCredentialFailureNotificationService_1 = require("./aiCredentialFailureNotificationService");
 const odooActivityService_1 = require("./odooActivityService");
+const poBillNotificationService_1 = require("./poBillNotificationService");
 const TOTAL_TOLERANCE = 1;
 const AUTO_MATCH_THRESHOLD = 90;
 const CORE_MATCH_THRESHOLD = 90;
@@ -152,17 +153,126 @@ const GENERIC_VENDOR_WORDS = new Set([
     'enterprises',
     'trader',
     'traders',
+    'trading',
+    'trade',
     'supplier',
     'suppliers',
+    'supply',
+    'supplies',
     'stationer',
     'stationers',
+    'stationery',
     'hardware',
+    'hardwares',
     'supermarket',
+    'super',
+    'mart',
     'store',
     'stores',
+    'shop',
+    'shops',
+    'kenya',
+    'east',
+    'africa',
+    'african',
+    'nairobi',
+    'kisumu',
+    'mombasa',
+    'nakuru',
+    'eldoret',
+    'industrial',
+    'industries',
+    'industry',
+    'industri',
+    'interior',
+    'interiors',
+    'design',
+    'designs',
+    'decor',
+    'general',
+    'service',
+    'services',
+    'solution',
+    'solutions',
+    'group',
+    'holding',
+    'holdings',
+    'investment',
+    'investments',
+    'international',
+    'distributor',
+    'distributors',
+    'wholesaler',
+    'wholesalers',
+    'wholesale',
+    'retail',
+    'agency',
+    'agencies',
+    'builder',
+    'builders',
+    'building',
+    'construction',
+    'logistics',
+    'transport',
+    'motors',
+    'motor',
+    'auto',
+    'centre',
+    'center',
+    'works',
+    'work',
+    'product',
+    'products',
+    'manufacturing',
+    'manufacturer',
+    'manufacturers',
+    'laboratory',
+    'lab',
+    'chemical',
+    'chemicals',
+    'water',
+    'mineral',
+    'glass',
+    'wood',
+    'woods',
+    'timber',
+    'steel',
+    'metal',
+    'plastics',
+    'plastic',
+    'packaging',
+    'electrical',
+    'electricals',
+    'electronics',
+    'commercial',
+    'ceiling',
+    'ceilings',
+    'urban',
+    'vibe',
 ]);
+function sanitizeExtractedVendorName(value) {
+    const raw = String(value || '')
+        .replace(/^(?:to|from|m\/s|messrs|bill\s+to|invoice\s+to|sold\s+to|customer|buyer)\s*[:.-]?\s*/i, '')
+        .trim();
+    if (!raw)
+        return null;
+    if (/\burban\s*vibe\b/i.test(raw) ||
+        /\b(?:carriage\s+paid|owners?\s+risk|subject\s+to|goods\s+once\s+sold|received?\s+the\s+above|in\s+good\s+order)\b/i.test(raw)) {
+        return null;
+    }
+    const normalized = normalizeText(raw)
+        .split(' ')
+        .filter((word) => word && !VENDOR_LEGAL_SUFFIXES.has(word));
+    if (normalized.length === 0)
+        return null;
+    if (normalized.length === 1 && GENERIC_VENDOR_WORDS.has(normalized[0])) {
+        return null;
+    }
+    return raw;
+}
 function normalizeVendorName(value) {
-    const words = normalizeText(value)
+    const sanitized = sanitizeExtractedVendorName(value);
+    const words = normalizeText(sanitized)
         .split(' ')
         .filter((word) => word && !VENDOR_LEGAL_SUFFIXES.has(word));
     return {
@@ -184,13 +294,17 @@ function buildOrDomain(conditions) {
 }
 function extractFilenameVendorHint(value) {
     const withoutExtension = path_1.default.basename(String(value || '')).replace(/\.[a-z0-9]{2,5}$/i, '');
-    const hint = normalizeText(withoutExtension)
-        .replace(/\b(?:receipt|invoice|bill|vendor|supplier|scan|scanned|copy|document)\b/g, ' ')
-        .replace(/\b20\d{2}[-_ ]\d{1,2}[-_ ]\d{1,2}\b/g, ' ')
-        .replace(/\b\d{6,}\b/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim();
-    return hint && /[a-z]{4,}/.test(hint) ? hint : null;
+    const cleaned = withoutExtension
+        .replace(/[-_ ]p\d+$/i, ' ')
+        .replace(/\b20\d{2}[-_ ]?\d{2}[-_ ]?\d{2}\b/g, ' ')
+        .replace(/\b\d{5,}\b/g, ' ');
+    const tokens = normalizeText(cleaned)
+        .split(' ')
+        .filter((word) => /^[a-z]{4,}$/.test(word) &&
+        !GENERIC_VENDOR_WORDS.has(word) &&
+        !/^(?:receipt|invoice|bill|vendor|supplier|scan|scanned|copy|document|delivery|customer|page)$/.test(word));
+    const hint = tokens.join(' ').trim();
+    return hint && hint.length >= 4 ? hint : null;
 }
 function addCheck(checks, label, status, detail) {
     checks.push({ label, status, detail });
@@ -352,8 +466,13 @@ function isJobSummaryDocument(input) {
 function isStandaloneDeliveryNoteDocument(input) {
     const rawText = normalizeText(input.rawText);
     const combined = normalizeText(`${input.attachmentName || ''}\n${input.rawText || ''}`);
-    const hasDeliveryNoteLabel = /\bdelivery\s+note\b/.test(rawText);
-    const hasInvoiceDocumentSignal = /\b(?:tax\s+invoice|invoice|vendor\s+bill|bill\s+(?:no|number)|receipt\s+(?:no|number))\b/.test(combined);
+    const hasSigningDeliveryClause = /\bconfir[mnl]+\s+your\s+goods\s+[bh]efor[ce]\s+signing\s+the\s+del/.test(rawText);
+    const hasDeliveryNoteLabel = /\bdelivery\s+note\b/.test(rawText) ||
+        hasSigningDeliveryClause;
+    const cleanedForInvoiceCheck = hasSigningDeliveryClause
+        ? combined.replace(/\bdate\s*invoice\b/g, ' ')
+        : combined;
+    const hasInvoiceDocumentSignal = /\b(?:tax\s+invoice|invoice|vendor\s+bill|bill\s+(?:no|number)|receipt\s+(?:no|number)|etims|amount\s+due|sub\s*total)\b/.test(cleanedForInvoiceCheck);
     return hasDeliveryNoteLabel && !hasInvoiceDocumentSignal;
 }
 function totalsMatch(left, right) {
@@ -502,24 +621,37 @@ function vendorNamesMatch(left, right) {
     const second = normalizeVendorName(right);
     if (!first.name || !second.name)
         return false;
-    if (first.name === second.name ||
-        first.compact === second.compact ||
-        first.name.includes(second.name) ||
-        second.name.includes(first.name) ||
-        first.compact.includes(second.compact) ||
-        second.compact.includes(first.compact)) {
+    if (first.name === second.name || first.compact === second.compact) {
         return true;
     }
-    // Prefer distinctive identity words. Generic terms such as ENTERPRISES or
-    // LTD must never match two unrelated vendors by themselves.
-    const firstWords = first.name.split(' ').filter((word) => !GENERIC_VENDOR_WORDS.has(word));
-    const secondWords = second.name.split(' ').filter((word) => !GENERIC_VENDOR_WORDS.has(word));
+    // Prefer distinctive identity words. Generic terms such as ENTERPRISES,
+    // KENYA, INTERIORS, SUPPLY, or LTD must never match two unrelated vendors.
+    const firstWords = first.name
+        .split(' ')
+        .filter((word) => /^[a-z]{4,}$/.test(word) && !GENERIC_VENDOR_WORDS.has(word));
+    const secondWords = second.name
+        .split(' ')
+        .filter((word) => /^[a-z]{4,}$/.test(word) && !GENERIC_VENDOR_WORDS.has(word));
     if (firstWords.length === 0 || secondWords.length === 0)
         return false;
+    if (first.compact.length >= 6 &&
+        second.compact.length >= 6 &&
+        (first.name.includes(second.name) || second.name.includes(first.name))) {
+        return true;
+    }
     const shorter = firstWords.length <= secondWords.length ? firstWords : secondWords;
     const longer = firstWords.length <= secondWords.length ? secondWords : firstWords;
     return shorter.some((word) => word.length >= 5 &&
-        longer.some((candidate) => candidate === word || candidate.startsWith(word) || word.startsWith(candidate)));
+        longer.some((candidate) => {
+            if (candidate.length < 5)
+                return false;
+            if (candidate === word)
+                return true;
+            const minLen = Math.min(word.length, candidate.length);
+            const maxLen = Math.max(word.length, candidate.length);
+            return (minLen / maxLen >= 0.8 &&
+                (candidate.startsWith(word) || word.startsWith(candidate)));
+        }));
 }
 function computeVendorScore(invoiceVendor, poVendor, filenameVendorHint) {
     const invoice = normalizeVendorName(invoiceVendor);
@@ -1400,6 +1532,9 @@ async function loadPurchaseOrderCandidateSearch(client, parsedInvoice, options =
     }
     // Apply the vendor scope in Odoo before pagination. Searching the newest
     // 100 POs globally can hide an older exact match behind unrelated vendors.
+    if (hasReadableVendor && vendorPartnerIds.length === 0) {
+        return [];
+    }
     if (vendorPartnerIds.length > 0) {
         domain.push(['partner_id', 'in', vendorPartnerIds]);
     }
@@ -1752,7 +1887,7 @@ async function postVendorBillCreatedEvidence(client, input) {
         input.vendorBill.ref ? `<p>Vendor Bill Ref: ${escapeHtml(input.vendorBill.ref)}</p>` : '',
     ].filter(Boolean).join(''));
 }
-function selectExistingVendorBillForMatchedPurchaseOrders(bills, purchaseOrders, parsedInvoice) {
+function selectExistingVendorBillForMatchedPurchaseOrders(bills, _purchaseOrders, parsedInvoice) {
     const activeBills = bills.filter((bill) => String(bill.state || '').toLowerCase() !== 'cancel');
     if (activeBills.length === 0) {
         return null;
@@ -1765,20 +1900,14 @@ function selectExistingVendorBillForMatchedPurchaseOrders(bills, purchaseOrders,
         return totalMatch;
     }
     const invoiceNumber = normalizeFingerprintPart(parsedInvoice.invoiceNumber);
-    const referenceMatch = invoiceNumber
+    const referenceMatch = invoiceNumber && invoiceNumber.length >= 2
         ? activeBills.find((bill) => normalizeFingerprintPart(bill.ref) === invoiceNumber ||
             normalizeFingerprintPart(bill.name) === invoiceNumber)
         : null;
     if (referenceMatch) {
         return referenceMatch;
     }
-    // If Odoo itself says the PO is invoiced and there is exactly one active
-    // bill for it, use that bill as the recovery evidence when the invoice
-    // parser could not read a reliable total or number.
-    const purchaseOrderShowsBilling = purchaseOrders.some((order) => order.invoice_status === 'invoiced' ||
-        Boolean(Array.isArray(order.invoice_ids) && order.invoice_ids.length > 0) ||
-        Number(order.invoice_count || 0) > 0);
-    return purchaseOrderShowsBilling && activeBills.length === 1 ? activeBills[0] : null;
+    return null;
 }
 async function findExistingVendorBillForMatchedPurchaseOrders(client, purchaseOrders, parsedInvoice, knownVendorBillIds = []) {
     const purchaseOrderNames = purchaseOrders.map((order) => order.name);
@@ -2246,9 +2375,60 @@ async function retryFailedPoBillPayment(client, input) {
     catch (_dbErr) {
         // Non-fatal if local db is not connected
     }
+    let matchedOrdersForNotify = [];
+    if (poIds.length > 0) {
+        matchedOrdersForNotify = await client
+            .readRecords('purchase.order', poIds, [
+            'id',
+            'name',
+            'partner_id',
+            'company_id',
+            'amount_total',
+            'date_order',
+            'state',
+        ])
+            .catch(() => []);
+    }
+    const emailNotify = await (0, poBillNotificationService_1.sendPoBillSuccessNotification)({
+        client,
+        attachment: {
+            id: vendorBill.id,
+            name: vendorBill.name || `Bill-${vendorBill.id}`,
+        },
+        purchaseOrders: matchedOrdersForNotify,
+        parsedInvoice: {
+            vendorName: Array.isArray(vendorBill.partner_id) ? vendorBill.partner_id[1] : null,
+            invoiceDate: input.paymentDate || vendorBill.invoice_date || null,
+            invoiceNumber: vendorBill.ref || vendorBill.name || null,
+            orderNumber: null,
+            taxPin: null,
+            pinNote: input.pinNote || 'NO PIN',
+            untaxedTotal: null,
+            vatTotal: null,
+            grandTotal: vendorBill.amount_total ?? null,
+            itemCount: 0,
+            items: [],
+            rawText: '',
+            logs: [],
+        },
+        vendorBill,
+        paymentResult: {
+            success: true,
+            message: paymentMessage,
+        },
+        eventType: 'payment_retry',
+        actionsTaken: [
+            paymentMessage,
+            `Closed ${totalClosedActivities} follow-up activity/activities on linked Purchase Order(s).`,
+        ],
+    }).catch((err) => ({
+        sent: false,
+        recipient: 'leoivardomondi64@gmail.com',
+        message: err instanceof Error ? err.message : String(err),
+    }));
     return {
         success: true,
-        message: `${paymentMessage} Closed ${totalClosedActivities} follow-up activity/activities on linked Purchase Order(s).`,
+        message: `${paymentMessage} Closed ${totalClosedActivities} follow-up activity/activities on linked Purchase Order(s). ${emailNotify.message}`,
         billId: vendorBill.id,
         billName: vendorBill.name || String(vendorBill.id),
         paymentState: isAlreadyPaid ? vendorBill.payment_state : 'in_payment',
@@ -2438,7 +2618,7 @@ async function runPoBillAutomationInternal(client, input) {
     ].filter(Boolean).join('\n\n');
     const detectedPin = findUrbanVibeBuyerPin(allExtractedText);
     const parsedInvoice = {
-        vendorName: supplierInvoice.supplier,
+        vendorName: sanitizeExtractedVendorName(supplierInvoice.supplier),
         filenameVendorHint: extractFilenameVendorHint(attachment.name),
         invoiceDate: supplierInvoice.invoice_date,
         invoiceNumber: supplierInvoice.invoice_number,
@@ -2652,8 +2832,12 @@ async function runPoBillAutomationInternal(client, input) {
         !candidates.some((candidate) => candidate.purchaseOrder.id === bestOverallCandidate?.purchaseOrder.id);
     // A PO can be filtered out as already invoiced even though the local
     // attachment marker/tag is missing. Recover that durable Odoo evidence
-    // before allowing the scheduler to continue with a weaker PO candidate.
-    if (input.mode === 'auto' && input.onlyUnbilledPurchaseOrders && bestOverallCandidate && bestOverallWasExcluded) {
+    // ONLY when the candidate is a reliable match (vendor, total, and threshold).
+    if (input.mode === 'auto' &&
+        input.onlyUnbilledPurchaseOrders &&
+        bestOverallCandidate &&
+        bestOverallWasExcluded &&
+        isReliablePoBillCandidate(bestOverallCandidate)) {
         const recovered = await repairAlreadyMatchedPoBillDocument(client, {
             attachment,
             purchaseOrders: [bestOverallCandidate.purchaseOrder],
@@ -2674,7 +2858,7 @@ async function runPoBillAutomationInternal(client, input) {
             if (recovered.chatterMessage) {
                 actionsTaken.push(`Repaired PO chatter evidence for existing vendor bill ${recovered.vendorBill.name || recovered.vendorBill.id}.`);
             }
-            actionsTaken.push(`Repaired the processed signature for ${attachment.name}; future scheduler runs will skip this document.`);
+            actionsTaken.push(`Marked ${attachment.name} as processed with warnings (repaired existing match).`);
             addCheck(checks, 'Processed Signature', 'pass', 'Existing PO/vendor-bill evidence was recorded locally to prevent duplicate processing.');
             actionsPending.push('Auto mode stopped because this document was already matched and billed in Odoo.');
             return {
@@ -2853,7 +3037,8 @@ async function runPoBillAutomationInternal(client, input) {
     if (existingProcessed && !processedEvidence?.valid && input.mode === 'auto') {
         actionsTaken.push('Local processed marker was ignored because Odoo vendor bill/chatter evidence could not be verified.');
     }
-    if (input.mode === 'auto') {
+    if (input.mode === 'auto' &&
+        (Boolean(combinedMatch) || Boolean(bestCandidate && isReliablePoBillCandidate(bestCandidate)))) {
         const recovered = await repairAlreadyMatchedPoBillDocument(client, {
             attachment,
             purchaseOrders: matchedPurchaseOrders,
@@ -2874,7 +3059,7 @@ async function runPoBillAutomationInternal(client, input) {
             if (recovered.chatterMessage) {
                 actionsTaken.push(`Repaired PO chatter evidence for existing vendor bill ${recovered.vendorBill.name || recovered.vendorBill.id}.`);
             }
-            actionsTaken.push(`Repaired the processed signature for ${attachment.name}; future scheduler runs will skip this document.`);
+            actionsTaken.push(`Marked ${attachment.name} as processed with warnings (repaired existing match).`);
             addCheck(checks, 'Processed Signature', 'pass', 'Existing PO/vendor-bill evidence was recorded locally to prevent duplicate processing.');
             actionsPending.push('Auto mode stopped because this document was already matched and billed in Odoo.');
             return {
@@ -3076,6 +3261,7 @@ async function runPoBillAutomationInternal(client, input) {
                 actionsPending.push(`PDF upload failed: ${message}`);
             }
             let vendorBill = null;
+            let paymentRegistrationOutcome = null;
             try {
                 if (!uploadAttachmentId) {
                     throw new Error('Cannot create a vendor bill because the upload attachment was not created.');
@@ -3097,6 +3283,7 @@ async function runPoBillAutomationInternal(client, input) {
                 }
                 if (vendorBill && vendorBill.state === 'posted') {
                     const paymentResult = await registerPaymentForVendorBill(client, vendorBill, parsedInvoice.pinNote, parsedInvoice.invoiceDate);
+                    paymentRegistrationOutcome = paymentResult;
                     if (paymentResult.success) {
                         actionsTaken.push(paymentResult.message);
                         addCheck(checks, 'Payment Registration', 'pass', paymentResult.message);
@@ -3211,6 +3398,25 @@ async function runPoBillAutomationInternal(client, input) {
                     actionsTaken.push(`Marked ${attachment.name} as ${processedStatus.replace(/_/g, ' ')}.`);
                     addCheck(checks, 'Processed Marker', 'pass', 'The PDF is now recorded locally after Odoo vendor bill and chatter evidence were verified.');
                 }
+            }
+            const emailNotification = await (0, poBillNotificationService_1.sendPoBillSuccessNotification)({
+                client,
+                attachment,
+                purchaseOrders: matchedPurchaseOrders,
+                parsedInvoice,
+                vendorBill,
+                uploadAttachmentId,
+                paymentResult: paymentRegistrationOutcome,
+                eventType: 'full_automation',
+                actionsTaken,
+                actionsPending,
+            });
+            if (emailNotification.sent) {
+                actionsTaken.push(emailNotification.message);
+                addCheck(checks, 'Email Notification', 'pass', emailNotification.message);
+            }
+            else {
+                addCheck(checks, 'Email Notification', 'warn', emailNotification.message);
             }
         }
         finally {

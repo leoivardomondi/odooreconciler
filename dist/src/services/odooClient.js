@@ -3804,7 +3804,23 @@ class OdooClient {
             });
             if (!openMOs.length)
                 return { reserved: [], failed: [] };
-            return this.reserveStockOnMOs(openMOs.map((mo) => mo.id));
+            const openMoIds = openMOs.map((mo) => mo.id);
+            const unreservedMoves = await this.searchReadRecords('stock.move', {
+                domain: [
+                    ['raw_material_production_id', 'in', openMoIds],
+                    ['state', 'in', ['confirmed', 'partially_available', 'waiting']],
+                ],
+                fields: ['id', 'raw_material_production_id'],
+                limit: 1000,
+            }).catch(() => []);
+            const candidateMoIds = unreservedMoves.length > 0
+                ? [...new Set(unreservedMoves
+                        .map((m) => (Array.isArray(m.raw_material_production_id) ? m.raw_material_production_id[0] : Number(m.raw_material_production_id || 0)))
+                        .filter((id) => id > 0))]
+                : [];
+            if (!candidateMoIds.length)
+                return { reserved: [], failed: [] };
+            return this.reserveStockOnMOs(candidateMoIds);
         }
         catch (err) {
             console.warn('[OdooClient] autoReserveConfirmedMOs error:', err);
@@ -4293,9 +4309,20 @@ class OdooClient {
      * This triggers Odoo's built-in reservation engine to allocate available stock.
      */
     async reserveStockOnMOs(moIds) {
+        const uniqueMoIds = [...new Set(moIds.map((id) => Number(id)).filter((id) => Number.isFinite(id) && id > 0))];
+        if (!uniqueMoIds.length) {
+            return { reserved: [], failed: [] };
+        }
+        try {
+            await this.callRecordMethod('mrp.production', 'action_assign', uniqueMoIds);
+            return { reserved: uniqueMoIds, failed: [] };
+        }
+        catch (batchErr) {
+            console.warn(`[OdooClient] Batch action_assign failed for [${uniqueMoIds.join(', ')}], falling back to per-MO:`, batchErr);
+        }
         const reserved = [];
         const failed = [];
-        for (const moId of moIds) {
+        for (const moId of uniqueMoIds) {
             try {
                 await this.callRecordMethod('mrp.production', 'action_assign', [moId]);
                 reserved.push(moId);

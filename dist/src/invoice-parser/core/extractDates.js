@@ -40,7 +40,7 @@ function toIsoDate(day, month, year) {
 function extractDateNear(text, labels) {
     for (const label of labels) {
         const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const matches = text.matchAll(new RegExp(`${escaped}\\s*:?\\s*(\\d{1,2})[/-]([A-Za-z]{3,9}|\\d{1,2})[/-](\\d{2,4})`, 'gi'));
+        const matches = text.matchAll(new RegExp(`${escaped}\\s*:?\\s*(\\d{1,2})(?:\\s*[/-]\\s*|\\s+)([A-Za-z]{3,9}|\\d{1,2})(?:\\s*[/-]\\s*|\\s+)(\\d{2,4})`, 'gi'));
         for (const match of matches) {
             const value = toIsoDate(match[1], match[2], match[3]);
             if (value) {
