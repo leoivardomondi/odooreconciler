@@ -225,6 +225,10 @@
       <p class="text-muted small mb-0">Log boards brought in by clients and automatically reserve them on pending manufacturing orders</p>
     </div>
     <div class="d-flex align-items-center gap-2 flex-wrap shop-boards-header-actions">
+      <a href="/public/board-logs" target="_blank" class="btn btn-outline-secondary btn-sm rounded-pill px-3 d-inline-flex align-items-center gap-1.5 shadow-sm" title="Open public continuous board logs list without logging in">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+        <span>Public Log List ↗</span>
+      </a>
       <span class="badge rounded-pill <%= stockMirror.isFresh ? 'bg-success-subtle text-success' : 'bg-warning-subtle text-warning-emphasis' %> border px-3 py-2">
         <%= stockMirror.isFresh ? 'Stock current' : (stockMirror.isRefreshing ? 'Stock refreshing' : 'Cached stock') %>
         <% if (stockMirror.syncedAt) { %> · <%= formatDateTime(stockMirror.syncedAt) %><% } %>
@@ -788,6 +792,12 @@
                 Jump to Today
               </a>
             <% } %>
+
+            <!-- Public Continuous View Link -->
+            <a href="/public/board-logs?date=<%= isDateAll ? todayDate : selectedDate %>" target="_blank" class="btn btn-sm btn-outline-dark rounded-pill px-3 py-1 shadow-sm d-inline-flex align-items-center gap-1.5" style="font-size: 0.80rem; font-weight: 600;" title="Open public continuous view without login">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+              <span>Public Continuous View ↗</span>
+            </a>
           </div>
         </div>
 

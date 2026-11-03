@@ -154,6 +154,7 @@ exports.createBoardIntakeQueueEntry = createBoardIntakeQueueEntry;
 exports.updateBoardIntakeQueueEntry = updateBoardIntakeQueueEntry;
 exports.getRecentBoardIntakeQueueEntries = getRecentBoardIntakeQueueEntries;
 exports.countBoardIntakeQueueEntries = countBoardIntakeQueueEntries;
+exports.getContinuousBoardIntakeLogs = getContinuousBoardIntakeLogs;
 exports.getBoardIntakeQueueDateCounts = getBoardIntakeQueueDateCounts;
 exports.getBoardIntakeQueueEntry = getBoardIntakeQueueEntry;
 exports.findActiveBoardIntakeLogsByPartnerOrProduct = findActiveBoardIntakeLogsByPartnerOrProduct;
@@ -4043,6 +4044,52 @@ async function countBoardIntakeQueueEntries(filterDate) {
     }
     catch {
         return 0;
+    }
+}
+async function getContinuousBoardIntakeLogs(options) {
+    const limit = Math.max(1, Math.min(1000, Number(options?.limit || 500)));
+    const offset = Math.max(0, Number(options?.offset || 0));
+    const conditions = [];
+    const params = [];
+    if (options?.search && options.search.trim()) {
+        const term = `%${options.search.trim()}%`;
+        conditions.push('(customer_name LIKE ? OR product_name LIKE ? OR vehicle_registration LIKE ? OR purchase_order_reference LIKE ? OR actor_name LIKE ?)');
+        params.push(term, term, term, term, term);
+    }
+    if (options?.startDate) {
+        conditions.push('(arrival_date >= ? OR (created_at >= ?))');
+        params.push(options.startDate, `${options.startDate} 00:00:00`);
+    }
+    if (options?.endDate) {
+        conditions.push('(arrival_date <= ? OR (created_at <= ?))');
+        params.push(options.endDate, `${options.endDate} 23:59:59`);
+    }
+    const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const query = `SELECT id, product_name, customer_name, quantity, vehicle_registration, arrival_date, arrival_time, gate, is_purchase, purchase_order_reference, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at, reverted_at, reverted_by, actor_name, actor_email,
+      CASE 
+        WHEN arrival_date IS NOT NULL AND arrival_date != '' THEN arrival_date 
+        ELSE SUBSTR(created_at, 1, 10) 
+      END AS effective_date
+    FROM board_intake_queue
+    ${whereClause}
+    ORDER BY 
+      CASE 
+        WHEN arrival_date IS NOT NULL AND arrival_date != '' THEN arrival_date 
+        ELSE SUBSTR(created_at, 1, 10) 
+      END DESC,
+      created_at DESC
+    LIMIT ? OFFSET ?`;
+    try {
+        return await (0, db_1.queryAll)(query, [...params, limit, offset]);
+    }
+    catch (_err) {
+        await (0, db_1.execute)(`ALTER TABLE board_intake_queue ADD COLUMN vehicle_registration VARCHAR(100) NULL`).catch(() => { });
+        await (0, db_1.execute)(`ALTER TABLE board_intake_queue ADD COLUMN arrival_date VARCHAR(50) NULL`).catch(() => { });
+        await (0, db_1.execute)(`ALTER TABLE board_intake_queue ADD COLUMN arrival_time VARCHAR(50) NULL`).catch(() => { });
+        await (0, db_1.execute)(`ALTER TABLE board_intake_queue ADD COLUMN gate VARCHAR(50) NULL`).catch(() => { });
+        await (0, db_1.execute)(`ALTER TABLE board_intake_queue ADD COLUMN is_purchase INTEGER DEFAULT 0`).catch(() => { });
+        await (0, db_1.execute)(`ALTER TABLE board_intake_queue ADD COLUMN purchase_order_reference VARCHAR(100) NULL`).catch(() => { });
+        return (0, db_1.queryAll)(query, [...params, limit, offset]).catch(() => []);
     }
 }
 async function getBoardIntakeQueueDateCounts(todayDate, yesterdayDate, selectedDate) {

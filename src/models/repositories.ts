@@ -5438,6 +5438,90 @@ export async function countBoardIntakeQueueEntries(filterDate?: string | null): 
   }
 }
 
+export interface ContinuousBoardIntakeEntry {
+  [key: string]: unknown;
+  id: string;
+  product_name: string;
+  customer_name: string;
+  quantity: number;
+  vehicle_registration?: string | null;
+  arrival_date?: string | null;
+  arrival_time?: string | null;
+  gate?: string | null;
+  is_purchase?: number | boolean;
+  purchase_order_reference?: string | null;
+  status: string;
+  error_message?: string | null;
+  retry_count?: number;
+  last_attempt_at?: string | null;
+  next_retry_at?: string | null;
+  created_at: string;
+  synced_at?: string | null;
+  reverted_at?: string | null;
+  reverted_by?: string | null;
+  actor_name?: string | null;
+  actor_email?: string | null;
+  effective_date: string;
+}
+
+export async function getContinuousBoardIntakeLogs(options?: {
+  limit?: number;
+  offset?: number;
+  search?: string;
+  startDate?: string;
+  endDate?: string;
+}): Promise<ContinuousBoardIntakeEntry[]> {
+  const limit = Math.max(1, Math.min(1000, Number(options?.limit || 500)));
+  const offset = Math.max(0, Number(options?.offset || 0));
+
+  const conditions: string[] = [];
+  const params: any[] = [];
+
+  if (options?.search && options.search.trim()) {
+    const term = `%${options.search.trim()}%`;
+    conditions.push('(customer_name LIKE ? OR product_name LIKE ? OR vehicle_registration LIKE ? OR purchase_order_reference LIKE ? OR actor_name LIKE ?)');
+    params.push(term, term, term, term, term);
+  }
+
+  if (options?.startDate) {
+    conditions.push('(arrival_date >= ? OR (created_at >= ?))');
+    params.push(options.startDate, `${options.startDate} 00:00:00`);
+  }
+
+  if (options?.endDate) {
+    conditions.push('(arrival_date <= ? OR (created_at <= ?))');
+    params.push(options.endDate, `${options.endDate} 23:59:59`);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const query = `SELECT id, product_name, customer_name, quantity, vehicle_registration, arrival_date, arrival_time, gate, is_purchase, purchase_order_reference, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at, reverted_at, reverted_by, actor_name, actor_email,
+      CASE 
+        WHEN arrival_date IS NOT NULL AND arrival_date != '' THEN arrival_date 
+        ELSE SUBSTR(created_at, 1, 10) 
+      END AS effective_date
+    FROM board_intake_queue
+    ${whereClause}
+    ORDER BY 
+      CASE 
+        WHEN arrival_date IS NOT NULL AND arrival_date != '' THEN arrival_date 
+        ELSE SUBSTR(created_at, 1, 10) 
+      END DESC,
+      created_at DESC
+    LIMIT ? OFFSET ?`;
+
+  try {
+    return await queryAll<ContinuousBoardIntakeEntry>(query, [...params, limit, offset]);
+  } catch (_err) {
+    await execute(`ALTER TABLE board_intake_queue ADD COLUMN vehicle_registration VARCHAR(100) NULL`).catch(() => {});
+    await execute(`ALTER TABLE board_intake_queue ADD COLUMN arrival_date VARCHAR(50) NULL`).catch(() => {});
+    await execute(`ALTER TABLE board_intake_queue ADD COLUMN arrival_time VARCHAR(50) NULL`).catch(() => {});
+    await execute(`ALTER TABLE board_intake_queue ADD COLUMN gate VARCHAR(50) NULL`).catch(() => {});
+    await execute(`ALTER TABLE board_intake_queue ADD COLUMN is_purchase INTEGER DEFAULT 0`).catch(() => {});
+    await execute(`ALTER TABLE board_intake_queue ADD COLUMN purchase_order_reference VARCHAR(100) NULL`).catch(() => {});
+    return queryAll<ContinuousBoardIntakeEntry>(query, [...params, limit, offset]).catch(() => []);
+  }
+}
+
 export async function getBoardIntakeQueueDateCounts(todayDate: string, yesterdayDate: string, selectedDate?: string): Promise<{
   todayLogsCount: number;
   yesterdayLogsCount: number;

@@ -45,6 +45,8 @@ import {
   updateShopFloorOperatorPhoto,
   invalidateShopFloorOperatorsRamCache,
   ShopFloorOperatorEntry,
+  getContinuousBoardIntakeLogs,
+  ContinuousBoardIntakeEntry,
 } from '../models/repositories';
 import { ShopFloorFeatureFlags, ShopFloorFeatureKey } from '../models/types';
 import { wakeShopFloorValidationJobWorker } from '../services/shopFloorValidationJobService';
@@ -3116,10 +3118,119 @@ router.post('/shop-floor/assign-item', async (req: Request, res: Response) => {
 });
 
 /**
+ * GET /public/board-logs & GET /board-logs
+ * Public read-only continuous timeline view of all gate board intake logs.
+ * No login required. Grouped continuously by arrival date subcategories.
+ */
+async function handlePublicBoardLogs(req: Request, res: Response): Promise<void> {
+  try {
+    const rawLogs = await getContinuousBoardIntakeLogs({ limit: 500 });
+    const targetDate = String(req.query.date || '').trim();
+    const initialSearch = String(req.query.q || '').trim();
+
+    const todayDate = dayjs().tz(env.APP_TIMEZONE || 'Africa/Nairobi').format('YYYY-MM-DD');
+    const yesterdayDate = dayjs().tz(env.APP_TIMEZONE || 'Africa/Nairobi').subtract(1, 'day').format('YYYY-MM-DD');
+
+    // Group logs by effective_date (arrival_date || created_at.slice(0, 10))
+    const groupMap = new Map<string, {
+      date: string;
+      dayLabel: string;
+      formattedDate: string;
+      isToday: boolean;
+      isYesterday: boolean;
+      totalSheets: number;
+      clientSupplySheets: number;
+      purchaseSheets: number;
+      entries: ContinuousBoardIntakeEntry[];
+    }>();
+
+    let totalSheets = 0;
+    let clientSupplySheets = 0;
+    let purchaseSheets = 0;
+
+    for (const log of rawLogs) {
+      const effDate = log.effective_date || log.arrival_date || log.created_at.slice(0, 10);
+      const qty = Number(log.quantity || 0);
+      const isPurchase = Boolean(log.is_purchase);
+
+      totalSheets += qty;
+      if (isPurchase) {
+        purchaseSheets += qty;
+      } else {
+        clientSupplySheets += qty;
+      }
+
+      let group = groupMap.get(effDate);
+      if (!group) {
+        const d = dayjs.tz(effDate, env.APP_TIMEZONE || 'Africa/Nairobi');
+        group = {
+          date: effDate,
+          dayLabel: d.isValid() ? d.format('dddd') : 'Date',
+          formattedDate: d.isValid() ? d.format('D MMMM YYYY') : effDate,
+          isToday: effDate === todayDate,
+          isYesterday: effDate === yesterdayDate,
+          totalSheets: 0,
+          clientSupplySheets: 0,
+          purchaseSheets: 0,
+          entries: [],
+        };
+        groupMap.set(effDate, group);
+      }
+
+      group.totalSheets += qty;
+      if (isPurchase) {
+        group.purchaseSheets += qty;
+      } else {
+        group.clientSupplySheets += qty;
+      }
+      group.entries.push(log);
+    }
+
+    const dateGroups = Array.from(groupMap.values());
+
+    const summary = {
+      totalLogs: rawLogs.length,
+      totalSheets,
+      clientSupplySheets,
+      purchaseSheets,
+      dateCount: dateGroups.length,
+    };
+
+    if (req.query.format === 'json' || req.xhr) {
+      res.json({ ok: true, summary, dateGroups });
+      return;
+    }
+
+    res.render('public-board-logs', {
+      pageTitle: 'Board Intake Logs',
+      dateGroups,
+      summary,
+      targetDate,
+      initialSearch,
+      todayDate,
+    });
+  } catch (err) {
+    console.error('[shopFloorRouter] Failed to render public board logs:', err);
+    res.status(500).render('error', {
+      pageTitle: 'Error Loading Board Logs',
+      errorMessage: 'Could not load public board logs. Please try again later.',
+      details: [err instanceof Error ? err.message : String(err)],
+    });
+  }
+}
+
+router.get('/public/board-logs', handlePublicBoardLogs);
+router.get('/board-logs', handlePublicBoardLogs);
+
+/**
  * GET /shop-floor/boards — Board Intake & Auto-Reserve dashboard.
  */
 router.get('/shop-floor/boards', async (req: Request, res: Response) => {
   if (!req.authUser) {
+    if (req.query.date) {
+      res.redirect(`/public/board-logs?date=${encodeURIComponent(String(req.query.date))}`);
+      return;
+    }
     res.redirect('/login');
     return;
   }
@@ -4053,7 +4164,7 @@ router.post('/shop-floor/board-intake', async (req: Request, res: Response) => {
           : 'No (Client Supplied)';
 
         const appBaseUrl = String(env.APP_BASE_URL || 'https://app.urbanvibeinteriordesign.co.ke').replace(/\/+$/, '');
-        const fullListUrl = `${appBaseUrl}/shop-floor/boards?date=${encodeURIComponent(reportDate)}#recentBoardLogsSection`;
+        const fullListUrl = `${appBaseUrl}/public/board-logs?date=${encodeURIComponent(reportDate)}#date-${encodeURIComponent(reportDate)}`;
         const buttonHtml = `<div style="margin-top:20px;margin-bottom:12px;">` +
           `<a href="${fullListUrl}" style="display:inline-block;background-color:#0f172a;color:#ffffff;text-decoration:none;padding:10px 22px;font-size:14px;font-weight:600;border-radius:8px;box-shadow:0 1px 2px rgba(0,0,0,0.08);letter-spacing:0.01em;" target="_blank">` +
           `📋 View Full Board Logs List &rarr;` +
@@ -4404,7 +4515,7 @@ router.post('/shop-floor/board-intake/:id/revert', async (req: Request, res: Res
       const subjectCustomerName = (entry.customer_name || 'Client').replace(/[\r\n]+/g, ' ').trim();
 
       const appBaseUrl = String(env.APP_BASE_URL || 'https://app.urbanvibeinteriordesign.co.ke').replace(/\/+$/, '');
-      const fullListUrl = `${appBaseUrl}/shop-floor/boards?date=${encodeURIComponent(reportDate)}#recentBoardLogsSection`;
+      const fullListUrl = `${appBaseUrl}/public/board-logs?date=${encodeURIComponent(reportDate)}#date-${encodeURIComponent(reportDate)}`;
       const buttonHtml = `<div style="margin-top:20px;margin-bottom:12px;">` +
         `<a href="${fullListUrl}" style="display:inline-block;background-color:#0f172a;color:#ffffff;text-decoration:none;padding:10px 22px;font-size:14px;font-weight:600;border-radius:8px;box-shadow:0 1px 2px rgba(0,0,0,0.08);letter-spacing:0.01em;" target="_blank">` +
         `📋 View Full Board Logs List &rarr;` +
