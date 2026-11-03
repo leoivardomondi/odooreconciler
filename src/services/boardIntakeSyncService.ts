@@ -19,6 +19,10 @@ import { findOdooUserByTerm, OdooUserStakeholder, extractSoNameFromOrigin } from
 const AUTO_RETRY_INTERVAL_MS = 2 * 60 * 1000;
 let intervalHandle: NodeJS.Timeout | null = null;
 let batchPromise: Promise<void> | null = null;
+const activeInMemoryBoardSyncIds = new Set<string>();
+let retroactiveReconcileInProgress = false;
+let lastRetroactiveReconcileAt = 0;
+const MIN_RETROACTIVE_RECONCILE_INTERVAL_MS = 15 * 60 * 1000;
 
 export function escapeHtml(value: unknown) {
   return String(value ?? '')
@@ -647,8 +651,16 @@ export const processBoardIntakePurchaseOrderFulfillmentLegacy = processBoardInta
 export async function reconcileRetroactiveBoardLogsForLinkedPos(
   client: OdooClient,
   cachedCandySharon?: Promise<[OdooUserStakeholder | null, OdooUserStakeholder | null]> | null,
+  force = false,
 ): Promise<{ matchedCount: number; logsFulfilled: string[] }> {
   const result = { matchedCount: 0, logsFulfilled: [] as string[] };
+  if (retroactiveReconcileInProgress) return result;
+  const now = Date.now();
+  if (!force && now - lastRetroactiveReconcileAt < MIN_RETROACTIVE_RECONCILE_INTERVAL_MS) {
+    return result;
+  }
+  retroactiveReconcileInProgress = true;
+  lastRetroactiveReconcileAt = now;
   try {
     const recentLogs = await queryAll<{
       id: string;
@@ -677,7 +689,36 @@ export async function reconcileRetroactiveBoardLogsForLinkedPos(
 
     if (!recentLogs.length) return result;
 
-    for (const log of recentLogs) {
+    // Bulk pre-check: find which logged board products actually have an active PO line in 'to approve' or 'purchase'
+    // so we don't fire 30 x 4 = 120 individual Odoo RPC calls when no matching PO lines exist.
+    const uniqueProductIds = [...new Set(recentLogs.map((l) => Number(l.product_id || 0)).filter((id) => id > 0))];
+    if (!uniqueProductIds.length) return result;
+
+    const targetCompanyId = await client.getTargetCompanyIdValue();
+    const candidatePoLines = await client.searchReadRecords<{
+      id: number;
+      product_id: [number, string] | false;
+    }>('purchase.order.line', {
+      domain: [
+        ['product_id', 'in', uniqueProductIds],
+        ['order_id.company_id', '=', targetCompanyId],
+        ['order_id.state', 'in', ['to approve', 'purchase']],
+      ],
+      fields: ['id', 'product_id'],
+      limit: 200,
+    }).catch(() => []);
+
+    const productsWithActivePo = new Set<number>(
+      candidatePoLines
+        .map((l) => (Array.isArray(l.product_id) ? l.product_id[0] : 0))
+        .filter((id) => id > 0),
+    );
+
+    if (!productsWithActivePo.size) return result;
+
+    const candidateLogs = recentLogs.filter((l) => productsWithActivePo.has(Number(l.product_id || 0)));
+
+    for (const log of candidateLogs) {
       try {
         const poFulfillment = await processBoardIntakePurchaseOrderFulfillment(
           client,
@@ -720,6 +761,8 @@ export async function reconcileRetroactiveBoardLogsForLinkedPos(
     }
   } catch (err) {
     console.error('[BoardIntakeSyncService] Error in reconcileRetroactiveBoardLogsForLinkedPos:', err);
+  } finally {
+    retroactiveReconcileInProgress = false;
   }
   return result;
 }
@@ -954,6 +997,7 @@ export async function syncBoardIntakeEntry(id: string) {
     throw new Error('This board log was claimed by another synchronization attempt.');
   }
 
+  activeInMemoryBoardSyncIds.add(id);
   try {
     entry = (await getBoardIntakeQueueEntry(id))!;
     const settings = await getSettings();
@@ -1132,12 +1176,6 @@ export async function syncBoardIntakeEntry(id: string) {
       await client.reserveStockOnMOs(matchingMOs.map((mo) => mo.moId));
     }
 
-    const warehouseId = Number(settings.stock.warehouseId || 0);
-    if (warehouseId) {
-      // Fire-and-forget warehouse-wide auto-reservation in background so it never blocks intake completion
-      void client.autoReserveConfirmedMOs(warehouseId).catch(() => null);
-    }
-
     await updateBoardIntakeQueueEntry(id, {
       status: 'synced',
       stockQuantity,
@@ -1162,6 +1200,8 @@ export async function syncBoardIntakeEntry(id: string) {
       error: message,
     }).catch(() => undefined);
     throw error;
+  } finally {
+    activeInMemoryBoardSyncIds.delete(id);
   }
 }
 
@@ -1200,6 +1240,9 @@ export async function retryDueBoardIntakeEntries() {
   batchPromise = (async () => {
     const due = await getDueBoardIntakeQueueEntries(5);
     for (const entry of due) {
+      if (activeInMemoryBoardSyncIds.has(entry.id)) {
+        continue;
+      }
       if (entry.status === 'processing') {
         await releaseStaleBoardIntakeQueueEntry(entry.id);
       }

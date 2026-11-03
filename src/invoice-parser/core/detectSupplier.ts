@@ -18,8 +18,10 @@ function extractHeaderSupplier(text: string) {
     .filter((line) => line.length >= 4)
     .slice(0, 45);
 
-  const blocked = /\b(receipt|invoice|billing|shipping|description|quantity|price|amount|vat|total|paybill|terms|tel|email|box|street|road|pin|buyer|date)\b/i;
-  const companyPattern = /\b([A-Z][A-Z0-9&.,' -]{2,80}\b(?:ENTERPRISES?|TRADERS?|SUPPLIERS?|STATIONERS?|COMPANY|CO\.?|LTD|LIMITED|HARDWARE|TIMBER|SUPERMARKET)\b(?:\s+LTD|\s+LIMITED)?)\b/i;
+  const blocked = /\b(receipt|invoice|billing|shipping|description|quantity|price|amount|vat|total|paybill|terms|tel|email|box|street|road|pin|buyer|date|carriage|owners?\s+risk|subject\s+to|goods\s+once|received?\s+the\s+above|urban\s*vibe)\b/i;
+  const buyerLinePattern = /\b(?:bill\s*to|invoice\s*to|sold\s*to|ship\s*to|deliver(?:ed)?\s*to|customer|buyer|client|urban\s*vibe)\b/i;
+  const disclaimerPattern = /\b(?:carriage\s+paid|owners?\s+risk|subject\s+to|goods\s+once\s+sold|received?\s+the\s+above|in\s+good\s+order|condition)\b/i;
+  const companyPattern = /\b([A-Z][A-Z0-9&.,' -]{2,80}\b(?:ENTERPRISES?|TRADERS?|SUPPLIERS?|STATIONERS?|COMPANY|CO\.?|LTD|LIMITED|HARDWARE|TIMBER|SUPERMARKET|INDUSTRIES|INDUSTRIAL)\b(?:\s+LTD|\s+LIMITED)?)\b/i;
 
   const candidates: { name: string; priority: number }[] = [];
 
@@ -28,13 +30,37 @@ function extractHeaderSupplier(text: string) {
     if (/\b(?:sales|tax|proforma|cash)\s*[li1]nvoice\b/i.test(line) || /sales[li1]nvoice/i.test(line) || /[li1]nvoice\s*co\b/i.test(line)) {
       continue;
     }
+    if (buyerLinePattern.test(line) || disclaimerPattern.test(line)) {
+      continue;
+    }
     if (blocked.test(line) && !/\b(LTD|LIMITED|ENTERPRISES?|COMPANY|CO\.?)\b/i.test(line)) {
       continue;
     }
     const match = line.match(companyPattern);
-    const supplier = match?.[1]?.replace(/\b(RECEIPT|INVOICE)\b/gi, '').trim();
+    const supplier = match?.[1]
+      ?.replace(/\b(RECEIPT|INVOICE)\b/gi, '')
+      ?.replace(/^(?:TO|FROM|M\/S|MESSRS)\s+/i, '')
+      .trim();
     if (supplier && supplier.length >= 5) {
-      if (/\b(?:sales|tax|proforma|cash)\s*[li1]nvoice\b/i.test(supplier) || /sales[li1]nvoice/i.test(supplier) || /[li1]nvoice\s*co\b/i.test(supplier)) {
+      if (
+        /\b(?:sales|tax|proforma|cash)\s*[li1]nvoice\b/i.test(supplier) ||
+        /sales[li1]nvoice/i.test(supplier) ||
+        /[li1]nvoice\s*co\b/i.test(supplier) ||
+        buyerLinePattern.test(supplier) ||
+        disclaimerPattern.test(supplier)
+      ) {
+        continue;
+      }
+      // Reject single-generic-word fragments such as "Water LTD" or "Company LTD"
+      const nonSuffixWords = supplier
+        .replace(/[^A-Za-z0-9\s]/g, ' ')
+        .trim()
+        .split(/\s+/)
+        .filter((w) => !/^(?:CO|COMPANY|LTD|LIMITED|INC|CORP|PLC)$/i.test(w));
+      if (
+        nonSuffixWords.length === 0 ||
+        (nonSuffixWords.length === 1 && /^(?:WATER|HARDWARE|ENTERPRISES?|SUPPLIERS?|TRADERS?|STATIONERS?|SUPERMARKET|GENERAL|TIMBER|GLASS)$/i.test(nonSuffixWords[0]))
+      ) {
         continue;
       }
       let priority = 1;

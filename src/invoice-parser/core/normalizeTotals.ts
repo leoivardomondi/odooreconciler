@@ -276,7 +276,8 @@ export function normalizeInvoiceTotals(invoice: ParsedInvoice): ParsedInvoice {
     nearlyEqualComputedMoney(lineItemsPlusVat, currentAmountDue);
   const goodsTotalMatchesLineItems =
     goodsTotal === null || clearLineItemsTotal === null ||
-    nearlyEqualMoney(goodsTotal, clearLineItemsTotal, 2);
+    nearlyEqualMoney(goodsTotal, clearLineItemsTotal, 2) ||
+    (currentAmountDue !== null && nearlyEqualMoney(currentAmountDue, clearLineItemsTotal, 2));
   const reconciledCurrentAmountDue =
     currentAmountDueMatchesLineItemsAndVat ||
     (currentAmountDueMatchesGoodsAndVat && goodsTotalMatchesLineItems);
