@@ -549,6 +549,84 @@ export async function reconcileWorkOrderQuantitiesForMo(
   });
 
   if (!targetQty || targetQty <= 0) {
+    // If no Job Summary or PO determined a target, but user manually set mo.product_qty in Odoo:
+    // Align open cutting work orders and 1:1 board component moves to match mo.product_qty
+    if (mo.product_qty && mo.product_qty > 0) {
+      let workordersUpdated = 0;
+      for (const wo of workorders) {
+        if (Math.abs(Number(wo.qty_production || 0) - mo.product_qty) > 0.001) {
+          const woVals: Record<string, unknown> = { qty_production: mo.product_qty };
+          if (Number(wo.qty_producing || 0) > mo.product_qty) {
+            woVals.qty_producing = mo.product_qty;
+          }
+          try {
+            await client.writeRecord('mrp.workorder', [wo.id], woVals);
+            workordersUpdated++;
+          } catch {
+            // Non-critical
+          }
+        }
+      }
+
+      let componentsUpdated = 0;
+      for (const move of rawMoves) {
+        const prodName = relationLabel(move.product_id);
+        if (isBoardProductName(prodName) && Math.abs((move.product_uom_qty || 0) - mo.product_qty) > 0.001) {
+          try {
+            await client.writeRecord('stock.move', [move.id], { product_uom_qty: mo.product_qty });
+            componentsUpdated++;
+          } catch {
+            // Non-critical
+          }
+        }
+      }
+
+      // Reconcile local shop_floor_pending_processes for this MO so board intake requirements reflect the new target
+      try {
+        const existingProcesses = await queryAll<{
+          id: string;
+          product_name: string;
+          qty_needed: number;
+          qty_reserved: number;
+          qty_missing: number;
+          status: string;
+        }>(
+          'SELECT id, product_name, qty_needed, qty_reserved, qty_missing, status FROM shop_floor_pending_processes WHERE mo_id = ?',
+          [mo.id],
+        );
+
+        for (const proc of existingProcesses) {
+          const prodName = proc.product_name || '';
+          if (isBoardProductName(prodName)) {
+            const newQtyNeeded = mo.product_qty;
+            const curReserved = Number(proc.qty_reserved || 0);
+            const newQtyMissing = Math.max(0, newQtyNeeded - curReserved);
+            const newQtyReserved = Math.min(newQtyNeeded, curReserved);
+            const newStatus = newQtyMissing <= 0 ? 'loaded' : 'pending';
+
+            await execute(
+              `UPDATE shop_floor_pending_processes
+               SET qty_needed = ?, qty_reserved = ?, qty_missing = ?, status = ?,
+                   loaded_at = CASE WHEN ? = 'loaded' AND (loaded_at IS NULL OR loaded_at = '') THEN CURRENT_TIMESTAMP ELSE loaded_at END,
+                   updated_at = CURRENT_TIMESTAMP
+               WHERE id = ?`,
+              [newQtyNeeded, newQtyReserved, newQtyMissing, newStatus, newStatus, proc.id],
+            );
+          }
+        }
+
+        invalidatePendingShopFloorProcessesCache();
+        shopFloorCache.clearPrefix('shop-floor-dashboard:');
+        await deleteShopFloorSharedCachePrefix('shop-floor:').catch(() => null);
+      } catch {
+        // Non-critical local update
+      }
+
+      if (workordersUpdated > 0 || componentsUpdated > 0) {
+        await client.callRecordMethod('mrp.production', 'action_assign', [mo.id]).catch(() => null);
+      }
+    }
+
     return {
       moId: mo.id,
       moName: mo.name,

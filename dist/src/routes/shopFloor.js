@@ -2736,10 +2736,8 @@ router.get('/shop-floor/boards', async (req, res) => {
         const prevDateShortLabel = prevDate === yesterdayDate ? 'Yesterday' : dayjs_1.default.tz(prevDate, env_1.env.APP_TIMEZONE || 'Africa/Nairobi').format('D MMM');
         const nextDateLabel = nextDate === todayDate ? 'Today' : dayjs_1.default.tz(nextDate, env_1.env.APP_TIMEZONE || 'Africa/Nairobi').format('D MMM');
         const nextDateShortLabel = nextDate === todayDate ? 'Today' : dayjs_1.default.tz(nextDate, env_1.env.APP_TIMEZONE || 'Africa/Nairobi').format('D MMM');
-        if (isRefresh) {
-            // Trigger fresh sync from Odoo in background without blocking initial render
-            void (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(true).catch(() => null);
-        }
+        // Ensure pending MO board requirements stay up to date with Odoo (debounced by lastSyncTimestamp)
+        void (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(Boolean(isRefresh)).catch(() => null);
         const [settings, stockMirror, recentIntakeRows, pendingProcesses, customers, dateCounts] = await Promise.all([
             (0, repositories_1.getSettings)(),
             (0, stockMirrorService_1.getStockMirrorForPage)(isRefresh),
@@ -2903,6 +2901,7 @@ router.get('/shop-floor/boards/requirements', async (req, res) => {
                 }
             }
             const requirements = Array.from(reqMap.values()).filter((r) => r.qtyMissing > 0 && !String(r.moName || '').toUpperCase().startsWith('VA/'));
+            void (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(false).catch(() => null);
             res.json(requirements);
             return;
         }

@@ -4430,10 +4430,12 @@ async function upsertPendingShopFloorProcesses(records) {
     invalidatePendingShopFloorProcessesCache();
     const now = (0, dateTime_1.appDateTime)();
     for (const rec of records) {
-        const existing = await (0, db_1.queryOne)('SELECT id, status, qty_missing, loaded_at, partner_id, partner_name FROM shop_floor_pending_processes WHERE mo_id = ? AND product_id = ?', [rec.mo_id, rec.product_id]);
+        const existing = await (0, db_1.queryOne)('SELECT id, status, qty_missing, qty_needed, loaded_at, partner_id, partner_name FROM shop_floor_pending_processes WHERE mo_id = ? AND product_id = ?', [rec.mo_id, rec.product_id]);
         if (existing) {
-            // Only protect 'loaded' status if an operator actively logged boards very recently (within 2 minutes)
-            const recentlyLoaded = Boolean((existing.status === 'loaded' || existing.status === 'synced') &&
+            const qtyChanged = Math.abs(Number(rec.qty_needed || 0) - Number(existing.qty_needed || 0)) > 0.001;
+            // Only protect 'loaded' status if an operator actively logged boards very recently (within 2 minutes) AND quantity hasn't changed
+            const recentlyLoaded = Boolean(!qtyChanged &&
+                (existing.status === 'loaded' || existing.status === 'synced') &&
                 existing.loaded_at &&
                 (Date.now() - new Date(existing.loaded_at).getTime() < 2 * 60 * 1000));
             if (recentlyLoaded) {

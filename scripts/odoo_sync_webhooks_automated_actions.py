@@ -36,19 +36,19 @@ Create an Automation Rule with Action To Do = "Send Webhook Notification":
 
 4. MANUFACTURING ORDERS (mrp.production):
    - Model: Manufacturing Order (mrp.production)
-   - Trigger: On Creation or On Update (state)
+   - Trigger: On Creation or On Update (state, product_qty, qty_producing, move_raw_ids)
    - Domain: [('company_id', '=', 1)]
    - Action: Send Webhook Notification
    - URL: https://app.urbanvibeinteriordesign.co.ke/api/webhooks/odoo-sync?token=reconciler-odoo-webhook-2026-8fK29sLmQx7PzA4n&type=mo&model=mrp.production
-   - Fields: Status (state)
+   - Fields: Status (state), Quantity To Produce (product_qty), Quantity Producing (qty_producing), Components (move_raw_ids), Company (company_id)
 
-5. WORK ORDERS (mrp.workorder - WHEN OPERATOR STARTS OR CLOSES ON SHOP FLOOR):
+5. WORK ORDERS (mrp.workorder - WHEN OPERATOR STARTS, CLOSES, OR ADJUSTS ON SHOP FLOOR):
    - Model: Work Order (mrp.workorder)
-   - Trigger: On Update (state)
+   - Trigger: On Update (state, qty_production, qty_producing, qty_produced)
    - Domain: [('production_id.company_id', '=', 1)]
    - Action: Send Webhook Notification
    - URL: https://app.urbanvibeinteriordesign.co.ke/api/webhooks/odoo-sync?token=reconciler-odoo-webhook-2026-8fK29sLmQx7PzA4n&type=mo&model=mrp.workorder
-   - Fields: Manufacturing Order (production_id), Status (state)
+   - Fields: Manufacturing Order (production_id), Status (state), Production Quantity (qty_production), Quantity Producing (qty_producing), Quantity Produced (qty_produced), Name (name)
 
 6. TRANSFERS / RECEIPTS & DELIVERIES (stock.picking):
    - Model: Transfer (stock.picking)

@@ -1993,7 +1993,12 @@ async function loadPurchaseOrderCandidateSearch(
   // Apply the vendor scope in Odoo before pagination. Searching the newest
   // 100 POs globally can hide an older exact match behind unrelated vendors.
   if (hasReadableVendor && vendorPartnerIds.length === 0) {
-    return [];
+    return {
+      hasReadableVendor: true,
+      approvalDates: new Map(),
+      processedByPo: {},
+      scoredOrders: [],
+    };
   }
   if (vendorPartnerIds.length > 0) {
     domain.push(['partner_id', 'in', vendorPartnerIds]);

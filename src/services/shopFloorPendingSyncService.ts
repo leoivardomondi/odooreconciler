@@ -65,13 +65,16 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
       name: string;
       state: string;
       origin: string | null;
+      product_qty?: number;
+      qty_producing?: number;
       create_date?: string;
+      write_date?: string;
     }>('mrp.production', {
       domain: [
         ['company_id', '=', targetCompanyId],
         ['state', 'in', ['confirmed', 'progress', 'to_close']],
       ],
-      fields: ['id', 'name', 'state', 'origin', 'create_date'],
+      fields: ['id', 'name', 'state', 'origin', 'product_qty', 'qty_producing', 'create_date', 'write_date'],
       limit: 250,
       order: 'create_date desc, id desc',
     });
@@ -88,13 +91,16 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
       name: string;
       state: string;
       origin: string | null;
+      product_qty?: number;
+      qty_producing?: number;
+      write_date?: string;
     }>('mrp.production', {
       domain: [
         ['company_id', '=', targetCompanyId],
         ['state', '=', 'done'],
         ['write_date', '>=', closedCutoffDate],
       ],
-      fields: ['id', 'name', 'state', 'origin'],
+      fields: ['id', 'name', 'state', 'origin', 'product_qty', 'qty_producing', 'write_date'],
       limit: 200,
       order: 'write_date desc, id desc',
     }).catch(() => []);
