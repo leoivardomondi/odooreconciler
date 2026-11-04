@@ -1,0 +1,1125 @@
+<%- include('partials/head') %>
+
+<style>
+  :root {
+    --odoo-primary: #714B67;
+    --odoo-primary-dark: #583a50;
+    --odoo-primary-light: #8e6283;
+    --odoo-secondary: #008784;
+    --odoo-teal: #017e84;
+    --odoo-teal-bg: #e6f4f4;
+    --odoo-success: #107e3e;
+    --odoo-success-bg: #e8f5e9;
+    --odoo-warning: #e59866;
+    --odoo-warning-dark: #d97706;
+    --odoo-warning-bg: #fef6f0;
+    --odoo-danger: #dc3545;
+    --odoo-danger-bg: #fdf2f2;
+    --odoo-bg: #f0f2f5;
+    --odoo-card-border: #e2e8f0;
+    --odoo-text-dark: #212529;
+    --odoo-text-muted: #64748b;
+  }
+
+  body {
+    background-color: var(--odoo-bg);
+    color: var(--odoo-text-dark);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+
+  /* Odoo Top Navigation */
+  .odoo-navbar {
+    background: linear-gradient(135deg, var(--odoo-primary) 0%, var(--odoo-primary-dark) 100%);
+    color: #ffffff;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+  }
+
+  .odoo-waffle {
+    display: inline-grid;
+    grid-template-columns: repeat(3, 4px);
+    grid-gap: 2.5px;
+    padding: 3px;
+  }
+  .odoo-waffle span {
+    width: 4px;
+    height: 4px;
+    background-color: #ffffff;
+    border-radius: 1px;
+    display: block;
+  }
+
+  .odoo-nav-pill {
+    color: rgba(255,255,255,0.85);
+    background: rgba(255,255,255,0.12);
+    border: 1px solid rgba(255,255,255,0.18);
+    font-size: 0.82rem;
+    font-weight: 600;
+    padding: 0.35rem 0.85rem;
+    border-radius: 9999px;
+    transition: all 0.15s ease;
+    text-decoration: none;
+    cursor: pointer;
+  }
+  .odoo-nav-pill:hover,
+  .odoo-nav-pill.active {
+    color: #ffffff;
+    background: var(--odoo-secondary);
+    border-color: var(--odoo-secondary);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.15);
+  }
+
+  /* Area Tabs */
+  .area-tab-btn {
+    border-radius: 12px;
+    padding: 0.65rem 1rem;
+    font-size: 0.88rem;
+    font-weight: 700;
+    border: 1.5px solid #cbd5e1;
+    background: #ffffff;
+    color: #334155;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+    cursor: pointer;
+  }
+  .area-tab-btn:hover {
+    border-color: var(--odoo-primary);
+    color: var(--odoo-primary);
+  }
+  .area-tab-btn.active {
+    background: var(--odoo-primary);
+    color: #ffffff;
+    border-color: var(--odoo-primary);
+    box-shadow: 0 3px 8px rgba(113, 75, 103, 0.25);
+  }
+  .area-tab-btn.active .badge {
+    background: #ffffff !important;
+    color: var(--odoo-primary) !important;
+  }
+
+  /* Client Group Section */
+  .client-group-card {
+    background: #ffffff;
+    border-radius: 14px;
+    border: 1px solid #e2e8f0;
+    border-left: 5px solid var(--odoo-primary);
+    box-shadow: 0 1px 4px rgba(0,0,0,0.04);
+    margin-bottom: 1.25rem;
+    overflow: hidden;
+  }
+  .client-group-header {
+    background: #fafafa;
+    border-bottom: 1px solid #edf2f7;
+    padding: 0.85rem 1.25rem;
+    cursor: pointer;
+    user-select: none;
+  }
+  .client-group-header:hover {
+    background: #f4f4f5;
+  }
+
+  .client-avatar {
+    width: 34px;
+    height: 34px;
+    border-radius: 8px;
+    background: var(--odoo-primary);
+    color: #ffffff;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 0.82rem;
+    letter-spacing: 0.03em;
+  }
+
+  /* Work Order Card */
+  .wo-card {
+    background: #ffffff;
+    border-radius: 12px;
+    border: 1.5px solid #e2e8f0;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+    transition: transform 0.12s ease, box-shadow 0.12s ease, border-color 0.12s ease;
+    padding: 1rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    height: 100%;
+  }
+  .wo-card:hover {
+    box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+    border-color: #cbd5e1;
+  }
+  .wo-card.state-progress {
+    border-color: #38bdf8 !important;
+    background: #f0f9ff !important;
+    border-left: 4.5px solid #0284c7 !important;
+  }
+  .wo-card.state-paused {
+    border-color: #fdba74 !important;
+    background: #fffaf5 !important;
+    border-left: 4.5px solid var(--odoo-warning-dark) !important;
+  }
+  .wo-card.state-done {
+    border-color: #86efac !important;
+    background: #f0fdf4 !important;
+    border-left: 4.5px solid var(--odoo-success) !important;
+    opacity: 0.78;
+  }
+
+  /* Odoo Buttons */
+  .btn-odoo-start {
+    background-color: var(--odoo-success);
+    color: #ffffff;
+    border: none;
+    font-weight: 700;
+    font-size: 0.86rem;
+    padding: 0.5rem 1.15rem;
+    border-radius: 9999px;
+    box-shadow: 0 2px 4px rgba(16, 126, 62, 0.25);
+    transition: all 0.12s ease;
+  }
+  .btn-odoo-start:hover {
+    background-color: #0c6331;
+    color: #ffffff;
+    transform: translateY(-1px);
+  }
+
+  .btn-odoo-pause {
+    background-color: var(--odoo-warning-dark);
+    color: #ffffff;
+    border: none;
+    font-weight: 700;
+    font-size: 0.86rem;
+    padding: 0.5rem 1rem;
+    border-radius: 9999px;
+    box-shadow: 0 2px 4px rgba(217, 119, 6, 0.25);
+    transition: all 0.12s ease;
+  }
+  .btn-odoo-pause:hover {
+    background-color: #b45309;
+    color: #ffffff;
+  }
+
+  .btn-odoo-finish {
+    background-color: var(--odoo-primary);
+    color: #ffffff;
+    border: none;
+    font-weight: 700;
+    font-size: 0.86rem;
+    padding: 0.5rem 1.1rem;
+    border-radius: 9999px;
+    box-shadow: 0 2px 4px rgba(113, 75, 103, 0.25);
+    transition: all 0.12s ease;
+  }
+  .btn-odoo-finish:hover {
+    background-color: var(--odoo-primary-dark);
+    color: #ffffff;
+  }
+
+  /* Live Pulse Indicator */
+  .pulse-dot {
+    width: 8px;
+    height: 8px;
+    background-color: #22c55e;
+    border-radius: 50%;
+    display: inline-block;
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7);
+    animation: pulse 1.8s infinite;
+  }
+  @keyframes pulse {
+    0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.7); }
+    70% { transform: scale(1); box-shadow: 0 0 0 6px rgba(34, 197, 94, 0); }
+    100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(34, 197, 94, 0); }
+  }
+
+  /* Search input */
+  .odoo-search-input {
+    border-radius: 9999px;
+    border: 1.5px solid #cbd5e1;
+    background-color: #ffffff;
+    padding: 0.45rem 1rem 0.45rem 2.2rem;
+    font-size: 0.86rem;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+  }
+  .odoo-search-input:focus {
+    border-color: var(--odoo-primary);
+    box-shadow: 0 0 0 3px rgba(113, 75, 103, 0.15);
+  }
+</style>
+
+<!-- Top Odoo Navbar -->
+<header class="odoo-navbar py-2 px-3 sticky-top">
+  <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+    <!-- Brand / Title -->
+    <div class="d-flex align-items-center gap-2.5">
+      <div class="odoo-waffle" title="Odoo Apps">
+        <span></span><span></span><span></span>
+        <span></span><span></span><span></span>
+        <span></span><span></span><span></span>
+      </div>
+      <div class="d-flex align-items-baseline gap-2">
+        <span class="fw-bold tracking-tight text-white" style="font-size: 1.12rem; letter-spacing: -0.01em;">
+          Odoo Shop Floor
+        </span>
+        <span class="badge rounded-pill bg-white text-dark bg-opacity-25 px-2.5 py-0.5 fw-semibold d-none d-sm-inline" style="font-size: 0.72rem;">
+          Public Operations
+        </span>
+      </div>
+    </div>
+
+    <!-- Center / Status & Clock -->
+    <div class="d-flex align-items-center gap-2">
+      <div class="d-inline-flex align-items-center gap-1.5 px-2.5 py-1 rounded-pill" style="background: rgba(255,255,255,0.12); font-size: 0.76rem;">
+        <span class="pulse-dot"></span>
+        <span class="fw-bold text-white">LIVE</span>
+        <span class="text-white-50 ms-1 d-none d-md-inline" id="liveClock"><%= currentTime %> EAT</span>
+      </div>
+    </div>
+
+    <!-- Right Controls: Operator Selector, Board Logs & Refresh -->
+    <div class="d-flex align-items-center gap-2 flex-wrap">
+      <!-- Active Operator Selector Pill -->
+      <div class="dropdown">
+        <button
+          type="button"
+          class="btn btn-sm rounded-pill text-white d-inline-flex align-items-center gap-1.5 fw-semibold shadow-none"
+          id="operatorSelectorBtn"
+          data-bs-toggle="dropdown"
+          aria-expanded="false"
+          style="background: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.28); font-size: 0.80rem;"
+        >
+          <span style="font-size: 0.95rem;">👤</span>
+          <span id="activeOperatorNameLabel">Select Operator</span>
+          <span style="font-size: 0.70rem; opacity: 0.7;">▼</span>
+        </button>
+        <ul class="dropdown-menu dropdown-menu-end shadow-lg border rounded-3 p-2" style="max-height: 380px; overflow-y: auto; min-width: 260px; font-size: 0.84rem;">
+          <li><h6 class="dropdown-header text-uppercase text-muted px-2 py-1" style="font-size: 0.70rem; letter-spacing: 0.05em;">Factory Operators</h6></li>
+          <% if (operators && operators.length > 0) { %>
+            <% operators.forEach((op) => { %>
+              <li>
+                <button
+                  type="button"
+                  class="dropdown-item rounded-2 py-1.5 d-flex justify-content-between align-items-center operator-select-item"
+                  data-operator-id="<%= op.id %>"
+                  data-operator-name="<%= op.name %>"
+                >
+                  <span class="fw-semibold text-dark"><%= op.name %></span>
+                  <span class="badge rounded-pill bg-light text-secondary border ms-2" style="font-size: 0.68rem;"><%= op.jobTitle || 'Operator' %></span>
+                </button>
+              </li>
+            <% }); %>
+          <% } else { %>
+            <li><span class="dropdown-item text-muted small">No operators registered</span></li>
+          <% } %>
+        </ul>
+      </div>
+
+      <!-- Link to Public Board Logs -->
+      <a href="/public/board-logs" class="odoo-nav-pill d-inline-flex align-items-center gap-1" title="View gate arrivals of whole boards">
+        <span>📋</span>
+        <span class="d-none d-sm-inline">Board Logs</span>
+      </a>
+
+      <!-- Instant Refresh Button -->
+      <button type="button" class="odoo-nav-pill d-inline-flex align-items-center gap-1" id="refreshBtn" title="Sync live orders from Odoo">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+        <span class="d-none d-md-inline">Refresh</span>
+      </button>
+    </div>
+  </div>
+</header>
+
+<!-- Main Container -->
+<main class="container-fluid px-3 px-md-4 py-3" style="max-width: 1440px;">
+
+  <!-- Metrics Banner Strip (Odoo Style) -->
+  <div class="row g-2 mb-3">
+    <div class="col-6 col-md-2">
+      <div class="card border-0 rounded-3 p-2.5 bg-white shadow-sm text-center">
+        <span class="text-muted small fw-semibold" style="font-size: 0.72rem; text-transform: uppercase;">Total Orders</span>
+        <span class="h5 fw-bold mb-0 text-dark" id="statTotalOrders"><%= summary.totalOrders %></span>
+      </div>
+    </div>
+    <div class="col-6 col-md-2">
+      <div class="card border-0 rounded-3 p-2.5 bg-white shadow-sm text-center" style="border-bottom: 3px solid #0284c7 !important;">
+        <span class="small fw-semibold" style="font-size: 0.72rem; text-transform: uppercase; color: #0284c7;">In Progress</span>
+        <span class="h5 fw-bold mb-0" style="color: #0284c7;" id="statInProgress"><%= summary.inProgressTotal %></span>
+      </div>
+    </div>
+    <div class="col-6 col-md-2">
+      <div class="card border-0 rounded-3 p-2.5 bg-white shadow-sm text-center" style="border-bottom: 3px solid var(--odoo-success) !important;">
+        <span class="small fw-semibold" style="font-size: 0.72rem; text-transform: uppercase; color: var(--odoo-success);">Ready</span>
+        <span class="h5 fw-bold mb-0" style="color: var(--odoo-success);" id="statReady"><%= summary.readyTotal %></span>
+      </div>
+    </div>
+    <div class="col-6 col-md-2">
+      <div class="card border-0 rounded-3 p-2.5 bg-white shadow-sm text-center" style="border-bottom: 3px solid var(--odoo-warning-dark) !important;">
+        <span class="small fw-semibold" style="font-size: 0.72rem; text-transform: uppercase; color: var(--odoo-warning-dark);">Paused</span>
+        <span class="h5 fw-bold mb-0" style="color: var(--odoo-warning-dark);" id="statPaused"><%= summary.pausedTotal %></span>
+      </div>
+    </div>
+    <div class="col-6 col-md-2">
+      <div class="card border-0 rounded-3 p-2.5 bg-white shadow-sm text-center" style="border-bottom: 3px solid #64748b !important;">
+        <span class="small fw-semibold" style="font-size: 0.72rem; text-transform: uppercase; color: #64748b;">Done</span>
+        <span class="h5 fw-bold mb-0 text-secondary" id="statDone"><%= summary.doneTotal %></span>
+      </div>
+    </div>
+    <div class="col-6 col-md-2">
+      <div class="card border-0 rounded-3 p-2.5 bg-white shadow-sm text-center" style="border-bottom: 3px solid var(--odoo-primary) !important;">
+        <span class="small fw-semibold" style="font-size: 0.72rem; text-transform: uppercase; color: var(--odoo-primary);">Total Panels / Qty</span>
+        <span class="h5 fw-bold mb-0" style="color: var(--odoo-primary);" id="statTotalSheets"><%= summary.totalSheets %></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Operation Areas Navigation Bar (Tabs) -->
+  <div class="card border-0 rounded-4 shadow-sm mb-3 bg-white p-3">
+    <div class="d-flex flex-column flex-lg-row justify-content-between align-items-lg-center gap-3">
+      <!-- Tabs for Operation Areas -->
+      <div class="d-flex align-items-center gap-2 overflow-x-auto pb-1" id="operationAreaTabs">
+        <button
+          type="button"
+          class="area-tab-btn active d-inline-flex align-items-center gap-2"
+          data-area-filter="all"
+        >
+          <span>🏢 All Areas</span>
+          <span class="badge rounded-pill bg-light text-dark px-2 py-0.5"><%= summary.totalOrders %></span>
+        </button>
+
+        <% (areaGroups || []).forEach((ag) => { 
+             let icon = '⚙️';
+             if (ag.areaName.includes('Table Saw')) icon = '🪚';
+             else if (ag.areaName.includes('Edge Banding')) icon = '⚡';
+             else if (ag.areaName.includes('Panel Rack')) icon = '📦';
+             else if (ag.areaName.includes('Sharpening')) icon = '🔪';
+        %>
+          <button
+            type="button"
+            class="area-tab-btn d-inline-flex align-items-center gap-2"
+            data-area-filter="<%= ag.areaKey %>"
+          >
+            <span><%= icon %> <%= ag.areaName %></span>
+            <span class="badge rounded-pill bg-light text-dark px-2 py-0.5"><%= ag.totalOrders %></span>
+            <% if (ag.inProgressOrders > 0) { %>
+              <span class="badge rounded-pill bg-primary text-white px-1.5 py-0.5" style="font-size: 0.65rem;" title="<%= ag.inProgressOrders %> in progress">
+                <%= ag.inProgressOrders %> live
+              </span>
+            <% } %>
+          </button>
+        <% }); %>
+      </div>
+
+      <!-- Search & Status Filter Controls -->
+      <div class="d-flex align-items-center gap-2 flex-wrap flex-grow-1 justify-content-lg-end" style="min-width: 300px;">
+        <!-- Live Instant Search -->
+        <div class="position-relative flex-grow-1" style="max-width: 380px;">
+          <svg style="position: absolute; left: 12px; top: 10px; color: #94a3b8;" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input
+            type="text"
+            id="searchInput"
+            class="form-control odoo-search-input w-100"
+            placeholder="Search client, MO #, product..."
+            aria-label="Search work orders"
+          />
+        </div>
+
+        <!-- State Filter Dropdown -->
+        <select class="form-select form-select-sm rounded-pill fw-semibold shadow-none" id="statusFilter" style="width: auto; font-size: 0.82rem; border-color: #cbd5e1;">
+          <option value="all">All States</option>
+          <option value="progress">In Progress</option>
+          <option value="ready">Ready to Start</option>
+          <option value="paused">Paused</option>
+          <option value="done">Completed</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <!-- Operation Areas Container -->
+  <div id="operationAreasContainer">
+    <% if (!areaGroups || areaGroups.length === 0) { %>
+      <div class="card border-0 rounded-4 shadow-sm p-5 text-center bg-white">
+        <h4 class="fw-bold mb-1">No active work orders found</h4>
+        <p class="text-muted small">No manufacturing work orders are currently active on the factory floor.</p>
+      </div>
+    <% } else { %>
+      <% areaGroups.forEach((area) => { 
+           let areaIcon = '⚙️';
+           let areaBadgeColor = 'var(--odoo-primary)';
+           if (area.areaName.includes('Table Saw')) { areaIcon = '🪚'; areaBadgeColor = '#7c3aed'; }
+           else if (area.areaName.includes('Edge Banding')) { areaIcon = '⚡'; areaBadgeColor = '#c2410c'; }
+           else if (area.areaName.includes('Panel Rack')) { areaIcon = '📦'; areaBadgeColor = '#0f766e'; }
+      %>
+        <section
+          class="operation-area-section mb-4"
+          id="areaSection-<%= area.areaKey %>"
+          data-area-key="<%= area.areaKey %>"
+        >
+          <!-- Operation Area Header Strip -->
+          <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 p-3 mb-3 rounded-4 shadow-sm bg-white" style="border-left: 6px solid <%= areaBadgeColor %>;">
+            <div class="d-flex align-items-center gap-2.5">
+              <span class="fs-4" style="line-height: 1;"><%= areaIcon %></span>
+              <div>
+                <h2 class="h5 fw-bold mb-0 text-dark" style="letter-spacing: -0.01em;">
+                  <%= area.areaName %>
+                </h2>
+                <span class="text-muted small" style="font-size: 0.78rem;">
+                  <%= area.clientGroups.length %> <%= area.clientGroups.length === 1 ? 'client' : 'clients' %> with active orders
+                </span>
+              </div>
+            </div>
+
+            <div class="d-flex align-items-center gap-2 flex-wrap">
+              <span class="badge rounded-pill bg-dark text-white fw-bold px-3 py-1.5" style="font-size: 0.78rem;">
+                <%= area.totalOrders %> <%= area.totalOrders === 1 ? 'Order' : 'Orders' %>
+              </span>
+              <% if (area.inProgressOrders > 0) { %>
+                <span class="badge rounded-pill bg-primary text-white fw-bold px-2.5 py-1" style="font-size: 0.74rem;">
+                  <%= area.inProgressOrders %> In Progress
+                </span>
+              <% } %>
+              <% if (area.readyOrders > 0) { %>
+                <span class="badge rounded-pill bg-success-subtle text-success border border-success-subtle fw-bold px-2.5 py-1" style="font-size: 0.74rem;">
+                  <%= area.readyOrders %> Ready
+                </span>
+              <% } %>
+              <% if (area.pausedOrders > 0) { %>
+                <span class="badge rounded-pill bg-warning-subtle text-warning-emphasis border border-warning-subtle fw-bold px-2.5 py-1" style="font-size: 0.74rem;">
+                  <%= area.pausedOrders %> Paused
+                </span>
+              <% } %>
+              <span class="badge rounded-pill bg-light text-secondary border px-2.5 py-1 fw-semibold" style="font-size: 0.74rem;">
+                <%= area.totalQuantity %> Total Panels / Units
+              </span>
+            </div>
+          </div>
+
+          <!-- CLIENT GROUPS UNDER THIS OPERATION AREA -->
+          <% if (!area.clientGroups || area.clientGroups.length === 0) { %>
+            <div class="card border-0 rounded-3 p-4 text-center bg-white text-muted small">
+              No orders queued in <%= area.areaName %> right now.
+            </div>
+          <% } else { %>
+            <div class="client-groups-list">
+              <% area.clientGroups.forEach((cg, cIdx) => { 
+                   const clientInitials = cg.clientName.split(/\s+/).slice(0, 2).map(w => w[0]).join('').toUpperCase() || 'CL';
+              %>
+                <div
+                  class="client-group-card"
+                  id="clientGroup-<%= area.areaKey %>-<%= cIdx %>"
+                  data-client-name="<%= cg.clientName.toLowerCase() %>"
+                >
+                  <!-- Client Group Header -->
+                  <div
+                    class="client-group-header d-flex flex-wrap justify-content-between align-items-center gap-2"
+                    data-bs-toggle="collapse"
+                    data-bs-target="#clientCollapse-<%= area.areaKey %>-<%= cIdx %>"
+                    aria-expanded="true"
+                  >
+                    <div class="d-flex align-items-center gap-2.5">
+                      <div class="client-avatar">
+                        <%= clientInitials %>
+                      </div>
+                      <div>
+                        <h3 class="h6 fw-bold mb-0 text-dark d-inline" style="font-size: 0.96rem;">
+                          <%= cg.clientName %>
+                        </h3>
+                        <div class="text-muted small" style="font-size: 0.76rem;">
+                          Client Work Orders in <%= area.areaName %>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div class="d-flex align-items-center gap-2 flex-wrap">
+                      <span class="badge rounded-pill bg-light text-dark border fw-bold px-2.5 py-1" style="font-size: 0.74rem;">
+                        <%= cg.totalOrders %> <%= cg.totalOrders === 1 ? 'Order' : 'Orders' %>
+                      </span>
+                      <span class="badge rounded-pill bg-light text-secondary border px-2.5 py-1" style="font-size: 0.74rem;">
+                        <%= cg.totalQuantity %> Panels
+                      </span>
+                      <% if (cg.inProgressOrders > 0) { %>
+                        <span class="badge rounded-pill bg-primary text-white fw-bold px-2 py-0.5" style="font-size: 0.70rem;">
+                          ● <%= cg.inProgressOrders %> In Progress
+                        </span>
+                      <% } %>
+                      <% if (cg.readyOrders > 0) { %>
+                        <span class="badge rounded-pill bg-success-subtle text-success border border-success-subtle fw-semibold px-2 py-0.5" style="font-size: 0.70rem;">
+                          <%= cg.readyOrders %> Ready
+                        </span>
+                      <% } %>
+                      <span class="text-muted ms-1" style="font-size: 0.8rem;">▼</span>
+                    </div>
+                  </div>
+
+                  <!-- Client Work Orders Grid -->
+                  <div class="collapse show" id="clientCollapse-<%= area.areaKey %>-<%= cIdx %>">
+                    <div class="p-3 bg-white">
+                      <div class="row g-3">
+                        <% cg.workOrders.forEach((wo) => { 
+                             const isStockBlocked = wo.stockStatus === 'no_stock';
+                             const isProgress = wo.state === 'progress';
+                             const isPaused = wo.state === 'paused';
+                             const isDone = wo.state === 'done';
+                             const isReady = wo.state === 'ready' || wo.state === 'confirmed';
+                        %>
+                          <div
+                            class="col-12 col-md-6 col-xl-4 wo-item-col"
+                            data-wo-id="<%= wo.id %>"
+                            data-mo-name="<%= (wo.name || '').toLowerCase() %>"
+                            data-client="<%= (cg.clientName || '').toLowerCase() %>"
+                            data-product="<%= (wo.product || '').toLowerCase() %>"
+                            data-state="<%= wo.state %>"
+                            data-stock-status="<%= wo.stockStatus %>"
+                          >
+                            <div
+                              class="wo-card state-<%= wo.state %>"
+                              id="woCard-<%= wo.id %>"
+                              data-wo-id="<%= wo.id %>"
+                            >
+                              <!-- Top Row: Reference, State & Stock Badges -->
+                              <div>
+                                <div class="d-flex justify-content-between align-items-start gap-1 mb-1.5">
+                                  <div>
+                                    <span class="fw-bold text-dark" style="font-size: 0.94rem; letter-spacing: -0.01em;">
+                                      <%= wo.name %>
+                                    </span>
+                                    <% if (wo.origin) { %>
+                                      <span class="badge bg-light text-secondary border rounded-pill ms-1 fw-semibold" style="font-size: 0.68rem;">
+                                        <%= wo.origin %>
+                                      </span>
+                                    <% } %>
+                                  </div>
+
+                                  <!-- State Pill -->
+                                  <div class="text-end" data-wo-state-container="<%= wo.id %>">
+                                    <% if (isProgress) { %>
+                                      <span class="badge rounded-pill bg-primary text-white fw-bold px-2.5 py-1" style="font-size: 0.72rem;">
+                                        <span class="spinner-grow spinner-grow-sm me-1" style="width: 7px; height: 7px;" role="status"></span>
+                                        In Progress
+                                      </span>
+                                    <% } else if (isPaused) { %>
+                                      <span class="badge rounded-pill bg-warning-subtle text-warning-emphasis border border-warning-subtle fw-bold px-2.5 py-1" style="font-size: 0.72rem;">
+                                        ⏸ Paused
+                                      </span>
+                                    <% } else if (isDone) { %>
+                                      <span class="badge rounded-pill bg-success-subtle text-success border border-success-subtle fw-bold px-2.5 py-1" style="font-size: 0.72rem;">
+                                        ✓ Done
+                                      </span>
+                                    <% } else { %>
+                                      <span class="badge rounded-pill bg-light text-secondary border fw-semibold px-2.5 py-1" style="font-size: 0.72rem;">
+                                        Ready
+                                      </span>
+                                    <% } %>
+                                  </div>
+                                </div>
+
+                                <!-- Product Material & Spec Title -->
+                                <h4 class="h6 fw-semibold text-dark mb-1" style="font-size: 0.88rem; line-height: 1.35;">
+                                  <%= wo.product %>
+                                </h4>
+
+                                <!-- Stock Readiness Tag -->
+                                <div class="mb-2">
+                                  <% if (isStockBlocked) { %>
+                                    <span class="badge bg-danger-subtle text-danger border border-danger-subtle rounded-pill fw-bold px-2 py-0.5" style="font-size: 0.68rem;" title="Raw boards missing in stock. Must be logged at gate first.">
+                                      ⚠️ No Stock (Gate Intake Required)
+                                    </span>
+                                  <% } else if (wo.stockStatus === 'incoming') { %>
+                                    <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle rounded-pill fw-semibold px-2 py-0.5" style="font-size: 0.68rem;">
+                                      ⏳ Incoming / PO Backed
+                                    </span>
+                                  <% } else { %>
+                                    <span class="badge bg-success-subtle text-success border border-success-subtle rounded-pill fw-semibold px-2 py-0.5" style="font-size: 0.68rem;">
+                                      ✓ Stock Ready
+                                    </span>
+                                  <% } %>
+
+                                  <% if (wo.assignedTo) { %>
+                                    <span class="badge bg-light text-secondary border rounded-pill ms-1" style="font-size: 0.68rem;">
+                                      👤 <%= wo.assignedTo %>
+                                    </span>
+                                  <% } %>
+                                </div>
+
+                                <!-- Progress Bar and Output Numbers -->
+                                <div class="mb-3 pt-1 border-top border-light">
+                                  <div class="d-flex justify-content-between align-items-center mb-1 small">
+                                    <span class="text-muted" style="font-size: 0.74rem;">
+                                      Output: <strong><%= wo.produced || 0 %></strong> / <strong><%= wo.qty %></strong> units
+                                    </span>
+                                    <span class="fw-bold text-dark" style="font-size: 0.74rem;" data-wo-progress-text="<%= wo.id %>">
+                                      <%= wo.progress || 0 %>%
+                                    </span>
+                                  </div>
+                                  <div class="progress" style="height: 6px; background-color: #e2e8f0; border-radius: 4px;">
+                                    <div
+                                      class="progress-bar <%= isDone ? 'bg-success' : 'bg-primary' %>"
+                                      role="progressbar"
+                                      style="width: <%= isDone ? '100%' : (wo.progress || 0) + '%' %>;"
+                                      data-wo-progress-bar="<%= wo.id %>"
+                                      aria-valuenow="<%= wo.progress || 0 %>"
+                                      aria-valuemin="0"
+                                      aria-valuemax="100"
+                                    ></div>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <!-- Action Buttons Area -->
+                              <div class="d-flex align-items-center gap-2 pt-2 border-top" data-wo-actions-container="<%= wo.id %>">
+                                <% if (isDone) { %>
+                                  <button type="button" class="btn btn-sm btn-outline-secondary rounded-pill w-100 fw-bold" style="font-size: 0.82rem;" disabled>
+                                    ✓ Completed
+                                  </button>
+                                <% } else if (isProgress) { %>
+                                  <button
+                                    type="button"
+                                    class="btn btn-odoo-pause flex-grow-1 action-pause-btn"
+                                    data-wo-id="<%= wo.id %>"
+                                    data-mo-name="<%= wo.name %>"
+                                  >
+                                    ⏸ Pause / Stop
+                                  </button>
+                                  <button
+                                    type="button"
+                                    class="btn btn-odoo-finish flex-grow-1 action-finish-btn"
+                                    data-wo-id="<%= wo.id %>"
+                                    data-mo-name="<%= wo.name %>"
+                                  >
+                                    ✓ Finish
+                                  </button>
+                                <% } else if (isPaused) { %>
+                                  <button
+                                    type="button"
+                                    class="btn btn-odoo-start flex-grow-1 action-start-btn"
+                                    data-wo-id="<%= wo.id %>"
+                                    data-mo-name="<%= wo.name %>"
+                                    data-stock-status="<%= wo.stockStatus %>"
+                                  >
+                                    ▶ Resume
+                                  </button>
+                                  <button
+                                    type="button"
+                                    class="btn btn-odoo-finish flex-grow-1 action-finish-btn"
+                                    data-wo-id="<%= wo.id %>"
+                                    data-mo-name="<%= wo.name %>"
+                                  >
+                                    ✓ Finish
+                                  </button>
+                                <% } else { %>
+                                  <button
+                                    type="button"
+                                    class="btn btn-odoo-start w-100 action-start-btn"
+                                    data-wo-id="<%= wo.id %>"
+                                    data-mo-name="<%= wo.name %>"
+                                    data-stock-status="<%= wo.stockStatus %>"
+                                  >
+                                    ▶ Start Operation
+                                  </button>
+                                <% } %>
+                              </div>
+                            </div>
+                          </div>
+                        <% }); %>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              <% }); %>
+            </div>
+          <% } %>
+        </section>
+      <% }); %>
+    <% } %>
+  </div>
+
+  <!-- Empty Search Results Alert -->
+  <div id="noSearchResultsAlert" class="card border-0 rounded-4 shadow-sm p-5 text-center bg-white d-none">
+    <div class="text-muted mb-2 fs-1">🔍</div>
+    <h3 class="h6 fw-bold text-dark mb-1">No work orders match your search</h3>
+    <p class="text-muted small mb-3">Try adjusting your client name, MO number, or filter criteria.</p>
+    <div>
+      <button type="button" class="btn btn-outline-secondary btn-sm rounded-pill px-4" id="clearSearchBtn">
+        Clear Filter &amp; Show All
+      </button>
+    </div>
+  </div>
+</main>
+
+<!-- Stock Missing Warning Modal (Odoo App Rule) -->
+<div class="modal fade" id="stockMissingModal" tabindex="-1" aria-labelledby="stockMissingModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content rounded-4 border-0 shadow-lg">
+      <div class="modal-header border-0 pb-0">
+        <div class="d-flex align-items-center gap-2 text-danger">
+          <span class="fs-4">⚠️</span>
+          <h5 class="modal-title fw-bold" id="stockMissingModalLabel">Stock Not Ready</h5>
+        </div>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body pt-2">
+        <div class="alert alert-danger rounded-3 py-2.5 px-3 mb-3 small" id="stockMissingMessage">
+          This manufacturing order cannot be started because raw materials have not yet been logged or received in stock.
+        </div>
+        <p class="small text-muted mb-0">
+          Factory App Rule: Whole boards and components must be checked in at factory gate intake before cutting or edging can begin.
+        </p>
+      </div>
+      <div class="modal-footer border-0 pt-0">
+        <button type="button" class="btn btn-light rounded-pill px-3" data-bs-dismiss="modal">Close</button>
+        <a href="/public/board-logs" class="btn btn-primary rounded-pill px-3 fw-semibold" target="_blank">
+          📋 Check Board Intake Logs &rarr;
+        </a>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Operator Selection Prompt Modal -->
+<div class="modal fade" id="selectOperatorModal" tabindex="-1" aria-labelledby="selectOperatorModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered modal-sm">
+    <div class="modal-content rounded-4 border-0 shadow-lg">
+      <div class="modal-header border-0 pb-0">
+        <h5 class="modal-title fw-bold text-dark" id="selectOperatorModalLabel">Select Operator</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body pt-2">
+        <p class="small text-muted mb-2">Tap your name to start this job:</p>
+        <div class="d-flex flex-column gap-1.5" style="max-height: 280px; overflow-y: auto;">
+          <% (operators || []).forEach((op) => { %>
+            <button
+              type="button"
+              class="btn btn-outline-secondary text-start rounded-3 py-2 px-3 d-flex justify-content-between align-items-center operator-modal-pick-btn"
+              data-operator-id="<%= op.id %>"
+              data-operator-name="<%= op.name %>"
+            >
+              <span class="fw-bold text-dark"><%= op.name %></span>
+              <span class="badge bg-light text-secondary border"><%= op.jobTitle || 'Operator' %></span>
+            </button>
+          <% }); %>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Toast Notification Container -->
+<div class="position-fixed bottom-0 end-0 p-3" style="z-index: 1100;">
+  <div id="actionToast" class="toast align-items-center text-white border-0 shadow-lg rounded-3" role="alert" aria-live="assertive" aria-atomic="true" style="background-color: var(--odoo-primary-dark);">
+    <div class="d-flex">
+      <div class="toast-body fw-medium" id="toastMessage">
+        Action executed.
+      </div>
+      <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
+    </div>
+  </div>
+</div>
+
+<script>
+  (function () {
+    // 1. Operator Persistence & Management
+    let currentOperatorId = localStorage.getItem('public_shop_floor_operator_id') || '';
+    let currentOperatorName = localStorage.getItem('public_shop_floor_operator_name') || '';
+
+    const operatorNameLabel = document.getElementById('activeOperatorNameLabel');
+    function updateOperatorLabel() {
+      if (currentOperatorName && operatorNameLabel) {
+        operatorNameLabel.textContent = currentOperatorName;
+      } else if (operatorNameLabel) {
+        operatorNameLabel.textContent = 'Select Operator';
+      }
+    }
+    updateOperatorLabel();
+
+    document.querySelectorAll('.operator-select-item').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        currentOperatorId = this.getAttribute('data-operator-id') || '';
+        currentOperatorName = this.getAttribute('data-operator-name') || '';
+        localStorage.setItem('public_shop_floor_operator_id', currentOperatorId);
+        localStorage.setItem('public_shop_floor_operator_name', currentOperatorName);
+        updateOperatorLabel();
+        showToast('Operator set to ' + currentOperatorName);
+      });
+    });
+
+    // 2. Modals & Toast
+    const stockModalEl = document.getElementById('stockMissingModal');
+    const stockModal = stockModalEl ? new bootstrap.Modal(stockModalEl) : null;
+    const stockMsgEl = document.getElementById('stockMissingMessage');
+
+    const opModalEl = document.getElementById('selectOperatorModal');
+    const opModal = opModalEl ? new bootstrap.Modal(opModalEl) : null;
+
+    const toastEl = document.getElementById('actionToast');
+    const toast = toastEl ? new bootstrap.Toast(toastEl, { delay: 3500 }) : null;
+    const toastMsgEl = document.getElementById('toastMessage');
+
+    function showToast(msg, isError) {
+      if (!toast || !toastMsgEl) return;
+      toastMsgEl.textContent = msg;
+      if (toastEl) {
+        toastEl.style.backgroundColor = isError ? '#dc3545' : '#714B67';
+      }
+      toast.show();
+    }
+
+    let pendingStartWoId = null;
+    let pendingStartStockStatus = null;
+
+    document.querySelectorAll('.operator-modal-pick-btn').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        currentOperatorId = this.getAttribute('data-operator-id') || '';
+        currentOperatorName = this.getAttribute('data-operator-name') || '';
+        localStorage.setItem('public_shop_floor_operator_id', currentOperatorId);
+        localStorage.setItem('public_shop_floor_operator_name', currentOperatorName);
+        updateOperatorLabel();
+        if (opModal) opModal.hide();
+
+        if (pendingStartWoId) {
+          executeWorkOrderAction(pendingStartWoId, 'start', pendingStartStockStatus);
+          pendingStartWoId = null;
+          pendingStartStockStatus = null;
+        }
+      });
+    });
+
+    // 3. Instant Optimistic Action Runner
+    async function executeWorkOrderAction(woId, action, stockStatus) {
+      // App Rule 1: Stock Check on Start
+      if (action === 'start' && stockStatus === 'no_stock') {
+        if (stockMsgEl) {
+          stockMsgEl.textContent = 'Cannot start work order: Raw boards have not yet been logged at the factory gate or received in physical stock. Please log intake at Board Intake first.';
+        }
+        if (stockModal) stockModal.show();
+        return;
+      }
+
+      // App Rule 2: Ensure operator is selected
+      if (!currentOperatorName && action === 'start') {
+        pendingStartWoId = woId;
+        pendingStartStockStatus = stockStatus;
+        if (opModal) opModal.show();
+        return;
+      }
+
+      const card = document.getElementById('woCard-' + woId);
+      const stateContainer = document.querySelector('[data-wo-state-container="' + woId + '"]');
+      const actionsContainer = document.querySelector('[data-wo-actions-container="' + woId + '"]');
+      const progressText = document.querySelector('[data-wo-progress-text="' + woId + '"]');
+      const progressBar = document.querySelector('[data-wo-progress-bar="' + woId + '"]');
+
+      const prevState = card ? (card.getAttribute('data-wo-state') || 'ready') : 'ready';
+      const prevHtml = actionsContainer ? actionsContainer.innerHTML : '';
+      const prevStateHtml = stateContainer ? stateContainer.innerHTML : '';
+
+      // Instant 0ms Optimistic DOM Update
+      if (action === 'start') {
+        if (card) {
+          card.classList.remove('state-ready', 'state-paused');
+          card.classList.add('state-progress');
+        }
+        if (stateContainer) {
+          stateContainer.innerHTML = '<span class="badge rounded-pill bg-primary text-white fw-bold px-2.5 py-1" style="font-size: 0.72rem;"><span class="spinner-grow spinner-grow-sm me-1" style="width:7px;height:7px;"></span>In Progress</span>';
+        }
+        if (actionsContainer) {
+          actionsContainer.innerHTML =
+            '<button type="button" class="btn btn-odoo-pause flex-grow-1 action-pause-btn" data-wo-id="' + woId + '">⏸ Pause / Stop</button>' +
+            '<button type="button" class="btn btn-odoo-finish flex-grow-1 action-finish-btn" data-wo-id="' + woId + '">✓ Finish</button>';
+        }
+        showToast('Starting operation...');
+      } else if (action === 'pause') {
+        if (card) {
+          card.classList.remove('state-progress');
+          card.classList.add('state-paused');
+        }
+        if (stateContainer) {
+          stateContainer.innerHTML = '<span class="badge rounded-pill bg-warning-subtle text-warning-emphasis border border-warning-subtle fw-bold px-2.5 py-1" style="font-size: 0.72rem;">⏸ Paused</span>';
+        }
+        if (actionsContainer) {
+          actionsContainer.innerHTML =
+            '<button type="button" class="btn btn-odoo-start flex-grow-1 action-start-btn" data-wo-id="' + woId + '" data-stock-status="ready">▶ Resume</button>' +
+            '<button type="button" class="btn btn-odoo-finish flex-grow-1 action-finish-btn" data-wo-id="' + woId + '">✓ Finish</button>';
+        }
+        showToast('Operation paused.');
+      } else if (action === 'finish') {
+        if (card) {
+          card.classList.remove('state-progress', 'state-paused');
+          card.classList.add('state-done');
+        }
+        if (stateContainer) {
+          stateContainer.innerHTML = '<span class="badge rounded-pill bg-success-subtle text-success border border-success-subtle fw-bold px-2.5 py-1" style="font-size: 0.72rem;">✓ Done</span>';
+        }
+        if (progressBar) progressBar.style.width = '100%';
+        if (progressText) progressText.textContent = '100%';
+        if (actionsContainer) {
+          actionsContainer.innerHTML = '<button type="button" class="btn btn-sm btn-outline-secondary rounded-pill w-100 fw-bold" style="font-size: 0.82rem;" disabled>✓ Completed</button>';
+        }
+        showToast('Operation completed!');
+      }
+
+      // Re-bind actions on the dynamically altered buttons
+      bindCardActionButtons();
+
+      // Dispatch async call to server
+      try {
+        const response = await fetch('/public/shop-floor/work-order/' + encodeURIComponent(woId) + '/action', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+          body: JSON.stringify({
+            action: action,
+            operatorId: currentOperatorId ? Number(currentOperatorId) : undefined,
+            operatorName: currentOperatorName || 'Factory Operator',
+          }),
+        });
+
+        const result = await response.json();
+        if (!response.ok || !result.ok) {
+          // Rollback on server error
+          if (actionsContainer) actionsContainer.innerHTML = prevHtml;
+          if (stateContainer) stateContainer.innerHTML = prevStateHtml;
+          if (card) {
+            card.className = 'wo-card state-' + prevState;
+          }
+          bindCardActionButtons();
+
+          if (result.code === 'stock_missing') {
+            if (stockMsgEl) stockMsgEl.textContent = result.message || 'Cannot start: Required components are missing from stock.';
+            if (stockModal) stockModal.show();
+          } else {
+            showToast(result.message || 'Action failed.', true);
+          }
+        } else {
+          showToast(result.message || 'Action updated in Odoo.');
+        }
+      } catch (networkErr) {
+        // Rollback
+        if (actionsContainer) actionsContainer.innerHTML = prevHtml;
+        if (stateContainer) stateContainer.innerHTML = prevStateHtml;
+        bindCardActionButtons();
+        showToast('Connection error. Please try again.', true);
+      }
+    }
+
+    function bindCardActionButtons() {
+      document.querySelectorAll('.action-start-btn').forEach(function (btn) {
+        btn.onclick = function (e) {
+          e.preventDefault();
+          const woId = this.getAttribute('data-wo-id');
+          const stockStatus = this.getAttribute('data-stock-status') || 'ready';
+          executeWorkOrderAction(woId, 'start', stockStatus);
+        };
+      });
+
+      document.querySelectorAll('.action-pause-btn').forEach(function (btn) {
+        btn.onclick = function (e) {
+          e.preventDefault();
+          const woId = this.getAttribute('data-wo-id');
+          executeWorkOrderAction(woId, 'pause');
+        };
+      });
+
+      document.querySelectorAll('.action-finish-btn').forEach(function (btn) {
+        btn.onclick = function (e) {
+          e.preventDefault();
+          const woId = this.getAttribute('data-wo-id');
+          executeWorkOrderAction(woId, 'finish');
+        };
+      });
+    }
+    bindCardActionButtons();
+
+    // 4. Filtering & Search (Instant Client-Side)
+    const areaTabButtons = document.querySelectorAll('.area-tab-btn');
+    const searchInput = document.getElementById('searchInput');
+    const statusFilter = document.getElementById('statusFilter');
+    const clearSearchBtn = document.getElementById('clearSearchBtn');
+    const noResultsAlert = document.getElementById('noSearchResultsAlert');
+
+    let activeAreaKey = 'all';
+
+    function applyFilters() {
+      const q = (searchInput.value || '').trim().toLowerCase();
+      const st = statusFilter.value;
+      const areaSections = document.querySelectorAll('.operation-area-section');
+      let totalVisible = 0;
+
+      areaSections.forEach(function (sec) {
+        const areaKey = sec.getAttribute('data-area-key');
+        const areaMatches = (activeAreaKey === 'all' || activeAreaKey === areaKey);
+
+        if (!areaMatches) {
+          sec.style.display = 'none';
+          return;
+        }
+
+        let visibleInArea = 0;
+        const clientCards = sec.querySelectorAll('.client-group-card');
+
+        clientCards.forEach(function (cc) {
+          const clientName = cc.getAttribute('data-client-name') || '';
+          let visibleInClient = 0;
+          const woCols = cc.querySelectorAll('.wo-item-col');
+
+          woCols.forEach(function (col) {
+            const moName = col.getAttribute('data-mo-name') || '';
+            const prodName = col.getAttribute('data-product') || '';
+            const state = col.getAttribute('data-state') || '';
+
+            const queryMatches = !q || clientName.includes(q) || moName.includes(q) || prodName.includes(q);
+            const stateMatches = (st === 'all') || (st === state) || (st === 'ready' && state === 'confirmed');
+
+            if (queryMatches && stateMatches) {
+              col.style.display = '';
+              visibleInClient++;
+              visibleInArea++;
+              totalVisible++;
+            } else {
+              col.style.display = 'none';
+            }
+          });
+
+          cc.style.display = visibleInClient > 0 ? '' : 'none';
+        });
+
+        sec.style.display = visibleInArea > 0 ? '' : 'none';
+      });
+
+      if (noResultsAlert) {
+        if (totalVisible === 0) {
+          noResultsAlert.classList.remove('d-none');
+        } else {
+          noResultsAlert.classList.add('d-none');
+        }
+      }
+    }
+
+    areaTabButtons.forEach(function (tab) {
+      tab.addEventListener('click', function () {
+        areaTabButtons.forEach(b => b.classList.remove('active'));
+        this.classList.add('active');
+        activeAreaKey = this.getAttribute('data-area-filter');
+        applyFilters();
+      });
+    });
+
+    if (searchInput) searchInput.addEventListener('input', applyFilters);
+    if (statusFilter) statusFilter.addEventListener('change', applyFilters);
+    if (clearSearchBtn) {
+      clearSearchBtn.addEventListener('click', function () {
+        if (searchInput) searchInput.value = '';
+        if (statusFilter) statusFilter.value = 'all';
+        activeAreaKey = 'all';
+        areaTabButtons.forEach(b => b.classList.toggle('active', b.getAttribute('data-area-filter') === 'all'));
+        applyFilters();
+      });
+    }
+
+    const refreshBtn = document.getElementById('refreshBtn');
+    if (refreshBtn) {
+      refreshBtn.addEventListener('click', function () {
+        window.location.reload();
+      });
+    }
+  })();
+</script>
+
+<%- include('partials/footer') %>

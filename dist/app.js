@@ -382,8 +382,10 @@ app.use((req, _res, next) => {
 });
 app.use(authService_1.enforceCsrf);
 app.use((req, res, next) => {
-    const publicPathPrefixes = ['/public', '/board-logs', '/auth/', '/staff-onboarding', '/api/webhooks'];
+    const publicPathPrefixes = ['/public', '/public-shop-floor', '/board-logs', '/auth/', '/staff-onboarding', '/api/webhooks'];
     const publicExactPaths = [
+        '/public/shop-floor',
+        '/public-shop-floor',
         '/board-logs',
         '/public/board-logs',
         '/health',

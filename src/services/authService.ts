@@ -975,7 +975,7 @@ export function requireAuthorizedAccess(req: Request, res: Response, next: NextF
 }
 
 export function enforceCsrf(req: Request, res: Response, next: NextFunction) {
-  if (req.path === '/staff-onboarding') {
+  if (req.path === '/staff-onboarding' || req.path.startsWith('/public/shop-floor') || req.path.startsWith('/public-shop-floor')) {
     next();
     return;
   }

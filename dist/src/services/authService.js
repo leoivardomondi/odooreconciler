@@ -799,7 +799,7 @@ function requireAuthorizedAccess(req, res, next) {
     });
 }
 function enforceCsrf(req, res, next) {
-    if (req.path === '/staff-onboarding') {
+    if (req.path === '/staff-onboarding' || req.path.startsWith('/public/shop-floor') || req.path.startsWith('/public-shop-floor')) {
         next();
         return;
     }

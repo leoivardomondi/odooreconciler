@@ -1902,15 +1902,23 @@ export class OdooClient {
   }
 
   async getBulkWorkOrderStates(moIds: number[]) {
-    if (!moIds.length) return new Map<number, 'progress' | 'pending' | 'ready' | 'paused' | 'done'>();
+    const details = await this.getBulkWorkOrderDetails(moIds);
+    return details.stateMap;
+  }
+
+  async getBulkWorkOrderDetails(moIds: number[]) {
+    const stateMap = new Map<number, 'progress' | 'pending' | 'ready' | 'paused' | 'done'>();
+    const areaMap = new Map<number, string>();
+    if (!moIds.length) return { stateMap, areaMap };
     const workorders = await this.searchReadRecords<{
       id: number;
       production_id: [number, string] | false;
       state: string;
       duration?: number;
+      workcenter_id?: [number, string] | false;
     }>('mrp.workorder', {
       domain: [['production_id', 'in', moIds], ['state', 'not in', ['cancel']]],
-      fields: ['id', 'production_id', 'state', 'duration'],
+      fields: ['id', 'production_id', 'state', 'duration', 'workcenter_id'],
       limit: 500,
     });
 
@@ -1927,10 +1935,13 @@ export class OdooClient {
       : [];
     const activeWoIds = new Set(activeProductivity.map((p) => p.workorder_id[0]));
 
-    const stateMap = new Map<number, 'progress' | 'pending' | 'ready' | 'paused' | 'done'>();
+
     for (const wo of workorders) {
       if (wo.production_id) {
         const moId = wo.production_id[0];
+        if (Array.isArray(wo.workcenter_id) && wo.workcenter_id[1]) {
+          areaMap.set(moId, String(wo.workcenter_id[1]));
+        }
         const existing = stateMap.get(moId);
         let resolvedState: 'progress' | 'pending' | 'ready' | 'paused' | 'done' = 'ready';
 
@@ -1957,7 +1968,7 @@ export class OdooClient {
         }
       }
     }
-    return stateMap;
+    return { stateMap, areaMap };
   }
 
   async getWarehouseScopedActiveWorkOrders(warehouseId: number, limit = 500) {

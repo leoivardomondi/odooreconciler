@@ -14,6 +14,10 @@ exports.fetchLiveSharedWorkOrders = fetchLiveSharedWorkOrders;
 exports.refreshSharedWorkOrders = refreshSharedWorkOrders;
 exports.fetchFastOperatorProfile = fetchFastOperatorProfile;
 exports.buildOperatorDashboard = buildOperatorDashboard;
+exports.groupWorkOrdersByAreaAndClient = groupWorkOrdersByAreaAndClient;
+exports.handlePublicShopFloor = handlePublicShopFloor;
+exports.handlePublicShopFloorData = handlePublicShopFloorData;
+exports.handlePublicWorkOrderAction = handlePublicWorkOrderAction;
 const express_1 = require("express");
 const crypto_1 = require("crypto");
 const dayjs_1 = __importDefault(require("dayjs"));
@@ -867,13 +871,15 @@ async function fetchLiveSharedWorkOrders(client) {
             o.name,
         ]).filter(Boolean))];
     const moIds = allOrders.map((o) => o.id);
-    const [clientMap, saleOrderDateMap, allComponents, poStateMap, workOrderStateMap] = await Promise.all([
+    const [clientMap, saleOrderDateMap, allComponents, poStateMap, woDetails] = await Promise.all([
         client.getBulkSaleOrderClients(originsToFetch).catch(() => new Map()),
         client.getBulkSaleOrderConfirmationDates(originsToFetch).catch(() => new Map()),
         client.getBulkManufacturingOrderComponents(moIds).catch(() => []),
         client.getBulkRelatedPurchaseOrderStates(originsToFetch).catch(() => new Map()),
-        client.getBulkWorkOrderStates(moIds).catch(() => new Map()),
+        client.getBulkWorkOrderDetails(moIds).catch(() => ({ stateMap: new Map(), areaMap: new Map() })),
     ]);
+    const workOrderStateMap = woDetails.stateMap;
+    const workOrderAreaMap = woDetails.areaMap;
     const componentsByMoId = new Map();
     for (const comp of allComponents) {
         if (comp.raw_material_production_id) {
@@ -1001,7 +1007,7 @@ async function fetchLiveSharedWorkOrders(client) {
             origin: o.origin || null,
             client: (o.origin && clientMap.get(o.origin)) || (o.origin && clientMap.get((0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(o.origin) || '')) || clientMap.get(o.name) || null,
             assignedTo: Array.isArray(o.user_id) ? o.user_id[1] : null,
-            area: detectArea(Array.isArray(o.product_id) ? o.product_id[1] : ''),
+            area: normalizeManufacturingArea(workOrderAreaMap.get(o.id)) || detectArea(Array.isArray(o.product_id) ? o.product_id[1] : ''),
             hasStockIssue: moIdsWithStockIssues.has(o.id),
             stockStatus: moStockStatus.get(o.id) || 'ready',
         };
@@ -2752,6 +2758,294 @@ async function handlePublicBoardLogs(req, res) {
 }
 router.get('/public/board-logs', handlePublicBoardLogs);
 router.get('/board-logs', handlePublicBoardLogs);
+function groupWorkOrdersByAreaAndClient(workOrders) {
+    const standardAreas = ['Table Saw Area', 'Edge Banding Area', 'Panel Rack Area'];
+    const areaMap = new Map();
+    for (const a of standardAreas) {
+        areaMap.set(a, new Map());
+    }
+    for (const wo of workOrders) {
+        const rawArea = String(wo.area || '').trim();
+        const area = normalizeManufacturingArea(rawArea) || rawArea || 'Table Saw Area';
+        if (!areaMap.has(area)) {
+            areaMap.set(area, new Map());
+        }
+        const client = String(wo.client || 'Direct / Unassigned Client').trim();
+        const clientMap = areaMap.get(area);
+        if (!clientMap.has(client)) {
+            clientMap.set(client, []);
+        }
+        clientMap.get(client).push(wo);
+    }
+    const result = [];
+    for (const [areaName, clientMap] of areaMap.entries()) {
+        const clientGroups = [];
+        let areaTotalOrders = 0;
+        let areaInProgress = 0;
+        let areaReady = 0;
+        let areaPaused = 0;
+        let areaDone = 0;
+        let areaTotalQty = 0;
+        for (const [clientName, orders] of clientMap.entries()) {
+            orders.sort((a, b) => {
+                const orderScore = (state, stock) => {
+                    if (state === 'progress')
+                        return 0;
+                    if (state === 'paused')
+                        return 1;
+                    if (state === 'ready' || state === 'confirmed')
+                        return stock === 'ready' ? 2 : 3;
+                    return 4;
+                };
+                return orderScore(a.state, a.stockStatus) - orderScore(b.state, b.stockStatus);
+            });
+            const inProgress = orders.filter((o) => o.state === 'progress').length;
+            const ready = orders.filter((o) => o.state === 'ready' || o.state === 'confirmed').length;
+            const paused = orders.filter((o) => o.state === 'paused').length;
+            const done = orders.filter((o) => o.state === 'done').length;
+            const clientTotalQty = orders.reduce((sum, o) => sum + Number(o.qty || 0), 0);
+            areaTotalOrders += orders.length;
+            areaInProgress += inProgress;
+            areaReady += ready;
+            areaPaused += paused;
+            areaDone += done;
+            areaTotalQty += clientTotalQty;
+            clientGroups.push({
+                clientName,
+                totalOrders: orders.length,
+                inProgressOrders: inProgress,
+                readyOrders: ready,
+                pausedOrders: paused,
+                doneOrders: done,
+                totalQuantity: clientTotalQty,
+                workOrders: orders,
+            });
+        }
+        clientGroups.sort((a, b) => {
+            if (a.inProgressOrders > 0 && b.inProgressOrders === 0)
+                return -1;
+            if (a.inProgressOrders === 0 && b.inProgressOrders > 0)
+                return 1;
+            if (a.pausedOrders > 0 && b.pausedOrders === 0)
+                return -1;
+            if (a.pausedOrders === 0 && b.pausedOrders > 0)
+                return 1;
+            if (a.readyOrders > 0 && b.readyOrders === 0)
+                return -1;
+            if (a.readyOrders === 0 && b.readyOrders > 0)
+                return 1;
+            return a.clientName.localeCompare(b.clientName);
+        });
+        const areaKey = areaName.toLowerCase().replace(/ area$/, '').replace(/[^a-z0-9]+/g, '-');
+        result.push({
+            areaName,
+            areaKey,
+            totalOrders: areaTotalOrders,
+            inProgressOrders: areaInProgress,
+            readyOrders: areaReady,
+            pausedOrders: areaPaused,
+            doneOrders: areaDone,
+            totalQuantity: areaTotalQty,
+            clientGroups,
+        });
+    }
+    return result;
+}
+async function handlePublicShopFloor(req, res) {
+    try {
+        const settings = await (0, repositories_1.getSettings)();
+        const client = new odooClient_1.OdooClient(settings.odoo);
+        const sharedData = await exports.shopFloorCache.getOrFetchTieredSWR('shop-floor:shared-work-orders:v1', 3 * 60 * 1000, 30 * 60 * 1000, () => fetchLiveSharedWorkOrders(client));
+        let workOrders = sharedData?.workOrders || [];
+        if (!workOrders.length) {
+            try {
+                const instant = await buildInstantMysqlOperatorDashboard('public@urbanvibeinteriordesign.co.ke');
+                if (instant?.workOrders?.length) {
+                    workOrders = instant.workOrders;
+                }
+            }
+            catch (_) { }
+        }
+        const operators = await (0, repositories_1.getShopFloorOperatorsFromDb)().catch(() => []);
+        const areaGroups = groupWorkOrdersByAreaAndClient(workOrders);
+        const totalOrders = workOrders.length;
+        const inProgressTotal = workOrders.filter((w) => w.state === 'progress').length;
+        const readyTotal = workOrders.filter((w) => w.state === 'ready' || w.state === 'confirmed').length;
+        const pausedTotal = workOrders.filter((w) => w.state === 'paused').length;
+        const doneTotal = workOrders.filter((w) => w.state === 'done').length;
+        const totalSheets = workOrders.reduce((sum, w) => sum + Number(w.qty || 0), 0);
+        const summary = {
+            totalOrders,
+            inProgressTotal,
+            readyTotal,
+            pausedTotal,
+            doneTotal,
+            totalSheets,
+            areaCount: areaGroups.length,
+            operatorCount: operators.length,
+        };
+        if (req.query.format === 'json' || req.xhr) {
+            res.json({ ok: true, summary, areaGroups, operators });
+            return;
+        }
+        res.render('public-shop-floor', {
+            pageTitle: 'Shop Floor · Operations',
+            appName: env_1.env.APP_NAME || 'Urban Vibe',
+            summary,
+            areaGroups,
+            operators,
+            selectedArea: req.query.area ? String(req.query.area) : 'all',
+            todayDate: new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Nairobi' }).format(new Date()),
+            currentTime: new Intl.DateTimeFormat('en-GB', { timeZone: 'Africa/Nairobi', hour: '2-digit', minute: '2-digit' }).format(new Date()),
+            message: typeof req.query.message === 'string' ? req.query.message : null,
+            error: typeof req.query.error === 'string' ? req.query.error : null,
+        });
+    }
+    catch (err) {
+        console.error('[PublicShopFloor] Error loading public shop floor:', err);
+        res.status(500).render('error', {
+            pageTitle: 'Shop Floor Unavailable',
+            errorMessage: 'Could not load public shop floor operations. Please try again in a few moments.',
+            details: [err instanceof Error ? err.message : String(err)],
+        });
+    }
+}
+async function handlePublicShopFloorData(req, res) {
+    try {
+        const settings = await (0, repositories_1.getSettings)();
+        const client = new odooClient_1.OdooClient(settings.odoo);
+        const sharedData = await exports.shopFloorCache.getOrFetchTieredSWR('shop-floor:shared-work-orders:v1', 15 * 1000, 30 * 60 * 1000, () => fetchLiveSharedWorkOrders(client));
+        const workOrders = sharedData?.workOrders || [];
+        const operators = await (0, repositories_1.getShopFloorOperatorsFromDb)().catch(() => []);
+        const areaGroups = groupWorkOrdersByAreaAndClient(workOrders);
+        const totalOrders = workOrders.length;
+        const inProgressTotal = workOrders.filter((w) => w.state === 'progress').length;
+        const readyTotal = workOrders.filter((w) => w.state === 'ready' || w.state === 'confirmed').length;
+        const pausedTotal = workOrders.filter((w) => w.state === 'paused').length;
+        const doneTotal = workOrders.filter((w) => w.state === 'done').length;
+        const totalSheets = workOrders.reduce((sum, w) => sum + Number(w.qty || 0), 0);
+        res.json({
+            ok: true,
+            summary: {
+                totalOrders,
+                inProgressTotal,
+                readyTotal,
+                pausedTotal,
+                doneTotal,
+                totalSheets,
+                refreshedAt: new Date().toISOString(),
+            },
+            areaGroups,
+            operators,
+        });
+    }
+    catch (err) {
+        res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
+    }
+}
+async function handlePublicWorkOrderAction(req, res) {
+    const moId = Number(req.params.id || req.body.moId || req.body.id);
+    const action = req.body.action;
+    const operatorId = req.body.operatorId ? Number(req.body.operatorId) : undefined;
+    const operatorName = String(req.body.operatorName || '').trim() || 'Factory Operator';
+    if (!Number.isFinite(moId) || moId <= 0) {
+        res.status(400).json({ ok: false, message: 'Invalid manufacturing order.' });
+        return;
+    }
+    if (!['start', 'pause', 'finish'].includes(action)) {
+        res.status(400).json({ ok: false, message: 'Invalid action. Supported actions are start, pause, finish.' });
+        return;
+    }
+    try {
+        const isResuming = exports.manuallyPausedMoIds.has(moId);
+        const targetState = action === 'finish' ? 'done' : action === 'pause' ? 'paused' : 'progress';
+        let stockCheck = null;
+        if (action === 'start' && !isResuming) {
+            const settings = await (0, repositories_1.getSettings)();
+            const client = new odooClient_1.OdooClient(settings.odoo);
+            stockCheck = await client.checkManufacturingOrderStockAvailability(moId);
+            if (!stockCheck.isFullyAvailable) {
+                const missingSummary = stockCheck.missingComponents
+                    .slice(0, 5)
+                    .map((c) => `${c.productName} (Need ${c.missingQty} ${c.uom})`)
+                    .join(', ') + (stockCheck.missingComponents.length > 5 ? ` and ${stockCheck.missingComponents.length - 5} more` : '');
+                const message = `Cannot start ${stockCheck.moName}: Missing required components in stock (${missingSummary}). Raw materials must be logged at factory intake before cutting or processing can start.`;
+                res.status(409).json({
+                    ok: false,
+                    code: 'stock_missing',
+                    action: 'start',
+                    moId,
+                    moName: stockCheck.moName,
+                    message,
+                    missingComponents: stockCheck.missingComponents,
+                    hasMissingBoards: stockCheck.hasMissingBoards,
+                    hasMissingHardware: stockCheck.hasMissingHardware,
+                });
+                return;
+            }
+        }
+        await optimisticallyUpdateSharedWorkOrderState(moId, targetState, operatorName);
+        exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
+        const successMessage = action === 'finish'
+            ? `Work order ${moId} completed by ${operatorName}.`
+            : action === 'pause'
+                ? `Work order ${moId} paused by ${operatorName}.`
+                : isResuming
+                    ? `Work order ${moId} resumed by ${operatorName}.`
+                    : `Work order ${moId} started for ${operatorName}.`;
+        res.json({
+            ok: true,
+            moId,
+            state: targetState,
+            action,
+            operatorName,
+            message: successMessage,
+        });
+        void (async () => {
+            try {
+                const settings = await (0, repositories_1.getSettings)();
+                const client = new odooClient_1.OdooClient(settings.odoo);
+                if (action === 'pause') {
+                    await client.pauseManufacturingOrder(moId, { createBackorder: true, qtyProduced: 0 }, operatorId);
+                }
+                else {
+                    await client.advanceManufacturingOrder(moId, action, operatorId, stockCheck);
+                }
+                await optimisticallyUpdateSharedWorkOrderState(moId, targetState, operatorName);
+                const sharedMoEntry = exports.shopFloorCache.getEntry('shop-floor:shared-work-orders:v1');
+                if (sharedMoEntry) {
+                    sharedMoEntry.freshUntil = 0;
+                }
+                exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
+                await (0, logService_1.logEvent)('info', `Public Shop Floor: work order ${action}`, {
+                    moId,
+                    action,
+                    operatorName,
+                    operatorId,
+                }).catch(() => undefined);
+            }
+            catch (bgErr) {
+                console.warn(`[PublicShopFloor] Background Odoo ${action} failed for MO ${moId}:`, bgErr);
+                void (0, logService_1.logEvent)('error', `Public Shop Floor: background Odoo ${action} failed`, {
+                    moId,
+                    action,
+                    error: bgErr instanceof Error ? bgErr.message : String(bgErr),
+                }).catch(() => undefined);
+            }
+        })();
+    }
+    catch (err) {
+        const message = err instanceof Error ? err.message : 'Failed to execute work order action.';
+        res.status(500).json({ ok: false, message });
+    }
+}
+router.get('/public/shop-floor', handlePublicShopFloor);
+router.get('/public-shop-floor', handlePublicShopFloor);
+router.get('/public/shop-floor/data', handlePublicShopFloorData);
+router.post('/public/shop-floor/work-order/:id/action', handlePublicWorkOrderAction);
+router.post('/public/shop-floor/work-order/:id/start', (req, res) => { req.body.action = 'start'; return handlePublicWorkOrderAction(req, res); });
+router.post('/public/shop-floor/work-order/:id/pause', (req, res) => { req.body.action = 'pause'; return handlePublicWorkOrderAction(req, res); });
+router.post('/public/shop-floor/work-order/:id/finish', (req, res) => { req.body.action = 'finish'; return handlePublicWorkOrderAction(req, res); });
 /**
  * GET /shop-floor/boards — Board Intake & Auto-Reserve dashboard.
  */

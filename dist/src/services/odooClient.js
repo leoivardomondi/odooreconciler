@@ -1248,11 +1248,17 @@ class OdooClient {
         return records.filter((mo) => !String(mo.name || '').toUpperCase().startsWith('VA/'));
     }
     async getBulkWorkOrderStates(moIds) {
+        const details = await this.getBulkWorkOrderDetails(moIds);
+        return details.stateMap;
+    }
+    async getBulkWorkOrderDetails(moIds) {
+        const stateMap = new Map();
+        const areaMap = new Map();
         if (!moIds.length)
-            return new Map();
+            return { stateMap, areaMap };
         const workorders = await this.searchReadRecords('mrp.workorder', {
             domain: [['production_id', 'in', moIds], ['state', 'not in', ['cancel']]],
-            fields: ['id', 'production_id', 'state', 'duration'],
+            fields: ['id', 'production_id', 'state', 'duration', 'workcenter_id'],
             limit: 500,
         });
         const woIds = workorders.map((w) => w.id);
@@ -1264,10 +1270,12 @@ class OdooClient {
             }).catch(() => [])
             : [];
         const activeWoIds = new Set(activeProductivity.map((p) => p.workorder_id[0]));
-        const stateMap = new Map();
         for (const wo of workorders) {
             if (wo.production_id) {
                 const moId = wo.production_id[0];
+                if (Array.isArray(wo.workcenter_id) && wo.workcenter_id[1]) {
+                    areaMap.set(moId, String(wo.workcenter_id[1]));
+                }
                 const existing = stateMap.get(moId);
                 let resolvedState = 'ready';
                 if (wo.state === 'done') {
@@ -1298,7 +1306,7 @@ class OdooClient {
                 }
             }
         }
-        return stateMap;
+        return { stateMap, areaMap };
     }
     async getWarehouseScopedActiveWorkOrders(warehouseId, limit = 500) {
         const targetCompanyId = await this.getTargetCompanyId();
