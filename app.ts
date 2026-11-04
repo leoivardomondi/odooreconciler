@@ -469,6 +469,12 @@ app.use((req: Request, res: Response, next: NextFunction) => {
     return;
   }
 
+  // Gracefully redirect unauthenticated recipients with legacy email links to the public view
+  if (req.path === '/shop-floor/boards' && req.query.date && !req.authUser) {
+    res.redirect(`/public/board-logs?date=${encodeURIComponent(String(req.query.date))}`);
+    return;
+  }
+
   requireAuthentication(req, res, (error?: unknown) => {
     if (error) {
       next(error);
