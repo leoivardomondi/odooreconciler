@@ -10,6 +10,7 @@
     "check": "tsc --noEmit -p tsconfig.json",
     "test": "tsx --test --test-force-exit src/**/*.test.ts",
     "verify": "npm run check && npm run build && npm test",
+    "prepare:cpanel": "node scripts/prepare-cpanel.js",
     "export:mysql-dump": "tsx scripts/export-sqlite-to-mysql.ts"
   },
   "engines": {
