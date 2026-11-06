@@ -319,7 +319,10 @@ test('reconcileRetroactiveBoardLogsForLinkedPos validates PO receipt for prior m
       }
       if (model === 'purchase.order.line') {
         const prodDomain = options?.domain?.find((d: any) => Array.isArray(d) && d[0] === 'product_id');
-        if (prodDomain && prodDomain[2] !== 205) return [];
+        if (prodDomain) {
+          const val = prodDomain[2];
+          if (Array.isArray(val) ? !val.includes(205) : val !== 205) return [];
+        }
         return [
           {
             id: 505,
@@ -368,7 +371,7 @@ test('reconcileRetroactiveBoardLogsForLinkedPos validates PO receipt for prior m
   } as unknown as OdooClient;
 
   try {
-    const result = await reconcileRetroactiveBoardLogsForLinkedPos(mockClient);
+    const result = await reconcileRetroactiveBoardLogsForLinkedPos(mockClient, null, true);
     assert.equal(result.matchedCount >= 1, true);
     assert.equal(result.logsFulfilled.includes(testLogId), true);
     assert.deepEqual(validatedPickingIds, [905]);

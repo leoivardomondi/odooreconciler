@@ -204,6 +204,7 @@ export class OdooClient {
   private webSessionCookie: string | null = null;
   private webSessionContext: Record<string, unknown> = {};
   private webRpcSequence = 0;
+  private readonly recentSoChatterDedupe = new Map<string, number>();
   private static verifiedWarehouseCache = new Map<string, { id: number; name: string; code: string; companyId: number; cachedAt: number }>();
 
   constructor(private readonly credentials: OdooCredentials) {
@@ -1175,6 +1176,7 @@ export class OdooClient {
   }
 
   async postChatterMessage(orderId: number, message: string) {
+    this.recordSoChatterDedupe(orderId, message);
     return this.request<number>('sale.order', 'message_post', {
       ids: [orderId],
       body: message,
@@ -1185,6 +1187,7 @@ export class OdooClient {
   }
 
   async postChatterAlert(orderId: number, message: string, partnerIds: number[] = []) {
+    this.recordSoChatterDedupe(orderId, message);
     return this.request<number>('sale.order', 'message_post', {
       ids: [orderId],
       body: message,
@@ -1406,7 +1409,157 @@ export class OdooClient {
     });
   }
 
-  async postModelChatterMessage(model: string, recordId: number, message: string, partnerIds?: number[]) {
+  private getChatterMessageHash(message: string): string {
+    const plain = (message || '')
+      .replace(/<[^>]*>/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
+    return plain.slice(0, 300);
+  }
+
+  private isSoChatterDuplicate(soId: number, message: string): boolean {
+    const now = Date.now();
+    this.cleanOldSoChatterDedupe(now);
+    const key = `${soId}:${this.getChatterMessageHash(message)}`;
+    const lastPosted = this.recentSoChatterDedupe.get(key);
+    if (lastPosted && (now - lastPosted) < 120_000) {
+      return true;
+    }
+    return false;
+  }
+
+  private recordSoChatterDedupe(soId: number, message: string): void {
+    const now = Date.now();
+    const key = `${soId}:${this.getChatterMessageHash(message)}`;
+    this.recentSoChatterDedupe.set(key, now);
+  }
+
+  private cleanOldSoChatterDedupe(now: number): void {
+    for (const [key, timestamp] of this.recentSoChatterDedupe.entries()) {
+      if (now - timestamp > 120_000) {
+        this.recentSoChatterDedupe.delete(key);
+      }
+    }
+  }
+
+  private async crossPostChatterToRelatedSalesOrder(
+    model: 'mrp.production' | 'purchase.order',
+    recordId: number,
+    message: string,
+    partnerIds?: number[],
+  ): Promise<void> {
+    const targetCompanyId = await this.getTargetCompanyIdValue();
+    let soName: string | null = null;
+    let sourceDocName = `#${recordId}`;
+
+    if (model === 'mrp.production') {
+      const records = await this.readRecords<{ id: number; name?: string; origin?: string | false }>(
+        'mrp.production',
+        [recordId],
+        ['name', 'origin'],
+      );
+      const mo = records[0];
+      if (!mo || !mo.origin) return;
+      if (mo.name) sourceDocName = mo.name;
+      soName = extractSoNameFromOrigin(mo.origin);
+      if (!soName && mo.origin.includes('MO')) {
+        const parentMos = await this.searchReadRecords<{ id: number; origin?: string | false }>(
+          'mrp.production',
+          {
+            domain: [
+              ['company_id', '=', targetCompanyId],
+              ['name', '=', mo.origin.trim()],
+            ],
+            fields: ['origin'],
+            limit: 1,
+          },
+        );
+        if (parentMos[0]?.origin) {
+          soName = extractSoNameFromOrigin(parentMos[0].origin);
+        }
+      }
+    } else if (model === 'purchase.order') {
+      const records = await this.readRecords<{ id: number; name?: string; origin?: string | false }>(
+        'purchase.order',
+        [recordId],
+        ['name', 'origin'],
+      );
+      const po = records[0];
+      if (!po || !po.origin) return;
+      if (po.name) sourceDocName = po.name;
+      soName = extractSoNameFromOrigin(po.origin);
+      if (!soName && po.origin.includes('MO')) {
+        const linkedMos = await this.searchReadRecords<{ id: number; origin?: string | false }>(
+          'mrp.production',
+          {
+            domain: [
+              ['company_id', '=', targetCompanyId],
+              ['name', '=', po.origin.trim()],
+            ],
+            fields: ['origin'],
+            limit: 1,
+          },
+        );
+        if (linkedMos[0]?.origin) {
+          soName = extractSoNameFromOrigin(linkedMos[0].origin);
+        }
+      }
+    }
+
+    if (!soName) return;
+
+    const salesOrders = await this.searchReadRecords<{ id: number; name: string }>(
+      'sale.order',
+      {
+        domain: [
+          ['company_id', '=', targetCompanyId],
+          ['name', '=', soName],
+        ],
+        fields: ['id', 'name'],
+        limit: 1,
+      },
+    );
+    const so = salesOrders[0];
+    if (!so || !so.id) return;
+
+    if (this.isSoChatterDuplicate(so.id, message)) {
+      return;
+    }
+
+    const sourceLabel = model === 'mrp.production' ? 'Manufacturing Order' : 'Purchase Order';
+    const crossPostHtml =
+      `<div style="font-size:12px;color:#4b5563;margin-bottom:6px;border-bottom:1px solid #e5e7eb;padding-bottom:3px;">` +
+      `📌 <strong>${sourceLabel} Note</strong> (${sourceDocName}):` +
+      `</div>` +
+      message;
+
+    this.recordSoChatterDedupe(so.id, message);
+    this.recordSoChatterDedupe(so.id, crossPostHtml);
+
+    await this.postModelChatterMessage(
+      'sale.order',
+      so.id,
+      crossPostHtml,
+      partnerIds,
+      { skipSoSync: true },
+    );
+  }
+
+  async postModelChatterMessage(
+    model: string,
+    recordId: number,
+    message: string,
+    partnerIds?: number[],
+    options?: { skipSoSync?: boolean },
+  ): Promise<number> {
+    if (model === 'sale.order') {
+      if (!options?.skipSoSync && this.isSoChatterDuplicate(recordId, message)) {
+        return 0;
+      }
+      this.recordSoChatterDedupe(recordId, message);
+    }
+
     const kwargs: Record<string, unknown> = {
       ids: [recordId],
       body: message,
@@ -1417,7 +1570,15 @@ export class OdooClient {
     if (partnerIds && partnerIds.length > 0) {
       kwargs.partner_ids = partnerIds;
     }
-    return this.request<number>(model, 'message_post', kwargs);
+    const result = await this.request<number>(model, 'message_post', kwargs);
+
+    if ((model === 'mrp.production' || model === 'purchase.order') && !options?.skipSoSync) {
+      await this.crossPostChatterToRelatedSalesOrder(model as 'mrp.production' | 'purchase.order', recordId, message, partnerIds).catch((err) => {
+        console.error(`[OdooClient] Failed to cross-post chatter from ${model} #${recordId} to sale.order:`, err);
+      });
+    }
+
+    return result;
   }
 
   async callRecordMethod<T>(

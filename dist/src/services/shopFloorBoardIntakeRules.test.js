@@ -436,7 +436,7 @@ const boardIntakeSyncService_1 = require("./boardIntakeSyncService");
     strict_1.default.equal(isAllowedQuantity(0), false);
     strict_1.default.equal(isAllowedQuantity(-1), false);
 });
-(0, node_test_1.default)('checkAndWarnPurchaseOrdersForManualBoardIntake warns salesperson to communicate with operator when PO matches', async () => {
+(0, node_test_1.default)('checkAndWarnPurchaseOrdersForManualBoardIntake detects matching PO without spamming warning chatter', async () => {
     const chatterCalls = [];
     const fakeClient = {
         getTargetCompanyIdValue: async () => 1,
@@ -496,20 +496,8 @@ const boardIntakeSyncService_1 = require("./boardIntakeSyncService");
     strict_1.default.equal(warnings[0].poName, 'P00450');
     strict_1.default.equal(warnings[0].poStateLabel, 'Yet to be approved');
     strict_1.default.equal(warnings[0].actorName, 'Leoivard Ongule');
-    // Verify chatter was posted to SO and PO
-    const soPost = chatterCalls.find((c) => c.model === 'sale.order' && c.id === 105);
-    const poPost = chatterCalls.find((c) => c.model === 'purchase.order' && c.id === 801);
-    strict_1.default.ok(soPost, 'Must post warning to sale.order');
-    strict_1.default.ok(poPost, 'Must post warning to purchase.order');
-    // Must tag the salesperson
-    strict_1.default.ok(soPost.message.includes('@Sharon'));
-    strict_1.default.deepEqual(soPost.partnerIds, [45]);
-    // Must state the responsible operator by name
-    strict_1.default.ok(soPost.message.includes('Leoivard Ongule'));
-    // Must instruct salesperson to communicate with the operator on whether boards were purchased
-    strict_1.default.ok(soPost.message.includes('communicate with operator <strong>Leoivard Ongule</strong> to confirm whether these boards were purchased'));
-    strict_1.default.ok(soPost.message.includes('Yet to be approved'));
-    strict_1.default.ok(soPost.message.includes('P00450'));
+    // Verify false-alarm warning chatter was NOT posted to Odoo
+    strict_1.default.equal(chatterCalls.length, 0, 'No warning chatter should be posted to Odoo when boards are logged at gate');
 });
 (0, node_test_1.default)('Board Log Notifications: urbanvibeinteriordesign@gmail.com is hardcoded and cannot be deleted or omitted', async () => {
     const { HARDCODED_BOARD_LOG_NOTIFICATION_EMAIL, normalizeBoardLogRecipients, DEFAULT_STOCK_CONFIG, } = await Promise.resolve().then(() => __importStar(require('../utils/helpers')));

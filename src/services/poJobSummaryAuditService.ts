@@ -4,7 +4,7 @@ import {
   PurchaseOrderLine,
   PurchaseOrderSummary,
 } from '../models/types';
-import { getLatestExtractedResultByOrderId, findActiveBoardIntakeLogsByPartnerOrProduct } from '../models/repositories';
+import { getLatestExtractedResultByOrderId } from '../models/repositories';
 import { isBoardProductName, assignBoardLinesToSheetMaterials } from './boardProductClassifier';
 import { logEvent } from './logService';
 import { createTodoActivity, findOpenActivities, closeActivities } from './odooActivityService';
@@ -683,28 +683,6 @@ export async function auditPurchaseOrderAgainstJobSummary(
       }
     }
 
-    const soPartnerId = relationId(so.partner_id);
-    let manualBoardLogWarningHtml = '';
-    if (soPartnerId) {
-      try {
-        const activeLogs = await findActiveBoardIntakeLogsByPartnerOrProduct(soPartnerId);
-        if (activeLogs.length > 0) {
-          const logItems = activeLogs.slice(0, 3).map((l) =>
-            `• <strong>${String(l.product_name || 'Board')}</strong>: ${Number(l.quantity)} sheets manually logged by operator <strong>${String(l.actor_name || 'Operator')}</strong>`
-          ).join('<br/>\n');
-          const primaryOperator = activeLogs[0].actor_name || 'the responsible operator';
-          manualBoardLogWarningHtml =
-            `<div style="margin-top:8px;padding:10px 14px;background:#fff7ed;border-left:5px solid #ea580c;color:#9a3412;border-radius:4px;line-height:1.5;">` +
-            `<strong>⚠️ Notice: Matching Manual Board Intake Detected:</strong><br/>` +
-            `${logItems}<br/>` +
-            `Please communicate with operator <strong>${primaryOperator}</strong> to confirm whether these boards were purchased with this Purchase Order (<strong>${po.name}</strong>) or client-supplied.` +
-            `</div>`;
-        }
-      } catch {
-        // Non-blocking
-      }
-    }
-
     // Post breakdown note in the PO Chatter
     await client.postModelChatterMessage(
       'purchase.order',
@@ -713,8 +691,7 @@ export async function auditPurchaseOrderAgainstJobSummary(
         `<p><strong>Stakeholders Alerted:</strong> ${mentionHtml}</p>` +
         `<p>Discrepancies found between Purchase Order <strong>${po.name}</strong> and Job Summary for <strong>${so.name}</strong>:</p>` +
         `<ul>${comparison.shortfalls.map((s) => `<li>${s}</li>`).join('')}</ul>` +
-        `<p><em>An activity has been created seeking written clarification or correction before approving this Purchase Order.</em></p>` +
-        manualBoardLogWarningHtml,
+        `<p><em>An activity has been created seeking written clarification or correction before approving this Purchase Order.</em></p>`,
       partnerIds,
     );
 
@@ -724,8 +701,7 @@ export async function auditPurchaseOrderAgainstJobSummary(
       so.id,
       `<p><strong>⚠️ PO Procurement Discrepancy on ${po.name}:</strong></p>` +
         `<p>The following mismatch was flagged on confirmed Purchase Order <strong>${po.name}</strong>:</p>` +
-        `<ul>${comparison.shortfalls.map((s) => `<li>${s}</li>`).join('')}</ul>` +
-        manualBoardLogWarningHtml,
+        `<ul>${comparison.shortfalls.map((s) => `<li>${s}</li>`).join('')}</ul>`,
     );
 
     await logEvent('warn', 'PO procurement mismatch detected against Job Summary', {
@@ -752,36 +728,13 @@ export async function auditPurchaseOrderAgainstJobSummary(
 
   // CASE 3: ALL ITEMS MATCH
   // User Rule: "If PO Sheets == Required Sheets: It marks procurement verified, report as a match between job summary and Purchase order for user Charles and Leoivard Ongule and the responsible sales person, and Raphael Onyango in odoo, as log notes"
-  const soPartnerId = relationId(so.partner_id);
-  let manualBoardLogWarningHtml = '';
-  if (soPartnerId) {
-    try {
-      const activeLogs = await findActiveBoardIntakeLogsByPartnerOrProduct(soPartnerId);
-      if (activeLogs.length > 0) {
-        const logItems = activeLogs.slice(0, 3).map((l) =>
-          `• <strong>${String(l.product_name || 'Board')}</strong>: ${Number(l.quantity)} sheets manually logged by operator <strong>${String(l.actor_name || 'Operator')}</strong>`
-        ).join('<br/>\n');
-        const primaryOperator = activeLogs[0].actor_name || 'the responsible operator';
-        manualBoardLogWarningHtml =
-          `<div style="margin-top:8px;padding:10px 14px;background:#fff7ed;border-left:5px solid #ea580c;color:#9a3412;border-radius:4px;line-height:1.5;">` +
-          `<strong>⚠️ Notice: Matching Manual Board Intake Detected:</strong><br/>` +
-          `${logItems}<br/>` +
-          `Please communicate with operator <strong>${primaryOperator}</strong> to confirm whether these boards were purchased with this Purchase Order (<strong>${po.name}</strong>) or client-supplied.` +
-          `</div>`;
-      }
-    } catch {
-      // Non-blocking
-    }
-  }
-
   await client.postModelChatterMessage(
     'purchase.order',
     po.id,
     `<p><strong>✅ Procurement Match Confirmed</strong></p>` +
       `<p>Procurement quantities on Purchase Order <strong>${po.name}</strong> match the Job Summary of Sales Order <strong>${so.name}</strong>.</p>` +
       `<p><strong>Stakeholders Notified:</strong> ${mentionHtml}</p>` +
-      `<ul>${comparison.verified.map((v) => `<li>${v}</li>`).join('')}</ul>` +
-      manualBoardLogWarningHtml,
+      `<ul>${comparison.verified.map((v) => `<li>${v}</li>`).join('')}</ul>`,
     partnerIds,
   );
 
@@ -789,8 +742,7 @@ export async function auditPurchaseOrderAgainstJobSummary(
   await client.postModelChatterMessage(
     'sale.order',
     so.id,
-    `<p><strong>✅ Procurement Match Confirmed:</strong> Purchase Order <strong>${po.name}</strong> sheet and edging quantities match the Job Summary.</p>` +
-      manualBoardLogWarningHtml,
+    `<p><strong>✅ Procurement Match Confirmed:</strong> Purchase Order <strong>${po.name}</strong> sheet and edging quantities match the Job Summary.</p>`,
   );
 
   await logEvent('info', 'PO procurement quantities verified against Job Summary', {

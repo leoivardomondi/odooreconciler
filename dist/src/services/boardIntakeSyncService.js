@@ -666,36 +666,11 @@ async function checkAndWarnPurchaseOrdersForManualBoardIntake(client, entry, cac
                 quantityLogged: qtyNum,
                 actorName: String(entry.actor_name || entry.actor_email || 'Operator'),
             });
-            const { mentionHtml, partnerIds } = await resolveBoardIntakeStakeholders(client, linkedSo?.userId, cachedCandySharon);
-            const warningHtml = [
-                mentionHtml,
-                `<div style="margin-top:8px;padding:12px 14px;background:#fff7ed;border-left:5px solid #ea580c;color:#9a3412;border-radius:4px;line-height:1.5;">` +
-                    `<strong>⚠️ Warning: Board Intake vs Purchase Order Communication Needed</strong><br/>` +
-                    `• <strong>Board:</strong> ${safeProductName}<br/>` +
-                    `• <strong>Quantity Manually Logged:</strong> ${qtyNum} sheet${qtyNum === 1 ? '' : 's'}<br/>` +
-                    `• <strong>Responsible Operator:</strong> <strong>${safeActor}</strong><br/>` +
-                    `• <strong>Client:</strong> ${safeCustomerName}<br/>` +
-                    `• <strong>Matching Purchase Order:</strong> <strong>${escapeHtml(po.name)}</strong> (<em>${escapeHtml(poStateLabel)}</em> — state: <code>${escapeHtml(po.state)}</code>)<br/>` +
-                    `• <strong>PO Ordered Quantity:</strong> ${poLineQty} sheets<br/>` +
-                    (vendorName ? `• <strong>Vendor:</strong> ${escapeHtml(vendorName)}<br/>` : '') +
-                    `<br/>` +
-                    `<strong>Action Required for Salesperson:</strong> Boards for this job have been manually logged by operator <strong>${safeActor}</strong> at the gate, and a matching ${escapeHtml(poStateLabel.toLowerCase())} Purchase Order (<strong>${escapeHtml(po.name)}</strong>) exists for this same board. Please communicate with operator <strong>${safeActor}</strong> to confirm whether these boards were purchased with the purchase order or client-supplied.` +
-                    `</div>`,
-            ].join('<br/>\n');
-            // 1. Post to related sale.order chatter
-            if (linkedSo?.id) {
-                await client.postModelChatterMessage('sale.order', linkedSo.id, warningHtml, partnerIds).catch(() => null);
-            }
-            // 2. Post to matching purchase.order chatter
-            await client.postModelChatterMessage('purchase.order', po.id, warningHtml, partnerIds).catch(() => null);
-            // 3. Post to mrp.production chatter if active MO exists
-            const moId = (orig ? moMap.get(orig) : undefined) ?? (extractedSo ? moMap.get(extractedSo) : undefined);
-            if (moId) {
-                await client.postModelChatterMessage('mrp.production', moId, warningHtml, partnerIds).catch(() => null);
-            }
+            // Obsolete Warning Removed: Board intake logs are now the standard intake gate used to fulfill POs.
+            // Posting "Board Intake vs Purchase Order Communication Needed" chatter is disabled to avoid false alarms.
         }
         if (warnings.length > 0) {
-            await (0, logService_1.logEvent)('warn', 'Manual board intake matched active/unapproved PO: warning log notes posted', {
+            await (0, logService_1.logEvent)('info', 'Manual board intake matched active/unapproved PO (chatter warning suppressed)', {
                 partnerId,
                 productId,
                 productName: entry.product_name,

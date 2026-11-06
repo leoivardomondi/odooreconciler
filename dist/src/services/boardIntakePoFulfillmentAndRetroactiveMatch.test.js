@@ -286,8 +286,11 @@ const db_1 = require("../models/db");
             }
             if (model === 'purchase.order.line') {
                 const prodDomain = options?.domain?.find((d) => Array.isArray(d) && d[0] === 'product_id');
-                if (prodDomain && prodDomain[2] !== 205)
-                    return [];
+                if (prodDomain) {
+                    const val = prodDomain[2];
+                    if (Array.isArray(val) ? !val.includes(205) : val !== 205)
+                        return [];
+                }
                 return [
                     {
                         id: 505,
@@ -335,7 +338,7 @@ const db_1 = require("../models/db");
         },
     };
     try {
-        const result = await (0, boardIntakeSyncService_1.reconcileRetroactiveBoardLogsForLinkedPos)(mockClient);
+        const result = await (0, boardIntakeSyncService_1.reconcileRetroactiveBoardLogsForLinkedPos)(mockClient, null, true);
         strict_1.default.equal(result.matchedCount >= 1, true);
         strict_1.default.equal(result.logsFulfilled.includes(testLogId), true);
         strict_1.default.deepEqual(validatedPickingIds, [905]);

@@ -474,7 +474,7 @@ test('Board intake strictly rejects decimals and requires whole boards only', ()
   assert.equal(isAllowedQuantity(-1), false);
 });
 
-test('checkAndWarnPurchaseOrdersForManualBoardIntake warns salesperson to communicate with operator when PO matches', async () => {
+test('checkAndWarnPurchaseOrdersForManualBoardIntake detects matching PO without spamming warning chatter', async () => {
   const chatterCalls: Array<{ model: string; id: number; message: string; partnerIds?: number[] }> = [];
 
   const fakeClient = {
@@ -541,23 +541,8 @@ test('checkAndWarnPurchaseOrdersForManualBoardIntake warns salesperson to commun
   assert.equal(warnings[0].poStateLabel, 'Yet to be approved');
   assert.equal(warnings[0].actorName, 'Leoivard Ongule');
 
-  // Verify chatter was posted to SO and PO
-  const soPost = chatterCalls.find((c) => c.model === 'sale.order' && c.id === 105);
-  const poPost = chatterCalls.find((c) => c.model === 'purchase.order' && c.id === 801);
-
-  assert.ok(soPost, 'Must post warning to sale.order');
-  assert.ok(poPost, 'Must post warning to purchase.order');
-
-  // Must tag the salesperson
-  assert.ok(soPost.message.includes('@Sharon'));
-  assert.deepEqual(soPost.partnerIds, [45]);
-
-  // Must state the responsible operator by name
-  assert.ok(soPost.message.includes('Leoivard Ongule'));
-  // Must instruct salesperson to communicate with the operator on whether boards were purchased
-  assert.ok(soPost.message.includes('communicate with operator <strong>Leoivard Ongule</strong> to confirm whether these boards were purchased'));
-  assert.ok(soPost.message.includes('Yet to be approved'));
-  assert.ok(soPost.message.includes('P00450'));
+  // Verify false-alarm warning chatter was NOT posted to Odoo
+  assert.equal(chatterCalls.length, 0, 'No warning chatter should be posted to Odoo when boards are logged at gate');
 });
 
 test('Board Log Notifications: urbanvibeinteriordesign@gmail.com is hardcoded and cannot be deleted or omitted', async () => {
