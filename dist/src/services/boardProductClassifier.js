@@ -193,26 +193,33 @@ function scoreBoardLineAgainstMaterial(lineName, material) {
             score += 50;
         }
         else {
-            score -= 100;
+            score -= 40;
         }
     }
-    // 3. Keyword / Material term checks
+    // 3. Keyword / Material term checks (exclude generic attributes, substrates, and thickness numbers)
+    const nonMaterialWords = new Set([
+        'board', 'boards', 'sheet', 'sheets', 'panel', 'panels', 'cutting',
+        'mdf', 'hdf', 'particle', 'chipboard', 'pb', 'mfc', 'plywood', 'ply', 'marine',
+        'blockboard', 'block', 'hardboard', 'backer', 'waterproof', 'wpc', 'pvc', 'eco', 'fixo',
+    ]);
     const matWords = normMat
         .split(/[\s_\-/]+/)
         .filter((w) => w.length > 2 &&
-        !['board', 'boards', 'sheet', 'sheets', 'panel', 'panels', 'cutting'].includes(w));
+        !nonMaterialWords.has(w) &&
+        !/^\d+(?:\.\d+)?mm$/.test(w) &&
+        !/^\d+$/.test(w));
     for (const word of matWords) {
         if (normLine.includes(word)) {
             score += 15;
         }
     }
-    // 4. Color family check
+    // 4. Color family check (Strict Isolation: different color boards must NEVER match)
     if (matAttr.colorFamily && lineAttr.colorFamily) {
         if (areSameColorFamily(matAttr.colorFamily, lineAttr.colorFamily)) {
-            score += 20;
+            score += 25;
         }
         else {
-            score -= 100;
+            score -= 500;
         }
     }
     return score;

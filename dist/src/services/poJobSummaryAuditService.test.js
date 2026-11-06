@@ -287,3 +287,80 @@ const poJobSummaryAuditService_1 = require("./poJobSummaryAuditService");
     strict_1.default.equal(res.shortfalls.length, 0);
     strict_1.default.equal(res.verified.length, 3);
 });
+(0, node_test_1.default)('comparePoLinesWithSheetMaterials accurately flags substrate mismatch (MDF vs Particle) and preserves exact match on other boards', () => {
+    // S03824 scenario:
+    // Job Summary: 7 Backer Royal Teak 3mm, 23 Royal teak MDF 18mm, 1 White Particle 18mm
+    const sheetMaterials = [
+        {
+            name: 'Backer Royal Teak 3mm',
+            thickness_mm: 3,
+            sheets: 7,
+            panels: 25,
+            length_mm: 2440,
+            width_mm: 1220,
+        },
+        {
+            name: 'Royal teak MDF 18mm',
+            thickness_mm: 18,
+            sheets: 23,
+            panels: 182,
+            length_mm: 2440,
+            width_mm: 1220,
+        },
+        {
+            name: 'White Particle 18mm',
+            thickness_mm: 18,
+            sheets: 1,
+            panels: 18,
+            length_mm: 2440,
+            width_mm: 1220,
+        },
+    ];
+    // PO P01378 has White Particle 18mm (1) and Royal teak particle 18mm (23)
+    const poLinesThis = [
+        {
+            id: 2233,
+            name: 'White Particle 18mm',
+            product_id: [37, 'White Particle 18mm'],
+            product_qty: 1,
+        },
+        {
+            id: 2234,
+            name: 'Royal teak particle 18mm',
+            product_id: [152, 'Royal teak particle 18mm'],
+            product_qty: 23,
+        },
+    ];
+    // PO P01377 has Backer Royal Teak 3mm (7)
+    const poLinesOther = [
+        {
+            id: 2232,
+            name: 'Backer Royal Teak 3mm',
+            product_id: [371, 'Backer Royal Teak 3mm'],
+            product_qty: 7,
+        },
+    ];
+    const res = (0, poJobSummaryAuditService_1.comparePoLinesWithSheetMaterials)(poLinesThis, sheetMaterials, [], poLinesOther);
+    // 1. White Particle 18mm must be verified as exact match (1 sheet) and NOT inflated by Royal Teak
+    const whiteVerified = res.verified.find((v) => v.includes('White Particle 18mm'));
+    strict_1.default.ok(whiteVerified, 'White Particle 18mm must be verified as exact match');
+    strict_1.default.ok(whiteVerified.includes('PO ordered 1 sheet(s)'));
+    // 2. Backer Royal Teak 3mm must be verified from the other PO
+    const backerVerified = res.verified.find((v) => v.includes('Backer Royal Teak 3mm'));
+    strict_1.default.ok(backerVerified, 'Backer Royal Teak 3mm must be verified on other PO');
+    // 3. Substrate Mismatch must be detected
+    strict_1.default.equal(res.hasShortfall, true, 'Substrate mismatch must be flagged');
+    strict_1.default.equal(res.substrateMismatches.length, 1);
+    strict_1.default.equal(res.substrateMismatches[0].materialName, 'Royal teak MDF 18mm');
+    strict_1.default.equal(res.substrateMismatches[0].requiredSubstrate, 'MDF');
+    strict_1.default.equal(res.substrateMismatches[0].orderedName, 'Royal teak particle 18mm');
+    strict_1.default.equal(res.substrateMismatches[0].orderedSubstrate, 'Particle Board');
+    strict_1.default.equal(res.substrateMismatches[0].requiredQty, 23);
+    strict_1.default.equal(res.substrateMismatches[0].orderedQty, 23);
+    // 4. Shortfalls text must clearly explain the Substrate Mismatch and floor risk
+    const mismatchShortfall = res.shortfalls.find((s) => s.includes('Substrate Mismatch on Board (Royal teak MDF 18mm 18mm)'));
+    strict_1.default.ok(mismatchShortfall, 'Shortfalls must describe the substrate mismatch explicitly');
+    strict_1.default.ok(mismatchShortfall.includes('specifies MDF (Royal teak MDF 18mm, 23 sheet(s))'));
+    strict_1.default.ok(mismatchShortfall.includes('PO ordered Particle Board (Royal teak particle 18mm, 23 sheet(s))'));
+    strict_1.default.ok(mismatchShortfall.includes('Panel labels and edging specs will conflict with physical boards on the production floor'));
+});

@@ -135,12 +135,23 @@ async function resolveNotificationStakeholders(client, soUserId) {
 function comparePoLinesWithSheetMaterials(poLines, sheetMaterials, edgingItems = [], otherPoLines = []) {
     const shortfalls = [];
     const verified = [];
+    const substrateMismatches = [];
     const details = [];
     // 1. Boards: MUST BE EXACT MATCH (not less, and NOT more)
     const assignedPoLines = (0, boardProductClassifier_1.assignBoardLinesToSheetMaterials)(poLines, sheetMaterials, (l) => relationLabel(l.product_id) || l.name || '');
     const assignedOtherPoLines = otherPoLines.length > 0
         ? (0, boardProductClassifier_1.assignBoardLinesToSheetMaterials)(otherPoLines, sheetMaterials, (l) => relationLabel(l.product_id) || l.name || '')
         : new Map();
+    const substrateLabels = {
+        mdf: 'MDF',
+        particle: 'Particle Board',
+        plywood: 'Plywood',
+        block_board: 'Block Board',
+        eco_board: 'Eco Board',
+        hardboard: 'Hardboard',
+        waterproof: 'Waterproof Board',
+        other: 'Other Substrate',
+    };
     for (const material of sheetMaterials) {
         const requiredSheets = material.sheets || 0;
         const matchingLines = assignedPoLines.get(material) || [];
@@ -149,10 +160,45 @@ function comparePoLinesWithSheetMaterials(poLines, sheetMaterials, edgingItems =
         const otherOrderedSheets = otherMatchingLines.reduce((sum, l) => sum + (Number(l.product_qty) || 0), 0);
         const totalOrderedAcrossOrder = orderedSheets + otherOrderedSheets;
         const label = `Board (${material.name} ${material.thickness_mm ? `${material.thickness_mm}mm` : ''})`;
+        const matAttr = (0, boardProductClassifier_1.extractBoardAttributes)(material.name);
+        const allAssignedLines = [...matchingLines, ...otherMatchingLines];
+        const mismatchedLines = allAssignedLines.filter((line) => {
+            const lineName = relationLabel(line.product_id) || line.name || '';
+            const lineAttr = (0, boardProductClassifier_1.extractBoardAttributes)(lineName);
+            if (matAttr.substrate === 'other' || lineAttr.substrate === 'other')
+                return false;
+            if (matAttr.substrate === lineAttr.substrate)
+                return false;
+            const isBackerPair = (lineName.toLowerCase().includes('backer') || lineAttr.substrate === 'hardboard') &&
+                (material.name.toLowerCase().includes('backer') || matAttr.substrate === 'hardboard');
+            return !isBackerPair;
+        });
+        const hasSubstrateMismatch = mismatchedLines.length > 0;
+        if (hasSubstrateMismatch) {
+            for (const line of mismatchedLines) {
+                const lineName = relationLabel(line.product_id) || line.name || '';
+                const lineAttr = (0, boardProductClassifier_1.extractBoardAttributes)(lineName);
+                const reqSub = substrateLabels[matAttr.substrate] || matAttr.substrate;
+                const ordSub = substrateLabels[lineAttr.substrate] || lineAttr.substrate;
+                substrateMismatches.push({
+                    materialName: material.name,
+                    requiredSubstrate: reqSub,
+                    orderedName: lineName,
+                    orderedSubstrate: ordSub,
+                    requiredQty: requiredSheets,
+                    orderedQty: Number(line.product_qty) || totalOrderedAcrossOrder,
+                    thickness: material.thickness_mm ? `${material.thickness_mm}mm` : null,
+                    color: matAttr.colorFamily,
+                });
+                shortfalls.push(`Substrate Mismatch on ${label}: Job Summary specifies ${reqSub} (${material.name}, ${requiredSheets} sheet(s)), but PO ordered ${ordSub} (${lineName}, ${Number(line.product_qty) || totalOrderedAcrossOrder} sheet(s)). Panel labels and edging specs will conflict with physical boards on the production floor.`);
+            }
+        }
         if (otherOrderedSheets > 0) {
             if (orderedSheets === 0) {
                 if (otherOrderedSheets === requiredSheets) {
-                    verified.push(`${label}: Job Summary requires ${requiredSheets} sheet(s) (Procured on other linked PO: ${otherOrderedSheets} sheet(s) — Verified match).`);
+                    if (!hasSubstrateMismatch) {
+                        verified.push(`${label}: Job Summary requires ${requiredSheets} sheet(s) (Procured on other linked PO: ${otherOrderedSheets} sheet(s) — Verified match).`);
+                    }
                 }
                 else if (otherOrderedSheets < requiredSheets) {
                     const shortfallCount = Math.round((requiredSheets - otherOrderedSheets) * 100) / 100;
@@ -165,7 +211,9 @@ function comparePoLinesWithSheetMaterials(poLines, sheetMaterials, edgingItems =
             }
             else {
                 if (totalOrderedAcrossOrder === requiredSheets) {
-                    verified.push(`${label}: PO ordered ${orderedSheets} sheet(s) (${otherOrderedSheets} sheet(s) on other linked PO, Total: ${totalOrderedAcrossOrder}/${requiredSheets} sheet(s) — Verified match).`);
+                    if (!hasSubstrateMismatch) {
+                        verified.push(`${label}: PO ordered ${orderedSheets} sheet(s) (${otherOrderedSheets} sheet(s) on other linked PO, Total: ${totalOrderedAcrossOrder}/${requiredSheets} sheet(s) — Verified match).`);
+                    }
                 }
                 else if (totalOrderedAcrossOrder < requiredSheets) {
                     const shortfallCount = Math.round((requiredSheets - totalOrderedAcrossOrder) * 100) / 100;
@@ -178,7 +226,6 @@ function comparePoLinesWithSheetMaterials(poLines, sheetMaterials, edgingItems =
             }
         }
         else {
-            const isMatch = orderedSheets === requiredSheets;
             if (orderedSheets < requiredSheets) {
                 const shortfallCount = Math.round((requiredSheets - orderedSheets) * 100) / 100;
                 shortfalls.push(`${label}: PO ordered ${orderedSheets} sheet(s), but Job Summary requires ${requiredSheets} sheet(s) (Shortfall: ${shortfallCount} sheet(s)).`);
@@ -188,7 +235,9 @@ function comparePoLinesWithSheetMaterials(poLines, sheetMaterials, edgingItems =
                 shortfalls.push(`${label}: PO ordered ${orderedSheets} sheet(s), but Job Summary requires ${requiredSheets} sheet(s) (Excess: ${excessCount} sheet(s) — boards must match exactly).`);
             }
             else {
-                verified.push(`${label}: PO ordered ${orderedSheets} sheet(s) (Required: ${requiredSheets} sheet(s)).`);
+                if (!hasSubstrateMismatch) {
+                    verified.push(`${label}: PO ordered ${orderedSheets} sheet(s) (Required: ${requiredSheets} sheet(s)).`);
+                }
             }
         }
         details.push({
@@ -198,7 +247,7 @@ function comparePoLinesWithSheetMaterials(poLines, sheetMaterials, edgingItems =
             requiredQty: requiredSheets,
             orderedQty: totalOrderedAcrossOrder,
             unit: 'sheet(s)',
-            isMatch: totalOrderedAcrossOrder === requiredSheets,
+            isMatch: totalOrderedAcrossOrder === requiredSheets && !hasSubstrateMismatch,
         });
     }
     // 2. Edge Banding: "Not less, but can be more"
@@ -246,6 +295,7 @@ function comparePoLinesWithSheetMaterials(poLines, sheetMaterials, edgingItems =
         shortfalls,
         verified,
         hasShortfall: shortfalls.length > 0,
+        substrateMismatches,
         details,
     };
 }
@@ -494,16 +544,47 @@ async function auditPurchaseOrderAgainstJobSummary(client, purchaseOrderId, prov
                 });
             }
         }
+        // Build dedicated Substrate Mismatch warning if core materials conflict
+        let substrateMismatchHtml = '';
+        if (comparison.substrateMismatches && comparison.substrateMismatches.length > 0) {
+            const rows = comparison.substrateMismatches.map((m) => `<tr>` +
+                `<td style="padding:6px;border-bottom:1px solid #fde68a;font-weight:bold;">${m.materialName}</td>` +
+                `<td style="padding:6px;border-bottom:1px solid #fde68a;color:#b45309;"><strong>${m.requiredSubstrate}</strong> (${m.requiredQty} sheets)</td>` +
+                `<td style="padding:6px;border-bottom:1px solid #fde68a;color:#15803d;"><strong>${m.orderedSubstrate}</strong> (${m.orderedQty} sheets)</td>` +
+                `</tr>`).join('');
+            substrateMismatchHtml =
+                `<div style="margin-top:10px;padding:12px 14px;background:#fffbeb;border:1px solid #f59e0b;border-left:6px solid #d97706;border-radius:4px;color:#92400e;line-height:1.5;">` +
+                    `<p style="margin:0 0 6px 0;font-size:14px;font-weight:bold;color:#b45309;">` +
+                    `⚠️ Technical Document Discrepancy: Board Type Mismatch (Optimizer vs PO)` +
+                    `</p>` +
+                    `<table style="width:100%;border-collapse:collapse;margin:8px 0;font-size:13px;">` +
+                    `<tr style="background:#fef3c7;border-bottom:1px solid #fde68a;">` +
+                    `<th style="padding:6px;text-align:left;">Material</th>` +
+                    `<th style="padding:6px;text-align:left;">Job Summary (Optimizer)</th>` +
+                    `<th style="padding:6px;text-align:left;">Purchase Order (Procured)</th>` +
+                    `</tr>` +
+                    `${rows}` +
+                    `</table>` +
+                    `<strong>🚨 Production Floor Risk:</strong> Panel labels printed from this Job Summary will display <em>MDF</em> while operators are cutting <em>Particle Board</em> (or vice-versa). This creates immediate confusion during cutting and halts edge banding.<br/><br/>` +
+                    `<strong>Action Required:</strong>` +
+                    `<ol style="margin:4px 0 0 16px;padding:0;">` +
+                    `<li><strong>If Job Summary is incorrect (PO board is genuine):</strong> Designer/Optimizer must re-export the Job Summary with the matching board material name and re-attach to <strong>${so.name}</strong> so machine labels and edging specs match physical boards.</li>` +
+                    `<li><strong>If PO is incorrect (Job Summary substrate is genuine):</strong> Buyer must amend PO <strong>${po.name}</strong> to the correct board substrate before cutting commences.</li>` +
+                    `</ol>` +
+                    `</div>`;
+        }
         // Post breakdown note in the PO Chatter
         await client.postModelChatterMessage('purchase.order', po.id, `<p><strong>⚠️ Job Summary Procurement Mismatch Alert:</strong></p>` +
             `<p><strong>Stakeholders Alerted:</strong> ${mentionHtml}</p>` +
             `<p>Discrepancies found between Purchase Order <strong>${po.name}</strong> and Job Summary for <strong>${so.name}</strong>:</p>` +
             `<ul>${comparison.shortfalls.map((s) => `<li>${s}</li>`).join('')}</ul>` +
+            substrateMismatchHtml +
             `<p><em>An activity has been created seeking written clarification or correction before approving this Purchase Order.</em></p>`, partnerIds);
         // Cross-alert note on Sales Order chatter
         await client.postModelChatterMessage('sale.order', so.id, `<p><strong>⚠️ PO Procurement Discrepancy on ${po.name}:</strong></p>` +
             `<p>The following mismatch was flagged on confirmed Purchase Order <strong>${po.name}</strong>:</p>` +
-            `<ul>${comparison.shortfalls.map((s) => `<li>${s}</li>`).join('')}</ul>`);
+            `<ul>${comparison.shortfalls.map((s) => `<li>${s}</li>`).join('')}</ul>` +
+            substrateMismatchHtml);
         await (0, logService_1.logEvent)('warn', 'PO procurement mismatch detected against Job Summary', {
             poId: po.id,
             poName: po.name,
