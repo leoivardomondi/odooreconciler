@@ -3808,6 +3808,37 @@ export async function getLatestExtractedResultByOrderId(orderId: number): Promis
   return row ? mapExtractedResult(row) : null;
 }
 
+export async function getLatestExtractedResultByOrderName(orderName: string): Promise<ExtractedResultEntry | null> {
+  const cleanName = String(orderName || '').trim();
+  if (!cleanName) return null;
+  const row = await queryOne<{
+    id: string;
+    history_id: string;
+    order_id: number;
+    order_name: string;
+    attachment_id: number;
+    attachment_name: string;
+    result_json: string;
+    raw_text: string;
+    pdf_signature: string | null;
+    created_at: string;
+  }>(
+    `
+      SELECT
+        er.id, er.history_id, er.order_id, er.order_name, er.attachment_id, er.attachment_name,
+        er.result_json, er.raw_text, er.pdf_signature, er.created_at
+      FROM extracted_results er
+      INNER JOIN history h ON h.id = er.history_id
+      WHERE UPPER(TRIM(er.order_name)) = UPPER(TRIM(?))
+      ORDER BY h.updated_at DESC, h.id DESC
+      LIMIT 1
+    `,
+    [cleanName],
+  );
+
+  return row ? mapExtractedResult(row) : null;
+}
+
 export async function getProcessedStockVariantIds(orderId: number, extractionSignature: string): Promise<number[]> {
   const rows = await queryAll<{ variant_id: number }>(
     `
@@ -6385,12 +6416,22 @@ export async function pruneStalePendingProcessesForActiveMos(
   activeMoIds: number[],
   validKeys: string[],
   poCoveredKeys: string[] = [],
+  cancelledMoIds: number[] = [],
 ): Promise<void> {
   invalidatePendingShopFloorProcessesCache();
   await execute(
     `DELETE FROM shop_floor_pending_processes WHERE mo_name LIKE 'VA/%' OR partner_name = 'URBAN VIBE 2' OR partner_id = 350`,
     [],
   );
+
+  if (cancelledMoIds.length > 0) {
+    const placeholders = cancelledMoIds.map(() => '?').join(', ');
+    await execute(
+      `DELETE FROM shop_floor_pending_processes WHERE mo_id IN (${placeholders})`,
+      cancelledMoIds,
+    );
+  }
+
   const existingPending = await queryAll<{
     id: string;
     mo_id: number;
@@ -6414,10 +6455,17 @@ export async function pruneStalePendingProcessesForActiveMos(
   const poCoveredKeySet = new Set(poCoveredKeys);
   const activeSet = new Set(activeMoIds);
   const validKeySet = new Set(validKeys);
+  const cancelledMoSet = new Set(cancelledMoIds);
 
   const idsToDelete: string[] = [];
 
   for (const row of existingPending) {
+    // 0. If MO is cancelled in Odoo, it will not be produced, so it must not need stock
+    if (cancelledMoSet.has(row.mo_id)) {
+      idsToDelete.push(row.id);
+      continue;
+    }
+
     const compositeKey = `${row.mo_id}_${row.product_id}`;
     const nameKey = `${row.mo_name}_${row.product_id}`;
 

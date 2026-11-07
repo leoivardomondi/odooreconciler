@@ -78,6 +78,8 @@ import { revertBoardIntakeEntry, syncBoardIntakeEntry } from '../services/boardI
 import { syncShopFloorOperatorAccess, syncShopFloorOperatorsData } from '../services/shopFloorOperatorAccessSyncService';
 import { syncPendingProcessesFromOdoo } from '../services/shopFloorPendingSyncService';
 import { extractSoNameFromOrigin } from '../services/poJobSummaryAuditService';
+import { isCuttingProductOrWorkOrder } from '../services/workOrderQuantityReconciliationService';
+import { selectBestBoardComponent } from '../services/cuttingBoMReconciliationService';
 import { isAllowedAttendanceIp, normalizeIpAddress } from '../utils/siteAttendanceAccess';
 import { normalizeBoardLogRecipients } from '../utils/helpers';
 import { isAccountDeactivated } from '../utils/accountStatus';
@@ -1210,11 +1212,14 @@ export async function fetchLiveSharedWorkOrders(client: OdooClient): Promise<Sha
       continue;
     }
 
-    const components = componentsByMoId.get(o.id) || [];
-    for (const comp of components) {
-      const componentName = Array.isArray(comp.product_id) ? comp.product_id[1] : '';
-      if (isBoardComponentName(componentName)) {
-        reservedBoardsCount += (comp.quantity || 0);
+    if (o.state !== 'cancel') {
+      const components = componentsByMoId.get(o.id) || [];
+      for (const comp of components) {
+        if (comp.state === 'cancel') continue;
+        const componentName = Array.isArray(comp.product_id) ? comp.product_id[1] : '';
+        if (isBoardComponentName(componentName)) {
+          reservedBoardsCount += (comp.quantity || 0);
+        }
       }
     }
 
@@ -1222,6 +1227,7 @@ export async function fetchLiveSharedWorkOrders(client: OdooClient): Promise<Sha
       moStockStatus.set(o.id, 'ready');
       continue;
     }
+    const components = componentsByMoId.get(o.id) || [];
     const unavailable = components.filter((c) => {
       if (c.state === 'done' || c.state === 'cancel' || c.state === 'draft' || c.state === 'assigned') {
         return false;
@@ -1231,7 +1237,24 @@ export async function fetchLiveSharedWorkOrders(client: OdooClient): Promise<Sha
       }
       return !c.forecast_availability || c.forecast_availability === 'unavailable';
     });
-    if (unavailable.length > 0) {
+
+    // If this is a cutting MO and multiple board components are marked unavailable, only alert on the single chosen board component
+    let effectiveUnavailable = unavailable;
+    if (isCuttingProductOrWorkOrder(manufacturedProductName, o.name)) {
+      const unavailableBoardMoves = unavailable.filter(c => isBoardComponentName(Array.isArray(c.product_id) ? c.product_id[1] : ''));
+      if (unavailableBoardMoves.length > 1) {
+        const nonBoardUnavailable = unavailable.filter(c => !isBoardComponentName(Array.isArray(c.product_id) ? c.product_id[1] : ''));
+        const chosen = selectBestBoardComponent({
+          moProductName: manufacturedProductName,
+          moQty: o.product_qty,
+          boardMoves: unavailableBoardMoves as any,
+          sheetMaterials: [],
+        });
+        effectiveUnavailable = [...nonBoardUnavailable, chosen.chosenMove as any];
+      }
+    }
+
+    if (effectiveUnavailable.length > 0) {
       const soOrigin = o.origin ? extractSoNameFromOrigin(o.origin) : null;
       const poState =
         (o.origin && poStateMap.get(o.origin)) ||
@@ -1244,7 +1267,7 @@ export async function fetchLiveSharedWorkOrders(client: OdooClient): Promise<Sha
         moIdsWithStockIssues.add(o.id);
         const confirmedAt = o.origin ? saleOrderDateMap.get(o.origin) || null : null;
         const overdueDays = getOverdueDaysFromDateOrder(confirmedAt);
-        for (const comp of unavailable) {
+        for (const comp of effectiveUnavailable) {
           const componentName = Array.isArray(comp.product_id) ? comp.product_id[1] : '';
           if (!isBoardComponentName(componentName)) {
             continue;

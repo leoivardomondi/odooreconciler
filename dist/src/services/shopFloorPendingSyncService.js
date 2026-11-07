@@ -5,12 +5,15 @@ exports.matchRetroactiveBoardLogsForActiveMos = matchRetroactiveBoardLogsForActi
 exports.startShopFloorPendingSyncInterval = startShopFloorPendingSyncInterval;
 exports.stopShopFloorPendingSyncInterval = stopShopFloorPendingSyncInterval;
 const repositories_1 = require("../models/repositories");
+const db_1 = require("../models/db");
 const odooClient_1 = require("./odooClient");
 const boardProductClassifier_1 = require("./boardProductClassifier");
 const poJobSummaryAuditService_1 = require("./poJobSummaryAuditService");
 const logService_1 = require("./logService");
 const boardIntakeSyncService_1 = require("./boardIntakeSyncService");
 const shopFloor_1 = require("../routes/shopFloor");
+const cuttingBoMReconciliationService_1 = require("./cuttingBoMReconciliationService");
+const workOrderQuantityReconciliationService_1 = require("./workOrderQuantityReconciliationService");
 let syncInProgress = false;
 let lastSyncTimestamp = 0;
 const MIN_SYNC_INTERVAL_MS = 60 * 1000; // Throttle to at most once per 60 seconds unless forced
@@ -41,7 +44,7 @@ async function syncPendingProcessesFromOdoo(force = false) {
                 ['company_id', '=', targetCompanyId],
                 ['state', 'in', ['confirmed', 'progress', 'to_close']],
             ],
-            fields: ['id', 'name', 'state', 'origin', 'product_qty', 'qty_producing', 'create_date', 'write_date'],
+            fields: ['id', 'name', 'state', 'origin', 'product_id', 'product_qty', 'qty_producing', 'create_date', 'write_date'],
             limit: 250,
             order: 'create_date desc, id desc',
         });
@@ -55,12 +58,47 @@ async function syncPendingProcessesFromOdoo(force = false) {
                 ['state', '=', 'done'],
                 ['write_date', '>=', closedCutoffDate],
             ],
-            fields: ['id', 'name', 'state', 'origin', 'product_qty', 'qty_producing', 'write_date'],
+            fields: ['id', 'name', 'state', 'origin', 'product_id', 'product_qty', 'qty_producing', 'write_date'],
             limit: 200,
             order: 'write_date desc, id desc',
         }).catch(() => []);
         const recentlyClosedMOs = rawRecentlyClosedMOs.filter((mo) => !String(mo.name || '').toUpperCase().startsWith('VA/'));
         const allMOs = [...activeMOs, ...recentlyClosedMOs];
+        // 1c. Identify any MOs currently pending in shop_floor_pending_processes that were cancelled in Odoo
+        const existingPendingMoRows = await (0, db_1.queryAll)(`SELECT DISTINCT mo_id FROM shop_floor_pending_processes WHERE status = 'pending'`);
+        const existingMoIds = existingPendingMoRows
+            .map((r) => r.mo_id)
+            .filter((id) => typeof id === 'number' && id > 0);
+        const allMoIdSet = new Set(allMOs.map((mo) => mo.id));
+        const unmappedMoIds = existingMoIds.filter((id) => !allMoIdSet.has(id));
+        const cancelledMoIds = [];
+        if (unmappedMoIds.length > 0) {
+            try {
+                const checkedOdooMos = await client.searchReadRecords('mrp.production', {
+                    domain: [['id', 'in', unmappedMoIds]],
+                    fields: ['id', 'state', 'name'],
+                    limit: 500,
+                });
+                const checkedMap = new Map();
+                for (const c of checkedOdooMos) {
+                    checkedMap.set(c.id, c.state);
+                }
+                for (const checkId of unmappedMoIds) {
+                    const st = checkedMap.get(checkId);
+                    // If state is cancel, or MO was deleted from Odoo entirely, it must NOT need stock
+                    if (!st || st === 'cancel') {
+                        cancelledMoIds.push(checkId);
+                    }
+                }
+            }
+            catch (checkErr) {
+                console.warn('[ShopFloorPendingSyncService] Error checking cancelled MOs in Odoo:', checkErr);
+            }
+        }
+        if (cancelledMoIds.length > 0) {
+            const placeholders = cancelledMoIds.map(() => '?').join(', ');
+            await (0, db_1.execute)(`DELETE FROM shop_floor_pending_processes WHERE mo_id IN (${placeholders})`, cancelledMoIds);
+        }
         if (!allMOs.length) {
             await (0, repositories_1.deleteStaleCompletedProcesses)(7);
             lastSyncTimestamp = Date.now();
@@ -258,8 +296,47 @@ async function syncPendingProcessesFromOdoo(force = false) {
         // 6. Build requirement records
         const recordsToUpsert = [];
         const activeLogs = await (0, repositories_1.getActiveBoardIntakeLogs)();
-        const aggregatedMoves = new Map();
+        // Group board component moves by MO ID to evaluate single board component rules for cutting operations
+        const boardMovesByMoId = new Map();
         for (const move of boardMoves) {
+            const rmId = Array.isArray(move.raw_material_production_id)
+                ? move.raw_material_production_id[0]
+                : move.raw_material_production_id;
+            if (!rmId)
+                continue;
+            const list = boardMovesByMoId.get(rmId) || [];
+            list.push(move);
+            boardMovesByMoId.set(rmId, list);
+        }
+        const filteredBoardMoves = [];
+        for (const [rmId, moMoves] of boardMovesByMoId.entries()) {
+            const mo = moMap.get(rmId);
+            if (!mo || String(mo.name || '').toUpperCase().startsWith('VA/'))
+                continue;
+            const moProductName = Array.isArray(mo.product_id) ? mo.product_id[1] : '';
+            const isCutting = (0, workOrderQuantityReconciliationService_1.isCuttingProductOrWorkOrder)(moProductName, mo.name);
+            if (isCutting && moMoves.length > 1) {
+                // Enforce single board component rule for cutting BoMs to prevent double stock requirements
+                const singleMoves = await (0, cuttingBoMReconciliationService_1.filterSingleBoardComponentForCuttingMo)({
+                    mo: {
+                        id: mo.id,
+                        name: mo.name,
+                        origin: mo.origin,
+                        product_id: mo.product_id,
+                        product_qty: mo.product_qty,
+                    },
+                    boardMoves: moMoves,
+                    client,
+                    settings,
+                });
+                filteredBoardMoves.push(...singleMoves);
+            }
+            else {
+                filteredBoardMoves.push(...moMoves);
+            }
+        }
+        const aggregatedMoves = new Map();
+        for (const move of filteredBoardMoves) {
             const moId = Array.isArray(move.raw_material_production_id)
                 ? move.raw_material_production_id[0]
                 : move.raw_material_production_id;
@@ -311,7 +388,15 @@ async function syncPendingProcessesFromOdoo(force = false) {
             if (partnerId === 350 || partnerName.toUpperCase() === 'URBAN VIBE 2') {
                 continue;
             }
-            const qtyNeeded = Number(move.product_uom_qty || 0);
+            const moProductName = Array.isArray(mo.product_id) ? mo.product_id[1] : '';
+            const isCutting = (0, workOrderQuantityReconciliationService_1.isCuttingProductOrWorkOrder)(moProductName, mo.name);
+            let rawQty = Number(move.product_uom_qty || 0);
+            // If work order / MO quantity was edited in Odoo (e.g. reduced from 10 to 5):
+            // In cutting operations, 1 sheet = 1 cutting unit. Align needed quantity with mo.product_qty
+            if (isCutting && typeof mo.product_qty === 'number' && mo.product_qty > 0) {
+                rawQty = mo.product_qty;
+            }
+            const qtyNeeded = rawQty;
             const qtyReserved = Number(move.quantity || 0);
             const key = `${moId}_${productId}`;
             const existing = aggregatedMoves.get(key);
@@ -398,8 +483,8 @@ async function syncPendingProcessesFromOdoo(force = false) {
             console.error('[ShopFloorPendingSyncService] Error matching retroactive board logs:', err);
         });
         // 8. Prune stale pending rows for active and closed MOs if components were removed or covered by POs
-        // Any PO-covered keys are explicitly purged so they do not linger in the Add Stock area
-        await (0, repositories_1.pruneStalePendingProcessesForActiveMos)(allMOs.map((mo) => mo.id), recordsToUpsert.map((r) => r.id), Array.from(poCoveredKeys));
+        // Any PO-covered keys and cancelled MOs are explicitly purged so they do not linger in the Add Stock area
+        await (0, repositories_1.pruneStalePendingProcessesForActiveMos)(allMOs.map((mo) => mo.id), recordsToUpsert.map((r) => r.id), Array.from(poCoveredKeys), cancelledMoIds);
         // 9. Clean up stale completed items older than 7 days
         await (0, repositories_1.deleteStaleCompletedProcesses)(7);
         // 10. Invalidate RAM cache and stale board registration cache so the UI sees up-to-date counts immediately

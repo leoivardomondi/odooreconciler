@@ -45,6 +45,8 @@ const boardIntakeSyncService_1 = require("../services/boardIntakeSyncService");
 const shopFloorOperatorAccessSyncService_1 = require("../services/shopFloorOperatorAccessSyncService");
 const shopFloorPendingSyncService_1 = require("../services/shopFloorPendingSyncService");
 const poJobSummaryAuditService_1 = require("../services/poJobSummaryAuditService");
+const workOrderQuantityReconciliationService_1 = require("../services/workOrderQuantityReconciliationService");
+const cuttingBoMReconciliationService_1 = require("../services/cuttingBoMReconciliationService");
 const siteAttendanceAccess_1 = require("../utils/siteAttendanceAccess");
 const helpers_1 = require("../utils/helpers");
 const router = (0, express_1.Router)();
@@ -900,17 +902,22 @@ async function fetchLiveSharedWorkOrders(client) {
             moStockStatus.set(o.id, 'ready');
             continue;
         }
-        const components = componentsByMoId.get(o.id) || [];
-        for (const comp of components) {
-            const componentName = Array.isArray(comp.product_id) ? comp.product_id[1] : '';
-            if (isBoardComponentName(componentName)) {
-                reservedBoardsCount += (comp.quantity || 0);
+        if (o.state !== 'cancel') {
+            const components = componentsByMoId.get(o.id) || [];
+            for (const comp of components) {
+                if (comp.state === 'cancel')
+                    continue;
+                const componentName = Array.isArray(comp.product_id) ? comp.product_id[1] : '';
+                if (isBoardComponentName(componentName)) {
+                    reservedBoardsCount += (comp.quantity || 0);
+                }
             }
         }
         if (o.state === 'done' || o.state === 'cancel') {
             moStockStatus.set(o.id, 'ready');
             continue;
         }
+        const components = componentsByMoId.get(o.id) || [];
         const unavailable = components.filter((c) => {
             if (c.state === 'done' || c.state === 'cancel' || c.state === 'draft' || c.state === 'assigned') {
                 return false;
@@ -920,7 +927,22 @@ async function fetchLiveSharedWorkOrders(client) {
             }
             return !c.forecast_availability || c.forecast_availability === 'unavailable';
         });
-        if (unavailable.length > 0) {
+        // If this is a cutting MO and multiple board components are marked unavailable, only alert on the single chosen board component
+        let effectiveUnavailable = unavailable;
+        if ((0, workOrderQuantityReconciliationService_1.isCuttingProductOrWorkOrder)(manufacturedProductName, o.name)) {
+            const unavailableBoardMoves = unavailable.filter(c => isBoardComponentName(Array.isArray(c.product_id) ? c.product_id[1] : ''));
+            if (unavailableBoardMoves.length > 1) {
+                const nonBoardUnavailable = unavailable.filter(c => !isBoardComponentName(Array.isArray(c.product_id) ? c.product_id[1] : ''));
+                const chosen = (0, cuttingBoMReconciliationService_1.selectBestBoardComponent)({
+                    moProductName: manufacturedProductName,
+                    moQty: o.product_qty,
+                    boardMoves: unavailableBoardMoves,
+                    sheetMaterials: [],
+                });
+                effectiveUnavailable = [...nonBoardUnavailable, chosen.chosenMove];
+            }
+        }
+        if (effectiveUnavailable.length > 0) {
             const soOrigin = o.origin ? (0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(o.origin) : null;
             const poState = (o.origin && poStateMap.get(o.origin)) ||
                 (soOrigin && poStateMap.get(soOrigin)) ||
@@ -932,7 +954,7 @@ async function fetchLiveSharedWorkOrders(client) {
                 moIdsWithStockIssues.add(o.id);
                 const confirmedAt = o.origin ? saleOrderDateMap.get(o.origin) || null : null;
                 const overdueDays = getOverdueDaysFromDateOrder(confirmedAt);
-                for (const comp of unavailable) {
+                for (const comp of effectiveUnavailable) {
                     const componentName = Array.isArray(comp.product_id) ? comp.product_id[1] : '';
                     if (!isBoardComponentName(componentName)) {
                         continue;

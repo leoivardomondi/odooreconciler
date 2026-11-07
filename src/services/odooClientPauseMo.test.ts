@@ -106,3 +106,4 @@ test('OdooClient: pauseManufacturingOrder executes end_previous(doall=True), clo
   assert.ok(postedChatters[0].message.includes('2 unit(s) completed so far'));
   assert.ok(postedChatters[0].message.includes('backorder requested for remaining units'));
 });
+

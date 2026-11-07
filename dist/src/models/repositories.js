@@ -88,6 +88,7 @@ exports.getRecentHistory = getRecentHistory;
 exports.insertExtractedResult = insertExtractedResult;
 exports.getExtractedResultByHistoryId = getExtractedResultByHistoryId;
 exports.getLatestExtractedResultByOrderId = getLatestExtractedResultByOrderId;
+exports.getLatestExtractedResultByOrderName = getLatestExtractedResultByOrderName;
 exports.getProcessedStockVariantIds = getProcessedStockVariantIds;
 exports.getUnreversedProcessedStockItemsForOrder = getUnreversedProcessedStockItemsForOrder;
 exports.insertProcessedStockItem = insertProcessedStockItem;
@@ -2834,6 +2835,22 @@ async function getLatestExtractedResultByOrderId(orderId) {
     `, [orderId]);
     return row ? mapExtractedResult(row) : null;
 }
+async function getLatestExtractedResultByOrderName(orderName) {
+    const cleanName = String(orderName || '').trim();
+    if (!cleanName)
+        return null;
+    const row = await (0, db_1.queryOne)(`
+      SELECT
+        er.id, er.history_id, er.order_id, er.order_name, er.attachment_id, er.attachment_name,
+        er.result_json, er.raw_text, er.pdf_signature, er.created_at
+      FROM extracted_results er
+      INNER JOIN history h ON h.id = er.history_id
+      WHERE UPPER(TRIM(er.order_name)) = UPPER(TRIM(?))
+      ORDER BY h.updated_at DESC, h.id DESC
+      LIMIT 1
+    `, [cleanName]);
+    return row ? mapExtractedResult(row) : null;
+}
 async function getProcessedStockVariantIds(orderId, extractionSignature) {
     const rows = await (0, db_1.queryAll)(`
       SELECT spi.variant_id
@@ -4683,9 +4700,13 @@ async function getActiveBoardIntakeLogs() {
        AND reverted_at IS NULL
        AND status NOT IN ('reverted', 'reverting')`, []);
 }
-async function pruneStalePendingProcessesForActiveMos(activeMoIds, validKeys, poCoveredKeys = []) {
+async function pruneStalePendingProcessesForActiveMos(activeMoIds, validKeys, poCoveredKeys = [], cancelledMoIds = []) {
     invalidatePendingShopFloorProcessesCache();
     await (0, db_1.execute)(`DELETE FROM shop_floor_pending_processes WHERE mo_name LIKE 'VA/%' OR partner_name = 'URBAN VIBE 2' OR partner_id = 350`, []);
+    if (cancelledMoIds.length > 0) {
+        const placeholders = cancelledMoIds.map(() => '?').join(', ');
+        await (0, db_1.execute)(`DELETE FROM shop_floor_pending_processes WHERE mo_id IN (${placeholders})`, cancelledMoIds);
+    }
     const existingPending = await (0, db_1.queryAll)(`SELECT id, mo_id, mo_name, origin, product_id, partner_id, partner_name, product_name, qty_needed, is_mo_closed
      FROM shop_floor_pending_processes WHERE status = 'pending'`);
     if (!existingPending.length)
@@ -4695,8 +4716,14 @@ async function pruneStalePendingProcessesForActiveMos(activeMoIds, validKeys, po
     const poCoveredKeySet = new Set(poCoveredKeys);
     const activeSet = new Set(activeMoIds);
     const validKeySet = new Set(validKeys);
+    const cancelledMoSet = new Set(cancelledMoIds);
     const idsToDelete = [];
     for (const row of existingPending) {
+        // 0. If MO is cancelled in Odoo, it will not be produced, so it must not need stock
+        if (cancelledMoSet.has(row.mo_id)) {
+            idsToDelete.push(row.id);
+            continue;
+        }
         const compositeKey = `${row.mo_id}_${row.product_id}`;
         const nameKey = `${row.mo_name}_${row.product_id}`;
         // 1. If an active or received PO covers this MO and product, prune it immediately

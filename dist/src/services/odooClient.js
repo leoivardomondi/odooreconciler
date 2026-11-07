@@ -28,6 +28,8 @@ const odooAxios = axios_1.default.create({
 const env_1 = require("../utils/env");
 const helpers_1 = require("../utils/helpers");
 const boardProductClassifier_1 = require("./boardProductClassifier");
+const workOrderQuantityReconciliationService_1 = require("./workOrderQuantityReconciliationService");
+const cuttingBoMReconciliationService_1 = require("./cuttingBoMReconciliationService");
 const MANUFACTURING_PERFORMANCE_START_DATE = '2026-08-05';
 const sharedOdooWebSessions = new Map();
 let isOdooTrafficPausedFlag = env_1.env.ODOO_PAUSE_TRAFFIC === 'true';
@@ -4487,7 +4489,7 @@ class OdooClient {
                     ['company_id', '=', targetCompanyId],
                     ['state', 'in', ['confirmed', 'progress']],
                 ],
-                fields: ['id', 'name', 'state', 'origin'],
+                fields: ['id', 'name', 'state', 'origin', 'product_id', 'product_qty'],
                 limit: 200,
                 order: 'create_date desc, id desc',
             });
@@ -4566,7 +4568,42 @@ class OdooClient {
             }
             // Build requirement list, aggregating multiple moves for the same MO and product
             const requirementsMap = new Map();
+            // Group board moves by MO ID to enforce single board component rule for cutting operations
+            const boardMovesByMoId = new Map();
             for (const move of boardMoves) {
+                const rmId = Array.isArray(move.raw_material_production_id)
+                    ? move.raw_material_production_id[0]
+                    : move.raw_material_production_id;
+                if (!rmId)
+                    continue;
+                const list = boardMovesByMoId.get(rmId) || [];
+                list.push(move);
+                boardMovesByMoId.set(rmId, list);
+            }
+            const filteredBoardMoves = [];
+            for (const [rmId, moMoves] of boardMovesByMoId.entries()) {
+                const mo = clientMOs.find(m => m.id === rmId);
+                if (!mo)
+                    continue;
+                const moProductName = Array.isArray(mo.product_id) ? mo.product_id[1] : '';
+                const isCutting = (0, workOrderQuantityReconciliationService_1.isCuttingProductOrWorkOrder)(moProductName, mo.name);
+                if (isCutting && moMoves.length > 1) {
+                    const chosen = (0, cuttingBoMReconciliationService_1.selectBestBoardComponent)({
+                        moProductName,
+                        moQty: mo.product_qty,
+                        boardMoves: moMoves,
+                        sheetMaterials: [],
+                    });
+                    filteredBoardMoves.push({
+                        ...chosen.chosenMove,
+                        product_uom_qty: chosen.alignedQty,
+                    });
+                }
+                else {
+                    filteredBoardMoves.push(...moMoves);
+                }
+            }
+            for (const move of filteredBoardMoves) {
                 const moId = Array.isArray(move.raw_material_production_id)
                     ? move.raw_material_production_id[0]
                     : move.raw_material_production_id;
@@ -4579,7 +4616,12 @@ class OdooClient {
                 if (mo.origin && originProductPOKeys.has(`${mo.origin}_${productId}`)) {
                     continue; // Exclude since PO exists
                 }
-                const qtyNeeded = Number(move.product_uom_qty || 0);
+                const moProductName = Array.isArray(mo.product_id) ? mo.product_id[1] : '';
+                const isCutting = (0, workOrderQuantityReconciliationService_1.isCuttingProductOrWorkOrder)(moProductName, mo.name);
+                let qtyNeeded = Number(move.product_uom_qty || 0);
+                if (isCutting && typeof mo.product_qty === 'number' && mo.product_qty > 0) {
+                    qtyNeeded = Math.min(qtyNeeded, mo.product_qty);
+                }
                 const qtyReserved = Number(move.quantity || 0);
                 const key = `${moId}_${productId}`;
                 const existing = requirementsMap.get(key);

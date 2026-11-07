@@ -7,6 +7,7 @@ import {
   markPendingShopFloorProcessesLoaded,
   deleteShopFloorSharedCachePrefix,
 } from '../models/repositories';
+import { queryAll, execute } from '../models/db';
 import { OdooClient, isOdooTrafficPaused } from './odooClient';
 import {
   isBoardProductName,
@@ -19,6 +20,8 @@ import { PendingShopFloorProcess } from '../models/types';
 import { logEvent } from './logService';
 import { escapeHtml, reconcileRetroactiveBoardLogsForLinkedPos } from './boardIntakeSyncService';
 import { shopFloorCache } from '../routes/shopFloor';
+import { filterSingleBoardComponentForCuttingMo } from './cuttingBoMReconciliationService';
+import { isCuttingProductOrWorkOrder } from './workOrderQuantityReconciliationService';
 
 let syncInProgress = false;
 let lastSyncTimestamp = 0;
@@ -65,6 +68,7 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
       name: string;
       state: string;
       origin: string | null;
+      product_id?: [number, string] | false;
       product_qty?: number;
       qty_producing?: number;
       create_date?: string;
@@ -74,7 +78,7 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
         ['company_id', '=', targetCompanyId],
         ['state', 'in', ['confirmed', 'progress', 'to_close']],
       ],
-      fields: ['id', 'name', 'state', 'origin', 'product_qty', 'qty_producing', 'create_date', 'write_date'],
+      fields: ['id', 'name', 'state', 'origin', 'product_id', 'product_qty', 'qty_producing', 'create_date', 'write_date'],
       limit: 250,
       order: 'create_date desc, id desc',
     });
@@ -91,6 +95,7 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
       name: string;
       state: string;
       origin: string | null;
+      product_id?: [number, string] | false;
       product_qty?: number;
       qty_producing?: number;
       write_date?: string;
@@ -100,7 +105,7 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
         ['state', '=', 'done'],
         ['write_date', '>=', closedCutoffDate],
       ],
-      fields: ['id', 'name', 'state', 'origin', 'product_qty', 'qty_producing', 'write_date'],
+      fields: ['id', 'name', 'state', 'origin', 'product_id', 'product_qty', 'qty_producing', 'write_date'],
       limit: 200,
       order: 'write_date desc, id desc',
     }).catch(() => []);
@@ -110,6 +115,55 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
     );
 
     const allMOs = [...activeMOs, ...recentlyClosedMOs];
+
+    // 1c. Identify any MOs currently pending in shop_floor_pending_processes that were cancelled in Odoo
+    const existingPendingMoRows = await queryAll<{ mo_id: number }>(
+      `SELECT DISTINCT mo_id FROM shop_floor_pending_processes WHERE status = 'pending'`,
+    );
+    const existingMoIds = existingPendingMoRows
+      .map((r) => r.mo_id)
+      .filter((id): id is number => typeof id === 'number' && id > 0);
+
+    const allMoIdSet = new Set(allMOs.map((mo) => mo.id));
+    const unmappedMoIds = existingMoIds.filter((id) => !allMoIdSet.has(id));
+    const cancelledMoIds: number[] = [];
+
+    if (unmappedMoIds.length > 0) {
+      try {
+        const checkedOdooMos = await client.searchReadRecords<{
+          id: number;
+          state: string;
+          name: string;
+        }>('mrp.production', {
+          domain: [['id', 'in', unmappedMoIds]],
+          fields: ['id', 'state', 'name'],
+          limit: 500,
+        });
+
+        const checkedMap = new Map<number, string>();
+        for (const c of checkedOdooMos) {
+          checkedMap.set(c.id, c.state);
+        }
+
+        for (const checkId of unmappedMoIds) {
+          const st = checkedMap.get(checkId);
+          // If state is cancel, or MO was deleted from Odoo entirely, it must NOT need stock
+          if (!st || st === 'cancel') {
+            cancelledMoIds.push(checkId);
+          }
+        }
+      } catch (checkErr) {
+        console.warn('[ShopFloorPendingSyncService] Error checking cancelled MOs in Odoo:', checkErr);
+      }
+    }
+
+    if (cancelledMoIds.length > 0) {
+      const placeholders = cancelledMoIds.map(() => '?').join(', ');
+      await execute(
+        `DELETE FROM shop_floor_pending_processes WHERE mo_id IN (${placeholders})`,
+        cancelledMoIds,
+      );
+    }
 
     if (!allMOs.length) {
       await deleteStaleCompletedProcesses(7);
@@ -348,6 +402,47 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
     const recordsToUpsert: PendingShopFloorProcess[] = [];
     const activeLogs = await getActiveBoardIntakeLogs();
 
+    // Group board component moves by MO ID to evaluate single board component rules for cutting operations
+    const boardMovesByMoId = new Map<number, typeof boardMoves>();
+    for (const move of boardMoves) {
+      const rmId = Array.isArray(move.raw_material_production_id)
+        ? move.raw_material_production_id[0]
+        : move.raw_material_production_id;
+      if (!rmId) continue;
+      const list = boardMovesByMoId.get(rmId) || [];
+      list.push(move);
+      boardMovesByMoId.set(rmId, list);
+    }
+
+    const filteredBoardMoves: typeof boardMoves = [];
+
+    for (const [rmId, moMoves] of boardMovesByMoId.entries()) {
+      const mo = moMap.get(rmId);
+      if (!mo || String(mo.name || '').toUpperCase().startsWith('VA/')) continue;
+
+      const moProductName = Array.isArray((mo as any).product_id) ? (mo as any).product_id[1] : '';
+      const isCutting = isCuttingProductOrWorkOrder(moProductName, mo.name);
+
+      if (isCutting && moMoves.length > 1) {
+        // Enforce single board component rule for cutting BoMs to prevent double stock requirements
+        const singleMoves = await filterSingleBoardComponentForCuttingMo({
+          mo: {
+            id: mo.id,
+            name: mo.name,
+            origin: mo.origin,
+            product_id: (mo as any).product_id,
+            product_qty: (mo as any).product_qty,
+          },
+          boardMoves: moMoves,
+          client,
+          settings,
+        });
+        filteredBoardMoves.push(...(singleMoves as any));
+      } else {
+        filteredBoardMoves.push(...moMoves);
+      }
+    }
+
     const aggregatedMoves = new Map<string, {
       moId: number;
       moName: string;
@@ -360,7 +455,7 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
       qtyReserved: number;
     }>();
 
-    for (const move of boardMoves) {
+    for (const move of filteredBoardMoves) {
       const moId = Array.isArray(move.raw_material_production_id)
         ? move.raw_material_production_id[0]
         : move.raw_material_production_id;
@@ -422,7 +517,17 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
         continue;
       }
 
-      const qtyNeeded = Number(move.product_uom_qty || 0);
+      const moProductName = Array.isArray((mo as any).product_id) ? (mo as any).product_id[1] : '';
+      const isCutting = isCuttingProductOrWorkOrder(moProductName, mo.name);
+
+      let rawQty = Number(move.product_uom_qty || 0);
+      // If work order / MO quantity was edited in Odoo (e.g. reduced from 10 to 5):
+      // In cutting operations, 1 sheet = 1 cutting unit. Align needed quantity with mo.product_qty
+      if (isCutting && typeof (mo as any).product_qty === 'number' && (mo as any).product_qty > 0) {
+        rawQty = (mo as any).product_qty;
+      }
+
+      const qtyNeeded = rawQty;
       const qtyReserved = Number(move.quantity || 0);
       const key = `${moId}_${productId}`;
 
@@ -530,11 +635,12 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
     });
 
     // 8. Prune stale pending rows for active and closed MOs if components were removed or covered by POs
-    // Any PO-covered keys are explicitly purged so they do not linger in the Add Stock area
+    // Any PO-covered keys and cancelled MOs are explicitly purged so they do not linger in the Add Stock area
     await pruneStalePendingProcessesForActiveMos(
       allMOs.map((mo) => mo.id),
       recordsToUpsert.map((r) => r.id),
       Array.from(poCoveredKeys),
+      cancelledMoIds,
     );
 
     // 9. Clean up stale completed items older than 7 days

@@ -41,6 +41,8 @@ import {
 import { env } from '../utils/env';
 import { sanitizeBaseUrl, extractSoNameFromOrigin } from '../utils/helpers';
 import { isBoardProductName, isStockExemptEdgeBandingService } from './boardProductClassifier';
+import { isCuttingProductOrWorkOrder } from './workOrderQuantityReconciliationService';
+import { selectBestBoardComponent } from './cuttingBoMReconciliationService';
 
 interface OdooErrorResponse {
   name?: string;
@@ -6125,12 +6127,14 @@ export class OdooClient {
         name: string;
         state: string;
         origin: string | null;
+        product_id?: [number, string] | false;
+        product_qty?: number;
       }>('mrp.production', {
         domain: [
           ['company_id', '=', targetCompanyId],
           ['state', 'in', ['confirmed', 'progress']],
         ],
-        fields: ['id', 'name', 'state', 'origin'],
+        fields: ['id', 'name', 'state', 'origin', 'product_id', 'product_qty'],
         limit: 200,
         order: 'create_date desc, id desc',
       });
@@ -6240,7 +6244,42 @@ export class OdooClient {
         qtyMissing: number;
       }>();
 
+      // Group board moves by MO ID to enforce single board component rule for cutting operations
+      const boardMovesByMoId = new Map<number, typeof boardMoves>();
       for (const move of boardMoves) {
+        const rmId = Array.isArray(move.raw_material_production_id)
+          ? move.raw_material_production_id[0]
+          : move.raw_material_production_id;
+        if (!rmId) continue;
+        const list = boardMovesByMoId.get(rmId) || [];
+        list.push(move);
+        boardMovesByMoId.set(rmId, list);
+      }
+
+      const filteredBoardMoves: typeof boardMoves = [];
+      for (const [rmId, moMoves] of boardMovesByMoId.entries()) {
+        const mo = clientMOs.find(m => m.id === rmId);
+        if (!mo) continue;
+        const moProductName = Array.isArray(mo.product_id) ? mo.product_id[1] : '';
+        const isCutting = isCuttingProductOrWorkOrder(moProductName, mo.name);
+
+        if (isCutting && moMoves.length > 1) {
+          const chosen = selectBestBoardComponent({
+            moProductName,
+            moQty: mo.product_qty,
+            boardMoves: moMoves as any,
+            sheetMaterials: [],
+          });
+          filteredBoardMoves.push({
+            ...chosen.chosenMove,
+            product_uom_qty: chosen.alignedQty,
+          } as any);
+        } else {
+          filteredBoardMoves.push(...moMoves);
+        }
+      }
+
+      for (const move of filteredBoardMoves) {
         const moId = Array.isArray(move.raw_material_production_id)
           ? move.raw_material_production_id[0]
           : move.raw_material_production_id;
@@ -6256,7 +6295,14 @@ export class OdooClient {
           continue; // Exclude since PO exists
         }
 
-        const qtyNeeded = Number(move.product_uom_qty || 0);
+        const moProductName = Array.isArray(mo.product_id) ? mo.product_id[1] : '';
+        const isCutting = isCuttingProductOrWorkOrder(moProductName, mo.name);
+
+        let qtyNeeded = Number(move.product_uom_qty || 0);
+        if (isCutting && typeof mo.product_qty === 'number' && mo.product_qty > 0) {
+          qtyNeeded = Math.min(qtyNeeded, mo.product_qty);
+        }
+
         const qtyReserved = Number(move.quantity || 0);
         const key = `${moId}_${productId}`;
         const existing = requirementsMap.get(key);
