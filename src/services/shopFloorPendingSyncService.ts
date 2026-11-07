@@ -465,43 +465,7 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
       const productId = Array.isArray(move.product_id) ? move.product_id[0] : 0;
       const productName = Array.isArray(move.product_id) ? move.product_id[1] : '';
       const normalizedMoveProdName = normalizeBoardProductName(productName);
-
-      // If an active or received PO exists for this origin/MO and product, exclude it (procured via vendor delivery, not gate log)
       const soOrigin = mo.origin ? extractSoNameFromOrigin(mo.origin) : null;
-      const poCovered = Boolean(
-        (mo.origin && (
-          originProductPOKeys.has(`${mo.origin}_${productId}`) ||
-          originProductPOKeys.has(`${mo.origin.toUpperCase()}_${productId}`) ||
-          originProductPOKeys.has(`${mo.origin}_${normalizedMoveProdName}`) ||
-          originProductPOKeys.has(`${mo.origin.toUpperCase()}_${normalizedMoveProdName}`)
-        )) ||
-        (soOrigin && (
-          originProductPOKeys.has(`${soOrigin}_${productId}`) ||
-          originProductPOKeys.has(`${soOrigin.toUpperCase()}_${productId}`) ||
-          originProductPOKeys.has(`${soOrigin}_${normalizedMoveProdName}`) ||
-          originProductPOKeys.has(`${soOrigin.toUpperCase()}_${normalizedMoveProdName}`)
-        )) ||
-        originProductPOKeys.has(`${mo.name}_${productId}`) ||
-        originProductPOKeys.has(`${mo.name.toUpperCase()}_${productId}`) ||
-        originProductPOKeys.has(`${mo.name}_${normalizedMoveProdName}`) ||
-        originProductPOKeys.has(`${mo.name.toUpperCase()}_${normalizedMoveProdName}`)
-      );
-
-      if (poCovered) {
-        poCoveredKeys.add(`${moId}_${productId}`);
-        poCoveredKeys.add(`${mo.name}_${productId}`);
-        poCoveredKeys.add(`${moId}_${normalizedMoveProdName}`);
-        poCoveredKeys.add(`${mo.name}_${normalizedMoveProdName}`);
-        if (mo.origin) {
-          poCoveredKeys.add(`${mo.origin}_${productId}`);
-          poCoveredKeys.add(`${mo.origin}_${normalizedMoveProdName}`);
-        }
-        if (soOrigin) {
-          poCoveredKeys.add(`${soOrigin}_${productId}`);
-          poCoveredKeys.add(`${soOrigin}_${normalizedMoveProdName}`);
-        }
-        continue;
-      }
 
       const originKey = mo.origin ? mo.origin.trim() : '';
       const partnerInfo = originKey
@@ -634,12 +598,12 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
       console.error('[ShopFloorPendingSyncService] Error matching retroactive board logs:', err);
     });
 
-    // 8. Prune stale pending rows for active and closed MOs if components were removed or covered by POs
-    // Any PO-covered keys and cancelled MOs are explicitly purged so they do not linger in the Add Stock area
+    // 8. Prune stale pending rows for active and closed MOs if components were removed or MO was cancelled
+    // Cancelled MOs are explicitly purged so they do not linger in the Add Stock area
     await pruneStalePendingProcessesForActiveMos(
       allMOs.map((mo) => mo.id),
       recordsToUpsert.map((r) => r.id),
-      Array.from(poCoveredKeys),
+      [],
       cancelledMoIds,
     );
 
@@ -721,16 +685,7 @@ export async function matchRetroactiveBoardLogsForActiveMos(
     const productId = Array.isArray(move.product_id) ? move.product_id[0] : 0;
     const productName = Array.isArray(move.product_id) ? move.product_id[1] : '';
     const normalizedMoveProdName = normalizeBoardProductName(productName);
-
-    // Rule: "no purchase order"
     const soOrigin = mo.origin ? extractSoNameFromOrigin(mo.origin) : null;
-    const poCovered = Boolean(
-      (mo.origin && (originProductPOKeys.has(`${mo.origin}_${productId}`) || originProductPOKeys.has(`${mo.origin}_${normalizedMoveProdName}`))) ||
-      (soOrigin && (originProductPOKeys.has(`${soOrigin}_${productId}`) || originProductPOKeys.has(`${soOrigin}_${normalizedMoveProdName}`))) ||
-      originProductPOKeys.has(`${mo.name}_${productId}`) ||
-      originProductPOKeys.has(`${mo.name}_${normalizedMoveProdName}`)
-    );
-    if (poCovered) continue;
 
     const partnerInfo = mo.origin ? (soPartnerMap.get(mo.origin) || (soOrigin ? soPartnerMap.get(soOrigin) : null)) : null;
     const partnerId = partnerInfo?.partnerId || 0;

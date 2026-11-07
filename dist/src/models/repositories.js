@@ -4726,14 +4726,6 @@ async function pruneStalePendingProcessesForActiveMos(activeMoIds, validKeys, po
         }
         const compositeKey = `${row.mo_id}_${row.product_id}`;
         const nameKey = `${row.mo_name}_${row.product_id}`;
-        // 1. If an active or received PO covers this MO and product, prune it immediately
-        // Crucial anti-double-logging rule:
-        // When a PO was received, boards were already logged in Odoo via PO receipt.
-        // They must never linger under "Stock Needed - No Purchase Orders"!
-        if (poCoveredKeySet.has(row.id) || poCoveredKeySet.has(compositeKey) || poCoveredKeySet.has(nameKey)) {
-            idsToDelete.push(row.id);
-            continue;
-        }
         // 2. Check if a matching history log exists in board_intake_queue
         const cleanCustomer = String(row.partner_name || '').trim().toLowerCase();
         const cleanProduct = String(row.product_name || '').trim().toLowerCase();

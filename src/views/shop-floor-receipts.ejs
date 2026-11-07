@@ -4,8 +4,8 @@
   <%- include('partials/shop-floor-nav', { activeShopFloorTab: 'receipts' }) %>
   <div class="d-flex flex-wrap justify-content-between align-items-center gap-3 mb-4">
     <div>
-      <h1 class="h3 fw-bold mb-1">Board Receipts</h1>
-      <p class="text-muted mb-0">Validate purchased boards received in Odoo. Validations run in the background (FIFO).</p>
+      <h1 class="h3 fw-bold mb-1">Receipts</h1>
+      <p class="text-muted mb-0">Validate incoming materials (hardware, edge banding, accessories) received in Odoo. Boards are received strictly via Board Logs.</p>
     </div>
     <div class="d-flex align-items-center gap-2">
       <span id="queueBadge" class="badge rounded-pill bg-primary px-3 py-2 <%- activeJobs && activeJobs.length ? '' : 'd-none' %>">
@@ -23,7 +23,7 @@
   <div id="receiptToastContainer" class="position-fixed bottom-0 end-0 p-3" style="z-index: 1080;"></div>
 
   <div id="emptyReceiptsCard" class="app-card p-5 text-center text-muted <%- (!receipts || !receipts.length) ? '' : 'd-none' %>">
-    No purchased-board receipts need validation.
+    No incoming material receipts need validation (boards are received via Board Logs).
   </div>
 
   <div class="d-grid gap-3" id="receiptsGrid">
@@ -72,7 +72,7 @@
                 <span><%= isRunning ? 'Validating in Odoo...' : 'In Queue (FIFO)...' %></span>
               </button>
             <% } else { %>
-              <form method="post" action="/shop-floor/receipts/<%= receipt.id %>/validate" class="receipt-validate-form" data-picking-id="<%= receipt.id %>" data-confirm="Validate this board receipt in Odoo?" data-no-loading="true">
+              <form method="post" action="/shop-floor/receipts/<%= receipt.id %>/validate" class="receipt-validate-form" data-picking-id="<%= receipt.id %>" data-confirm="Validate this receipt in Odoo?" data-no-loading="true">
                 <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
                 <button class="btn btn-success" type="submit" id="btn-validate-<%= receipt.id %>">Validate Receipt</button>
               </form>
@@ -81,7 +81,7 @@
         </div>
         <div class="table-responsive mt-3">
           <table class="table table-sm mb-0">
-            <thead><tr><th>Board</th><th>Ordered</th><th>Received</th></tr></thead>
+            <thead><tr><th>Item / Material</th><th>Ordered</th><th>Received</th></tr></thead>
             <tbody>
               <% receipt.items.forEach((item) => { %>
                 <tr><td><%= item.name %></td><td><%= item.ordered %></td><td><%= item.received %></td></tr>

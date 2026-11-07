@@ -4901,134 +4901,29 @@ export class OdooClient {
       limit: 2000,
     });
     const byPicking = new Map<number, any[]>();
-    const boardPickingIds = new Set<number>();
     moves.forEach((move) => {
       const id = Array.isArray(move.picking_id) ? move.picking_id[0] : move.picking_id;
       const name = Array.isArray(move.product_id) ? String(move.product_id[1] || '') : '';
+      // RULE: Receipts should ONLY show items that are NOT boards! Boards are received strictly via Board Logs.
+      if (isBoardProductName(name)) {
+        return;
+      }
       if (!byPicking.has(id)) byPicking.set(id, []);
       byPicking.get(id)!.push({ name, ordered: Number(move.product_uom_qty || 0), received: Number(move.quantity || 0) });
-      if (isBoardProductName(name)) {
-        boardPickingIds.add(id);
-      }
     });
 
-    // Resolve client / Sales Order info for board purchases
-    const poOriginsToLookup = [...new Set(
-      scopedPickings
-        .filter((p) => p.origin && boardPickingIds.has(p.id))
-        .map((p) => String(p.origin).trim())
-    )];
+    // Only return pickings that have non-board items (hardware, edge banding, accessories) to receive
+    const eligiblePickings = scopedPickings.filter((p) => (byPicking.get(p.id) || []).length > 0);
+    if (!eligiblePickings.length) return [];
 
-    const poToClientMap = new Map<string, { clientName: string; soName: string }>();
-
-    if (poOriginsToLookup.length > 0) {
-      try {
-        const purchaseOrders = await this.searchReadRecords<{
-          name: string;
-          origin?: string | false | null;
-        }>('purchase.order', {
-          domain: [
-            ['company_id', '=', warehouse.companyId],
-            ['name', 'in', poOriginsToLookup],
-          ],
-          fields: ['name', 'origin'],
-          limit: 100,
-        }).catch(() => []);
-
-        const candidateSoNames = new Set<string>();
-        const candidateMoNames = new Set<string>();
-        const poNameToOrigins = new Map<string, string[]>();
-
-        for (const po of purchaseOrders) {
-          const poOrig = String(po.origin || '').trim();
-          if (!poOrig) continue;
-          const origList = poOrig.split(/[:, ]+/).map((s) => s.trim()).filter(Boolean);
-          poNameToOrigins.set(po.name, origList);
-          for (const item of origList) {
-            if (/^S\d{4,}|^SO\d{3,}/i.test(item)) {
-              candidateSoNames.add(item.toUpperCase());
-            } else if (item.startsWith('WH/MO/') || item.startsWith('MO/')) {
-              candidateMoNames.add(item);
-            }
-          }
-        }
-
-        // Resolve MOs if any candidate MO names were found in PO origins
-        if (candidateMoNames.size > 0) {
-          const mos = await this.searchReadRecords<{ name: string; origin?: string | false | null }>('mrp.production', {
-            domain: [
-              ['company_id', '=', warehouse.companyId],
-              ['name', 'in', Array.from(candidateMoNames)],
-            ],
-            fields: ['name', 'origin'],
-            limit: 50,
-          }).catch(() => []);
-
-          for (const mo of mos) {
-            const moOrig = String(mo.origin || '').trim();
-            if (moOrig) {
-              const parts = moOrig.split(/[:, ]+/).map((s) => s.trim()).filter(Boolean);
-              for (const part of parts) {
-                if (/^S\d{4,}|^SO\d{3,}/i.test(part)) {
-                  candidateSoNames.add(part.toUpperCase());
-                }
-              }
-            }
-          }
-        }
-
-        // Fetch Sales Orders to get client partner names
-        if (candidateSoNames.size > 0) {
-          const saleOrders = await this.searchReadRecords<{
-            name: string;
-            partner_id: [number, string] | false;
-          }>('sale.order', {
-            domain: [
-              ['company_id', '=', warehouse.companyId],
-              ['name', 'in', Array.from(candidateSoNames)],
-            ],
-            fields: ['name', 'partner_id'],
-            limit: 100,
-          }).catch(() => []);
-
-          const soClientMap = new Map<string, string>();
-          for (const so of saleOrders) {
-            if (so.partner_id && Array.isArray(so.partner_id) && so.partner_id[0] !== 350) {
-              soClientMap.set(so.name.toUpperCase(), so.partner_id[1]);
-            }
-          }
-
-          // Map back to PO name
-          for (const po of purchaseOrders) {
-            const origins = poNameToOrigins.get(po.name) || [];
-            for (const item of origins) {
-              const upper = item.toUpperCase();
-              if (soClientMap.has(upper)) {
-                poToClientMap.set(po.name, {
-                  clientName: soClientMap.get(upper)!,
-                  soName: upper,
-                });
-                break;
-              }
-            }
-          }
-        }
-      } catch (err) {
-        console.warn('[odooClient] Failed to resolve client for board receipts:', err);
-      }
-    }
-
-    return scopedPickings.map((p) => {
+    return eligiblePickings.map((p) => {
       const items = byPicking.get(p.id) || [];
-      const hasBoards = boardPickingIds.has(p.id);
-      const poOrigin = p.origin ? String(p.origin).trim() : '';
-      const clientInfo = hasBoards && poOrigin ? poToClientMap.get(poOrigin) : undefined;
       return {
         ...p,
         items,
-        hasBoards,
-        clientName: clientInfo?.clientName || null,
-        soName: clientInfo?.soName || null,
+        hasBoards: false,
+        clientName: null,
+        soName: null,
       };
     });
   }
@@ -6188,50 +6083,6 @@ export class OdooClient {
 
       if (!boardMoves.length) return [];
 
-      // 4. Exclude moves that have corresponding POs for this board product
-      const clientOrigins = [...new Set(clientMOs.map(mo => mo.origin).filter(Boolean) as string[])];
-
-      const purchaseOrders = clientOrigins.length > 0
-        ? await this.searchReadRecords<{
-          id: number;
-          origin: string | false;
-        }>('purchase.order', {
-          domain: [
-            ['company_id', '=', targetCompanyId],
-            ['origin', 'in', clientOrigins],
-          ],
-          fields: ['id', 'origin'],
-          limit: 500,
-        })
-        : [];
-
-      const originProductPOKeys = new Set<string>();
-      if (purchaseOrders.length > 0) {
-        const poIds = purchaseOrders.map(po => po.id);
-        const poLines = await this.searchReadRecords<{
-          order_id: [number, string];
-          product_id: [number, string] | false;
-        }>('purchase.order.line', {
-          domain: [['order_id', 'in', poIds]],
-          fields: ['order_id', 'product_id'],
-          limit: 2000,
-        });
-
-        const poOriginMap = new Map<number, string>();
-        for (const po of purchaseOrders) {
-          if (po.origin) poOriginMap.set(po.id, po.origin);
-        }
-
-        for (const line of poLines) {
-          const poId = Array.isArray(line.order_id) ? line.order_id[0] : 0;
-          const productId = Array.isArray(line.product_id) ? line.product_id[0] : 0;
-          const origin = poOriginMap.get(poId);
-          if (origin && productId) {
-            originProductPOKeys.add(`${origin}_${productId}`);
-          }
-        }
-      }
-
       // Build requirement list, aggregating multiple moves for the same MO and product
       const requirementsMap = new Map<string, {
         moId: number;
@@ -6289,11 +6140,6 @@ export class OdooClient {
 
         const productId = Array.isArray(move.product_id) ? move.product_id[0] : 0;
         const productName = Array.isArray(move.product_id) ? move.product_id[1] : '';
-
-        // Check if there is a PO for this SO origin and product
-        if (mo.origin && originProductPOKeys.has(`${mo.origin}_${productId}`)) {
-          continue; // Exclude since PO exists
-        }
 
         const moProductName = Array.isArray(mo.product_id) ? mo.product_id[1] : '';
         const isCutting = isCuttingProductOrWorkOrder(moProductName, mo.name);
