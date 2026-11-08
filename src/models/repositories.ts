@@ -6412,6 +6412,42 @@ export async function getActiveBoardIntakeLogs(): Promise<Array<{
   );
 }
 
+export async function getLoadedShopFloorPendingProcesses(): Promise<Array<{
+  id: string;
+  mo_id: number;
+  mo_name?: string;
+  origin?: string | null;
+  partner_id: number;
+  partner_name: string;
+  product_id: number;
+  product_name: string;
+  qty_needed: number;
+  qty_reserved: number;
+  qty_missing: number;
+  status: string;
+}>> {
+  return queryAll<{
+    id: string;
+    mo_id: number;
+    mo_name?: string;
+    origin?: string | null;
+    partner_id: number;
+    partner_name: string;
+    product_id: number;
+    product_name: string;
+    qty_needed: number;
+    qty_reserved: number;
+    qty_missing: number;
+    status: string;
+  }>(
+    `SELECT id, mo_id, mo_name, origin, partner_id, partner_name, product_id, product_name,
+            qty_needed, qty_reserved, qty_missing, status
+     FROM shop_floor_pending_processes
+     WHERE status = 'loaded' OR qty_missing = 0 OR qty_reserved >= qty_needed`,
+    [],
+  );
+}
+
 export async function pruneStalePendingProcessesForActiveMos(
   activeMoIds: number[],
   validKeys: string[],

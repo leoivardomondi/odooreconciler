@@ -43,6 +43,8 @@ import { sanitizeBaseUrl, extractSoNameFromOrigin } from '../utils/helpers';
 import { isBoardProductName, isStockExemptEdgeBandingService } from './boardProductClassifier';
 import { isCuttingProductOrWorkOrder } from './workOrderQuantityReconciliationService';
 import { selectBestBoardComponent } from './cuttingBoMReconciliationService';
+import { findMatchingBoardLog, PoLineCandidate } from './boardLogStockMatcher';
+import { getActiveBoardIntakeLogs, getLoadedShopFloorPendingProcesses } from '../models/repositories';
 
 interface OdooErrorResponse {
   name?: string;
@@ -2354,6 +2356,63 @@ export class OdooClient {
     return stateMap;
   }
 
+  async getBulkRelatedPurchaseOrderLines(origins: string[]): Promise<Array<{
+    orderName: string;
+    origin: string | false;
+    productId: number;
+    productName: string;
+    productQty: number;
+    qtyReceived: number;
+  }>> {
+    if (!origins || origins.length === 0) return [];
+    try {
+      const pos = await this.searchReadRecords<{
+        id: number;
+        name: string;
+        origin: string | false;
+        order_line: number[];
+      }>('purchase.order', {
+        domain: [
+          ['origin', 'in', origins],
+          ['state', '!=', 'cancel'],
+        ],
+        fields: ['id', 'name', 'origin', 'order_line'],
+        limit: 1000,
+      });
+      const poLineIds = pos.flatMap((p) => p.order_line || []);
+      if (!poLineIds.length) return [];
+      const poById = new Map<number, { name: string; origin: string | false }>();
+      for (const po of pos) {
+        poById.set(po.id, { name: po.name, origin: po.origin });
+      }
+      const lines = await this.searchReadRecords<{
+        id: number;
+        order_id: [number, string] | false;
+        product_id: [number, string] | false;
+        product_qty: number;
+        qty_received: number;
+      }>('purchase.order.line', {
+        domain: [['id', 'in', poLineIds]],
+        fields: ['id', 'order_id', 'product_id', 'product_qty', 'qty_received'],
+        limit: 5000,
+      });
+      return lines.map((line) => {
+        const orderId = Array.isArray(line.order_id) ? line.order_id[0] : 0;
+        const poInfo = poById.get(orderId);
+        return {
+          orderName: poInfo?.name || (Array.isArray(line.order_id) ? line.order_id[1] : ''),
+          origin: poInfo?.origin || false,
+          productId: Array.isArray(line.product_id) ? line.product_id[0] : 0,
+          productName: Array.isArray(line.product_id) ? line.product_id[1] : '',
+          productQty: Number(line.product_qty || 0),
+          qtyReceived: Number(line.qty_received || 0),
+        };
+      });
+    } catch {
+      return [];
+    }
+  }
+
   /**
    * Check whether 100% of required raw materials/components for a Manufacturing Order
    * have been physically made available and assigned in stock.
@@ -2367,11 +2426,12 @@ export class OdooClient {
     const productions = await this.searchReadRecords<{
       id: number;
       name: string;
+      origin: string | false;
       state: string;
       product_id: [number, string] | false;
     }>('mrp.production', {
       domain: [['id', '=', moId]],
-      fields: ['id', 'name', 'state', 'product_id'],
+      fields: ['id', 'name', 'origin', 'state', 'product_id'],
       limit: 1,
     });
 
@@ -2431,6 +2491,42 @@ export class OdooClient {
       limit: 1000,
     });
 
+    // Fetch active board logs, loaded pending processes, and PO receipts before noting missing stock.
+    // This prevents blocking MOs when Odoo assigns physical stock to an older negative-stock order.
+    const [activeLogs, loadedProcesses] = await Promise.all([
+      getActiveBoardIntakeLogs().catch(() => []),
+      getLoadedShopFloorPendingProcesses().catch(() => []),
+    ]);
+
+    let clientId: number | null = null;
+    let clientName: string | null = null;
+    let relatedPoNames: string[] = [];
+    let poLines: PoLineCandidate[] = [];
+
+    if (production.origin) {
+      const extractedSo = extractSoNameFromOrigin(production.origin);
+      const originKeys = [production.origin, extractedSo, production.name].filter(Boolean) as string[];
+      try {
+        const sos = await this.searchReadRecords<{ id: number; name: string; partner_id: [number, string] | false }>(
+          'sale.order',
+          {
+            domain: [['name', 'in', originKeys]],
+            fields: ['id', 'name', 'partner_id'],
+            limit: 5,
+          },
+        );
+        if (sos.length > 0 && Array.isArray(sos[0].partner_id)) {
+          clientId = sos[0].partner_id[0];
+          clientName = sos[0].partner_id[1];
+        }
+      } catch (_) {}
+
+      try {
+        poLines = await this.getBulkRelatedPurchaseOrderLines(originKeys);
+        relatedPoNames = [...new Set(poLines.map((p) => p.orderName).filter((n): n is string => Boolean(n)))];
+      } catch (_) {}
+    }
+
     const missingComponents: MoMissingComponent[] = [];
 
     for (const move of rawMoves) {
@@ -2447,12 +2543,35 @@ export class OdooClient {
       // If state is assigned and available >= required, move is satisfied
       if (state === 'assigned' && availableQty >= requiredQty) continue;
 
-      // Otherwise component is missing or partially missing
-      const missingQty = Math.max(0, requiredQty - availableQty);
       const productId = Array.isArray(move.product_id) ? move.product_id[0] : 0;
       const productName = Array.isArray(move.product_id) ? move.product_id[1] : 'Unknown Product';
       const uom = Array.isArray(move.product_uom) ? move.product_uom[1] : 'Units';
       const isBoard = isBoardProductName(productName);
+
+      // Before noting that the MO needs stock for a board component, first check records
+      // to see if there were board logs related to this exact match (board intake logs,
+      // loaded shop floor pending processes, or PO receipts).
+      if (isBoard) {
+        const match = findMatchingBoardLog({
+          moId: production.id,
+          moName: production.name,
+          origin: production.origin || null,
+          partnerId: clientId,
+          partnerName: clientName,
+          productId,
+          productName,
+          relatedPoNames,
+          activeLogs,
+          loadedProcesses,
+          poLines,
+        });
+        if (match.hasMatch) {
+          continue;
+        }
+      }
+
+      // Otherwise component is missing or partially missing
+      const missingQty = Math.max(0, requiredQty - availableQty);
 
       missingComponents.push({
         id: move.id,
@@ -2506,14 +2625,36 @@ export class OdooClient {
     if (!production) {
       throw new OdooClientError('Manufacturing order was not found in Odoo.');
     }
+
+    const [activeLogs, loadedProcesses] = await Promise.all([
+      getActiveBoardIntakeLogs().catch(() => []),
+      getLoadedShopFloorPendingProcesses().catch(() => []),
+    ]);
+
     const unavailableBoards = components.filter((component) => {
       const productName = Array.isArray(component.product_id) ? component.product_id[1] : '';
       if (!isBoardProductName(productName) || ['done', 'cancel', 'draft', 'assigned'].includes(component.state)) {
         return false;
       }
-      return ['confirmed', 'waiting', 'partially_available'].includes(component.state)
+      const isUnavail = ['confirmed', 'waiting', 'partially_available'].includes(component.state)
         || !component.forecast_availability
         || component.forecast_availability === 'unavailable';
+      if (!isUnavail) return false;
+
+      const compPid = Array.isArray(component.product_id) ? component.product_id[0] : 0;
+      const match = findMatchingBoardLog({
+        moId: production.id,
+        moName: production.name,
+        origin: production.origin || null,
+        productId: compPid,
+        productName,
+        activeLogs,
+        loadedProcesses,
+      });
+      if (match.hasMatch) {
+        return false;
+      }
+      return true;
     }).map((component) => ({
       name: Array.isArray(component.product_id) ? component.product_id[1] : 'Board',
       required: Number(component.product_uom_qty || 0),

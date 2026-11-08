@@ -47,7 +47,10 @@ import {
   ShopFloorOperatorEntry,
   getContinuousBoardIntakeLogs,
   ContinuousBoardIntakeEntry,
+  getActiveBoardIntakeLogs,
+  getLoadedShopFloorPendingProcesses,
 } from '../models/repositories';
+import { findMatchingBoardLog } from '../services/boardLogStockMatcher';
 import { ShopFloorFeatureFlags, ShopFloorFeatureKey } from '../models/types';
 import { wakeShopFloorValidationJobWorker } from '../services/shopFloorValidationJobService';
 import { OdooClient } from '../services/odooClient';
@@ -1178,13 +1181,30 @@ export async function fetchLiveSharedWorkOrders(client: OdooClient): Promise<Sha
   )] as string[];
   const moIds = allOrders.map((o) => o.id);
 
-  const [clientMap, saleOrderDateMap, allComponents, poStateMap, woDetails] = await Promise.all([
+  const [clientMap, saleOrderDateMap, allComponents, poStateMap, woDetails, activeBoardLogs, loadedBoardProcesses, bulkPoLines] = await Promise.all([
     client.getBulkSaleOrderClients(originsToFetch).catch(() => new Map<string, string>()),
     client.getBulkSaleOrderConfirmationDates(originsToFetch).catch(() => new Map<string, string>()),
     client.getBulkManufacturingOrderComponents(moIds).catch(() => []),
     client.getBulkRelatedPurchaseOrderStates(originsToFetch).catch(() => new Map<string, string>()),
     client.getBulkWorkOrderDetails(moIds).catch(() => ({ stateMap: new Map<number, string>(), areaMap: new Map<number, string>() })),
+    getActiveBoardIntakeLogs().catch(() => []),
+    getLoadedShopFloorPendingProcesses().catch(() => []),
+    client.getBulkRelatedPurchaseOrderLines(originsToFetch).catch(() => []),
   ]);
+
+  const poLinesByOrigin = new Map<string, typeof bulkPoLines>();
+  for (const line of bulkPoLines) {
+    const keys: string[] = [];
+    if (line.origin) keys.push(line.origin.trim().toUpperCase());
+    const extracted = line.origin ? extractSoNameFromOrigin(line.origin) : null;
+    if (extracted) keys.push(extracted.trim().toUpperCase());
+    if (line.orderName) keys.push(line.orderName.trim().toUpperCase());
+    for (const k of keys) {
+      const list = poLinesByOrigin.get(k) || [];
+      list.push(line);
+      poLinesByOrigin.set(k, list);
+    }
+  }
 
   const workOrderStateMap = woDetails.stateMap;
   const workOrderAreaMap = woDetails.areaMap;
@@ -1231,6 +1251,31 @@ export async function fetchLiveSharedWorkOrders(client: OdooClient): Promise<Sha
     const unavailable = components.filter((c) => {
       if (c.state === 'done' || c.state === 'cancel' || c.state === 'draft' || c.state === 'assigned') {
         return false;
+      }
+      const componentName = Array.isArray(c.product_id) ? c.product_id[1] : '';
+      if (isBoardComponentName(componentName)) {
+        const compPid = Array.isArray(c.product_id) ? c.product_id[0] : 0;
+        const soOrigin = o.origin ? extractSoNameFromOrigin(o.origin) : null;
+        const resolvedClient = (o.origin && clientMap.get(o.origin)) || (soOrigin && clientMap.get(soOrigin)) || clientMap.get(o.name) || null;
+        const linesForMo = [
+          ...(o.origin ? poLinesByOrigin.get(o.origin.trim().toUpperCase()) || [] : []),
+          ...(soOrigin ? poLinesByOrigin.get(soOrigin.trim().toUpperCase()) || [] : []),
+          ...(poLinesByOrigin.get(o.name.trim().toUpperCase()) || []),
+        ];
+        const match = findMatchingBoardLog({
+          moId: o.id,
+          moName: o.name,
+          origin: o.origin,
+          partnerName: resolvedClient,
+          productId: compPid,
+          productName: componentName,
+          activeLogs: activeBoardLogs,
+          loadedProcesses: loadedBoardProcesses,
+          poLines: linesForMo,
+        });
+        if (match.hasMatch) {
+          return false;
+        }
       }
       if (['confirmed', 'waiting', 'partially_available'].includes(c.state)) {
         return true;

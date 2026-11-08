@@ -190,6 +190,7 @@ exports.reconcilePendingProcessesWithBoardLogs = reconcilePendingProcessesWithBo
 exports.deleteStaleCompletedProcesses = deleteStaleCompletedProcesses;
 exports.unmarkPendingShopFloorProcessesLoaded = unmarkPendingShopFloorProcessesLoaded;
 exports.getActiveBoardIntakeLogs = getActiveBoardIntakeLogs;
+exports.getLoadedShopFloorPendingProcesses = getLoadedShopFloorPendingProcesses;
 exports.pruneStalePendingProcessesForActiveMos = pruneStalePendingProcessesForActiveMos;
 const crypto_1 = require("crypto");
 const uuid_1 = require("uuid");
@@ -4699,6 +4700,12 @@ async function getActiveBoardIntakeLogs() {
      WHERE status IN ('synced', 'processing', 'pending')
        AND reverted_at IS NULL
        AND status NOT IN ('reverted', 'reverting')`, []);
+}
+async function getLoadedShopFloorPendingProcesses() {
+    return (0, db_1.queryAll)(`SELECT id, mo_id, mo_name, origin, partner_id, partner_name, product_id, product_name,
+            qty_needed, qty_reserved, qty_missing, status
+     FROM shop_floor_pending_processes
+     WHERE status = 'loaded' OR qty_missing = 0 OR qty_reserved >= qty_needed`, []);
 }
 async function pruneStalePendingProcessesForActiveMos(activeMoIds, validKeys, poCoveredKeys = [], cancelledMoIds = []) {
     invalidatePendingShopFloorProcessesCache();

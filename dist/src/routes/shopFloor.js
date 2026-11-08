@@ -25,6 +25,7 @@ const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
 const multer_1 = __importDefault(require("multer"));
 const repositories_1 = require("../models/repositories");
+const boardLogStockMatcher_1 = require("../services/boardLogStockMatcher");
 const shopFloorValidationJobService_1 = require("../services/shopFloorValidationJobService");
 const odooClient_1 = require("../services/odooClient");
 const payrollBridgeService_1 = require("../services/payrollBridgeService");
@@ -873,13 +874,32 @@ async function fetchLiveSharedWorkOrders(client) {
             o.name,
         ]).filter(Boolean))];
     const moIds = allOrders.map((o) => o.id);
-    const [clientMap, saleOrderDateMap, allComponents, poStateMap, woDetails] = await Promise.all([
+    const [clientMap, saleOrderDateMap, allComponents, poStateMap, woDetails, activeBoardLogs, loadedBoardProcesses, bulkPoLines] = await Promise.all([
         client.getBulkSaleOrderClients(originsToFetch).catch(() => new Map()),
         client.getBulkSaleOrderConfirmationDates(originsToFetch).catch(() => new Map()),
         client.getBulkManufacturingOrderComponents(moIds).catch(() => []),
         client.getBulkRelatedPurchaseOrderStates(originsToFetch).catch(() => new Map()),
         client.getBulkWorkOrderDetails(moIds).catch(() => ({ stateMap: new Map(), areaMap: new Map() })),
+        (0, repositories_1.getActiveBoardIntakeLogs)().catch(() => []),
+        (0, repositories_1.getLoadedShopFloorPendingProcesses)().catch(() => []),
+        client.getBulkRelatedPurchaseOrderLines(originsToFetch).catch(() => []),
     ]);
+    const poLinesByOrigin = new Map();
+    for (const line of bulkPoLines) {
+        const keys = [];
+        if (line.origin)
+            keys.push(line.origin.trim().toUpperCase());
+        const extracted = line.origin ? (0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(line.origin) : null;
+        if (extracted)
+            keys.push(extracted.trim().toUpperCase());
+        if (line.orderName)
+            keys.push(line.orderName.trim().toUpperCase());
+        for (const k of keys) {
+            const list = poLinesByOrigin.get(k) || [];
+            list.push(line);
+            poLinesByOrigin.set(k, list);
+        }
+    }
     const workOrderStateMap = woDetails.stateMap;
     const workOrderAreaMap = woDetails.areaMap;
     const componentsByMoId = new Map();
@@ -921,6 +941,31 @@ async function fetchLiveSharedWorkOrders(client) {
         const unavailable = components.filter((c) => {
             if (c.state === 'done' || c.state === 'cancel' || c.state === 'draft' || c.state === 'assigned') {
                 return false;
+            }
+            const componentName = Array.isArray(c.product_id) ? c.product_id[1] : '';
+            if (isBoardComponentName(componentName)) {
+                const compPid = Array.isArray(c.product_id) ? c.product_id[0] : 0;
+                const soOrigin = o.origin ? (0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(o.origin) : null;
+                const resolvedClient = (o.origin && clientMap.get(o.origin)) || (soOrigin && clientMap.get(soOrigin)) || clientMap.get(o.name) || null;
+                const linesForMo = [
+                    ...(o.origin ? poLinesByOrigin.get(o.origin.trim().toUpperCase()) || [] : []),
+                    ...(soOrigin ? poLinesByOrigin.get(soOrigin.trim().toUpperCase()) || [] : []),
+                    ...(poLinesByOrigin.get(o.name.trim().toUpperCase()) || []),
+                ];
+                const match = (0, boardLogStockMatcher_1.findMatchingBoardLog)({
+                    moId: o.id,
+                    moName: o.name,
+                    origin: o.origin,
+                    partnerName: resolvedClient,
+                    productId: compPid,
+                    productName: componentName,
+                    activeLogs: activeBoardLogs,
+                    loadedProcesses: loadedBoardProcesses,
+                    poLines: linesForMo,
+                });
+                if (match.hasMatch) {
+                    return false;
+                }
             }
             if (['confirmed', 'waiting', 'partially_available'].includes(c.state)) {
                 return true;

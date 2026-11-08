@@ -30,6 +30,8 @@ const helpers_1 = require("../utils/helpers");
 const boardProductClassifier_1 = require("./boardProductClassifier");
 const workOrderQuantityReconciliationService_1 = require("./workOrderQuantityReconciliationService");
 const cuttingBoMReconciliationService_1 = require("./cuttingBoMReconciliationService");
+const boardLogStockMatcher_1 = require("./boardLogStockMatcher");
+const repositories_1 = require("../models/repositories");
 const MANUFACTURING_PERFORMANCE_START_DATE = '2026-08-05';
 const sharedOdooWebSessions = new Map();
 let isOdooTrafficPausedFlag = env_1.env.ODOO_PAUSE_TRAFFIC === 'true';
@@ -1585,6 +1587,47 @@ class OdooClient {
         }
         return stateMap;
     }
+    async getBulkRelatedPurchaseOrderLines(origins) {
+        if (!origins || origins.length === 0)
+            return [];
+        try {
+            const pos = await this.searchReadRecords('purchase.order', {
+                domain: [
+                    ['origin', 'in', origins],
+                    ['state', '!=', 'cancel'],
+                ],
+                fields: ['id', 'name', 'origin', 'order_line'],
+                limit: 1000,
+            });
+            const poLineIds = pos.flatMap((p) => p.order_line || []);
+            if (!poLineIds.length)
+                return [];
+            const poById = new Map();
+            for (const po of pos) {
+                poById.set(po.id, { name: po.name, origin: po.origin });
+            }
+            const lines = await this.searchReadRecords('purchase.order.line', {
+                domain: [['id', 'in', poLineIds]],
+                fields: ['id', 'order_id', 'product_id', 'product_qty', 'qty_received'],
+                limit: 5000,
+            });
+            return lines.map((line) => {
+                const orderId = Array.isArray(line.order_id) ? line.order_id[0] : 0;
+                const poInfo = poById.get(orderId);
+                return {
+                    orderName: poInfo?.name || (Array.isArray(line.order_id) ? line.order_id[1] : ''),
+                    origin: poInfo?.origin || false,
+                    productId: Array.isArray(line.product_id) ? line.product_id[0] : 0,
+                    productName: Array.isArray(line.product_id) ? line.product_id[1] : '',
+                    productQty: Number(line.product_qty || 0),
+                    qtyReceived: Number(line.qty_received || 0),
+                };
+            });
+        }
+        catch {
+            return [];
+        }
+    }
     /**
      * Check whether 100% of required raw materials/components for a Manufacturing Order
      * have been physically made available and assigned in stock.
@@ -1596,7 +1639,7 @@ class OdooClient {
         }
         const productions = await this.searchReadRecords('mrp.production', {
             domain: [['id', '=', moId]],
-            fields: ['id', 'name', 'state', 'product_id'],
+            fields: ['id', 'name', 'origin', 'state', 'product_id'],
             limit: 1,
         });
         const production = productions[0];
@@ -1643,6 +1686,37 @@ class OdooClient {
             fields: ['id', 'product_id', 'product_uom_qty', 'quantity', 'product_uom', 'state', 'forecast_availability'],
             limit: 1000,
         });
+        // Fetch active board logs, loaded pending processes, and PO receipts before noting missing stock.
+        // This prevents blocking MOs when Odoo assigns physical stock to an older negative-stock order.
+        const [activeLogs, loadedProcesses] = await Promise.all([
+            (0, repositories_1.getActiveBoardIntakeLogs)().catch(() => []),
+            (0, repositories_1.getLoadedShopFloorPendingProcesses)().catch(() => []),
+        ]);
+        let clientId = null;
+        let clientName = null;
+        let relatedPoNames = [];
+        let poLines = [];
+        if (production.origin) {
+            const extractedSo = (0, helpers_1.extractSoNameFromOrigin)(production.origin);
+            const originKeys = [production.origin, extractedSo, production.name].filter(Boolean);
+            try {
+                const sos = await this.searchReadRecords('sale.order', {
+                    domain: [['name', 'in', originKeys]],
+                    fields: ['id', 'name', 'partner_id'],
+                    limit: 5,
+                });
+                if (sos.length > 0 && Array.isArray(sos[0].partner_id)) {
+                    clientId = sos[0].partner_id[0];
+                    clientName = sos[0].partner_id[1];
+                }
+            }
+            catch (_) { }
+            try {
+                poLines = await this.getBulkRelatedPurchaseOrderLines(originKeys);
+                relatedPoNames = [...new Set(poLines.map((p) => p.orderName).filter((n) => Boolean(n)))];
+            }
+            catch (_) { }
+        }
         const missingComponents = [];
         for (const move of rawMoves) {
             const requiredQty = Number(move.product_uom_qty || 0);
@@ -1657,12 +1731,33 @@ class OdooClient {
             // If state is assigned and available >= required, move is satisfied
             if (state === 'assigned' && availableQty >= requiredQty)
                 continue;
-            // Otherwise component is missing or partially missing
-            const missingQty = Math.max(0, requiredQty - availableQty);
             const productId = Array.isArray(move.product_id) ? move.product_id[0] : 0;
             const productName = Array.isArray(move.product_id) ? move.product_id[1] : 'Unknown Product';
             const uom = Array.isArray(move.product_uom) ? move.product_uom[1] : 'Units';
             const isBoard = (0, boardProductClassifier_1.isBoardProductName)(productName);
+            // Before noting that the MO needs stock for a board component, first check records
+            // to see if there were board logs related to this exact match (board intake logs,
+            // loaded shop floor pending processes, or PO receipts).
+            if (isBoard) {
+                const match = (0, boardLogStockMatcher_1.findMatchingBoardLog)({
+                    moId: production.id,
+                    moName: production.name,
+                    origin: production.origin || null,
+                    partnerId: clientId,
+                    partnerName: clientName,
+                    productId,
+                    productName,
+                    relatedPoNames,
+                    activeLogs,
+                    loadedProcesses,
+                    poLines,
+                });
+                if (match.hasMatch) {
+                    continue;
+                }
+            }
+            // Otherwise component is missing or partially missing
+            const missingQty = Math.max(0, requiredQty - availableQty);
             missingComponents.push({
                 id: move.id,
                 productId,
@@ -1703,14 +1798,34 @@ class OdooClient {
         if (!production) {
             throw new OdooClientError('Manufacturing order was not found in Odoo.');
         }
+        const [activeLogs, loadedProcesses] = await Promise.all([
+            (0, repositories_1.getActiveBoardIntakeLogs)().catch(() => []),
+            (0, repositories_1.getLoadedShopFloorPendingProcesses)().catch(() => []),
+        ]);
         const unavailableBoards = components.filter((component) => {
             const productName = Array.isArray(component.product_id) ? component.product_id[1] : '';
             if (!(0, boardProductClassifier_1.isBoardProductName)(productName) || ['done', 'cancel', 'draft', 'assigned'].includes(component.state)) {
                 return false;
             }
-            return ['confirmed', 'waiting', 'partially_available'].includes(component.state)
+            const isUnavail = ['confirmed', 'waiting', 'partially_available'].includes(component.state)
                 || !component.forecast_availability
                 || component.forecast_availability === 'unavailable';
+            if (!isUnavail)
+                return false;
+            const compPid = Array.isArray(component.product_id) ? component.product_id[0] : 0;
+            const match = (0, boardLogStockMatcher_1.findMatchingBoardLog)({
+                moId: production.id,
+                moName: production.name,
+                origin: production.origin || null,
+                productId: compPid,
+                productName,
+                activeLogs,
+                loadedProcesses,
+            });
+            if (match.hasMatch) {
+                return false;
+            }
+            return true;
         }).map((component) => ({
             name: Array.isArray(component.product_id) ? component.product_id[1] : 'Board',
             required: Number(component.product_uom_qty || 0),
