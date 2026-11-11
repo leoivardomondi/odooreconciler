@@ -14,6 +14,7 @@ const logService_1 = require("./logService");
 const odooClient_1 = require("./odooClient");
 const poBillAutomationService_1 = require("./poBillAutomationService");
 const stockProcessingService_1 = require("./stockProcessingService");
+const poJobSummaryAuditService_1 = require("./poJobSummaryAuditService");
 const tempCleanup_1 = require("../utils/tempCleanup");
 const campaignReportService_1 = require("./campaignReportService");
 let schedulerRunning = false;
@@ -1234,6 +1235,11 @@ async function runSchedulerCycle(trigger = 'manual') {
                         },
                     };
                 }
+                // Fallback: Audit linked confirmed Purchase Orders against the Job Summary
+                try {
+                    await (0, poJobSummaryAuditService_1.auditLinkedPurchaseOrdersForSaleOrder)(client, order.id);
+                }
+                catch (_) { }
                 if (stockResult.alreadyProcessed || stockResult.lockSkipped) {
                     return {
                         result: 'skipped',

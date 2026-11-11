@@ -4,6 +4,7 @@ const express_1 = require("express");
 const repositories_1 = require("../models/repositories");
 const extractionService_1 = require("../services/extractionService");
 const jobSummaryReminderService_1 = require("../services/jobSummaryReminderService");
+const poJobSummaryAuditService_1 = require("../services/poJobSummaryAuditService");
 const odooClient_1 = require("../services/odooClient");
 const stockProcessingService_1 = require("../services/stockProcessingService");
 const helpers_1 = require("../utils/helpers");
@@ -376,6 +377,13 @@ router.post('/sales-orders/:orderId/extract-latest', async (req, res) => {
     const page = Math.max(1, Number(req.body.page || 1) || 1);
     try {
         const history = await (0, extractionService_1.extractLatestJobSummaryForOrder)(orderId);
+        void (async () => {
+            try {
+                const { client } = await buildClient();
+                await (0, poJobSummaryAuditService_1.auditLinkedPurchaseOrdersForSaleOrder)(client, orderId);
+            }
+            catch (_) { }
+        })();
         res.redirect(`/extractions/${history.id}`);
     }
     catch (error) {
@@ -390,6 +398,13 @@ router.post('/sales-orders/:orderId/extract-selected', async (req, res) => {
     const page = Math.max(1, Number(req.body.page || 1) || 1);
     try {
         const history = await (0, extractionService_1.extractAttachmentForOrder)(orderId, attachmentId);
+        void (async () => {
+            try {
+                const { client } = await buildClient();
+                await (0, poJobSummaryAuditService_1.auditLinkedPurchaseOrdersForSaleOrder)(client, orderId);
+            }
+            catch (_) { }
+        })();
         res.redirect(`/extractions/${history.id}`);
     }
     catch (error) {

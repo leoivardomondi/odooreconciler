@@ -839,30 +839,42 @@ export async function auditPurchaseOrderAgainstJobSummary(
 
   // CASE 3: ALL ITEMS MATCH
   // User Rule: "If PO Sheets == Required Sheets: It marks procurement verified, report as a match between job summary and Purchase order for user Charles and Leoivard Ongule and the responsible sales person, and Raphael Onyango in odoo, as log notes"
-  await client.postModelChatterMessage(
-    'purchase.order',
-    po.id,
-    `<p><strong>✅ Procurement Match Confirmed</strong></p>` +
-      `<p>Procurement quantities on Purchase Order <strong>${po.name}</strong> match the Job Summary of Sales Order <strong>${so.name}</strong>.</p>` +
-      `<p><strong>Stakeholders Notified:</strong> ${mentionHtml}</p>` +
-      `<ul>${comparison.verified.map((v) => `<li>${v}</li>`).join('')}</ul>`,
-    partnerIds,
-  );
+  const existingConfirmations = await client.searchReadRecords<{ id: number; body: string }>('mail.message', {
+    domain: [
+      ['model', '=', 'purchase.order'],
+      ['res_id', '=', po.id],
+      ['body', 'ilike', 'Procurement Match Confirmed'],
+    ],
+    fields: ['id', 'body'],
+    limit: 1,
+  }).catch(() => []);
 
-  // Confirmation on Sales Order chatter
-  await client.postModelChatterMessage(
-    'sale.order',
-    so.id,
-    `<p><strong>✅ Procurement Match Confirmed:</strong> Purchase Order <strong>${po.name}</strong> sheet and edging quantities match the Job Summary.</p>`,
-  );
+  if (existingConfirmations.length === 0) {
+    await client.postModelChatterMessage(
+      'purchase.order',
+      po.id,
+      `<p><strong>✅ Procurement Match Confirmed</strong></p>` +
+        `<p>Procurement quantities on Purchase Order <strong>${po.name}</strong> match the Job Summary of Sales Order <strong>${so.name}</strong>.</p>` +
+        `<p><strong>Stakeholders Notified:</strong> ${mentionHtml}</p>` +
+        `<ul>${comparison.verified.map((v) => `<li>${v}</li>`).join('')}</ul>`,
+      partnerIds,
+    );
 
-  await logEvent('info', 'PO procurement quantities verified against Job Summary', {
-    poId: po.id,
-    poName: po.name,
-    soId: so.id,
-    soName: so.name,
-    verifiedItems: comparison.verified,
-  });
+    // Confirmation on Sales Order chatter
+    await client.postModelChatterMessage(
+      'sale.order',
+      so.id,
+      `<p><strong>✅ Procurement Match Confirmed:</strong> Purchase Order <strong>${po.name}</strong> sheet and edging quantities match the Job Summary.</p>`,
+    );
+
+    await logEvent('info', 'PO procurement quantities verified against Job Summary', {
+      poId: po.id,
+      poName: po.name,
+      soId: so.id,
+      soName: so.name,
+      verifiedItems: comparison.verified,
+    });
+  }
 
   return {
     poId: po.id,
@@ -884,7 +896,7 @@ export async function auditPurchaseOrderAgainstJobSummary(
 export async function auditLinkedPurchaseOrdersForSaleOrder(
   client: OdooClient,
   saleOrderId: number,
-  parsed: ParsedJobSummaryResult,
+  parsed?: ParsedJobSummaryResult,
 ): Promise<PoJobSummaryAuditResult[]> {
   const saleOrders = await client.readRecords<{ id: number; name: string }>(
     'sale.order',

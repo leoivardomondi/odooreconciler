@@ -28,6 +28,7 @@ import {
   runPoBillAutomation,
 } from './poBillAutomationService';
 import { processSaleOrderStock } from './stockProcessingService';
+import { auditLinkedPurchaseOrdersForSaleOrder } from './poJobSummaryAuditService';
 import { cleanupStaleTempFiles } from '../utils/tempCleanup';
 import {
   CAMPAIGN_BATCH_SIZE,
@@ -1459,6 +1460,11 @@ export async function runSchedulerCycle(
             },
           };
         }
+
+        // Fallback: Audit linked confirmed Purchase Orders against the Job Summary
+        try {
+          await auditLinkedPurchaseOrdersForSaleOrder(client, order.id);
+        } catch (_) {}
 
         if (stockResult.alreadyProcessed || stockResult.lockSkipped) {
           return {

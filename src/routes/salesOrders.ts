@@ -10,6 +10,7 @@ import {
   ensureMissingJobSummaryReminder,
   JOB_SUMMARY_REMINDER_ACTIVITY_SUMMARY,
 } from '../services/jobSummaryReminderService';
+import { auditLinkedPurchaseOrdersForSaleOrder } from '../services/poJobSummaryAuditService';
 import { OdooClient } from '../services/odooClient';
 import {
   previewSaleOrderStockProcessing,
@@ -460,6 +461,12 @@ router.post('/sales-orders/:orderId/extract-latest', async (req, res) => {
 
   try {
     const history = await extractLatestJobSummaryForOrder(orderId);
+    void (async () => {
+      try {
+        const { client } = await buildClient();
+        await auditLinkedPurchaseOrdersForSaleOrder(client, orderId);
+      } catch (_) {}
+    })();
     res.redirect(`/extractions/${history.id}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Could not extract the latest Job Summary.';
@@ -479,6 +486,12 @@ router.post('/sales-orders/:orderId/extract-selected', async (req, res) => {
 
   try {
     const history = await extractAttachmentForOrder(orderId, attachmentId);
+    void (async () => {
+      try {
+        const { client } = await buildClient();
+        await auditLinkedPurchaseOrdersForSaleOrder(client, orderId);
+      } catch (_) {}
+    })();
     res.redirect(`/extractions/${history.id}`);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Could not extract the selected PDF.';

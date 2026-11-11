@@ -585,6 +585,19 @@ router.post('/jobs/attachment-uploaded', async (req, res) => {
                 error: reminderMessage,
             });
         }
+        // Immediately audit any linked confirmed Purchase Orders against the newly uploaded Job Summary
+        try {
+            const latestExtracted = await (0, repositories_1.getLatestExtractedResultByOrderId)(targetOrderId);
+            if (latestExtracted?.resultJson) {
+                await (0, poJobSummaryAuditService_1.auditLinkedPurchaseOrdersForSaleOrder)(client, targetOrderId, latestExtracted.resultJson);
+            }
+        }
+        catch (auditError) {
+            await (0, logService_1.logEvent)('warn', 'Odoo attachment webhook failed to audit linked Purchase Orders', {
+                orderId: targetOrderId,
+                error: auditError instanceof Error ? auditError.message : String(auditError),
+            });
+        }
         writeWebhookTrace('processed', {
             ...requestContext,
             payload,
