@@ -29,6 +29,7 @@ import {
 } from './poBillAutomationService';
 import { processSaleOrderStock } from './stockProcessingService';
 import { auditLinkedPurchaseOrdersForSaleOrder } from './poJobSummaryAuditService';
+import { syncAllPendingStandaloneEtrPos } from './crossCompanySyncService';
 import { cleanupStaleTempFiles } from '../utils/tempCleanup';
 import {
   CAMPAIGN_BATCH_SIZE,
@@ -1035,6 +1036,14 @@ export async function runPoBillSchedulerCycle(
       },
       finished: true,
     });
+
+    try {
+      await syncAllPendingStandaloneEtrPos(client);
+    } catch (crossSyncErr) {
+      await logEvent('error', 'Non-fatal error running standalone ETR cross-company sync cycle', {
+        error: crossSyncErr instanceof Error ? crossSyncErr.message : 'Unknown error',
+      });
+    }
 
     try {
       const campaignMetrics = await computeMayCampaignMetrics(client, settings.odoo.baseUrl);

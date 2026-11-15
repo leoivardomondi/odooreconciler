@@ -19,6 +19,10 @@ import {
   auditPurchaseOrderAgainstJobSummary,
   auditLinkedPurchaseOrdersForSaleOrder,
 } from '../services/poJobSummaryAuditService';
+import {
+  syncStandaloneEtrPoToCompany3,
+  syncAllPendingStandaloneEtrPos,
+} from '../services/crossCompanySyncService';
 import { reconcileWorkOrderQuantitiesForMo } from '../services/workOrderQuantityReconciliationService';
 import { ParsedJobSummaryResult } from '../models/types';
 import { closeOpenJobSummaryReminderActivities } from '../services/jobSummaryReminderService';
@@ -1169,10 +1173,18 @@ async function handleOdooSyncWebhook(req: Request, res: Response) {
         if (poId) {
           const settings = await getSettings();
           const client = new OdooClient(settings.odoo);
-          await auditPurchaseOrderAgainstJobSummary(client, poId);
+          await Promise.allSettled([
+            auditPurchaseOrderAgainstJobSummary(client, poId),
+            syncStandaloneEtrPoToCompany3(client, poId),
+          ]);
           void syncPendingProcessesFromOdoo(true).catch(() => null);
         } else {
-          await runPoBillSchedulerCycle('cron');
+          const settings = await getSettings();
+          const client = new OdooClient(settings.odoo);
+          await Promise.allSettled([
+            runPoBillSchedulerCycle('cron'),
+            syncAllPendingStandaloneEtrPos(client),
+          ]);
           void syncPendingProcessesFromOdoo(true).catch(() => null);
         }
       } else if (resolvedType === 'so') {

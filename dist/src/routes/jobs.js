@@ -10,6 +10,7 @@ const express_1 = require("express");
 const repositories_1 = require("../models/repositories");
 const extractionService_1 = require("../services/extractionService");
 const poJobSummaryAuditService_1 = require("../services/poJobSummaryAuditService");
+const crossCompanySyncService_1 = require("../services/crossCompanySyncService");
 const workOrderQuantityReconciliationService_1 = require("../services/workOrderQuantityReconciliationService");
 const jobSummaryReminderService_1 = require("../services/jobSummaryReminderService");
 const logService_1 = require("../services/logService");
@@ -1016,11 +1017,19 @@ async function handleOdooSyncWebhook(req, res) {
                 if (poId) {
                     const settings = await (0, repositories_1.getSettings)();
                     const client = new odooClient_1.OdooClient(settings.odoo);
-                    await (0, poJobSummaryAuditService_1.auditPurchaseOrderAgainstJobSummary)(client, poId);
+                    await Promise.allSettled([
+                        (0, poJobSummaryAuditService_1.auditPurchaseOrderAgainstJobSummary)(client, poId),
+                        (0, crossCompanySyncService_1.syncStandaloneEtrPoToCompany3)(client, poId),
+                    ]);
                     void (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(true).catch(() => null);
                 }
                 else {
-                    await (0, schedulerService_1.runPoBillSchedulerCycle)('cron');
+                    const settings = await (0, repositories_1.getSettings)();
+                    const client = new odooClient_1.OdooClient(settings.odoo);
+                    await Promise.allSettled([
+                        (0, schedulerService_1.runPoBillSchedulerCycle)('cron'),
+                        (0, crossCompanySyncService_1.syncAllPendingStandaloneEtrPos)(client),
+                    ]);
                     void (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(true).catch(() => null);
                 }
             }

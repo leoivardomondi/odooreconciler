@@ -15,6 +15,7 @@ const odooClient_1 = require("./odooClient");
 const poBillAutomationService_1 = require("./poBillAutomationService");
 const stockProcessingService_1 = require("./stockProcessingService");
 const poJobSummaryAuditService_1 = require("./poJobSummaryAuditService");
+const crossCompanySyncService_1 = require("./crossCompanySyncService");
 const tempCleanup_1 = require("../utils/tempCleanup");
 const campaignReportService_1 = require("./campaignReportService");
 let schedulerRunning = false;
@@ -859,6 +860,14 @@ async function runPoBillSchedulerCycle(trigger = 'manual') {
             },
             finished: true,
         });
+        try {
+            await (0, crossCompanySyncService_1.syncAllPendingStandaloneEtrPos)(client);
+        }
+        catch (crossSyncErr) {
+            await (0, logService_1.logEvent)('error', 'Non-fatal error running standalone ETR cross-company sync cycle', {
+                error: crossSyncErr instanceof Error ? crossSyncErr.message : 'Unknown error',
+            });
+        }
         try {
             const campaignMetrics = await (0, campaignReportService_1.computeMayCampaignMetrics)(client, settings.odoo.baseUrl);
             if (campaignMetrics.unprocessedRemaining === 0) {
