@@ -200,7 +200,7 @@ async function buildWeeklyShopFloorReport(scope) {
         reportStart = (0, shopFloorReporting_1.clampShopFloorReportingDate)(window.start, reportingBaseline);
         reportEnd = (0, shopFloorReporting_1.clampShopFloorReportingDate)(window.end, reportingBaseline);
     }
-    const [boardSummary, penalties, orders, moCompletion, operators, boardLoggingByOperator] = await Promise.all([
+    const [boardSummary, penalties, orders, moCompletion, operators, rawBoardLoggingByOperator] = await Promise.all([
         client.getBoardRegistrationSummary({
             ...settings.stock,
             fromDate: reportStart,
@@ -212,6 +212,13 @@ async function buildWeeklyShopFloorReport(scope) {
         getOperators(client, companyId),
         (0, repositories_1.getBoardIntakeLoggingReport)(reportStart, reportEnd, reportingBaseline),
     ]);
+    // Completely exclude non-operations personnel from all sections of the report
+    const normalizeName = (s) => s.toLowerCase().replace(/\s+/g, ' ').trim();
+    const operationsNames = new Set(operators.map((op) => normalizeName(op.name)));
+    const boardLoggingByOperator = rawBoardLoggingByOperator.filter((b) => {
+        const cleanName = normalizeName(b.name || '');
+        return operationsNames.has(cleanName) || Array.from(operationsNames).some((opName) => cleanName.includes(opName) || opName.includes(cleanName));
+    });
     const endDateObj = new Date(`${reportEnd}T23:59:59Z`);
     const confirmedQueueSchedule = (0, moOverdueService_1.getConfirmedMoQueueSchedule)(orders);
     const overdueNotStarted = orders.filter((order) => {

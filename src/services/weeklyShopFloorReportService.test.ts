@@ -52,4 +52,18 @@ test('weeklyShopFloorReportService - Wednesday Report Attendance Operations Depa
     assert.ok(!names.includes('Sharon Araka'));
     assert.ok(!names.includes('Charles Onyango'));
   });
+
+  await t.test('board logging filters out non-operations employees', () => {
+    const operationsNames = new Set(['Janet Awino Amollo', 'Joel Ochango'].map(s => s.toLowerCase().trim()));
+    const rawBoardLogging = [
+      { name: 'Janet Awino Amollo', records: 5, boards: 10 },
+      { name: 'Joel Ochango', records: 3, boards: 6 },
+      { name: 'Charles Onyango', records: 1, boards: 2 },
+      { name: 'dbadmin', records: 2, boards: 4 },
+    ];
+    const filtered = rawBoardLogging.filter(b => operationsNames.has(b.name.toLowerCase().trim()));
+    assert.equal(filtered.length, 2);
+    assert.deepEqual(filtered.map(f => f.name), ['Janet Awino Amollo', 'Joel Ochango']);
+  });
 });
+
