@@ -16,7 +16,7 @@ import { clampShopFloorReportingDate } from '../utils/shopFloorReporting';
 import { resolveFromProjectRoot } from '../utils/paths';
 import { completedAttendanceCoversWorkday, classifyAttendanceRecords, type AttendanceRecord } from '../utils/attendanceReconciliation';
 
-const DEPARTMENTS = ['Operations', 'Production', 'Shop Floor', 'Manufacturing', 'Factory'];
+const OPERATIONS_DEPARTMENT_NAME = 'Operations';
 const RECIPIENT_NAMES = ['dbadmin', 'charles', 'raphael'];
 
 function dateOnly(date: Date) { return date.toISOString().slice(0, 10); }
@@ -108,18 +108,28 @@ function defaultReportWindow() {
   return { start: addDays(today, -daysSinceWednesday), end };
 }
 
-async function getOperators(client: OdooClient, companyId: number): Promise<Array<{ id: number; name: string }>> {
+export function isOperationsDept(dept: unknown): boolean {
+  if (!dept) return false;
+  const raw = Array.isArray(dept) ? String(dept[1] || '') : String(dept);
+  const leaf = raw.includes('/') ? raw.split('/').pop()?.trim() : raw.trim();
+  return leaf?.toLowerCase() === 'operations';
+}
+
+export async function getOperators(client: OdooClient, companyId: number): Promise<Array<{ id: number; name: string }>> {
+
   // 1. Check persistent operator cache from MySQL (0 Odoo RPC calls, instant <5ms)
   try {
     const cached = await getShopFloorSharedCache<{
-      allOperators: Array<{ id: number; name: string; workEmail?: string | null; active?: boolean }>;
+      allOperators: Array<{ id: number; name: string; workEmail?: string | null; active?: boolean; department?: string | null }>;
     }>('shop-floor:operators-list:v2');
     if (cached?.data?.allOperators && cached.data.allOperators.length > 0) {
       const valid = cached.data.allOperators.filter((op) => {
         if (!op || !op.id || !op.name) return false;
         const n = op.name.trim();
         const prefix = String(op.workEmail || '').split('@')[0].trim().toLowerCase();
-        return n.toLowerCase() !== prefix;
+        if (n.toLowerCase() === prefix) return false;
+        // Wednesday report attendance must ONLY include people whose department is Operations
+        return isOperationsDept(op.department);
       });
       if (valid.length > 0) {
         return valid.map((op) => ({ id: op.id, name: op.name }));
@@ -131,26 +141,29 @@ async function getOperators(client: OdooClient, companyId: number): Promise<Arra
 
   // 2. Batch query fallback: 1 query for departments, 1 query for employees (2 calls instead of 10)
   try {
-    const departments = await client.searchReadRecords<{ id: number; name: string }>('hr.department', {
+    const departments = await client.searchReadRecords<{ id: number; name: string; complete_name?: string }>('hr.department', {
       domain: [
-        ['company_id', '=', companyId],
-        ['name', 'in', DEPARTMENTS],
+        ['company_id', 'in', [companyId, false]],
+        '|',
+        ['name', '=', OPERATIONS_DEPARTMENT_NAME],
+        ['complete_name', 'ilike', OPERATIONS_DEPARTMENT_NAME],
       ],
-      fields: ['id', 'name'],
+      fields: ['id', 'name', 'complete_name'],
     });
     const deptIds = departments.map((d) => d.id);
     if (!deptIds.length) return [];
 
-    const employees = await client.searchReadRecords<{ id: number; name: string }>('hr.employee', {
+    const employees = await client.searchReadRecords<{ id: number; name: string; department_id?: unknown }>('hr.employee', {
       domain: [
         ['company_id', '=', companyId],
         ['department_id', 'in', deptIds],
         ['active', '=', true],
       ],
-      fields: ['id', 'name'],
+      fields: ['id', 'name', 'department_id'],
       limit: 200,
     });
-    return [...new Map(employees.map((e) => [e.id, e])).values()];
+    const operationsEmployees = employees.filter((e) => isOperationsDept(e.department_id));
+    return [...new Map(operationsEmployees.map((e) => [e.id, { id: e.id, name: e.name }])).values()];
   } catch (err) {
     console.warn('[weekly-report] Batch department/employee search failed:', err);
     return [];

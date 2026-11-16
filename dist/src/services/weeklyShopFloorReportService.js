@@ -3,6 +3,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.isOperationsDept = isOperationsDept;
+exports.getOperators = getOperators;
 exports.buildWeeklyShopFloorReport = buildWeeklyShopFloorReport;
 exports.renderWeeklyShopFloorReportPdf = renderWeeklyShopFloorReportPdf;
 exports.sendWeeklyShopFloorReport = sendWeeklyShopFloorReport;
@@ -22,7 +24,7 @@ const env_1 = require("../utils/env");
 const shopFloorReporting_1 = require("../utils/shopFloorReporting");
 const paths_1 = require("../utils/paths");
 const attendanceReconciliation_1 = require("../utils/attendanceReconciliation");
-const DEPARTMENTS = ['Operations', 'Production', 'Shop Floor', 'Manufacturing', 'Factory'];
+const OPERATIONS_DEPARTMENT_NAME = 'Operations';
 const RECIPIENT_NAMES = ['dbadmin', 'charles', 'raphael'];
 function dateOnly(date) { return date.toISOString().slice(0, 10); }
 function productName(value) { return Array.isArray(value) ? String(value[1] || '') : String(value || ''); }
@@ -118,6 +120,13 @@ function defaultReportWindow() {
     const end = Number(get('hour')) >= 18 ? today : previousDate(today);
     return { start: addDays(today, -daysSinceWednesday), end };
 }
+function isOperationsDept(dept) {
+    if (!dept)
+        return false;
+    const raw = Array.isArray(dept) ? String(dept[1] || '') : String(dept);
+    const leaf = raw.includes('/') ? raw.split('/').pop()?.trim() : raw.trim();
+    return leaf?.toLowerCase() === 'operations';
+}
 async function getOperators(client, companyId) {
     // 1. Check persistent operator cache from MySQL (0 Odoo RPC calls, instant <5ms)
     try {
@@ -128,7 +137,10 @@ async function getOperators(client, companyId) {
                     return false;
                 const n = op.name.trim();
                 const prefix = String(op.workEmail || '').split('@')[0].trim().toLowerCase();
-                return n.toLowerCase() !== prefix;
+                if (n.toLowerCase() === prefix)
+                    return false;
+                // Wednesday report attendance must ONLY include people whose department is Operations
+                return isOperationsDept(op.department);
             });
             if (valid.length > 0) {
                 return valid.map((op) => ({ id: op.id, name: op.name }));
@@ -142,10 +154,12 @@ async function getOperators(client, companyId) {
     try {
         const departments = await client.searchReadRecords('hr.department', {
             domain: [
-                ['company_id', '=', companyId],
-                ['name', 'in', DEPARTMENTS],
+                ['company_id', 'in', [companyId, false]],
+                '|',
+                ['name', '=', OPERATIONS_DEPARTMENT_NAME],
+                ['complete_name', 'ilike', OPERATIONS_DEPARTMENT_NAME],
             ],
-            fields: ['id', 'name'],
+            fields: ['id', 'name', 'complete_name'],
         });
         const deptIds = departments.map((d) => d.id);
         if (!deptIds.length)
@@ -156,10 +170,11 @@ async function getOperators(client, companyId) {
                 ['department_id', 'in', deptIds],
                 ['active', '=', true],
             ],
-            fields: ['id', 'name'],
+            fields: ['id', 'name', 'department_id'],
             limit: 200,
         });
-        return [...new Map(employees.map((e) => [e.id, e])).values()];
+        const operationsEmployees = employees.filter((e) => isOperationsDept(e.department_id));
+        return [...new Map(operationsEmployees.map((e) => [e.id, { id: e.id, name: e.name }])).values()];
     }
     catch (err) {
         console.warn('[weekly-report] Batch department/employee search failed:', err);
