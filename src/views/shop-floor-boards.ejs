@@ -448,22 +448,31 @@
 
             <!-- Select Client -->
             <div class="mb-3 position-relative" id="partnerCombobox">
-              <label for="partnerSearch" class="form-label fw-semibold" style="font-size: 0.92rem; color: #334155;">
-                Client Who Brought Boards <span class="text-danger">*</span>
-              </label>
+              <div class="d-flex justify-content-between align-items-center mb-1">
+                <label for="partnerSearch" class="form-label fw-semibold mb-0" style="font-size: 0.92rem; color: #334155;">
+                  Client Who Brought Boards <span class="text-danger" id="partnerRequiredStar">*</span>
+                </label>
+                <button type="button" class="btn btn-sm btn-outline-warning rounded-pill py-0.5 px-2.5 fw-semibold" id="btnUnknownClient" style="font-size: 0.78rem;">
+                  ❓ Owner Unknown (Pending Match)
+                </button>
+              </div>
               <div class="input-group rounded-3 border overflow-hidden" style="border-color: #cbd5e1 !important;">
                 <span class="input-group-text bg-white border-0 pe-1" style="color: #94a3b8; font-size: 1.1rem; padding: 0.65rem 0.75rem;">🔍</span>
                 <input type="text" id="partnerSearch" class="form-control border-0 ps-2" placeholder="Type to search clients..." style="font-size: 1rem; padding: 0.65rem 0.75rem; outline: none; box-shadow: none;" autocomplete="off" required>
               </div>
               <input type="hidden" name="partner_id" id="partnerSelect" required>
               <input type="hidden" name="partner_name" id="partnerName">
+              <input type="hidden" name="pending_client" id="pendingClientFlag" value="false">
               <input type="hidden" name="mo_id" id="intakeMoId">
               <input type="hidden" name="mo_name" id="intakeMoName">
-              <div class="custom-invalid-feedback" id="partnerFeedback">Please choose a client from the dropdown list.</div>
+              <div class="custom-invalid-feedback" id="partnerFeedback">Please choose a client or click "Owner Unknown".</div>
               
               <!-- Dropdown menu -->
               <div class="combobox-dropdown d-none shadow border position-absolute" style="top: 100%; left: 0; max-height: 280px; overflow-y: auto;">
                 <div class="list-group list-group-flush" id="partnerList">
+                  <button type="button" class="list-group-item list-group-item-action text-start py-2.5 px-3 combobox-item fw-semibold text-warning-emphasis bg-warning-subtle" data-id="0" data-name="Pending Client Matching" style="border: none;">
+                    ❓ Pending Client Matching (Owner Unknown)
+                  </button>
                   <% customers.forEach(c => { %>
                     <button type="button" class="list-group-item list-group-item-action text-start py-2.5 px-3 combobox-item" data-id="<%= c.id %>" data-name="<%= c.name %>" style="border: none;">
                       <%= c.name %>
@@ -876,12 +885,17 @@
               const isOwner = Boolean((userEmail && itemEmail && userEmail === itemEmail) || (userName && itemName && userName === itemName));
               const canRevert = isAdminUser || isOwner;
               const isPurchase = Boolean(item.is_purchase);
+              const isPendingClient = !item.partner_id || Number(item.partner_id) === 0 || item.customer_name === 'Pending Client Matching';
             %>
-            <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 border rounded-3 px-3 py-2.5 <%= item.reverted_at || item.status === 'reverted' ? 'bg-light' : 'bg-white' %>" data-board-log-row="<%= item.id %>" style="<%= item.reverted_at || item.status === 'reverted' ? 'opacity:0.75;' : '' %>border-color:#cbd5e1!important;<%= isPurchase ? 'border-left: 4.5px solid #2563eb !important;' : 'border-left: 4.5px solid #059669 !important;' %>">
+            <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 border rounded-3 px-3 py-2.5 <%= item.reverted_at || item.status === 'reverted' ? 'bg-light' : 'bg-white' %>" data-board-log-row="<%= item.id %>" style="<%= item.reverted_at || item.status === 'reverted' ? 'opacity:0.75;' : '' %>border-color:#cbd5e1!important;<%= isPendingClient ? 'border-left: 4.5px solid #f59e0b !important;' : (isPurchase ? 'border-left: 4.5px solid #2563eb !important;' : 'border-left: 4.5px solid #059669 !important;') %>">
               <div>
                 <div class="d-flex flex-wrap align-items-center gap-2">
                   <strong class="text-dark" style="font-size:0.95rem;"><%= item.quantity %> × <%= item.product_name %></strong>
-                  <% if (isPurchase) { %>
+                  <% if (isPendingClient) { %>
+                    <span class="badge text-dark border border-warning shadow-sm" style="background-color: #fef08a !important; font-size:0.72rem; font-weight:700; letter-spacing:0.02em;" title="Owner is unknown - pending client matching">
+                      ⚠️ PENDING CLIENT MATCHING
+                    </span>
+                  <% } else if (isPurchase) { %>
                     <span class="badge bg-primary text-white border-0 shadow-sm" style="font-size:0.72rem;font-weight:700;letter-spacing:0.02em;" title="Company Purchase (PO-backed)">
                       🛒 COMPANY PURCHASE
                     </span>
@@ -897,11 +911,18 @@
                   <% } %>
                 </div>
                 <div class="small mt-1" style="color:#334155;font-weight:500;">
-                  <span class="fw-bold" style="color:#0f172a;"><%= item.customer_name %></span>
-                  <% if (isPurchase) { %>
-                    <span class="badge bg-light text-primary border border-primary-subtle px-1.5 py-0.5 ms-1" style="font-size: 0.68rem; font-weight: 600;">Company Procured</span>
+                  <% if (isPendingClient) { %>
+                    <span class="fw-bold text-warning-emphasis">⚠️ Pending Client Matching</span>
                   <% } else { %>
-                    <span class="badge bg-light text-success border border-success-subtle px-1.5 py-0.5 ms-1" style="font-size: 0.68rem; font-weight: 600;">Customer's Own Material</span>
+                    <span class="fw-bold" style="color:#0f172a;"><%= item.customer_name %></span>
+                    <% if (isPurchase) { %>
+                      <span class="badge bg-light text-primary border border-primary-subtle px-1.5 py-0.5 ms-1" style="font-size: 0.68rem; font-weight: 600;">Company Procured</span>
+                    <% } else { %>
+                      <span class="badge bg-light text-success border border-success-subtle px-1.5 py-0.5 ms-1" style="font-size: 0.68rem; font-weight: 600;">Customer's Own Material</span>
+                    <% } %>
+                  <% } %>
+                  <% if (item.matched_by) { %>
+                    <span class="badge bg-info-subtle text-info-emphasis border border-info-subtle px-2 py-0.5 ms-1" style="font-size:0.72rem;">Matched to <strong><%= item.customer_name %></strong> by <%= item.matched_by %></span>
                   <% } %>
                   · <span style="color:#475569;"><%= formatDateTime(item.created_at) %></span>
                   <% if (item.gate) { %>
@@ -931,6 +952,11 @@
                     <div class="small text-danger fw-semibold mt-1" data-board-log-retry="<%= item.id %>">Automatic retry scheduled · attempt <%= item.retry_count || 1 %></div>
                   <% } %>
                 </div>
+                <% if (isPendingClient && item.status !== 'reverted' && !item.reverted_at) { %>
+                  <button type="button" class="btn btn-sm btn-warning rounded-pill fw-bold btn-open-match-modal px-2.5 shadow-sm" data-intake-id="<%= item.id %>" data-product-name="<%= item.product_name %>" data-qty="<%= item.quantity %>" style="font-size:0.76rem;">
+                    🔗 Match Client
+                  </button>
+                <% } %>
                 <% if (item.status === 'failed') { %>
                   <form method="post" action="/shop-floor/board-intake/<%= encodeURIComponent(item.id) %>/retry" class="board-retry-form" data-intake-id="<%= item.id %>" data-no-loading="true">
                     <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>">
@@ -959,6 +985,63 @@
         <% } %>
       </div>
     </section>
+
+    <!-- Match Client Modal -->
+    <div class="modal fade" id="matchClientModal" tabindex="-1" aria-labelledby="matchClientModalLabel" aria-hidden="true">
+      <div class="modal-dialog modal-dialog-centered">
+        <div class="modal-content shadow border-0 rounded-4">
+          <form id="matchClientForm" method="post" action="">
+            <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>">
+            <div class="modal-header border-bottom-0 pb-0 pt-4 px-4">
+              <div>
+                <h5 class="modal-title fw-bold" id="matchClientModalLabel">🔗 Match Board Log to Client</h5>
+                <p class="text-muted small mb-0 mt-1">Assign the owner for this board intake so matching MOs can be reserved in Odoo.</p>
+              </div>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body px-4 py-3">
+              <div class="p-3 rounded-3 bg-light border mb-3">
+                <div class="small text-muted mb-1">Board Intake Details</div>
+                <div class="fw-bold text-dark" id="matchModalBoardDetails">--</div>
+              </div>
+              <div class="mb-3 position-relative" id="matchPartnerCombobox">
+                <label for="matchPartnerSearch" class="form-label fw-semibold" style="font-size: 0.92rem; color: #334155;">
+                  Select Client <span class="text-danger">*</span>
+                </label>
+                <div class="input-group rounded-3 border overflow-hidden" style="border-color: #cbd5e1 !important;">
+                  <span class="input-group-text bg-white border-0 pe-1" style="color: #94a3b8; font-size: 1.1rem; padding: 0.65rem 0.75rem;">🔍</span>
+                  <input type="text" id="matchPartnerSearch" class="form-control border-0 ps-2" placeholder="Type to search clients..." style="font-size: 1rem; padding: 0.65rem 0.75rem;" autocomplete="off" required>
+                </div>
+                <input type="hidden" name="partner_id" id="matchPartnerId" required>
+                <input type="hidden" name="partner_name" id="matchPartnerName" required>
+                <div class="custom-invalid-feedback" id="matchPartnerFeedback">Please choose a valid client from the list.</div>
+                
+                <div class="combobox-dropdown d-none shadow border position-absolute w-100" style="top: 100%; left: 0; max-height: 250px; overflow-y: auto; z-index: 1055; background: #fff;">
+                  <div class="list-group list-group-flush" id="matchPartnerList">
+                    <% customers.forEach(c => { %>
+                      <button type="button" class="list-group-item list-group-item-action text-start py-2 px-3 combobox-item" data-id="<%= c.id %>" data-name="<%= c.name %>" style="border: none;">
+                        <%= c.name %>
+                      </button>
+                    <% }) %>
+                  </div>
+                  <div class="text-muted text-center py-3 d-none no-results" style="font-size: 0.85rem;">No clients found</div>
+                </div>
+              </div>
+              <div class="small text-muted">
+                <i class="bi bi-info-circle"></i> Once matched, Odoo will link this stock intake to the client, look up their open Cutting/Manufacturing Orders for this board, and automatically reserve stock.
+              </div>
+            </div>
+            <div class="modal-footer border-top-0 pt-0 pb-4 px-4">
+              <button type="button" class="btn btn-secondary rounded-pill px-3" data-bs-dismiss="modal">Cancel</button>
+              <button type="submit" class="btn btn-primary rounded-pill px-4 fw-semibold" id="btnSubmitMatchClient">
+                <span class="spinner-border spinner-border-sm d-none me-1" id="matchClientSpinner" role="status"></span>
+                Confirm &amp; Match
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
 </main>
 
 <script>
@@ -1534,16 +1617,142 @@
     }
 
     // Initialize custom comboboxes
+    var btnUnknownClient = document.getElementById('btnUnknownClient');
+    if (btnUnknownClient) {
+      btnUnknownClient.addEventListener('click', function(e) {
+        e.preventDefault();
+        var partnerSearch = document.getElementById('partnerSearch');
+        var partnerSelect = document.getElementById('partnerSelect');
+        var partnerName = document.getElementById('partnerName');
+        var pendingClientFlag = document.getElementById('pendingClientFlag');
+        var partnerFeedback = document.getElementById('partnerFeedback');
+
+        if (pendingClientFlag && pendingClientFlag.value === 'true') {
+          // Toggle off
+          pendingClientFlag.value = 'false';
+          if (partnerSelect) partnerSelect.value = '';
+          if (partnerName) partnerName.value = '';
+          if (partnerSearch) {
+            partnerSearch.value = '';
+            partnerSearch.placeholder = 'Type to search clients...';
+            partnerSearch.focus();
+          }
+          btnUnknownClient.classList.remove('btn-warning');
+          btnUnknownClient.classList.add('btn-outline-warning');
+          btnUnknownClient.textContent = '❓ Owner Unknown (Pending Match)';
+        } else {
+          // Toggle on
+          if (pendingClientFlag) pendingClientFlag.value = 'true';
+          if (partnerSelect) partnerSelect.value = '0';
+          if (partnerName) partnerName.value = 'Pending Client Matching';
+          if (partnerSearch) {
+            partnerSearch.value = 'Pending Client Matching (Owner Unknown)';
+            partnerSearch.classList.remove('is-invalid');
+          }
+          if (partnerFeedback) partnerFeedback.style.display = 'none';
+          btnUnknownClient.classList.remove('btn-outline-warning');
+          btnUnknownClient.classList.add('btn-warning');
+          btnUnknownClient.textContent = '✓ Owner Unknown (Click to undo)';
+          clearRequirements();
+        }
+      });
+    }
+
     setupRemotePartnerSearch('partnerCombobox', 'partnerSearch', 'partnerSelect', 'partnerList', function(selectedItem) {
       var partnerName = document.getElementById('partnerName');
-      if (partnerName) partnerName.value = selectedItem ? (selectedItem.getAttribute('data-name') || selectedItem.textContent.trim()) : '';
-      if (selectedItem) {
-        var partnerId = selectedItem.getAttribute('data-id');
-        fetchRequirements(partnerId);
-      } else {
+      var pendingClientFlag = document.getElementById('pendingClientFlag');
+      var btnUnknownClient = document.getElementById('btnUnknownClient');
+      var partnerId = selectedItem ? selectedItem.getAttribute('data-id') : '';
+
+      if (partnerId === '0') {
+        if (pendingClientFlag) pendingClientFlag.value = 'true';
+        if (partnerName) partnerName.value = 'Pending Client Matching';
+        if (btnUnknownClient) {
+          btnUnknownClient.classList.remove('btn-outline-warning');
+          btnUnknownClient.classList.add('btn-warning');
+          btnUnknownClient.textContent = '✓ Owner Unknown (Click to undo)';
+        }
         clearRequirements();
+      } else {
+        if (pendingClientFlag) pendingClientFlag.value = 'false';
+        if (partnerName) partnerName.value = selectedItem ? (selectedItem.getAttribute('data-name') || selectedItem.textContent.trim()) : '';
+        if (btnUnknownClient) {
+          btnUnknownClient.classList.remove('btn-warning');
+          btnUnknownClient.classList.add('btn-outline-warning');
+          btnUnknownClient.textContent = '❓ Owner Unknown (Pending Match)';
+        }
+        if (selectedItem) {
+          fetchRequirements(partnerId);
+        } else {
+          clearRequirements();
+        }
       }
     });
+
+    // Initialize Match Client combobox inside Match Modal
+    setupRemotePartnerSearch('matchPartnerCombobox', 'matchPartnerSearch', 'matchPartnerId', 'matchPartnerList', function(selectedItem) {
+      var matchPartnerName = document.getElementById('matchPartnerName');
+      if (matchPartnerName) {
+        matchPartnerName.value = selectedItem ? (selectedItem.getAttribute('data-name') || selectedItem.textContent.trim()) : '';
+      }
+    });
+
+    // Handle Match Client modal button clicks from recent intakes table
+    document.addEventListener('click', function(e) {
+      var btn = e.target.closest('.btn-open-match-modal');
+      if (!btn) return;
+      var intakeId = btn.getAttribute('data-intake-id');
+      var prodName = btn.getAttribute('data-product-name') || '';
+      var qty = btn.getAttribute('data-qty') || '';
+
+      var matchModalForm = document.getElementById('matchClientForm');
+      if (matchModalForm) {
+        matchModalForm.action = '/shop-floor/board-intake/' + encodeURIComponent(intakeId) + '/match-client';
+      }
+      var boardDetailsEl = document.getElementById('matchModalBoardDetails');
+      if (boardDetailsEl) {
+        boardDetailsEl.textContent = qty + ' × ' + prodName + ' (Intake #' + intakeId + ')';
+      }
+      var matchPartnerSearch = document.getElementById('matchPartnerSearch');
+      var matchPartnerId = document.getElementById('matchPartnerId');
+      var matchPartnerName = document.getElementById('matchPartnerName');
+      if (matchPartnerSearch) {
+        matchPartnerSearch.value = '';
+        matchPartnerSearch.classList.remove('is-invalid');
+      }
+      if (matchPartnerId) matchPartnerId.value = '';
+      if (matchPartnerName) matchPartnerName.value = '';
+
+      var modalEl = document.getElementById('matchClientModal');
+      if (modalEl && window.bootstrap && window.bootstrap.Modal) {
+        var modal = window.bootstrap.Modal.getOrCreateInstance(modalEl);
+        modal.show();
+        setTimeout(function() {
+          if (matchPartnerSearch) matchPartnerSearch.focus();
+        }, 300);
+      }
+    });
+
+    // Handle match client form submission
+    var matchClientForm = document.getElementById('matchClientForm');
+    if (matchClientForm) {
+      matchClientForm.addEventListener('submit', function(e) {
+        var matchPartnerId = document.getElementById('matchPartnerId');
+        var matchPartnerSearch = document.getElementById('matchPartnerSearch');
+        if (!matchPartnerId || !matchPartnerId.value || matchPartnerId.value === '0') {
+          e.preventDefault();
+          if (matchPartnerSearch) {
+            matchPartnerSearch.classList.add('is-invalid');
+            matchPartnerSearch.focus();
+          }
+          return;
+        }
+        var btnSubmit = document.getElementById('btnSubmitMatchClient');
+        var spinner = document.getElementById('matchClientSpinner');
+        if (btnSubmit) btnSubmit.disabled = true;
+        if (spinner) spinner.classList.remove('d-none');
+      });
+    }
     
     var qtyInput = document.getElementById('intakeQty');
     var stockHelp = document.getElementById('qtyCurrentStock');
@@ -2309,10 +2518,12 @@
         }
 
         var partnerVal = document.getElementById('partnerSelect').value;
+        var pendingClientFlag = document.getElementById('pendingClientFlag');
+        var isPendingClient = (pendingClientFlag && pendingClientFlag.value === 'true') || partnerVal === '0';
         var productVal = document.getElementById('productSelect').value;
         var isValid = true;
 
-        if (!partnerVal) {
+        if (!partnerVal && !isPendingClient) {
           document.getElementById('partnerSearch').classList.add('is-invalid');
           isValid = false;
         } else {
@@ -2461,6 +2672,14 @@
           var partnerSelect = document.getElementById('partnerSelect');
           var partnerName = document.getElementById('partnerName');
           var partnerSearch = document.getElementById('partnerSearch');
+          var pendingClientFlag = document.getElementById('pendingClientFlag');
+          var btnUnknownClient = document.getElementById('btnUnknownClient');
+          if (pendingClientFlag) pendingClientFlag.value = 'false';
+          if (btnUnknownClient) {
+            btnUnknownClient.classList.remove('btn-warning');
+            btnUnknownClient.classList.add('btn-outline-warning');
+            btnUnknownClient.textContent = '❓ Owner Unknown (Pending Match)';
+          }
           if (partnerSelect) partnerSelect.value = '';
           if (partnerName) partnerName.value = '';
           if (partnerSearch) {

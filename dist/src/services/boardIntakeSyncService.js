@@ -9,11 +9,12 @@ exports.reconcileRetroactiveBoardLogsForLinkedPos = reconcileRetroactiveBoardLog
 exports.checkAndWarnPurchaseOrdersForManualBoardIntake = checkAndWarnPurchaseOrdersForManualBoardIntake;
 exports.syncBoardIntakeEntry = syncBoardIntakeEntry;
 exports.revertBoardIntakeEntry = revertBoardIntakeEntry;
+exports.matchBoardIntakeToClient = matchBoardIntakeToClient;
 exports.retryDueBoardIntakeEntries = retryDueBoardIntakeEntries;
 exports.cleanPreexistingMismatchChatter = cleanPreexistingMismatchChatter;
 exports.startBoardIntakeSyncInterval = startBoardIntakeSyncInterval;
 const repositories_1 = require("../models/repositories");
-const repositories_2 = require("../models/repositories");
+const shopFloor_1 = require("../routes/shopFloor");
 const db_1 = require("../models/db");
 const stockMirrorService_1 = require("./stockMirrorService");
 const logService_1 = require("./logService");
@@ -703,7 +704,7 @@ async function syncBoardIntakeEntry(id) {
     activeInMemoryBoardSyncIds.add(id);
     try {
         entry = (await (0, repositories_1.getBoardIntakeQueueEntry)(id));
-        const settings = await (0, repositories_2.getSettings)();
+        const settings = await (0, repositories_1.getSettings)();
         const client = new odooClient_1.OdooClient(settings.odoo);
         let stockQuantity = entry.odoo_stock_quantity;
         const activeEntry = entry;
@@ -770,10 +771,13 @@ async function syncBoardIntakeEntry(id) {
             });
             await (0, stockMirrorService_1.recordExactStockQuantity)(Number(entry.product_id), entry.product_name, stockQuantity);
         }
-        const matchingMOs = await client.findMOsForBoardIntake({
-            productId: Number(entry.product_id),
-            partnerId: Number(entry.partner_id),
-        });
+        const partnerId = Number(entry.partner_id || 0);
+        const matchingMOs = partnerId > 0
+            ? await client.findMOsForBoardIntake({
+                productId: Number(entry.product_id),
+                partnerId,
+            })
+            : [];
         if (matchingMOs.length) {
             // NOTE: We do NOT reduce the MO's required component quantity (product_uom_qty).
             // When an MO needs 10 boards and operator logs 5, the MO still requires 10 boards total,
@@ -884,7 +888,7 @@ async function revertBoardIntakeEntry(id, revertedBy) {
     if (!await (0, repositories_1.claimBoardIntakeRevert)(id))
         throw new Error('This board log is already being reverted or was reverted by another user.');
     try {
-        const settings = await (0, repositories_2.getSettings)();
+        const settings = await (0, repositories_1.getSettings)();
         const result = await new odooClient_1.OdooClient(settings.odoo).removeBoardsFromStock({
             productId: Number(entry.product_id),
             quantity: Number(entry.quantity),
@@ -905,6 +909,130 @@ async function revertBoardIntakeEntry(id, revertedBy) {
         await (0, repositories_1.releaseBoardIntakeRevert)(id, message).catch(() => undefined);
         throw error;
     }
+}
+async function matchBoardIntakeToClient(input) {
+    const entry = await (0, repositories_1.getBoardIntakeQueueEntry)(input.id);
+    if (!entry)
+        throw new Error('Board log was not found.');
+    if (entry.reverted_at || entry.status === 'reverted') {
+        throw new Error('Cannot match a client on a reverted board log.');
+    }
+    const partnerId = Number(input.partnerId);
+    const customerName = String(input.customerName || '').trim() || `Client #${partnerId}`;
+    if (!partnerId || partnerId <= 0) {
+        throw new Error('A valid client must be selected.');
+    }
+    // 1. Update database record with new partner and matched metadata
+    await (0, repositories_1.matchBoardIntakeQueueEntryClient)({
+        id: input.id,
+        partnerId,
+        customerName,
+        matchedBy: input.matchedBy,
+    });
+    // 2. Mark matching pending shop floor processes loaded
+    await (0, repositories_1.markPendingShopFloorProcessesLoaded)({
+        partnerId,
+        productId: Number(entry.product_id),
+        customerName,
+        productName: entry.product_name,
+        loadedBy: input.matchedBy,
+        quantity: Number(entry.quantity),
+        moId: input.moId,
+        moName: input.moName,
+    });
+    // 3. Match in Odoo & reserve components on MOs
+    const settings = await (0, repositories_1.getSettings)();
+    const client = new odooClient_1.OdooClient(settings.odoo);
+    const candySharonPromise = Promise.all([
+        (0, poJobSummaryAuditService_1.findOdooUserByTerm)(client, 'Candy').catch(() => null),
+        (0, poJobSummaryAuditService_1.findOdooUserByTerm)(client, 'Sharon').catch(() => null),
+    ]);
+    const matchingMOs = await client.findMOsForBoardIntake({
+        productId: Number(entry.product_id),
+        partnerId,
+    });
+    if (matchingMOs.length) {
+        const reportDate = entry.arrival_date || new Intl.DateTimeFormat('en-CA', {
+            timeZone: 'Africa/Nairobi',
+            year: 'numeric',
+            month: '2-digit',
+            day: '2-digit',
+        }).format(new Date());
+        await Promise.all(matchingMOs.map(async (mo) => {
+            const { mentionHtml, partnerIds } = await resolveBoardIntakeStakeholders(client, mo.soUserId, candySharonPromise);
+            const qtyNeeded = Number(mo.qtyNeeded || 0);
+            const qtyLogged = Number(entry.quantity || 0);
+            const previousReserved = Number(mo.qtyReserved || 0);
+            const totalSupplied = previousReserved + qtyLogged;
+            const balanceRemaining = Math.max(0, qtyNeeded - totalSupplied);
+            const chatterHtml = buildBoardIntakeChatterHtml({
+                customerName,
+                productName: entry.product_name,
+                quantity: entry.quantity,
+                moName: mo.moName,
+                qtyNeeded: qtyNeeded > 0 ? qtyNeeded : null,
+                balanceRemaining: qtyNeeded > 0 ? balanceRemaining : null,
+                gate: entry.gate,
+                vehicleRegistration: entry.vehicle_registration,
+                arrivalTime: entry.arrival_time,
+                reportDate,
+                actorName: `${entry.actor_name || entry.actor_email} (Matched to ${customerName} by ${input.matchedBy})`,
+                mentionHtml,
+                hasBoardPo: mo.hasBoardPo,
+                boardPoNames: mo.boardPoNames,
+            });
+            return client.postModelChatterMessage('mrp.production', mo.moId, chatterHtml, partnerIds).catch(() => null);
+        }));
+        // Post to related sale.order chatter if matching MO has a linked Sales Order
+        const postedSoIds = new Set();
+        for (const mo of matchingMOs) {
+            if (mo.soId && !postedSoIds.has(mo.soId)) {
+                postedSoIds.add(mo.soId);
+                const { mentionHtml, partnerIds } = await resolveBoardIntakeStakeholders(client, mo.soUserId, candySharonPromise);
+                const qtyNeeded = Number(mo.qtyNeeded || 0);
+                const qtyLogged = Number(entry.quantity || 0);
+                const previousReserved = Number(mo.qtyReserved || 0);
+                const totalSupplied = previousReserved + qtyLogged;
+                const balanceRemaining = Math.max(0, qtyNeeded - totalSupplied);
+                const chatterHtml = buildBoardIntakeChatterHtml({
+                    customerName,
+                    productName: entry.product_name,
+                    quantity: entry.quantity,
+                    moName: mo.moName,
+                    qtyNeeded: qtyNeeded > 0 ? qtyNeeded : null,
+                    balanceRemaining: qtyNeeded > 0 ? balanceRemaining : null,
+                    gate: entry.gate,
+                    vehicleRegistration: entry.vehicle_registration,
+                    arrivalTime: entry.arrival_time,
+                    reportDate,
+                    actorName: `${entry.actor_name || entry.actor_email} (Matched to ${customerName} by ${input.matchedBy})`,
+                    mentionHtml,
+                    hasBoardPo: mo.hasBoardPo,
+                    boardPoNames: mo.boardPoNames,
+                });
+                await client.postModelChatterMessage('sale.order', mo.soId, chatterHtml, partnerIds).catch(() => null);
+            }
+        }
+        await client.reserveStockOnMOs(matchingMOs.map((mo) => mo.moId));
+    }
+    // 4. Invalidate caches
+    shopFloor_1.shopFloorCache.clearPrefix('shop-floor-dashboard:');
+    void Promise.allSettled([
+        (0, repositories_1.deleteShopFloorDashboardSnapshot)(),
+        (0, repositories_1.deleteShopFloorSharedCachePrefix)('shop-floor:shared-board-reg:'),
+    ]).catch(() => { });
+    await (0, logService_1.logEvent)('info', 'Board intake matched to client', {
+        boardIntakeId: input.id,
+        partnerId,
+        customerName,
+        matchedBy: input.matchedBy,
+        matchingMoCount: matchingMOs.length,
+    }).catch(() => undefined);
+    return {
+        matchedMoCount: matchingMOs.length,
+        matchingMOs,
+        customerName,
+    };
 }
 async function retryDueBoardIntakeEntries() {
     if (batchPromise)
@@ -934,7 +1062,7 @@ async function cleanPreexistingMismatchChatter(client) {
     try {
         let odooClient = client;
         if (!odooClient) {
-            const settings = await (0, repositories_2.getSettings)();
+            const settings = await (0, repositories_1.getSettings)();
             if (!settings?.odoo?.baseUrl)
                 return { deletedCount: 0, deletedIds: [] };
             odooClient = new odooClient_1.OdooClient(settings.odoo);

@@ -3789,9 +3789,10 @@ router.post('/shop-floor/board-intake', async (req, res) => {
         res.redirect('/login');
         return;
     }
-    const { product_id, quantity, partner_id } = req.body;
-    if (!product_id || !quantity || !partner_id) {
-        const errorMsg = 'Missing required fields: board type, quantity, and client are all required.';
+    const { product_id, quantity, partner_id, pending_client } = req.body;
+    const isPendingClient = pending_client === 'true' || pending_client === '1' || pending_client === 'on' || partner_id === '0' || partner_id === 'pending';
+    if (!product_id || !quantity || (!partner_id && !isPendingClient)) {
+        const errorMsg = 'Missing required fields: board type and quantity are required, and a client or "Pending Client Matching" must be selected.';
         if (wantsJson) {
             res.status(400).json({ ok: false, error: errorMsg });
             return;
@@ -3801,7 +3802,7 @@ router.post('/shop-floor/board-intake', async (req, res) => {
     }
     const productId = Number(product_id);
     const qty = Number(quantity);
-    const partnerId = Number(partner_id);
+    const partnerId = isPendingClient ? 0 : Number(partner_id);
     if (qty <= 0 || !Number.isFinite(qty) || !Number.isInteger(qty) || qty % 1 !== 0) {
         const errorMsg = 'Only full boards can be logged. Offcuts do not need logging.';
         if (wantsJson) {
@@ -3813,7 +3814,9 @@ router.post('/shop-floor/board-intake', async (req, res) => {
     }
     try {
         const productName = String(req.body.product_name || '').trim() || `Product #${productId}`;
-        const customerName = String(req.body.partner_name || '').trim() || `Client #${partnerId}`;
+        const customerName = isPendingClient
+            ? 'Pending Client Matching'
+            : (String(req.body.partner_name || '').trim() || `Client #${partnerId}`);
         const vehicleRegistration = String(req.body.vehicle_registration || '').trim().toUpperCase();
         const arrivalDate = String(req.body.arrival_date || '').trim();
         const arrivalTime = String(req.body.arrival_time || '').trim();
@@ -3831,17 +3834,19 @@ router.post('/shop-floor/board-intake', async (req, res) => {
         await (0, stockMirrorService_1.recordOptimisticStockAddition)(productId, productName, qty);
         const moId = req.body.mo_id ? Number(req.body.mo_id) : undefined;
         const moName = req.body.mo_name ? String(req.body.mo_name).trim() : undefined;
-        // Mark matching pending board requirements loaded in MySQL immediately
-        const updatedRequirements = await (0, repositories_1.markPendingShopFloorProcessesLoaded)({
-            partnerId,
-            productId,
-            customerName,
-            productName,
-            loadedBy: actorName,
-            quantity: qty,
-            moId,
-            moName,
-        });
+        // Mark matching pending board requirements loaded in MySQL immediately (if client known)
+        const updatedRequirements = partnerId > 0
+            ? await (0, repositories_1.markPendingShopFloorProcessesLoaded)({
+                partnerId,
+                productId,
+                customerName,
+                productName,
+                loadedBy: actorName,
+                quantity: qty,
+                moId,
+                moName,
+            })
+            : [];
         optimisticBoardIntakes.push({ id: optimisticId, partnerId, productId, productName, customerName, quantity: qty, expiresAt: Date.now() + 10 * 60 * 1000 });
         exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
         void Promise.allSettled([
@@ -3867,7 +3872,11 @@ router.post('/shop-floor/board-intake', async (req, res) => {
             partialSuffix = ` (For ${resolvedMoNames})`;
         }
         const purchaseTypeBadge = isPurchase ? ' [Purchase]' : ' [Client Supply]';
-        const successMessage = `Boards saved immediately: ${qty} x ${productName} for ${customerName}${purchaseTypeBadge}${partialSuffix}${vehicleRegistration ? ` (${vehicleRegistration})` : ''}. Odoo synchronization and MO reservation are continuing in the background.`;
+        const clientDesc = isPendingClient ? ' [Pending Client Matching]' : ` for ${customerName}`;
+        const syncDesc = isPendingClient
+            ? 'Odoo warehouse inventory update is processing in the background. Client can be matched when known.'
+            : 'Odoo synchronization and MO reservation are continuing in the background.';
+        const successMessage = `Boards saved immediately: ${qty} x ${productName}${clientDesc}${purchaseTypeBadge}${partialSuffix}${vehicleRegistration ? ` (${vehicleRegistration})` : ''}. ${syncDesc}`;
         if (wantsJson) {
             res.json({
                 ok: true,
@@ -4387,6 +4396,64 @@ router.post('/shop-floor/board-intake/:id/revert', async (req, res) => {
         return;
     }
     res.redirect('/shop-floor/boards?message=' + encodeURIComponent('Board log revert is processing in the background.') + '&boardLogPage=' + encodeURIComponent(String(req.body.boardLogPage || '1')));
+});
+router.post('/shop-floor/board-intake/:id/match-client', async (req, res) => {
+    const wantsJson = Boolean(req.xhr || req.headers.accept?.includes('application/json') || req.is('json') || req.body?.ajax === 'true');
+    if (!req.authUser) {
+        if (wantsJson) {
+            res.status(401).json({ ok: false, error: 'Please sign in first.' });
+            return;
+        }
+        res.redirect('/login');
+        return;
+    }
+    const entryId = String(req.params.id || '').trim();
+    const partnerId = Number(req.body.partner_id || 0);
+    const customerName = String(req.body.partner_name || '').trim();
+    const moId = req.body.mo_id ? Number(req.body.mo_id) : undefined;
+    const moName = req.body.mo_name ? String(req.body.mo_name).trim() : undefined;
+    if (!entryId) {
+        if (wantsJson) {
+            res.status(400).json({ ok: false, error: 'Board log ID is required.' });
+            return;
+        }
+        res.redirect('/shop-floor/boards?error=' + encodeURIComponent('Board log ID is required.'));
+        return;
+    }
+    if (!partnerId || partnerId <= 0) {
+        const errorMsg = 'Please choose a valid client from the list.';
+        if (wantsJson) {
+            res.status(400).json({ ok: false, error: errorMsg });
+            return;
+        }
+        res.redirect('/shop-floor/boards?error=' + encodeURIComponent(errorMsg));
+        return;
+    }
+    const matchedBy = req.authUser.displayName || req.authUser.email || 'Operator';
+    try {
+        const result = await (0, boardIntakeSyncService_1.matchBoardIntakeToClient)({
+            id: entryId,
+            partnerId,
+            customerName,
+            matchedBy,
+            moId,
+            moName,
+        });
+        const msg = `Board log matched successfully to ${result.customerName}.${result.matchedMoCount > 0 ? ` Allocated and reserved on ${result.matchedMoCount} active MO(s).` : ''}`;
+        if (wantsJson) {
+            res.json({ ok: true, message: msg, matchedMoCount: result.matchedMoCount, customerName: result.customerName });
+            return;
+        }
+        res.redirect('/shop-floor/boards?message=' + encodeURIComponent(msg));
+    }
+    catch (err) {
+        const errorMsg = err instanceof Error ? err.message : 'Failed to match client to board log.';
+        if (wantsJson) {
+            res.status(500).json({ ok: false, error: errorMsg });
+            return;
+        }
+        res.redirect('/shop-floor/boards?error=' + encodeURIComponent(errorMsg));
+    }
 });
 router.get('/shop-floor/board-intake/status', async (req, res) => {
     if (!req.authUser) {

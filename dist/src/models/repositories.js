@@ -153,6 +153,7 @@ exports.beginStaffOnboardingApproval = beginStaffOnboardingApproval;
 exports.finishStaffOnboardingApproval = finishStaffOnboardingApproval;
 exports.createBoardIntakeQueueEntry = createBoardIntakeQueueEntry;
 exports.updateBoardIntakeQueueEntry = updateBoardIntakeQueueEntry;
+exports.matchBoardIntakeQueueEntryClient = matchBoardIntakeQueueEntryClient;
 exports.getRecentBoardIntakeQueueEntries = getRecentBoardIntakeQueueEntries;
 exports.countBoardIntakeQueueEntries = countBoardIntakeQueueEntries;
 exports.getContinuousBoardIntakeLogs = getContinuousBoardIntakeLogs;
@@ -4015,6 +4016,14 @@ async function updateBoardIntakeQueueEntry(id, input) {
     params.push(id);
     await (0, db_1.execute)(`UPDATE board_intake_queue SET ${sets.join(', ')} WHERE id = ?`, params);
 }
+async function matchBoardIntakeQueueEntryClient(input) {
+    await (0, db_1.execute)(`ALTER TABLE board_intake_queue ADD COLUMN matched_at VARCHAR(50) NULL`).catch(() => { });
+    await (0, db_1.execute)(`ALTER TABLE board_intake_queue ADD COLUMN matched_by VARCHAR(255) NULL`).catch(() => { });
+    const now = (0, dateTime_1.appDateTime)();
+    await (0, db_1.execute)(`UPDATE board_intake_queue
+     SET partner_id = ?, customer_name = ?, matched_by = ?, matched_at = ?, updated_at = ?
+     WHERE id = ?`, [input.partnerId, input.customerName, input.matchedBy, now, now, input.id]);
+}
 function buildBoardIntakeDateCondition(filterDate) {
     if (!filterDate || filterDate === 'all') {
         return { whereClause: '', filterParams: [] };
@@ -4034,7 +4043,7 @@ function buildBoardIntakeDateCondition(filterDate) {
 }
 async function getRecentBoardIntakeQueueEntries(limit = 12, offset = 0, filterDate) {
     const { whereClause, filterParams } = buildBoardIntakeDateCondition(filterDate);
-    const query = `SELECT id, product_name, customer_name, quantity, vehicle_registration, arrival_date, arrival_time, gate, is_purchase, purchase_order_reference, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at, reverted_at, reverted_by, actor_name, actor_email
+    const query = `SELECT id, product_id, product_name, partner_id, customer_name, quantity, vehicle_registration, arrival_date, arrival_time, gate, is_purchase, purchase_order_reference, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at, reverted_at, reverted_by, matched_at, matched_by, actor_name, actor_email
     FROM board_intake_queue 
     ${whereClause}
     ORDER BY 
@@ -4051,6 +4060,8 @@ async function getRecentBoardIntakeQueueEntries(limit = 12, offset = 0, filterDa
         await (0, db_1.execute)(`ALTER TABLE board_intake_queue ADD COLUMN gate VARCHAR(50) NULL`).catch(() => { });
         await (0, db_1.execute)(`ALTER TABLE board_intake_queue ADD COLUMN is_purchase INTEGER DEFAULT 0`).catch(() => { });
         await (0, db_1.execute)(`ALTER TABLE board_intake_queue ADD COLUMN purchase_order_reference VARCHAR(100) NULL`).catch(() => { });
+        await (0, db_1.execute)(`ALTER TABLE board_intake_queue ADD COLUMN matched_at VARCHAR(50) NULL`).catch(() => { });
+        await (0, db_1.execute)(`ALTER TABLE board_intake_queue ADD COLUMN matched_by VARCHAR(255) NULL`).catch(() => { });
         return (0, db_1.queryAll)(query, [...filterParams, Math.max(1, Math.min(50, limit)), Math.max(0, offset)]);
     }
 }
@@ -4083,7 +4094,7 @@ async function getContinuousBoardIntakeLogs(options) {
         params.push(options.endDate, `${options.endDate} 23:59:59`);
     }
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-    const query = `SELECT id, product_name, customer_name, quantity, vehicle_registration, arrival_date, arrival_time, gate, is_purchase, purchase_order_reference, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at, reverted_at, reverted_by, actor_name, actor_email,
+    const query = `SELECT id, product_id, product_name, partner_id, customer_name, quantity, vehicle_registration, arrival_date, arrival_time, gate, is_purchase, purchase_order_reference, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at, reverted_at, reverted_by, matched_at, matched_by, actor_name, actor_email,
       CASE 
         WHEN arrival_date IS NOT NULL AND arrival_date != '' THEN arrival_date 
         ELSE SUBSTR(created_at, 1, 10) 
@@ -4107,6 +4118,8 @@ async function getContinuousBoardIntakeLogs(options) {
         await (0, db_1.execute)(`ALTER TABLE board_intake_queue ADD COLUMN gate VARCHAR(50) NULL`).catch(() => { });
         await (0, db_1.execute)(`ALTER TABLE board_intake_queue ADD COLUMN is_purchase INTEGER DEFAULT 0`).catch(() => { });
         await (0, db_1.execute)(`ALTER TABLE board_intake_queue ADD COLUMN purchase_order_reference VARCHAR(100) NULL`).catch(() => { });
+        await (0, db_1.execute)(`ALTER TABLE board_intake_queue ADD COLUMN matched_at VARCHAR(50) NULL`).catch(() => { });
+        await (0, db_1.execute)(`ALTER TABLE board_intake_queue ADD COLUMN matched_by VARCHAR(255) NULL`).catch(() => { });
         return (0, db_1.queryAll)(query, [...params, limit, offset]).catch(() => []);
     }
 }

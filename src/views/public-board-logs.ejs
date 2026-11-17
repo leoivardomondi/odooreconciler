@@ -175,6 +175,7 @@
             <% group.entries.forEach((item) => { 
                  const isPurchase = Boolean(item.is_purchase);
                  const status = String(item.status || 'synced').toLowerCase();
+                 const isPendingClient = !item.partner_id || Number(item.partner_id) === 0 || item.customer_name === 'Pending Client Matching';
             %>
               <div class="board-log-entry-card border rounded-3 p-3 bg-white shadow-sm"
                    data-entry-id="<%= item.id %>"
@@ -184,8 +185,8 @@
                    data-po="<%= (item.purchase_order_reference || '').toLowerCase() %>"
                    data-gate="<%= (item.gate || '').toLowerCase() %>"
                    data-operator="<%= (item.actor_name || '').toLowerCase() %>"
-                   data-supply="<%= isPurchase ? 'purchase' : 'client' %>"
-                   style="border-left: 4.5px solid <%= isPurchase ? '#2563eb' : '#059669' %> !important; border-color: #cbd5e1 !important; transition: transform 0.15s ease, box-shadow 0.15s ease;">
+                   data-supply="<%= isPendingClient ? 'pending' : (isPurchase ? 'purchase' : 'client') %>"
+                   style="border-left: 4.5px solid <%= isPendingClient ? '#f59e0b' : (isPurchase ? '#2563eb' : '#059669') %> !important; border-color: #cbd5e1 !important; transition: transform 0.15s ease, box-shadow 0.15s ease;">
                 <div class="d-flex flex-wrap justify-content-between align-items-start gap-2">
                   <div style="flex: 1 1 300px;">
                     <!-- Line 1: Quantity × Product Name & Supply Badge -->
@@ -193,7 +194,11 @@
                       <strong class="text-dark" style="font-size: 0.96rem;">
                         <%= item.quantity %> × <%= item.product_name %>
                       </strong>
-                      <% if (isPurchase) { %>
+                      <% if (isPendingClient) { %>
+                        <span class="badge text-dark border border-warning shadow-sm rounded-pill" style="background-color: #fef08a !important; font-size: 0.72rem; font-weight: 700; letter-spacing: 0.02em;" title="Owner is unknown - pending client matching">
+                          ⚠️ PENDING CLIENT MATCHING
+                        </span>
+                      <% } else if (isPurchase) { %>
                         <span class="badge bg-primary text-white border-0 shadow-sm rounded-pill" style="font-size: 0.72rem; font-weight: 700; letter-spacing: 0.02em;" title="Company Purchase (PO-backed)">
                           📦 COMPANY PURCHASE
                         </span>
@@ -211,11 +216,18 @@
 
                     <!-- Line 2: Customer, Source Tag & Gate Details -->
                     <div class="small mt-1 text-secondary" style="font-size: 0.84rem; line-height: 1.45;">
-                      <span class="fw-bold" style="color: #0f172a;"><%= item.customer_name %></span>
-                      <% if (isPurchase) { %>
-                        <span class="badge bg-light text-primary border border-primary-subtle px-1.5 py-0.5 ms-1" style="font-size: 0.68rem; font-weight: 600;">Company Procured</span>
+                      <% if (isPendingClient) { %>
+                        <span class="fw-bold text-warning-emphasis">⚠️ Pending Client Matching</span>
                       <% } else { %>
-                        <span class="badge bg-light text-success border border-success-subtle px-1.5 py-0.5 ms-1" style="font-size: 0.68rem; font-weight: 600;">Customer's Own Material</span>
+                        <span class="fw-bold" style="color: #0f172a;"><%= item.customer_name %></span>
+                        <% if (isPurchase) { %>
+                          <span class="badge bg-light text-primary border border-primary-subtle px-1.5 py-0.5 ms-1" style="font-size: 0.68rem; font-weight: 600;">Company Procured</span>
+                        <% } else { %>
+                          <span class="badge bg-light text-success border border-success-subtle px-1.5 py-0.5 ms-1" style="font-size: 0.68rem; font-weight: 600;">Customer's Own Material</span>
+                        <% } %>
+                      <% } %>
+                      <% if (item.matched_by) { %>
+                        <span class="badge bg-info-subtle text-info-emphasis border border-info-subtle px-2 py-0.5 ms-1" style="font-size: 0.70rem;">Matched by <%= item.matched_by %></span>
                       <% } %>
                       <span class="text-muted">·</span>
                       <span style="color: #475569;"><%= item.created_at %></span>

@@ -4,11 +4,16 @@ import {
   finishBoardIntakeRevert,
   getBoardIntakeQueueEntry,
   getDueBoardIntakeQueueEntries,
+  matchBoardIntakeQueueEntryClient,
   releaseStaleBoardIntakeQueueEntry,
   releaseBoardIntakeRevert,
   updateBoardIntakeQueueEntry,
+  markPendingShopFloorProcessesLoaded,
+  deleteShopFloorDashboardSnapshot,
+  deleteShopFloorSharedCachePrefix,
+  getSettings,
 } from '../models/repositories';
-import { getSettings } from '../models/repositories';
+import { shopFloorCache } from '../routes/shopFloor';
 import { queryAll, getDatabaseDialect } from '../models/db';
 import { recordExactStockQuantity, refreshStockMirror } from './stockMirrorService';
 import { logEvent } from './logService';
@@ -1054,10 +1059,13 @@ export async function syncBoardIntakeEntry(id: string) {
       await recordExactStockQuantity(Number(entry.product_id), entry.product_name, stockQuantity);
     }
 
-    const matchingMOs = await client.findMOsForBoardIntake({
-      productId: Number(entry.product_id),
-      partnerId: Number(entry.partner_id),
-    });
+    const partnerId = Number(entry.partner_id || 0);
+    const matchingMOs = partnerId > 0
+      ? await client.findMOsForBoardIntake({
+          productId: Number(entry.product_id),
+          partnerId,
+        })
+      : [];
 
     if (matchingMOs.length) {
       // NOTE: We do NOT reduce the MO's required component quantity (product_uom_qty).
@@ -1200,6 +1208,160 @@ export async function revertBoardIntakeEntry(id: string, revertedBy: string) {
     await releaseBoardIntakeRevert(id, message).catch(() => undefined);
     throw error;
   }
+}
+
+export async function matchBoardIntakeToClient(input: {
+  id: string;
+  partnerId: number;
+  customerName: string;
+  matchedBy: string;
+  moId?: number;
+  moName?: string;
+}) {
+  const entry = await getBoardIntakeQueueEntry(input.id);
+  if (!entry) throw new Error('Board log was not found.');
+  if (entry.reverted_at || entry.status === 'reverted') {
+    throw new Error('Cannot match a client on a reverted board log.');
+  }
+
+  const partnerId = Number(input.partnerId);
+  const customerName = String(input.customerName || '').trim() || `Client #${partnerId}`;
+  if (!partnerId || partnerId <= 0) {
+    throw new Error('A valid client must be selected.');
+  }
+
+  // 1. Update database record with new partner and matched metadata
+  await matchBoardIntakeQueueEntryClient({
+    id: input.id,
+    partnerId,
+    customerName,
+    matchedBy: input.matchedBy,
+  });
+
+  // 2. Mark matching pending shop floor processes loaded
+  await markPendingShopFloorProcessesLoaded({
+    partnerId,
+    productId: Number(entry.product_id),
+    customerName,
+    productName: entry.product_name,
+    loadedBy: input.matchedBy,
+    quantity: Number(entry.quantity),
+    moId: input.moId,
+    moName: input.moName,
+  });
+
+  // 3. Match in Odoo & reserve components on MOs
+  const settings = await getSettings();
+  const client = new OdooClient(settings.odoo);
+
+  const candySharonPromise = Promise.all([
+    findOdooUserByTerm(client, 'Candy').catch(() => null),
+    findOdooUserByTerm(client, 'Sharon').catch(() => null),
+  ]);
+
+  const matchingMOs = await client.findMOsForBoardIntake({
+    productId: Number(entry.product_id),
+    partnerId,
+  });
+
+  if (matchingMOs.length) {
+    const reportDate = entry.arrival_date || new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Africa/Nairobi',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date());
+
+    await Promise.all(matchingMOs.map(async (mo) => {
+      const { mentionHtml, partnerIds } = await resolveBoardIntakeStakeholders(
+        client,
+        mo.soUserId,
+        candySharonPromise,
+      );
+      const qtyNeeded = Number(mo.qtyNeeded || 0);
+      const qtyLogged = Number(entry.quantity || 0);
+      const previousReserved = Number(mo.qtyReserved || 0);
+      const totalSupplied = previousReserved + qtyLogged;
+      const balanceRemaining = Math.max(0, qtyNeeded - totalSupplied);
+
+      const chatterHtml = buildBoardIntakeChatterHtml({
+        customerName,
+        productName: entry.product_name,
+        quantity: entry.quantity,
+        moName: mo.moName,
+        qtyNeeded: qtyNeeded > 0 ? qtyNeeded : null,
+        balanceRemaining: qtyNeeded > 0 ? balanceRemaining : null,
+        gate: entry.gate,
+        vehicleRegistration: entry.vehicle_registration,
+        arrivalTime: entry.arrival_time,
+        reportDate,
+        actorName: `${entry.actor_name || entry.actor_email} (Matched to ${customerName} by ${input.matchedBy})`,
+        mentionHtml,
+        hasBoardPo: mo.hasBoardPo,
+        boardPoNames: mo.boardPoNames,
+      });
+      return client.postModelChatterMessage('mrp.production', mo.moId, chatterHtml, partnerIds).catch(() => null);
+    }));
+
+    // Post to related sale.order chatter if matching MO has a linked Sales Order
+    const postedSoIds = new Set<number>();
+    for (const mo of matchingMOs) {
+      if (mo.soId && !postedSoIds.has(mo.soId)) {
+        postedSoIds.add(mo.soId);
+        const { mentionHtml, partnerIds } = await resolveBoardIntakeStakeholders(
+          client,
+          mo.soUserId,
+          candySharonPromise,
+        );
+        const qtyNeeded = Number(mo.qtyNeeded || 0);
+        const qtyLogged = Number(entry.quantity || 0);
+        const previousReserved = Number(mo.qtyReserved || 0);
+        const totalSupplied = previousReserved + qtyLogged;
+        const balanceRemaining = Math.max(0, qtyNeeded - totalSupplied);
+
+        const chatterHtml = buildBoardIntakeChatterHtml({
+          customerName,
+          productName: entry.product_name,
+          quantity: entry.quantity,
+          moName: mo.moName,
+          qtyNeeded: qtyNeeded > 0 ? qtyNeeded : null,
+          balanceRemaining: qtyNeeded > 0 ? balanceRemaining : null,
+          gate: entry.gate,
+          vehicleRegistration: entry.vehicle_registration,
+          arrivalTime: entry.arrival_time,
+          reportDate,
+          actorName: `${entry.actor_name || entry.actor_email} (Matched to ${customerName} by ${input.matchedBy})`,
+          mentionHtml,
+          hasBoardPo: mo.hasBoardPo,
+          boardPoNames: mo.boardPoNames,
+        });
+        await client.postModelChatterMessage('sale.order', mo.soId, chatterHtml, partnerIds).catch(() => null);
+      }
+    }
+
+    await client.reserveStockOnMOs(matchingMOs.map((mo) => mo.moId));
+  }
+
+  // 4. Invalidate caches
+  shopFloorCache.clearPrefix('shop-floor-dashboard:');
+  void Promise.allSettled([
+    deleteShopFloorDashboardSnapshot(),
+    deleteShopFloorSharedCachePrefix('shop-floor:shared-board-reg:'),
+  ]).catch(() => {});
+
+  await logEvent('info', 'Board intake matched to client', {
+    boardIntakeId: input.id,
+    partnerId,
+    customerName,
+    matchedBy: input.matchedBy,
+    matchingMoCount: matchingMOs.length,
+  }).catch(() => undefined);
+
+  return {
+    matchedMoCount: matchingMOs.length,
+    matchingMOs,
+    customerName,
+  };
 }
 
 export async function retryDueBoardIntakeEntries() {
