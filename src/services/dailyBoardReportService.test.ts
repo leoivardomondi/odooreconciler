@@ -175,3 +175,4 @@ test('dailyBoardReportService: renderDailyBoardReportPdf generates valid PDF wit
   const header = pdfBuffer.subarray(0, 5).toString('utf-8');
   assert.equal(header, '%PDF-');
 });
+

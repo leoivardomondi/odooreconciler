@@ -494,9 +494,9 @@ async function renderWeeklyShopFloorReportPdf(reportInput, scope) {
         totals.boards += operator.boards;
         totals.synced += operator.synced;
         totals.failed += operator.failed;
-        totals.pending += operator.pending;
+        totals.reverted += (operator.reverted || 0);
         return totals;
-    }, { records: 0, boards: 0, synced: 0, failed: 0, pending: 0 });
+    }, { records: 0, boards: 0, synced: 0, failed: 0, reverted: 0 });
     section('Board logging by operator', `Board intake records created from ${report.start} to ${report.end}. Total: ${boardLogTotals.records} record(s), ${boardLogTotals.boards} board(s).`);
     const boardLogCols = [
         { label: 'OPERATOR', x: 48, width: 146 },
@@ -505,7 +505,7 @@ async function renderWeeklyShopFloorReportPdf(reportInput, scope) {
         { label: 'SHARE', x: 290, width: 42 },
         { label: 'SYNCED', x: 336, width: 42 },
         { label: 'FAILED', x: 382, width: 42 },
-        { label: 'PENDING', x: 428, width: 46 },
+        { label: 'REVERTED', x: 428, width: 46 },
         { label: 'LAST LOG', x: 478, width: 66 },
     ];
     tableHeader(boardLogCols);
@@ -529,12 +529,12 @@ async function renderWeeklyShopFloorReportPdf(reportInput, scope) {
             .text(`${boardShare}%`, 290, y + 9, { width: 42, align: 'center' })
             .text(String(operator.synced), 336, y + 9, { width: 42, align: 'center' });
         document.fillColor(operator.failed > 0 ? '#dc2626' : ink).text(String(operator.failed), 382, y + 9, { width: 42, align: 'center' });
-        document.fillColor(operator.pending > 0 ? '#d97706' : ink).text(String(operator.pending), 428, y + 9, { width: 46, align: 'center' });
+        document.fillColor((operator.reverted || 0) > 0 ? '#dc2626' : ink).text(String(operator.reverted || 0), 428, y + 9, { width: 46, align: 'center' });
         document.fontSize(5.9).fillColor(muted).text(nairobiDateTime(operator.lastLoggedAt), 478, y + 6, { width: 66, height: 18 });
         document.y = y + 29;
     });
     document.moveDown(.35);
-    document.font('Helvetica').fontSize(7).fillColor(muted).text(`Totals: ${boardLogTotals.records} records | ${boardLogTotals.boards} boards | ${boardLogTotals.synced} synced | ${boardLogTotals.failed} failed | ${boardLogTotals.pending} pending`, 42, document.y, { width: contentWidth });
+    document.font('Helvetica').fontSize(7).fillColor(muted).text(`Totals: ${boardLogTotals.records} records | ${boardLogTotals.boards} boards | ${boardLogTotals.synced} synced | ${boardLogTotals.failed} failed | ${boardLogTotals.reverted} reverted`, 42, document.y, { width: contentWidth });
     document.moveDown(.4);
     const classifyArea = (name) => name.toLowerCase().includes('edge band') || name.toLowerCase().includes('edging band') ? 'Edge Banding' : name.toLowerCase().includes('optimised') || name.toLowerCase().includes('optimized') || name.toLowerCase().includes('panel') ? 'Panel Rack' : 'Table Saw';
     const now = report.generatedAt.getTime();

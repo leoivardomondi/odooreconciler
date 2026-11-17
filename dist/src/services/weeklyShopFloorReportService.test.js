@@ -55,13 +55,33 @@ const weeklyShopFloorReportService_1 = require("./weeklyShopFloorReportService")
     await t.test('board logging filters out non-operations employees', () => {
         const operationsNames = new Set(['Janet Awino Amollo', 'Joel Ochango'].map(s => s.toLowerCase().trim()));
         const rawBoardLogging = [
-            { name: 'Janet Awino Amollo', records: 5, boards: 10 },
-            { name: 'Joel Ochango', records: 3, boards: 6 },
-            { name: 'Charles Onyango', records: 1, boards: 2 },
-            { name: 'dbadmin', records: 2, boards: 4 },
+            { name: 'Janet Awino Amollo', records: 5, boards: 10, synced: 4, failed: 0, reverted: 1, pending: 0 },
+            { name: 'Joel Ochango', records: 3, boards: 6, synced: 3, failed: 0, reverted: 0, pending: 0 },
+            { name: 'Charles Onyango', records: 1, boards: 2, synced: 1, failed: 0, reverted: 0, pending: 0 },
+            { name: 'dbadmin', records: 2, boards: 4, synced: 2, failed: 0, reverted: 0, pending: 0 },
         ];
         const filtered = rawBoardLogging.filter(b => operationsNames.has(b.name.toLowerCase().trim()));
         strict_1.default.equal(filtered.length, 2);
         strict_1.default.deepEqual(filtered.map(f => f.name), ['Janet Awino Amollo', 'Joel Ochango']);
+    });
+    await t.test('board logging totals correctly accumulate reverted count', () => {
+        const operators = [
+            { name: 'Janet Awino Amollo', records: 5, boards: 10, synced: 4, failed: 0, reverted: 1, pending: 0 },
+            { name: 'Joel Ochango', records: 3, boards: 6, synced: 3, failed: 0, reverted: 0, pending: 0 },
+            { name: 'Operator 3', records: 4, boards: 8, synced: 2, failed: 0, reverted: 2, pending: 0 },
+        ];
+        const totals = operators.reduce((acc, op) => {
+            acc.records += op.records;
+            acc.boards += op.boards;
+            acc.synced += op.synced;
+            acc.failed += op.failed;
+            acc.reverted += (op.reverted || 0);
+            return acc;
+        }, { records: 0, boards: 0, synced: 0, failed: 0, reverted: 0 });
+        strict_1.default.equal(totals.records, 12);
+        strict_1.default.equal(totals.boards, 24);
+        strict_1.default.equal(totals.synced, 9);
+        strict_1.default.equal(totals.failed, 0);
+        strict_1.default.equal(totals.reverted, 3);
     });
 });

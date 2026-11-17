@@ -5717,8 +5717,9 @@ export async function getBoardIntakeLoggingReport(startDate: string, endDate: st
     actor_email: string | null;
     quantity: number;
     status: string;
+    reverted_at: string | null;
     created_at: string;
-  }>(`SELECT actor_name, actor_email, quantity, status, created_at
+  }>(`SELECT actor_name, actor_email, quantity, status, reverted_at, created_at
       FROM board_intake_queue
       WHERE created_at >= ? AND created_at <= ?
       ORDER BY created_at ASC`, [`${effectiveStartDate} 00:00:00`, `${effectiveEndDate} 23:59:59`]);
@@ -5730,6 +5731,7 @@ export async function getBoardIntakeLoggingReport(startDate: string, endDate: st
     boards: number;
     synced: number;
     failed: number;
+    reverted: number;
     pending: number;
     lastLoggedAt: string;
   }>();
@@ -5737,12 +5739,17 @@ export async function getBoardIntakeLoggingReport(startDate: string, endDate: st
     const email = String(row.actor_email || '').trim().toLowerCase();
     const name = String(row.actor_name || email || 'Unknown operator').trim();
     const key = email || name.toLowerCase();
-    const item = byOperator.get(key) || { name, email, records: 0, boards: 0, synced: 0, failed: 0, pending: 0, lastLoggedAt: row.created_at };
+    const item = byOperator.get(key) || { name, email, records: 0, boards: 0, synced: 0, failed: 0, reverted: 0, pending: 0, lastLoggedAt: row.created_at };
     item.records += 1;
-    item.boards += Number(row.quantity || 0);
-    if (row.status === 'synced') item.synced += 1;
-    else if (row.status === 'failed') item.failed += 1;
-    else item.pending += 1;
+    const isReverted = Boolean(row.reverted_at || row.status === 'reverted' || row.status === 'reverting');
+    if (isReverted) {
+      item.reverted += 1;
+    } else {
+      item.boards += Number(row.quantity || 0);
+      if (row.status === 'synced') item.synced += 1;
+      else if (row.status === 'failed') item.failed += 1;
+      else item.pending += 1;
+    }
     item.lastLoggedAt = row.created_at;
     byOperator.set(key, item);
   });
