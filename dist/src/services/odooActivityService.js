@@ -71,6 +71,28 @@ async function findOpenActivities(client, input) {
     });
 }
 async function createTodoActivity(client, input) {
+    // Prevent duplicate activities: check if an open activity with matching summary already exists on this record
+    try {
+        const openActivities = await findOpenActivities(client, {
+            modelName: input.modelName,
+            recordId: input.recordId,
+        });
+        const normalizedInputSummary = input.summary.trim().toLowerCase();
+        const existing = openActivities.find((act) => {
+            const actSummary = String(act.summary || '').trim().toLowerCase();
+            if (!actSummary)
+                return false;
+            return (actSummary === normalizedInputSummary ||
+                actSummary.includes(normalizedInputSummary) ||
+                normalizedInputSummary.includes(actSummary));
+        });
+        if (existing) {
+            return existing.id;
+        }
+    }
+    catch (checkErr) {
+        // If activity check fails (e.g. permission/network), proceed safely to creation
+    }
     const resModelId = await getOdooModelId(client, input.modelName);
     const activityTypeId = await getTodoActivityTypeId(client);
     const values = {

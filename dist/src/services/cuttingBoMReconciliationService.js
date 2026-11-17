@@ -232,7 +232,12 @@ async function notifyLeoivardDuplicateBoardComponent(input) {
           </p>
         </div>
       `;
-            await client.postModelChatterMessage('mrp.production', mo.id, chatterHtml, leoivardPartnerId ? [leoivardPartnerId] : undefined);
+            const alreadyWarned = typeof client.hasModelChatterMessage === 'function'
+                ? await client.hasModelChatterMessage('mrp.production', mo.id, 'Duplicate Board Component Detected on Cutting BoM')
+                : false;
+            if (!alreadyWarned) {
+                await client.postModelChatterMessage('mrp.production', mo.id, chatterHtml, leoivardPartnerId ? [leoivardPartnerId] : undefined, { dedupeSnippet: 'Duplicate Board Component Detected on Cutting BoM' });
+            }
         }
         catch (chatterErr) {
             console.warn(`[CuttingBoMReconciliation] Could not post chatter warning on MO ${mo.name}:`, chatterErr);

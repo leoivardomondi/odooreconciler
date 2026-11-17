@@ -670,11 +670,18 @@ export async function syncQuotationWithJobSummary(
       const itemRows = unmatchedItems
         .map((u) => `<li><strong>${u.type}:</strong> ${u.name} — <em>${u.reason}</em></li>`)
         .join('');
-      await client.postModelChatterMessage(
-        'sale.order',
-        orderId,
-        `<p><strong>Job Summary Line Population Notice:</strong></p><p>The following item(s) from the Job Summary could not be created because no matching product exists in Odoo:</p><ul>${itemRows}</ul><p><em>Please create the missing products or add them manually to the quotation.</em></p>`,
-      );
+      const alreadyNotified = typeof (client as any).hasModelChatterMessage === 'function'
+        ? await client.hasModelChatterMessage('sale.order', orderId, 'Job Summary Line Population Notice')
+        : false;
+      if (!alreadyNotified) {
+        await client.postModelChatterMessage(
+          'sale.order',
+          orderId,
+          `<p><strong>Job Summary Line Population Notice:</strong></p><p>The following item(s) from the Job Summary could not be created because no matching product exists in Odoo:</p><ul>${itemRows}</ul><p><em>Please create the missing products or add them manually to the quotation.</em></p>`,
+          undefined,
+          { dedupeSnippet: 'Job Summary Line Population Notice' },
+        );
+      }
 
       const userId = resolveSalespersonUserId(order);
       if (userId) {
@@ -743,13 +750,20 @@ export async function syncQuotationWithJobSummary(
       }
     }
 
-    await client.postModelChatterMessage(
-      'sale.order',
-      orderId,
-      `<p><strong>Job Summary Verification Alert:</strong></p><ul>${comparison.shortfalls
-        .map((s) => `<li>${s}</li>`)
-        .join('')}</ul><p><em>Quotation lines were NOT modified because they were already customized.</em></p>`,
-    );
+    const alreadyAlerted = typeof (client as any).hasModelChatterMessage === 'function'
+      ? await client.hasModelChatterMessage('sale.order', orderId, 'Job Summary Verification Alert')
+      : false;
+    if (!alreadyAlerted) {
+      await client.postModelChatterMessage(
+        'sale.order',
+        orderId,
+        `<p><strong>Job Summary Verification Alert:</strong></p><ul>${comparison.shortfalls
+          .map((s) => `<li>${s}</li>`)
+          .join('')}</ul><p><em>Quotation lines were NOT modified because they were already customized.</em></p>`,
+        undefined,
+        { dedupeSnippet: 'Job Summary Verification Alert' },
+      );
+    }
 
     await logEvent('warn', 'Quotation lines shortfall compared to Job Summary', {
       orderId,

@@ -107,8 +107,17 @@ async function checkAndAlertUnapprovedPurchaseOrders(client, activeMos, soPartne
         for (const po of matchedPos) {
             const dedupeKey = `${po.id}:${mo.id}`;
             const lastAlertedAt = exports.unapprovedPoAlertCooldown.get(dedupeKey) || 0;
-            if (!options.forceAlert && now - lastAlertedAt < exports.UNAPPROVED_PO_ALERT_COOLDOWN_MS) {
-                continue;
+            if (!options.forceAlert) {
+                if (now - lastAlertedAt < exports.UNAPPROVED_PO_ALERT_COOLDOWN_MS) {
+                    continue;
+                }
+                if (typeof client.hasModelChatterMessage === 'function') {
+                    const poAlreadyAlerted = await client.hasModelChatterMessage('purchase.order', po.id, 'PO Approval Check Required');
+                    if (poAlreadyAlerted) {
+                        exports.unapprovedPoAlertCooldown.set(dedupeKey, now);
+                        continue;
+                    }
+                }
             }
             const moStateLabel = mo.state === 'progress' ? 'IN PROGRESS' : 'READY TO START (Confirmed)';
             const poChatterHtml = `
@@ -121,8 +130,8 @@ async function checkAndAlertUnapprovedPurchaseOrders(client, activeMos, soPartne
 <p>Linked Purchase Order <strong>${po.name}</strong> is in state <em>${po.state}</em> (not yet approved). Alerted ${charlesMention} and ${leoivardMention} to check and approve.</p>
 `.trim();
             try {
-                await client.postModelChatterMessage('purchase.order', po.id, poChatterHtml, notifyPartnerIds.length ? notifyPartnerIds : undefined);
-                await client.postModelChatterMessage('mrp.production', mo.id, moChatterHtml);
+                await client.postModelChatterMessage('purchase.order', po.id, poChatterHtml, notifyPartnerIds.length ? notifyPartnerIds : undefined, { dedupeSnippet: 'PO Approval Check Required', dedupeWindowMs: exports.UNAPPROVED_PO_ALERT_COOLDOWN_MS });
+                await client.postModelChatterMessage('mrp.production', mo.id, moChatterHtml, undefined, { dedupeSnippet: 'Purchase Order Awaiting Approval', dedupeWindowMs: exports.UNAPPROVED_PO_ALERT_COOLDOWN_MS });
                 exports.unapprovedPoAlertCooldown.set(dedupeKey, now);
                 await (0, logService_1.logEvent)('info', 'Unapproved PO alert logged to chatter for Charles and Leoivard', {
                     poId: po.id,

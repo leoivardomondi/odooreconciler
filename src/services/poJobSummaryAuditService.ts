@@ -624,23 +624,36 @@ export async function auditPurchaseOrderAgainstJobSummary(
       : '@Charles';
     const notifyPartnerIds = charlesUser?.partnerId ? [charlesUser.partnerId] : undefined;
 
-    // Post chatter note on PO
-    await client.postModelChatterMessage(
-      'purchase.order',
-      po.id,
-      `<p>⚠️ <strong>Job Summary Missing Alert (${charlesMention}):</strong></p>` +
-        `<p>Associated Sales Order <strong>${so.name}</strong> has no Job Summary PDF attached.</p>` +
-        `<p>Please await or request Job Summary to be attached ASAP to the associated Sales Order log note area before approving Purchase Order <strong>${po.name}</strong>.</p>`,
-      notifyPartnerIds,
-    );
+    // Post chatter note on PO if not already alerted
+    const poAlreadyAlerted = typeof (client as any).hasModelChatterMessage === 'function'
+      ? await client.hasModelChatterMessage('purchase.order', po.id, 'Job Summary Missing Alert')
+      : false;
+    if (!poAlreadyAlerted) {
+      await client.postModelChatterMessage(
+        'purchase.order',
+        po.id,
+        `<p>⚠️ <strong>Job Summary Missing Alert (${charlesMention}):</strong></p>` +
+          `<p>Associated Sales Order <strong>${so.name}</strong> has no Job Summary PDF attached.</p>` +
+          `<p>Please await or request Job Summary to be attached ASAP to the associated Sales Order log note area before approving Purchase Order <strong>${po.name}</strong>.</p>`,
+        notifyPartnerIds,
+        { dedupeSnippet: 'Job Summary Missing Alert' },
+      );
+    }
 
-    // Cross-alert note on Sales Order chatter
-    await client.postModelChatterMessage(
-      'sale.order',
-      so.id,
-      `<p>⚠️ <strong>Job Summary Required for PO ${po.name}:</strong></p>` +
-        `<p>Purchase Order <strong>${po.name}</strong> is confirmed, but no Job Summary PDF is attached to this Sales Order. Please attach the Job Summary PDF ASAP in this log note area so procurement can be verified.</p>`,
-    );
+    // Cross-alert note on Sales Order chatter if not already alerted
+    const soAlreadyAlerted = typeof (client as any).hasModelChatterMessage === 'function'
+      ? await client.hasModelChatterMessage('sale.order', so.id, `Job Summary Required for PO ${po.name}`)
+      : false;
+    if (!soAlreadyAlerted) {
+      await client.postModelChatterMessage(
+        'sale.order',
+        so.id,
+        `<p>⚠️ <strong>Job Summary Required for PO ${po.name}:</strong></p>` +
+          `<p>Purchase Order <strong>${po.name}</strong> is confirmed, but no Job Summary PDF is attached to this Sales Order. Please attach the Job Summary PDF ASAP in this log note area so procurement can be verified.</p>`,
+        undefined,
+        { dedupeSnippet: `Job Summary Required for PO ${po.name}` },
+      );
+    }
 
     await logEvent('warn', 'PO audit: Job Summary not found, activity created for Charles', {
       poId: po.id,
@@ -792,28 +805,41 @@ export async function auditPurchaseOrderAgainstJobSummary(
         `</div>`;
     }
 
-    // Post breakdown note in the PO Chatter
-    await client.postModelChatterMessage(
-      'purchase.order',
-      po.id,
-      `<p><strong>⚠️ Job Summary Procurement Mismatch Alert:</strong></p>` +
-        `<p><strong>Stakeholders Alerted:</strong> ${mentionHtml}</p>` +
-        `<p>Discrepancies found between Purchase Order <strong>${po.name}</strong> and Job Summary for <strong>${so.name}</strong>:</p>` +
-        `<ul>${comparison.shortfalls.map((s) => `<li>${s}</li>`).join('')}</ul>` +
-        substrateMismatchHtml +
-        `<p><em>An activity has been created seeking written clarification or correction before approving this Purchase Order.</em></p>`,
-      partnerIds,
-    );
+    // Post breakdown note in the PO Chatter if not already alerted
+    const poMismatchAlreadyAlerted = typeof (client as any).hasModelChatterMessage === 'function'
+      ? await client.hasModelChatterMessage('purchase.order', po.id, 'Job Summary Procurement Mismatch Alert')
+      : false;
+    if (!poMismatchAlreadyAlerted) {
+      await client.postModelChatterMessage(
+        'purchase.order',
+        po.id,
+        `<p><strong>⚠️ Job Summary Procurement Mismatch Alert:</strong></p>` +
+          `<p><strong>Stakeholders Alerted:</strong> ${mentionHtml}</p>` +
+          `<p>Discrepancies found between Purchase Order <strong>${po.name}</strong> and Job Summary for <strong>${so.name}</strong>:</p>` +
+          `<ul>${comparison.shortfalls.map((s) => `<li>${s}</li>`).join('')}</ul>` +
+          substrateMismatchHtml +
+          `<p><em>An activity has been created seeking written clarification or correction before approving this Purchase Order.</em></p>`,
+        partnerIds,
+        { dedupeSnippet: 'Job Summary Procurement Mismatch Alert' },
+      );
+    }
 
-    // Cross-alert note on Sales Order chatter
-    await client.postModelChatterMessage(
-      'sale.order',
-      so.id,
-      `<p><strong>⚠️ PO Procurement Discrepancy on ${po.name}:</strong></p>` +
-        `<p>The following mismatch was flagged on confirmed Purchase Order <strong>${po.name}</strong>:</p>` +
-        `<ul>${comparison.shortfalls.map((s) => `<li>${s}</li>`).join('')}</ul>` +
-        substrateMismatchHtml,
-    );
+    // Cross-alert note on Sales Order chatter if not already alerted
+    const soMismatchAlreadyAlerted = typeof (client as any).hasModelChatterMessage === 'function'
+      ? await client.hasModelChatterMessage('sale.order', so.id, `PO Procurement Discrepancy on ${po.name}`)
+      : false;
+    if (!soMismatchAlreadyAlerted) {
+      await client.postModelChatterMessage(
+        'sale.order',
+        so.id,
+        `<p><strong>⚠️ PO Procurement Discrepancy on ${po.name}:</strong></p>` +
+          `<p>The following mismatch was flagged on confirmed Purchase Order <strong>${po.name}</strong>:</p>` +
+          `<ul>${comparison.shortfalls.map((s) => `<li>${s}</li>`).join('')}</ul>` +
+          substrateMismatchHtml,
+        undefined,
+        { dedupeSnippet: `PO Procurement Discrepancy on ${po.name}` },
+      );
+    }
 
     await logEvent('warn', 'PO procurement mismatch detected against Job Summary', {
       poId: po.id,

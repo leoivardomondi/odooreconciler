@@ -209,6 +209,7 @@ export class OdooClient {
   private webSessionContext: Record<string, unknown> = {};
   private webRpcSequence = 0;
   private readonly recentSoChatterDedupe = new Map<string, number>();
+  private readonly recentChatterDedupe = new Map<string, number>();
   private static verifiedWarehouseCache = new Map<string, { id: number; name: string; code: string; companyId: number; cachedAt: number }>();
 
   constructor(private readonly credentials: OdooCredentials) {
@@ -1422,29 +1423,67 @@ export class OdooClient {
     return plain.slice(0, 300);
   }
 
-  private isSoChatterDuplicate(soId: number, message: string): boolean {
+  async hasModelChatterMessage(
+    model: string,
+    recordId: number,
+    textSnippet: string,
+  ): Promise<boolean> {
+    try {
+      const cleanSnippet = textSnippet.replace(/<[^>]*>/g, '').replace(/\s+/g, ' ').trim();
+      if (!cleanSnippet) return false;
+      const messages = await this.searchReadRecords<{ id: number }>('mail.message', {
+        domain: [
+          ['model', '=', model],
+          ['res_id', '=', recordId],
+          ['body', 'ilike', cleanSnippet.slice(0, 100)],
+        ],
+        fields: ['id'],
+        limit: 1,
+      });
+      return Array.isArray(messages) && messages.length > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  isChatterDuplicate(model: string, recordId: number, message: string, windowMs = 120_000): boolean {
     const now = Date.now();
-    this.cleanOldSoChatterDedupe(now);
-    const key = `${soId}:${this.getChatterMessageHash(message)}`;
-    const lastPosted = this.recentSoChatterDedupe.get(key);
-    if (lastPosted && (now - lastPosted) < 120_000) {
+    this.cleanOldChatterDedupe(now, windowMs);
+    const key = `${model}:${recordId}:${this.getChatterMessageHash(message)}`;
+    const lastPosted = this.recentChatterDedupe.get(key) || (model === 'sale.order' ? this.recentSoChatterDedupe.get(`${recordId}:${this.getChatterMessageHash(message)}`) : undefined);
+    if (lastPosted && (now - lastPosted) < windowMs) {
       return true;
     }
     return false;
   }
 
-  private recordSoChatterDedupe(soId: number, message: string): void {
+  recordChatterDedupe(model: string, recordId: number, message: string): void {
     const now = Date.now();
-    const key = `${soId}:${this.getChatterMessageHash(message)}`;
-    this.recentSoChatterDedupe.set(key, now);
+    const key = `${model}:${recordId}:${this.getChatterMessageHash(message)}`;
+    this.recentChatterDedupe.set(key, now);
+    if (model === 'sale.order') {
+      this.recentSoChatterDedupe.set(`${recordId}:${this.getChatterMessageHash(message)}`, now);
+    }
+  }
+
+  private cleanOldChatterDedupe(now: number, windowMs = 120_000): void {
+    for (const [key, timestamp] of this.recentChatterDedupe.entries()) {
+      if (now - timestamp > windowMs) {
+        this.recentChatterDedupe.delete(key);
+      }
+    }
+  }
+
+  private isSoChatterDuplicate(soId: number, message: string): boolean {
+    return this.isChatterDuplicate('sale.order', soId, message, 120_000);
+  }
+
+  private recordSoChatterDedupe(soId: number, message: string): void {
+    this.recordChatterDedupe('sale.order', soId, message);
   }
 
   private cleanOldSoChatterDedupe(now: number): void {
-    for (const [key, timestamp] of this.recentSoChatterDedupe.entries()) {
-      if (now - timestamp > 120_000) {
-        this.recentSoChatterDedupe.delete(key);
-      }
-    }
+    this.cleanOldChatterDedupe(now, 120_000);
   }
 
   private async crossPostChatterToRelatedSalesOrder(
@@ -1555,13 +1594,36 @@ export class OdooClient {
     recordId: number,
     message: string,
     partnerIds?: number[],
-    options?: { skipSoSync?: boolean },
+    options?: {
+      skipSoSync?: boolean;
+      dedupeSnippet?: string;
+      dedupeWindowMs?: number;
+      checkExisting?: boolean;
+    },
   ): Promise<number> {
+    // 1. Check if matching chatter message already exists in Odoo to prevent repeating overtime
+    if (options?.dedupeSnippet || options?.checkExisting) {
+      const snippet = options.dedupeSnippet || this.getChatterMessageHash(message).slice(0, 80);
+      const existsInOdoo = await this.hasModelChatterMessage(model, recordId, snippet);
+      if (existsInOdoo) {
+        return 0;
+      }
+    }
+
+    // 2. In-memory deduplication across all models
     if (model === 'sale.order') {
       if (!options?.skipSoSync && this.isSoChatterDuplicate(recordId, message)) {
         return 0;
       }
       this.recordSoChatterDedupe(recordId, message);
+    } else {
+      const dedupeWindow = options?.dedupeWindowMs ?? 0;
+      if (dedupeWindow > 0 && this.isChatterDuplicate(model, recordId, message, dedupeWindow)) {
+        return 0;
+      }
+      if (dedupeWindow > 0) {
+        this.recordChatterDedupe(model, recordId, message);
+      }
     }
 
     const kwargs: Record<string, unknown> = {

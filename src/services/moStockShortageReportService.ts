@@ -227,8 +227,17 @@ export async function checkAndAlertUnapprovedPurchaseOrders(
     for (const po of matchedPos) {
       const dedupeKey = `${po.id}:${mo.id}`;
       const lastAlertedAt = unapprovedPoAlertCooldown.get(dedupeKey) || 0;
-      if (!options.forceAlert && now - lastAlertedAt < UNAPPROVED_PO_ALERT_COOLDOWN_MS) {
-        continue;
+      if (!options.forceAlert) {
+        if (now - lastAlertedAt < UNAPPROVED_PO_ALERT_COOLDOWN_MS) {
+          continue;
+        }
+        if (typeof (client as any).hasModelChatterMessage === 'function') {
+          const poAlreadyAlerted = await (client as any).hasModelChatterMessage('purchase.order', po.id, 'PO Approval Check Required');
+          if (poAlreadyAlerted) {
+            unapprovedPoAlertCooldown.set(dedupeKey, now);
+            continue;
+          }
+        }
       }
 
       const moStateLabel = mo.state === 'progress' ? 'IN PROGRESS' : 'READY TO START (Confirmed)';
@@ -249,8 +258,15 @@ export async function checkAndAlertUnapprovedPurchaseOrders(
           po.id,
           poChatterHtml,
           notifyPartnerIds.length ? notifyPartnerIds : undefined,
+          { dedupeSnippet: 'PO Approval Check Required', dedupeWindowMs: UNAPPROVED_PO_ALERT_COOLDOWN_MS },
         );
-        await client.postModelChatterMessage('mrp.production', mo.id, moChatterHtml);
+        await client.postModelChatterMessage(
+          'mrp.production',
+          mo.id,
+          moChatterHtml,
+          undefined,
+          { dedupeSnippet: 'Purchase Order Awaiting Approval', dedupeWindowMs: UNAPPROVED_PO_ALERT_COOLDOWN_MS },
+        );
         unapprovedPoAlertCooldown.set(dedupeKey, now);
         await logEvent('info', 'Unapproved PO alert logged to chatter for Charles and Leoivard', {
           poId: po.id,
