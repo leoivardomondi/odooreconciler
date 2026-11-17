@@ -5760,6 +5760,23 @@ export async function getRecentBoardIntakeForAudit(limit = 500): Promise<BoardIn
   );
 }
 
+export async function getBoardIntakesForDailyReport(targetDate: string): Promise<BoardIntakeQueueEntry[]> {
+  const dayStart = `${targetDate} 00:00:00`;
+  const dayEnd = `${targetDate} 23:59:59`;
+  return queryAll<BoardIntakeQueueEntry>(
+    `SELECT id, product_id, product_name, partner_id, customer_name, quantity,
+            vehicle_registration, arrival_date, arrival_time, gate,
+            is_purchase, purchase_order_reference, status, created_at,
+            matched_at, matched_by, actor_name, actor_email
+     FROM board_intake_queue
+     WHERE (arrival_date = ? OR (arrival_date IS NULL AND created_at >= ? AND created_at <= ?))
+       AND reverted_at IS NULL
+       AND status != 'reverted'
+     ORDER BY created_at ASC`,
+    [targetDate, dayStart, dayEnd]
+  );
+}
+
 // ─── Shop Floor: Incidents & Assigned Items ──────────────────────────
 
 function ensureShopFloorTables() {

@@ -168,6 +168,7 @@ exports.getDueBoardIntakeQueueEntries = getDueBoardIntakeQueueEntries;
 exports.releaseStaleBoardIntakeQueueEntry = releaseStaleBoardIntakeQueueEntry;
 exports.getBoardIntakeLoggingReport = getBoardIntakeLoggingReport;
 exports.getRecentBoardIntakeForAudit = getRecentBoardIntakeForAudit;
+exports.getBoardIntakesForDailyReport = getBoardIntakesForDailyReport;
 exports.getShopFloorIncidents = getShopFloorIncidents;
 exports.createShopFloorIncident = createShopFloorIncident;
 exports.resolveShopFloorIncident = resolveShopFloorIncident;
@@ -4245,6 +4246,19 @@ async function getRecentBoardIntakeForAudit(limit = 500) {
      WHERE status IN ('pending', 'processing', 'synced')
      ORDER BY created_at DESC
      LIMIT ?`, [Math.max(1, limit)]);
+}
+async function getBoardIntakesForDailyReport(targetDate) {
+    const dayStart = `${targetDate} 00:00:00`;
+    const dayEnd = `${targetDate} 23:59:59`;
+    return (0, db_1.queryAll)(`SELECT id, product_id, product_name, partner_id, customer_name, quantity,
+            vehicle_registration, arrival_date, arrival_time, gate,
+            is_purchase, purchase_order_reference, status, created_at,
+            matched_at, matched_by, actor_name, actor_email
+     FROM board_intake_queue
+     WHERE (arrival_date = ? OR (arrival_date IS NULL AND created_at >= ? AND created_at <= ?))
+       AND reverted_at IS NULL
+       AND status != 'reverted'
+     ORDER BY created_at ASC`, [targetDate, dayStart, dayEnd]);
 }
 // ─── Shop Floor: Incidents & Assigned Items ──────────────────────────
 function ensureShopFloorTables() {

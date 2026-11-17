@@ -40,6 +40,7 @@ const weeklyShopFloorReportService_1 = require("../services/weeklyShopFloorRepor
 const moOverdueService_1 = require("../services/moOverdueService");
 const boardProductClassifier_1 = require("../services/boardProductClassifier");
 const moStockShortageReportService_1 = require("../services/moStockShortageReportService");
+const dailyBoardReportService_1 = require("../services/dailyBoardReportService");
 const stockMirrorService_1 = require("../services/stockMirrorService");
 const customerMirrorService_1 = require("../services/customerMirrorService");
 const boardIntakeSyncService_1 = require("../services/boardIntakeSyncService");
@@ -4665,6 +4666,78 @@ router.post('/reports/mo-stock-shortage/settings', async (req, res) => {
             return;
         }
         res.redirect('/reports/mo-stock-shortage?error=' + encodeURIComponent(err instanceof Error ? err.message : 'Failed to update settings.'));
+    }
+});
+router.get('/reports/daily-boards', async (req, res) => {
+    if (!req.authUser) {
+        res.redirect('/login');
+        return;
+    }
+    try {
+        const date = typeof req.query.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date)
+            ? req.query.date
+            : undefined;
+        const forceRefresh = req.query.refresh === 'true';
+        const report = await (0, dailyBoardReportService_1.buildDailyBoardReport)({ date, forceRefresh });
+        res.render('daily-board-report', {
+            report,
+            message: req.query.message ? String(req.query.message) : null,
+            error: req.query.error ? String(req.query.error) : null,
+            csrfToken: req.csrfToken || '',
+            canAccess: (method, path) => true,
+        });
+    }
+    catch (err) {
+        res.status(500).render('error', {
+            pageTitle: 'Daily Board Report Error',
+            errorMessage: err instanceof Error ? err.message : 'Could not generate daily board report.',
+            details: [],
+            csrfToken: req.csrfToken || null,
+        });
+    }
+});
+router.get('/reports/daily-boards/pdf', async (req, res) => {
+    if (!req.authUser) {
+        res.redirect('/login');
+        return;
+    }
+    try {
+        const date = typeof req.query.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date)
+            ? req.query.date
+            : undefined;
+        const report = await (0, dailyBoardReportService_1.buildDailyBoardReport)({ date });
+        const pdfBuffer = await (0, dailyBoardReportService_1.renderDailyBoardReportPdf)(report);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `inline; filename="Daily-Board-Report-${report.reportDate}.pdf"`);
+        res.send(pdfBuffer);
+    }
+    catch (err) {
+        res.status(500).send(err instanceof Error ? err.message : 'Failed to generate PDF.');
+    }
+});
+router.post('/reports/daily-boards/send', async (req, res) => {
+    if (!canManageShopFloor(req)) {
+        res.status(403).json({ ok: false, error: 'Administrator access required.' });
+        return;
+    }
+    try {
+        const recipientEmail = typeof req.body.recipientEmail === 'string' ? req.body.recipientEmail.trim() : '';
+        const date = typeof req.body.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.body.date) ? req.body.date : undefined;
+        const recipients = recipientEmail ? [recipientEmail] : undefined;
+        const result = await (0, dailyBoardReportService_1.sendDailyBoardReport)(recipients, date);
+        if (req.headers.accept?.includes('application/json')) {
+            res.json(result);
+            return;
+        }
+        res.redirect(`/reports/daily-boards?date=${date || ''}&message=` + encodeURIComponent(result.message));
+    }
+    catch (err) {
+        const errorMsg = err instanceof Error ? err.message : 'Failed to send daily board report.';
+        if (req.headers.accept?.includes('application/json')) {
+            res.status(500).json({ ok: false, error: errorMsg });
+            return;
+        }
+        res.redirect(`/reports/daily-boards?error=` + encodeURIComponent(errorMsg));
     }
 });
 exports.default = router;

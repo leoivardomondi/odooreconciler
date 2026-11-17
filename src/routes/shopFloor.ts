@@ -75,6 +75,11 @@ import {
   sendDailyMoStockShortageReport,
   updateMoStockShortageAutomationSettings,
 } from '../services/moStockShortageReportService';
+import {
+  buildDailyBoardReport,
+  renderDailyBoardReportPdf,
+  sendDailyBoardReport,
+} from '../services/dailyBoardReportService';
 import { getStockMirrorForPage, recordOptimisticStockAddition, refreshStockMirror, recordExactStockQuantity } from '../services/stockMirrorService';
 import { getCustomersForPage, searchCustomers } from '../services/customerMirrorService';
 import { revertBoardIntakeEntry, syncBoardIntakeEntry, matchBoardIntakeToClient } from '../services/boardIntakeSyncService';
@@ -5290,6 +5295,81 @@ router.post('/reports/mo-stock-shortage/settings', async (req: Request, res: Res
       return;
     }
     res.redirect('/reports/mo-stock-shortage?error=' + encodeURIComponent(err instanceof Error ? err.message : 'Failed to update settings.'));
+  }
+});
+
+router.get('/reports/daily-boards', async (req: Request, res: Response) => {
+  if (!req.authUser) {
+    res.redirect('/login');
+    return;
+  }
+  try {
+    const date = typeof req.query.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date)
+      ? req.query.date
+      : undefined;
+    const forceRefresh = req.query.refresh === 'true';
+    const report = await buildDailyBoardReport({ date, forceRefresh });
+
+    res.render('daily-board-report', {
+      report,
+      message: req.query.message ? String(req.query.message) : null,
+      error: req.query.error ? String(req.query.error) : null,
+      csrfToken: req.csrfToken || '',
+      canAccess: (method: string, path: string) => true,
+    });
+  } catch (err) {
+    res.status(500).render('error', {
+      pageTitle: 'Daily Board Report Error',
+      errorMessage: err instanceof Error ? err.message : 'Could not generate daily board report.',
+      details: [],
+      csrfToken: req.csrfToken || null,
+    });
+  }
+});
+
+router.get('/reports/daily-boards/pdf', async (req: Request, res: Response) => {
+  if (!req.authUser) {
+    res.redirect('/login');
+    return;
+  }
+  try {
+    const date = typeof req.query.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date)
+      ? req.query.date
+      : undefined;
+    const report = await buildDailyBoardReport({ date });
+    const pdfBuffer = await renderDailyBoardReportPdf(report);
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="Daily-Board-Report-${report.reportDate}.pdf"`);
+    res.send(pdfBuffer);
+  } catch (err) {
+    res.status(500).send(err instanceof Error ? err.message : 'Failed to generate PDF.');
+  }
+});
+
+router.post('/reports/daily-boards/send', async (req: Request, res: Response) => {
+  if (!canManageShopFloor(req)) {
+    res.status(403).json({ ok: false, error: 'Administrator access required.' });
+    return;
+  }
+  try {
+    const recipientEmail = typeof req.body.recipientEmail === 'string' ? req.body.recipientEmail.trim() : '';
+    const date = typeof req.body.date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(req.body.date) ? req.body.date : undefined;
+    const recipients = recipientEmail ? [recipientEmail] : undefined;
+    const result = await sendDailyBoardReport(recipients, date);
+
+    if (req.headers.accept?.includes('application/json')) {
+      res.json(result);
+      return;
+    }
+    res.redirect(`/reports/daily-boards?date=${date || ''}&message=` + encodeURIComponent(result.message));
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Failed to send daily board report.';
+    if (req.headers.accept?.includes('application/json')) {
+      res.status(500).json({ ok: false, error: errorMsg });
+      return;
+    }
+    res.redirect(`/reports/daily-boards?error=` + encodeURIComponent(errorMsg));
   }
 });
 
