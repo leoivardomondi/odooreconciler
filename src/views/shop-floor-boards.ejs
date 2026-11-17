@@ -343,7 +343,7 @@
                         data-mo-name="<%= item.moName || '' %>"
                         title="Fill form with <%= client %> and <%= item.component %> (<%= item.qtyNeeded %> boards)">
                         <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-                        <span>Fill Form<%= (item.qtyReserved && item.qtyReserved > 0) ? ' (' + item.qtyNeeded + ' balance)' : '' %></span>
+                        <span>Fill Form</span>
                       </button>
                     <% } %>
                   <% } %>
@@ -1818,7 +1818,7 @@
                   <strong>Required Board:</strong> ${req.productName}
                 </div>
                 <div class="text-indigo fw-semibold mt-1 d-flex align-items-center gap-1" style="font-size: 0.74rem; text-decoration: underline; color: #4f46e5;">
-                  <span>⚡</span> Click to auto-fill this Board Type & Qty
+                  <span>⚡</span> Click to select this Board Type
                 </div>
               `;
 
@@ -1847,11 +1847,12 @@
                   });
                   productItem.classList.add('selected');
 
-                  // Populate quantity
+                  // Leave quantity empty for physical verification by operator
                   var qtyInput = document.getElementById('intakeQty');
                   if (qtyInput) {
-                    qtyInput.value = req.qtyMissing;
+                    qtyInput.value = '';
                     qtyInput.classList.remove('is-invalid');
+                    qtyInput.focus();
                   }
 
                   // Update stock display helper
@@ -1873,8 +1874,9 @@
 
                   var qtyInput = document.getElementById('intakeQty');
                   if (qtyInput) {
-                    qtyInput.value = req.qtyMissing;
+                    qtyInput.value = '';
                     qtyInput.classList.remove('is-invalid');
+                    qtyInput.focus();
                   }
                 }
               });
@@ -1984,11 +1986,10 @@
           }
         }
 
-        // 3. Populate Quantity (Strictly whole boards only)
+        // 3. Leave Quantity empty for operator physical count (do NOT auto-fill quantity)
         var intakeQty = document.getElementById('intakeQty');
         if (intakeQty) {
-          var cleanQty = Math.max(1, Math.round(parseFloat(qty || '1')));
-          intakeQty.value = cleanQty;
+          intakeQty.value = '';
           intakeQty.classList.remove('is-invalid');
           var qtyFeedback = document.getElementById('qtyFeedback');
           if (qtyFeedback) qtyFeedback.style.display = 'none';
@@ -2016,10 +2017,15 @@
           btn.style.background = '#16a34a';
         }, 1200);
 
-        // 6. Smooth scroll to the intake form
+        // 6. Smooth scroll to the intake form and focus on Quantity
         var intakeForm = document.getElementById('intakeForm');
         if (intakeForm) {
           intakeForm.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+        if (intakeQty) {
+          setTimeout(function() {
+            intakeQty.focus();
+          }, 350);
         }
     });
 
@@ -2348,7 +2354,7 @@
                       'data-qty-reserved="' + newReserved + '" ' +
                       'title="Fill form with ' + newMissing + ' boards">' +
                       '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>' +
-                      '<span>Fill Form (' + newMissing + ')</span>' +
+                      '<span>Fill Form</span>' +
                     '</button>';
                 }
 
@@ -2359,7 +2365,7 @@
                     groupBtn.setAttribute('data-qty', String(newMissing));
                     groupBtn.setAttribute('data-qty-reserved', String(newReserved));
                     var btnSpan = groupBtn.querySelector('span');
-                    if (btnSpan) btnSpan.textContent = 'Fill Form (' + newMissing + ')';
+                    if (btnSpan) btnSpan.textContent = 'Fill Form';
                   }
                 }
               }
@@ -2827,7 +2833,7 @@
                       'data-qty-reserved="' + newReserved + '" ' +
                       'title="Fill form with remaining balance of ' + newBalance + ' boards">' +
                       '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>' +
-                      '<span>Fill Form (' + newBalance + ')</span>' +
+                      '<span>Fill Form</span>' +
                     '</button>';
                 }
 
@@ -2839,7 +2845,7 @@
                     groupBtn.setAttribute('data-qty-reserved', String(newReserved));
                     groupBtn.setAttribute('data-total-needed', String(totalNeeded));
                     var btnSpan = groupBtn.querySelector('span');
-                    if (btnSpan) btnSpan.textContent = 'Fill Form (' + newBalance + ' balance)';
+                    if (btnSpan) btnSpan.textContent = 'Fill Form';
                   }
                 }
               } else {
