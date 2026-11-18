@@ -1030,13 +1030,6 @@
                   <div class="text-muted text-center py-3 d-none no-results" style="font-size: 0.85rem;">No clients found</div>
                 </div>
               </div>
-              <div class="mb-3">
-                <label for="matchShopFloorPin" class="form-label fw-semibold" style="font-size: 0.92rem; color: #334155;">
-                  Attendance PIN <span class="text-danger">*</span>
-                </label>
-                <input type="password" inputmode="numeric" pattern="[0-9]*" class="form-control rounded-3" id="matchShopFloorPin" name="pin" placeholder="Enter your 4-digit attendance PIN" maxlength="8" required autocomplete="off" style="font-size: 1rem; padding: 0.65rem 0.75rem; border-color: #cbd5e1;">
-                <div class="form-text small text-muted">Your Odoo attendance PIN is verified against MySQL.</div>
-              </div>
               <div class="small text-muted">
                 <i class="bi bi-info-circle"></i> Once matched, Odoo will link this stock intake to the client, look up their open Cutting/Manufacturing Orders for this board, and automatically reserve stock.
               </div>
@@ -1732,8 +1725,6 @@
       }
       if (matchPartnerId) matchPartnerId.value = '';
       if (matchPartnerName) matchPartnerName.value = '';
-      var matchPinEl = document.getElementById('matchShopFloorPin');
-      if (matchPinEl) matchPinEl.value = '';
 
       var modalEl = document.getElementById('matchClientModal');
       if (modalEl && window.bootstrap && window.bootstrap.Modal) {
@@ -1751,20 +1742,11 @@
       matchClientForm.addEventListener('submit', function(e) {
         var matchPartnerId = document.getElementById('matchPartnerId');
         var matchPartnerSearch = document.getElementById('matchPartnerSearch');
-        var matchPin = document.getElementById('matchShopFloorPin');
         if (!matchPartnerId || !matchPartnerId.value || matchPartnerId.value === '0') {
           e.preventDefault();
           if (matchPartnerSearch) {
             matchPartnerSearch.classList.add('is-invalid');
             matchPartnerSearch.focus();
-          }
-          return;
-        }
-        if (!matchPin || !matchPin.value.trim()) {
-          e.preventDefault();
-          if (matchPin) {
-            matchPin.classList.add('is-invalid');
-            matchPin.focus();
           }
           return;
         }

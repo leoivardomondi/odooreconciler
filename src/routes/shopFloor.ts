@@ -5148,32 +5148,16 @@ router.post('/shop-floor/board-intake/:id/revert', async (req: Request, res: Res
 
 router.post('/shop-floor/board-intake/:id/match-client', async (req: Request, res: Response) => {
   const wantsJson = Boolean(req.xhr || req.headers.accept?.includes('application/json') || req.is('json') || req.body?.ajax === 'true');
-  const pin = String(req.body.pin || '').trim();
-  let matchedBy = '';
-
-  if (pin) {
-    const operator = await verifyEmployeeAttendancePin(pin);
-    if (!operator) {
-      const errorMsg = 'Invalid attendance PIN. Please enter your valid 4-digit Odoo attendance PIN.';
-      if (wantsJson) {
-        res.status(401).json({ ok: false, error: errorMsg });
-        return;
-      }
-      res.redirect('/shop-floor/boards?error=' + encodeURIComponent(errorMsg));
-      return;
-    }
-    matchedBy = operator.name;
-  } else if (req.authUser) {
-    matchedBy = req.authUser.displayName || req.authUser.email || 'Operator';
-  } else {
+  if (!req.authUser) {
     if (wantsJson) {
-      res.status(401).json({ ok: false, error: 'Please enter your attendance PIN or sign in.' });
+      res.status(401).json({ ok: false, error: 'Please sign in first.' });
       return;
     }
     res.redirect('/login');
     return;
   }
 
+  const matchedBy = req.authUser.displayName || req.authUser.email || 'Operator';
   const entryId = String(req.params.id || '').trim();
   const partnerId = Number(req.body.partner_id || 0);
   const customerName = String(req.body.partner_name || '').trim();
