@@ -6,6 +6,7 @@ exports.buildBoardIntakeChatterHtml = buildBoardIntakeChatterHtml;
 exports.resolveBoardIntakeStakeholders = resolveBoardIntakeStakeholders;
 exports.processBoardIntakePurchaseOrderFulfillment = processBoardIntakePurchaseOrderFulfillment;
 exports.reconcileRetroactiveBoardLogsForLinkedPos = reconcileRetroactiveBoardLogsForLinkedPos;
+exports.reconcileStuckBoardIntakeReceipts = reconcileStuckBoardIntakeReceipts;
 exports.checkAndWarnPurchaseOrdersForManualBoardIntake = checkAndWarnPurchaseOrdersForManualBoardIntake;
 exports.syncBoardIntakeEntry = syncBoardIntakeEntry;
 exports.revertBoardIntakeEntry = revertBoardIntakeEntry;
@@ -582,6 +583,82 @@ async function reconcileRetroactiveBoardLogsForLinkedPos(client, cachedCandyShar
     }
     finally {
         retroactiveReconcileInProgress = false;
+    }
+    return result;
+}
+/**
+ * Auto-heals and completes validation on stuck or pending receipts in Odoo
+ * where board intake was logged for purchase orders but the receipt remained in 'Ready' (assigned)
+ * due to Odoo backorder confirmation requirements.
+ */
+async function reconcileStuckBoardIntakeReceipts(client) {
+    const result = { validatedCount: 0, pickingNames: [] };
+    try {
+        const stuckPurchaseLogs = await (0, db_1.queryAll)(`SELECT id, product_id, product_name, quantity, purchase_order_reference
+       FROM board_intake_queue
+       WHERE status = 'synced' AND reverted_at IS NULL AND is_purchase = 1 AND purchase_order_reference IS NOT NULL
+         AND created_at >= ${(0, db_1.getDatabaseDialect)() === 'mysql' ? 'DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 14 DAY)' : "datetime(CURRENT_TIMESTAMP, '-14 days')"}
+       ORDER BY created_at DESC LIMIT 50`).catch(() => []);
+        if (!stuckPurchaseLogs.length)
+            return result;
+        const distinctPoRefs = [...new Set(stuckPurchaseLogs.map((l) => String(l.purchase_order_reference || '').trim()).filter(Boolean))];
+        const targetCompanyId = await client.getTargetCompanyIdValue();
+        const unvalidatedPickings = await client.searchReadRecords('stock.picking', {
+            domain: [
+                ['company_id', '=', targetCompanyId],
+                ['picking_type_code', '=', 'incoming'],
+                ['state', 'in', ['assigned', 'confirmed']],
+                '|',
+                ['origin', 'in', distinctPoRefs],
+                ['name', 'in', distinctPoRefs],
+            ],
+            fields: ['id', 'name', 'state', 'origin'],
+            limit: 20,
+        }).catch(() => []);
+        for (const picking of unvalidatedPickings) {
+            try {
+                const valResult = await client.callRecordMethod('stock.picking', 'button_validate', [picking.id]).catch(() => null);
+                if (valResult && typeof valResult === 'object' && valResult.res_model) {
+                    const wizardContext = {
+                        active_model: 'stock.picking',
+                        active_id: picking.id,
+                        active_ids: [picking.id],
+                        button_validate_picking_ids: [picking.id],
+                        ...(valResult.context || {}),
+                    };
+                    const wizardId = valResult.res_id;
+                    if (wizardId) {
+                        await client.callRecordMethod(valResult.res_model, 'process', [wizardId], { context: wizardContext }).catch(() => null);
+                    }
+                    else {
+                        const createdWizId = await client.createRecord(valResult.res_model, {
+                            pick_ids: [[6, 0, [picking.id]]],
+                        }, { context: wizardContext }).catch(() => null);
+                        if (createdWizId) {
+                            await client.callRecordMethod(valResult.res_model, 'process', [createdWizId], { context: wizardContext }).catch(() => null);
+                        }
+                    }
+                }
+                const refreshed = typeof client.readRecords === 'function'
+                    ? await client.readRecords('stock.picking', [picking.id], ['id', 'state']).catch(() => [])
+                    : await client.searchReadRecords('stock.picking', { domain: [['id', '=', picking.id]], fields: ['id', 'state'], limit: 1 }).catch(() => []);
+                if (refreshed[0]?.state === 'done') {
+                    result.validatedCount += 1;
+                    result.pickingNames.push(picking.name);
+                    await (0, logService_1.logEvent)('info', 'Auto-validated stuck board intake receipt', {
+                        pickingId: picking.id,
+                        pickingName: picking.name,
+                        origin: picking.origin,
+                    }).catch(() => undefined);
+                }
+            }
+            catch (pickErr) {
+                console.warn(`[BoardIntakeSyncService] Note validating stuck receipt ${picking.name}:`, pickErr);
+            }
+        }
+    }
+    catch (err) {
+        console.error('[BoardIntakeSyncService] Error in reconcileStuckBoardIntakeReceipts:', err);
     }
     return result;
 }

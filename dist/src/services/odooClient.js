@@ -4039,6 +4039,32 @@ class OdooClient {
         await this.callRecordMethod('stock.picking', 'action_assign', [pickingId]).catch(() => null);
         await this.populatePickingValidationMetadata(pickingId, actorEmail);
         const result = await this.callRecordMethod('stock.picking', 'button_validate', [pickingId]);
+        if (result && typeof result === 'object' && result.res_model) {
+            try {
+                const wizardContext = {
+                    active_model: 'stock.picking',
+                    active_id: pickingId,
+                    active_ids: [pickingId],
+                    button_validate_picking_ids: [pickingId],
+                    ...(result.context || {}),
+                };
+                const wizardId = result.res_id;
+                if (wizardId) {
+                    await this.callRecordMethod(result.res_model, 'process', [wizardId], { context: wizardContext });
+                }
+                else {
+                    const createdWizId = await this.createRecord(result.res_model, {
+                        pick_ids: [[6, 0, [pickingId]]],
+                    }, { context: wizardContext }).catch(() => null);
+                    if (createdWizId) {
+                        await this.callRecordMethod(result.res_model, 'process', [createdWizId], { context: wizardContext });
+                    }
+                }
+            }
+            catch (wizErr) {
+                console.warn('[validateBoardReceipt] Backorder wizard note:', wizErr);
+            }
+        }
         // Run factory-wide stock reservation detached in the background so receipt validation completes instantly
         void this.autoReserveConfirmedMOs(warehouseId).catch(() => null);
         return result;
@@ -4080,6 +4106,32 @@ class OdooClient {
         await this.postModelChatterMessage('stock.picking', pickingId, `Delivery validation performed in OPERATOR MOBILE APP\nUser: ${actorEmail}\nDate: ${new Date().toISOString()}`);
         await this.populatePickingValidationMetadata(pickingId, actorEmail);
         const result = await this.callRecordMethod('stock.picking', 'button_validate', [pickingId]);
+        if (result && typeof result === 'object' && result.res_model) {
+            try {
+                const wizardContext = {
+                    active_model: 'stock.picking',
+                    active_id: pickingId,
+                    active_ids: [pickingId],
+                    button_validate_picking_ids: [pickingId],
+                    ...(result.context || {}),
+                };
+                const wizardId = result.res_id;
+                if (wizardId) {
+                    await this.callRecordMethod(result.res_model, 'process', [wizardId], { context: wizardContext });
+                }
+                else {
+                    const createdWizId = await this.createRecord(result.res_model, {
+                        pick_ids: [[6, 0, [pickingId]]],
+                    }, { context: wizardContext }).catch(() => null);
+                    if (createdWizId) {
+                        await this.callRecordMethod(result.res_model, 'process', [createdWizId], { context: wizardContext });
+                    }
+                }
+            }
+            catch (wizErr) {
+                console.warn('[validateBoardReceipt] Backorder wizard note:', wizErr);
+            }
+        }
         await this.populatePickingValidationMetadata(pickingId, actorEmail);
         return result;
     }

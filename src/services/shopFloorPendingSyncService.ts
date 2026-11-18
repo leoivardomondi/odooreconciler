@@ -18,7 +18,7 @@ import {
 import { extractSoNameFromOrigin } from './poJobSummaryAuditService';
 import { PendingShopFloorProcess } from '../models/types';
 import { logEvent } from './logService';
-import { escapeHtml, reconcileRetroactiveBoardLogsForLinkedPos } from './boardIntakeSyncService';
+import { escapeHtml, reconcileRetroactiveBoardLogsForLinkedPos, reconcileStuckBoardIntakeReceipts } from './boardIntakeSyncService';
 import { shopFloorCache } from '../routes/shopFloor';
 import { filterSingleBoardComponentForCuttingMo } from './cuttingBoMReconciliationService';
 import { isCuttingProductOrWorkOrder } from './workOrderQuantityReconciliationService';
@@ -621,6 +621,11 @@ export async function syncPendingProcessesFromOdoo(force = false): Promise<SyncP
     // 11. Retroactively validate any prior manual board intake logs whose connected MO now has a linked PO
     void reconcileRetroactiveBoardLogsForLinkedPos(client).catch((err) => {
       console.warn('[ShopFloorPendingSyncService] Failed checking retroactive PO fulfillment:', err);
+    });
+
+    // 12. Auto-heal any stuck purchase receipts where board intake was logged but receipt awaited backorder confirmation
+    void reconcileStuckBoardIntakeReceipts(client).catch((err) => {
+      console.warn('[ShopFloorPendingSyncService] Failed checking stuck board intake receipts:', err);
     });
 
     lastSyncTimestamp = Date.now();

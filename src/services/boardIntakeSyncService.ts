@@ -811,6 +811,100 @@ export async function reconcileRetroactiveBoardLogsForLinkedPos(
   return result;
 }
 
+/**
+ * Auto-heals and completes validation on stuck or pending receipts in Odoo
+ * where board intake was logged for purchase orders but the receipt remained in 'Ready' (assigned)
+ * due to Odoo backorder confirmation requirements.
+ */
+export async function reconcileStuckBoardIntakeReceipts(
+  client: OdooClient,
+): Promise<{ validatedCount: number; pickingNames: string[] }> {
+  const result = { validatedCount: 0, pickingNames: [] as string[] };
+  try {
+    const stuckPurchaseLogs = await queryAll<{
+      id: string;
+      product_id: number;
+      product_name: string;
+      quantity: number;
+      purchase_order_reference: string;
+    }>(
+      `SELECT id, product_id, product_name, quantity, purchase_order_reference
+       FROM board_intake_queue
+       WHERE status = 'synced' AND reverted_at IS NULL AND is_purchase = 1 AND purchase_order_reference IS NOT NULL
+         AND created_at >= ${getDatabaseDialect() === 'mysql' ? 'DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 14 DAY)' : "datetime(CURRENT_TIMESTAMP, '-14 days')"}
+       ORDER BY created_at DESC LIMIT 50`
+    ).catch(() => []);
+
+    if (!stuckPurchaseLogs.length) return result;
+
+    const distinctPoRefs = [...new Set(stuckPurchaseLogs.map((l) => String(l.purchase_order_reference || '').trim()).filter(Boolean))];
+    const targetCompanyId = await client.getTargetCompanyIdValue();
+
+    const unvalidatedPickings = await client.searchReadRecords<{
+      id: number;
+      name: string;
+      state: string;
+      origin: string | false;
+    }>('stock.picking', {
+      domain: [
+        ['company_id', '=', targetCompanyId],
+        ['picking_type_code', '=', 'incoming'],
+        ['state', 'in', ['assigned', 'confirmed']],
+        '|',
+        ['origin', 'in', distinctPoRefs],
+        ['name', 'in', distinctPoRefs],
+      ],
+      fields: ['id', 'name', 'state', 'origin'],
+      limit: 20,
+    }).catch(() => []);
+
+    for (const picking of unvalidatedPickings) {
+      try {
+        const valResult = await client.callRecordMethod<any>('stock.picking', 'button_validate', [picking.id]).catch(() => null);
+        if (valResult && typeof valResult === 'object' && valResult.res_model) {
+          const wizardContext = {
+            active_model: 'stock.picking',
+            active_id: picking.id,
+            active_ids: [picking.id],
+            button_validate_picking_ids: [picking.id],
+            ...(valResult.context || {}),
+          };
+          const wizardId = valResult.res_id;
+          if (wizardId) {
+            await client.callRecordMethod(valResult.res_model, 'process', [wizardId], { context: wizardContext }).catch(() => null);
+          } else {
+            const createdWizId = await client.createRecord(valResult.res_model, {
+              pick_ids: [[6, 0, [picking.id]]],
+            }, { context: wizardContext }).catch(() => null);
+            if (createdWizId) {
+              await client.callRecordMethod(valResult.res_model, 'process', [createdWizId], { context: wizardContext }).catch(() => null);
+            }
+          }
+        }
+
+        const refreshed = typeof (client as any).readRecords === 'function'
+          ? await client.readRecords<{ id: number; state: string }>('stock.picking', [picking.id], ['id', 'state']).catch(() => [])
+          : await client.searchReadRecords<{ id: number; state: string }>('stock.picking', { domain: [['id', '=', picking.id]], fields: ['id', 'state'], limit: 1 }).catch(() => []);
+
+        if (refreshed[0]?.state === 'done') {
+          result.validatedCount += 1;
+          result.pickingNames.push(picking.name);
+          await logEvent('info', 'Auto-validated stuck board intake receipt', {
+            pickingId: picking.id,
+            pickingName: picking.name,
+            origin: picking.origin,
+          }).catch(() => undefined);
+        }
+      } catch (pickErr) {
+        console.warn(`[BoardIntakeSyncService] Note validating stuck receipt ${picking.name}:`, pickErr);
+      }
+    }
+  } catch (err) {
+    console.error('[BoardIntakeSyncService] Error in reconcileStuckBoardIntakeReceipts:', err);
+  }
+  return result;
+}
+
 export async function checkAndWarnPurchaseOrdersForManualBoardIntake(
   client: OdooClient,
   entry: {

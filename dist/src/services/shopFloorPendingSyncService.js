@@ -471,6 +471,10 @@ async function syncPendingProcessesFromOdoo(force = false) {
         void (0, boardIntakeSyncService_1.reconcileRetroactiveBoardLogsForLinkedPos)(client).catch((err) => {
             console.warn('[ShopFloorPendingSyncService] Failed checking retroactive PO fulfillment:', err);
         });
+        // 12. Auto-heal any stuck purchase receipts where board intake was logged but receipt awaited backorder confirmation
+        void (0, boardIntakeSyncService_1.reconcileStuckBoardIntakeReceipts)(client).catch((err) => {
+            console.warn('[ShopFloorPendingSyncService] Failed checking stuck board intake receipts:', err);
+        });
         lastSyncTimestamp = Date.now();
         const durationMs = Date.now() - startTime;
         void (0, logService_1.logEvent)('info', 'Synced pending MO board requirements from Odoo to MySQL', {
