@@ -5157,7 +5157,13 @@ router.post('/shop-floor/board-intake/:id/match-client', async (req: Request, re
 
     const msg = `Board log matched successfully to ${result.customerName}.${result.matchedMoCount > 0 ? ` Allocated and reserved on ${result.matchedMoCount} active MO(s).` : ''}`;
     if (wantsJson) {
-      res.json({ ok: true, message: msg, matchedMoCount: result.matchedMoCount, customerName: result.customerName });
+      res.json({
+        ok: true,
+        message: msg,
+        matchedMoCount: result.matchedMoCount,
+        customerName: result.customerName,
+        matchedBy,
+      });
       return;
     }
     res.redirect('/shop-floor/boards?message=' + encodeURIComponent(msg));

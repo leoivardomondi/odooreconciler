@@ -1021,7 +1021,7 @@
     <div class="modal fade" id="matchClientModal" tabindex="-1" aria-labelledby="matchClientModalLabel" aria-hidden="true">
       <div class="modal-dialog modal-dialog-centered">
         <div class="modal-content shadow border-0 rounded-4">
-          <form id="matchClientForm" method="post" action="">
+          <form id="matchClientForm" method="post" action="" data-no-loading="true">
             <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>">
             <div class="modal-header border-bottom-0 pb-0 pt-4 px-4">
               <div>
@@ -1031,6 +1031,7 @@
               <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
             </div>
             <div class="modal-body px-4 py-3">
+              <div id="matchModalAlert" class="alert alert-danger d-none small py-2 px-3 rounded-3 mb-3"></div>
               <div class="p-3 rounded-3 bg-light border mb-3">
                 <div class="small text-muted mb-1">Board Intake Details</div>
                 <div class="fw-bold text-dark" id="matchModalBoardDetails">--</div>
@@ -1066,7 +1067,7 @@
               <button type="button" class="btn btn-secondary rounded-pill px-3" data-bs-dismiss="modal">Cancel</button>
               <button type="submit" class="btn btn-primary rounded-pill px-4 fw-semibold" id="btnSubmitMatchClient">
                 <span class="spinner-border spinner-border-sm d-none me-1" id="matchClientSpinner" role="status"></span>
-                Confirm &amp; Match
+                <span id="matchClientBtnText">Confirm &amp; Match</span>
               </button>
             </div>
           </form>
@@ -1819,14 +1820,31 @@
       var matchModalForm = document.getElementById('matchClientForm');
       if (matchModalForm) {
         matchModalForm.action = '/shop-floor/board-intake/' + encodeURIComponent(intakeId) + '/match-client';
+        matchModalForm.setAttribute('data-intake-id', intakeId);
       }
       var boardDetailsEl = document.getElementById('matchModalBoardDetails');
       if (boardDetailsEl) {
-        boardDetailsEl.textContent = qty + ' × ' + prodName + ' (Intake #' + intakeId + ')';
+        boardDetailsEl.textContent = qty + ' × ' + prodName + ' (Intake #' + intakeId.substring(0, 8) + '...)';
       }
       var matchPartnerSearch = document.getElementById('matchPartnerSearch');
       var matchPartnerId = document.getElementById('matchPartnerId');
       var matchPartnerName = document.getElementById('matchPartnerName');
+      var matchModalAlert = document.getElementById('matchModalAlert');
+      var btnSubmit = document.getElementById('btnSubmitMatchClient');
+      var spinner = document.getElementById('matchClientSpinner');
+      var btnText = document.getElementById('matchClientBtnText');
+
+      if (matchModalAlert) {
+        matchModalAlert.classList.add('d-none');
+        matchModalAlert.textContent = '';
+      }
+      if (btnSubmit) {
+        btnSubmit.disabled = false;
+        btnSubmit.removeAttribute('data-submitting');
+      }
+      if (spinner) spinner.classList.add('d-none');
+      if (btnText) btnText.innerHTML = 'Confirm &amp; Match';
+
       if (matchPartnerSearch) {
         matchPartnerSearch.value = '';
         matchPartnerSearch.classList.remove('is-invalid');
@@ -1844,24 +1862,156 @@
       }
     });
 
-    // Handle match client form submission
+    // Handle match client form submission via non-blocking AJAX
     var matchClientForm = document.getElementById('matchClientForm');
     if (matchClientForm) {
-      matchClientForm.addEventListener('submit', function(e) {
+      matchClientForm.addEventListener('submit', async function(e) {
+        e.preventDefault();
         var matchPartnerId = document.getElementById('matchPartnerId');
         var matchPartnerSearch = document.getElementById('matchPartnerSearch');
+        var matchPartnerName = document.getElementById('matchPartnerName');
+        var matchModalAlert = document.getElementById('matchModalAlert');
+        var btnSubmit = document.getElementById('btnSubmitMatchClient');
+        var spinner = document.getElementById('matchClientSpinner');
+        var btnText = document.getElementById('matchClientBtnText');
+
+        if (matchModalAlert) matchModalAlert.classList.add('d-none');
+
         if (!matchPartnerId || !matchPartnerId.value || matchPartnerId.value === '0') {
-          e.preventDefault();
           if (matchPartnerSearch) {
             matchPartnerSearch.classList.add('is-invalid');
             matchPartnerSearch.focus();
           }
+          if (matchModalAlert) {
+            matchModalAlert.textContent = 'Please choose a valid client from the list.';
+            matchModalAlert.classList.remove('d-none');
+          }
           return;
         }
-        var btnSubmit = document.getElementById('btnSubmitMatchClient');
-        var spinner = document.getElementById('matchClientSpinner');
-        if (btnSubmit) btnSubmit.disabled = true;
+
+        var intakeId = matchClientForm.getAttribute('data-intake-id') || '';
+        var partnerId = matchPartnerId.value;
+        var partnerName = (matchPartnerName && matchPartnerName.value) || (matchPartnerSearch && matchPartnerSearch.value) || '';
+
+        if (btnSubmit) {
+          btnSubmit.disabled = true;
+          btnSubmit.setAttribute('data-submitting', 'true');
+        }
         if (spinner) spinner.classList.remove('d-none');
+        if (btnText) btnText.textContent = 'Matching client...';
+
+        try {
+          var formData = new FormData(matchClientForm);
+          formData.append('ajax', 'true');
+          var res = await fetch(matchClientForm.action, {
+            method: 'POST',
+            headers: {
+              'Accept': 'application/json',
+              'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            body: new URLSearchParams(formData).toString()
+          });
+
+          var data = await res.json().catch(function() { return {}; });
+
+          if (!res.ok || !data.ok) {
+            throw new Error(data.error || 'Failed to match client to board log.');
+          }
+
+          // Close modal cleanly
+          var modalEl = document.getElementById('matchClientModal');
+          if (modalEl && window.bootstrap && window.bootstrap.Modal) {
+            var modal = window.bootstrap.Modal.getInstance(modalEl);
+            if (modal) modal.hide();
+          }
+
+          var resolvedCustomer = data.customerName || partnerName;
+          var matchedBy = data.matchedBy || 'Operator';
+
+          // Update the card in DOM
+          var row = document.querySelector('[data-board-log-row="' + intakeId + '"]');
+          if (row) {
+            // Update left border color to client supply green
+            row.style.setProperty('border-left', '4.5px solid #059669', 'important');
+
+            // 1. Update supply badge
+            var warningBadge = row.querySelector('.badge.border-warning, .badge[title*="pending client matching"], .badge[title*="Owner is unknown"]');
+            if (warningBadge) {
+              warningBadge.className = 'badge text-white border-0 shadow-sm';
+              warningBadge.style.backgroundColor = '#059669 !important';
+              warningBadge.style.fontSize = '0.72rem';
+              warningBadge.style.fontWeight = '700';
+              warningBadge.style.letterSpacing = '0.02em';
+              warningBadge.title = 'Client Supplied Boards (Customer Provided)';
+              warningBadge.textContent = '📦 CLIENT SUPPLY';
+            }
+
+            // 2. Update line 2 customer text & matched by badge
+            var pendingText = row.querySelector('.fw-bold.text-warning-emphasis');
+            if (pendingText) {
+              pendingText.className = 'fw-bold';
+              pendingText.style.color = '#0f172a';
+              pendingText.textContent = resolvedCustomer;
+
+              var matBadge = document.createElement('span');
+              matBadge.className = 'badge bg-light text-success border border-success-subtle px-1.5 py-0.5 ms-1';
+              matBadge.style.fontSize = '0.68rem';
+              matBadge.style.fontWeight = '600';
+              matBadge.textContent = "Customer's Own Material";
+              pendingText.after(matBadge);
+
+              var matchedBadge = document.createElement('span');
+              matchedBadge.className = 'badge bg-info-subtle text-info-emphasis border border-info-subtle px-2 py-0.5 ms-1';
+              matchedBadge.style.fontSize = '0.72rem';
+              matchedBadge.innerHTML = 'Matched to <strong>' + escapeHtml(resolvedCustomer) + '</strong> by ' + escapeHtml(matchedBy);
+              matBadge.after(matchedBadge);
+            }
+
+            // 3. Remove "Match Client" button from row
+            var matchBtn = row.querySelector('.btn-open-match-modal');
+            if (matchBtn) matchBtn.remove();
+
+            // 4. Update status pill
+            var statusPill = row.querySelector('[data-board-log-status="' + intakeId + '"]');
+            if (statusPill) {
+              statusPill.className = 'badge rounded-pill bg-success text-white fw-bold px-2.5 py-1';
+              statusPill.textContent = 'Synced to Odoo';
+            }
+          }
+
+          // Clear cache so navigation remains fresh
+          if (window.shopFloorPageCache) {
+            window.shopFloorPageCache.clear();
+          }
+
+          // Immediate top banner feedback
+          var alertContainer = document.getElementById('intakeAlertContainer');
+          if (alertContainer) {
+            alertContainer.className = 'alert alert-success alert-dismissible fade show rounded-3 py-2.5 px-3 mb-3 d-flex align-items-center justify-content-between gap-3 shadow-sm';
+            alertContainer.innerHTML =
+              '<div class="small">' +
+                '<strong>✓ Matched successfully:</strong> ' + escapeHtml(resolvedCustomer) +
+                ' assigned to board log. ' +
+                (data.matchedMoCount > 0 ? 'Allocated and reserved on ' + data.matchedMoCount + ' active MO(s).' : 'Linked in Odoo.') +
+              '</div>' +
+              '<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>';
+          }
+
+        } catch (err) {
+          if (matchModalAlert) {
+            matchModalAlert.textContent = err.message || 'Failed to match client to board log.';
+            matchModalAlert.classList.remove('d-none');
+          } else {
+            alert(err.message || 'Failed to match client to board log.');
+          }
+        } finally {
+          if (btnSubmit) {
+            btnSubmit.disabled = false;
+            btnSubmit.removeAttribute('data-submitting');
+          }
+          if (spinner) spinner.classList.add('d-none');
+          if (btnText) btnText.innerHTML = 'Confirm &amp; Match';
+        }
       });
     }
     
