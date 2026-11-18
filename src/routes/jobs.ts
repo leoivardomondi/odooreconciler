@@ -1053,7 +1053,9 @@ async function handleOdooSyncWebhook(req: Request, res: Response) {
     resolvedType = 'attendance';
   } else if (
     rawModel === 'purchase.order' ||
-    ['po', 'purchase', 'purchases', 'procurement'].includes(rawType)
+    rawModel === 'account.move' ||
+    rawModel === 'account.payment' ||
+    ['po', 'purchase', 'purchases', 'procurement', 'bill', 'bills', 'invoice', 'invoices', 'payment', 'payments'].includes(rawType)
   ) {
     resolvedType = 'po';
   } else if (
@@ -1162,25 +1164,28 @@ async function handleOdooSyncWebhook(req: Request, res: Response) {
           employeeId: payload.employee_id ?? req.query.employee_id ?? null,
         });
       } else if (resolvedType === 'po') {
-        const poId =
-          parsePositiveInteger(payload.id) ||
-          parsePositiveInteger(payload.order_id) ||
-          parsePositiveInteger(payload.po_id) ||
-          parsePositiveInteger(req.query.id) ||
-          parsePositiveInteger(req.query.order_id) ||
-          parsePositiveInteger(req.query.po_id);
+        const isDirectPo = rawModel === 'purchase.order';
+        const poId = isDirectPo
+          ? (parsePositiveInteger(payload.id) ||
+             parsePositiveInteger(payload.order_id) ||
+             parsePositiveInteger(payload.po_id) ||
+             parsePositiveInteger(req.query.id) ||
+             parsePositiveInteger(req.query.order_id) ||
+             parsePositiveInteger(req.query.po_id))
+          : (parsePositiveInteger(payload.purchase_id) ||
+             parsePositiveInteger(payload.po_id) ||
+             parsePositiveInteger(req.query.po_id));
+
+        const settings = await getSettings();
+        const client = new OdooClient(settings.odoo);
 
         if (poId) {
-          const settings = await getSettings();
-          const client = new OdooClient(settings.odoo);
           await Promise.allSettled([
             auditPurchaseOrderAgainstJobSummary(client, poId),
             syncStandaloneEtrPoToCompany3(client, poId),
           ]);
           void syncPendingProcessesFromOdoo(true).catch(() => null);
         } else {
-          const settings = await getSettings();
-          const client = new OdooClient(settings.odoo);
           await Promise.allSettled([
             runPoBillSchedulerCycle('cron'),
             syncAllPendingStandaloneEtrPos(client),

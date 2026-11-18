@@ -903,7 +903,9 @@ async function handleOdooSyncWebhook(req, res) {
         resolvedType = 'attendance';
     }
     else if (rawModel === 'purchase.order' ||
-        ['po', 'purchase', 'purchases', 'procurement'].includes(rawType)) {
+        rawModel === 'account.move' ||
+        rawModel === 'account.payment' ||
+        ['po', 'purchase', 'purchases', 'procurement', 'bill', 'bills', 'invoice', 'invoices', 'payment', 'payments'].includes(rawType)) {
         resolvedType = 'po';
     }
     else if (rawModel === 'sale.order' ||
@@ -1008,15 +1010,20 @@ async function handleOdooSyncWebhook(req, res) {
                 });
             }
             else if (resolvedType === 'po') {
-                const poId = parsePositiveInteger(payload.id) ||
-                    parsePositiveInteger(payload.order_id) ||
-                    parsePositiveInteger(payload.po_id) ||
-                    parsePositiveInteger(req.query.id) ||
-                    parsePositiveInteger(req.query.order_id) ||
-                    parsePositiveInteger(req.query.po_id);
+                const isDirectPo = rawModel === 'purchase.order';
+                const poId = isDirectPo
+                    ? (parsePositiveInteger(payload.id) ||
+                        parsePositiveInteger(payload.order_id) ||
+                        parsePositiveInteger(payload.po_id) ||
+                        parsePositiveInteger(req.query.id) ||
+                        parsePositiveInteger(req.query.order_id) ||
+                        parsePositiveInteger(req.query.po_id))
+                    : (parsePositiveInteger(payload.purchase_id) ||
+                        parsePositiveInteger(payload.po_id) ||
+                        parsePositiveInteger(req.query.po_id));
+                const settings = await (0, repositories_1.getSettings)();
+                const client = new odooClient_1.OdooClient(settings.odoo);
                 if (poId) {
-                    const settings = await (0, repositories_1.getSettings)();
-                    const client = new odooClient_1.OdooClient(settings.odoo);
                     await Promise.allSettled([
                         (0, poJobSummaryAuditService_1.auditPurchaseOrderAgainstJobSummary)(client, poId),
                         (0, crossCompanySyncService_1.syncStandaloneEtrPoToCompany3)(client, poId),
@@ -1024,8 +1031,6 @@ async function handleOdooSyncWebhook(req, res) {
                     void (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(true).catch(() => null);
                 }
                 else {
-                    const settings = await (0, repositories_1.getSettings)();
-                    const client = new odooClient_1.OdooClient(settings.odoo);
                     await Promise.allSettled([
                         (0, schedulerService_1.runPoBillSchedulerCycle)('cron'),
                         (0, crossCompanySyncService_1.syncAllPendingStandaloneEtrPos)(client),
