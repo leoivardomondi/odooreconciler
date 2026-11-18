@@ -158,7 +158,7 @@ export async function syncShopFloorOperatorsData(forceRefresh = false): Promise<
             ['company_id', '=', targetCompanyId],
             ['active', '=', true],
           ],
-          fields: ['id', 'name', 'job_title', 'department_id', 'work_email', 'mobile_phone', 'user_id', 'active'],
+          fields: ['id', 'name', 'job_title', 'department_id', 'work_email', 'mobile_phone', 'user_id', 'active', 'pin'],
         }).catch(() => []),
         client.searchReadRecords<any>('res.users', {
           domain: [
@@ -231,6 +231,7 @@ export async function syncShopFloorOperatorsData(forceRefresh = false): Promise<
           assignedItems: [],
           priority,
           active: true,
+          pin: linkedEmp.pin ? String(linkedEmp.pin).trim() : null,
         });
       }
 
@@ -265,6 +266,7 @@ export async function syncShopFloorOperatorsData(forceRefresh = false): Promise<
           assignedItems: [],
           priority,
           active: true,
+          pin: emp.pin ? String(emp.pin).trim() : null,
         });
       }
 

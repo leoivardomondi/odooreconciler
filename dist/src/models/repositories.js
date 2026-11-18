@@ -132,6 +132,7 @@ exports.updateUserPhoto = updateUserPhoto;
 exports.invalidateShopFloorOperatorsRamCache = invalidateShopFloorOperatorsRamCache;
 exports.getShopFloorOperatorsFromDb = getShopFloorOperatorsFromDb;
 exports.upsertShopFloorOperators = upsertShopFloorOperators;
+exports.getShopFloorOperatorByPin = getShopFloorOperatorByPin;
 exports.deactivateShopFloorOperatorsNotIn = deactivateShopFloorOperatorsNotIn;
 exports.updateShopFloorOperatorPhoto = updateShopFloorOperatorPhoto;
 exports.getStockProductMirror = getStockProductMirror;
@@ -3687,7 +3688,7 @@ async function getShopFloorOperatorsFromDb() {
     try {
         const rows = await (0, db_1.queryAll)(`
       SELECT id, name, job_title, department, work_email, mobile_phone, user_id, user_name, photo_url,
-             checked_in, checked_out, check_in_time, assigned_items_json, priority, active, synced_at
+             checked_in, checked_out, check_in_time, assigned_items_json, priority, active, synced_at, pin
       FROM shop_floor_operators
       WHERE active = 1
       ORDER BY priority ASC, name ASC
@@ -3716,6 +3717,7 @@ async function getShopFloorOperatorsFromDb() {
             priority: Number(r.priority || 2),
             active: Boolean(r.active),
             syncedAt: formatDbDateString(r.synced_at),
+            pin: r.pin ? String(r.pin).trim() : null,
         }));
         shopFloorOperatorsRamCache = { data: result, freshUntil: now + 30 * 1000 };
         return result;
@@ -3745,13 +3747,14 @@ async function upsertShopFloorOperators(operators) {
             JSON.stringify(op.assignedItems || []),
             op.priority ?? 2,
             op.active !== false ? 1 : 0,
+            op.pin ? op.pin.trim() : null,
         ];
         if ((0, db_1.getDatabaseDialect)() === 'mysql') {
             await (0, db_1.execute)(`
         INSERT INTO shop_floor_operators (
           id, name, job_title, department, work_email, mobile_phone, user_id, user_name, photo_url,
-          checked_in, checked_out, check_in_time, assigned_items_json, priority, active, synced_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+          checked_in, checked_out, check_in_time, assigned_items_json, priority, active, pin, synced_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON DUPLICATE KEY UPDATE
           name = VALUES(name),
           job_title = VALUES(job_title),
@@ -3767,6 +3770,7 @@ async function upsertShopFloorOperators(operators) {
           assigned_items_json = VALUES(assigned_items_json),
           priority = VALUES(priority),
           active = VALUES(active),
+          pin = COALESCE(VALUES(pin), pin),
           synced_at = CURRENT_TIMESTAMP
       `, params);
         }
@@ -3774,8 +3778,8 @@ async function upsertShopFloorOperators(operators) {
             await (0, db_1.execute)(`
         INSERT INTO shop_floor_operators (
           id, name, job_title, department, work_email, mobile_phone, user_id, user_name, photo_url,
-          checked_in, checked_out, check_in_time, assigned_items_json, priority, active, synced_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+          checked_in, checked_out, check_in_time, assigned_items_json, priority, active, pin, synced_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(id) DO UPDATE SET
           name = excluded.name,
           job_title = excluded.job_title,
@@ -3791,11 +3795,53 @@ async function upsertShopFloorOperators(operators) {
           assigned_items_json = excluded.assigned_items_json,
           priority = excluded.priority,
           active = excluded.active,
+          pin = COALESCE(excluded.pin, pin),
           synced_at = CURRENT_TIMESTAMP,
           updated_at = CURRENT_TIMESTAMP
       `, params);
         }
     }
+}
+async function getShopFloorOperatorByPin(pin) {
+    const cleanPin = String(pin || '').trim();
+    if (!cleanPin)
+        return null;
+    const rows = await (0, db_1.queryAll)(`
+    SELECT id, name, job_title, department, work_email, mobile_phone, user_id, user_name, photo_url,
+           checked_in, checked_out, check_in_time, assigned_items_json, priority, active, synced_at, pin
+    FROM shop_floor_operators
+    WHERE active = 1 AND pin = ?
+    LIMIT 1
+  `, [cleanPin]);
+    if (!rows.length)
+        return null;
+    const r = rows[0];
+    return {
+        id: Number(r.id),
+        name: String(r.name || ''),
+        jobTitle: r.job_title ? String(r.job_title) : null,
+        department: r.department ? String(r.department) : null,
+        workEmail: r.work_email ? String(r.work_email) : null,
+        mobilePhone: r.mobile_phone ? String(r.mobile_phone) : null,
+        userId: r.user_id ? Number(r.user_id) : null,
+        userName: r.user_name ? String(r.user_name) : (r.name || ''),
+        photoUrl: r.photo_url ? String(r.photo_url) : null,
+        checkedIn: Boolean(r.checked_in),
+        checkedOut: Boolean(r.checked_out),
+        checkInTime: r.check_in_time ? String(r.check_in_time) : null,
+        assignedItems: (() => {
+            try {
+                return r.assigned_items_json ? JSON.parse(r.assigned_items_json) : [];
+            }
+            catch {
+                return [];
+            }
+        })(),
+        priority: Number(r.priority || 2),
+        active: Boolean(r.active),
+        syncedAt: formatDbDateString(r.synced_at),
+        pin: r.pin ? String(r.pin).trim() : null,
+    };
 }
 async function deactivateShopFloorOperatorsNotIn(activeIds) {
     invalidateShopFloorOperatorsRamCache();

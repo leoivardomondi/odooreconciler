@@ -813,6 +813,7 @@ async function ensureSqliteDatabase(config) {
       assigned_items_json TEXT,
       priority INTEGER NOT NULL DEFAULT 2,
       active INTEGER NOT NULL DEFAULT 1,
+      pin TEXT,
       synced_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
@@ -905,6 +906,8 @@ async function ensureSqliteDatabase(config) {
     await ensureColumnSqlite(db, 'invoice_extraction_jobs', 'next_retry_at', 'TEXT');
     await ensureColumnSqlite(db, 'app_user_profiles', 'photo_url', 'TEXT');
     await ensureColumnSqlite(db, 'shop_floor_pending_processes', 'is_mo_closed', 'INTEGER NOT NULL DEFAULT 0');
+    await ensureColumnSqlite(db, 'shop_floor_operators', 'pin', 'TEXT');
+    await sqliteExec(db, 'CREATE INDEX IF NOT EXISTS idx_sf_operators_pin ON shop_floor_operators(pin);').catch(() => undefined);
     await sqliteExec(db, `
     UPDATE settings
     SET mail_config_json = REPLACE(mail_config_json, '"hour":8', '"hour":7')
@@ -1444,10 +1447,12 @@ async function ensureMysqlDatabase(config) {
       assigned_items_json LONGTEXT NULL,
       priority INT NOT NULL DEFAULT 2,
       active TINYINT(1) NOT NULL DEFAULT 1,
+      pin VARCHAR(32) NULL,
       synced_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       KEY idx_sf_operators_active (active, priority, name),
-      KEY idx_sf_operators_email (work_email)
+      KEY idx_sf_operators_email (work_email),
+      KEY idx_sf_operators_pin (pin)
     )
   `);
     await query('create mpesa extraction jobs table', `
@@ -1549,6 +1554,8 @@ async function ensureMysqlDatabase(config) {
     await ensureColumnMysql(pool, 'invoice_extraction_jobs', 'next_retry_at', 'DATETIME NULL', config.mysqlDatabase);
     await ensureColumnMysql(pool, 'app_user_profiles', 'photo_url', 'VARCHAR(500) NULL', config.mysqlDatabase);
     await ensureColumnMysql(pool, 'shop_floor_pending_processes', 'is_mo_closed', 'TINYINT(1) NOT NULL DEFAULT 0', config.mysqlDatabase);
+    await ensureColumnMysql(pool, 'shop_floor_operators', 'pin', 'VARCHAR(32) NULL', config.mysqlDatabase);
+    await ensureIndexMysql(pool, 'shop_floor_operators', 'idx_sf_operators_pin', '`pin`', config.mysqlDatabase).catch(() => undefined);
     await ensureIndexMysql(pool, 'board_intake_queue', 'idx_board_intake_arrival', '`arrival_date`', config.mysqlDatabase).catch(() => undefined);
     await ensureIndexMysql(pool, 'board_intake_queue', 'idx_board_intake_created', '`created_at`', config.mysqlDatabase).catch(() => undefined);
     await query('migrate weekly report default hour', `

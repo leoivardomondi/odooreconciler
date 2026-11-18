@@ -91,6 +91,8 @@ import { selectBestBoardComponent } from '../services/cuttingBoMReconciliationSe
 import { isAllowedAttendanceIp, normalizeIpAddress } from '../utils/siteAttendanceAccess';
 import { normalizeBoardLogRecipients } from '../utils/helpers';
 import { isAccountDeactivated } from '../utils/accountStatus';
+import { verifyEmployeeAttendancePin } from '../services/operatorPinVerificationService';
+import { queryAll } from '../models/db';
 
 const router = Router();
 
@@ -3277,6 +3279,8 @@ async function handlePublicBoardLogs(req: Request, res: Response): Promise<void>
       return;
     }
 
+    const customers = await getCustomersForPage().catch(() => []);
+
     res.render('public-board-logs', {
       pageTitle: 'Board Intake Logs',
       dateGroups,
@@ -3284,6 +3288,7 @@ async function handlePublicBoardLogs(req: Request, res: Response): Promise<void>
       targetDate,
       initialSearch,
       todayDate,
+      customers,
     });
   } catch (err) {
     console.error('[shopFloorRouter] Failed to render public board logs:', err);
@@ -3297,6 +3302,128 @@ async function handlePublicBoardLogs(req: Request, res: Response): Promise<void>
 
 router.get('/public/board-logs', handlePublicBoardLogs);
 router.get('/board-logs', handlePublicBoardLogs);
+
+router.get('/public/board-logs/partners/search', async (req: Request, res: Response) => {
+  try {
+    const query = typeof req.query.q === 'string' ? req.query.q : '';
+    const results = await searchCustomers(query, 50);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ ok: true, query, results });
+  } catch (err) {
+    console.error('[shopFloorRouter] Failed to search partner records for public view:', err);
+    res.status(500).json({ ok: false, results: [] });
+  }
+});
+
+router.get('/public/board-logs/status', async (req: Request, res: Response) => {
+  try {
+    const rawIds = typeof req.query.ids === 'string'
+      ? req.query.ids.split(',').map((s) => s.trim()).filter(Boolean)
+      : [];
+    if (rawIds.length === 0) {
+      res.json({ ok: true, statuses: [] });
+      return;
+    }
+    const placeholders = rawIds.map(() => '?').join(',');
+    const rows = await queryAll<{
+      id: string;
+      status: string;
+      reverted_at: string | null;
+      reverted_by: string | null;
+      matched_at: string | null;
+      matched_by: string | null;
+      partner_id: number | null;
+      customer_name: string | null;
+      error_message: string | null;
+    }>(`SELECT id, status, reverted_at, reverted_by, matched_at, matched_by, partner_id, customer_name, error_message
+        FROM board_intake_queue
+        WHERE id IN (${placeholders})`, rawIds);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ ok: true, statuses: rows });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err instanceof Error ? err.message : 'Failed to fetch status' });
+  }
+});
+
+router.post('/public/board-logs/match-client', async (req: Request, res: Response) => {
+  const wantsJson = Boolean(req.xhr || req.headers.accept?.includes('application/json') || req.is('json') || req.body?.ajax === 'true');
+  const entryId = String(req.body.id || req.body.entry_id || req.body.intake_id || '').trim();
+  const partnerId = Number(req.body.partner_id || 0);
+  const customerName = String(req.body.partner_name || req.body.customer_name || '').trim();
+  const pin = String(req.body.pin || '').trim();
+
+  if (!entryId) {
+    if (wantsJson) {
+      res.status(400).json({ ok: false, error: 'Board log ID is required.' });
+      return;
+    }
+    res.redirect('/public/board-logs?error=' + encodeURIComponent('Board log ID is required.'));
+    return;
+  }
+
+  if (!partnerId || partnerId <= 0) {
+    const errorMsg = 'Please choose a valid client from the list.';
+    if (wantsJson) {
+      res.status(400).json({ ok: false, error: errorMsg });
+      return;
+    }
+    res.redirect('/public/board-logs?error=' + encodeURIComponent(errorMsg));
+    return;
+  }
+
+  if (!pin) {
+    const errorMsg = 'Your Odoo attendance PIN is required to match a client.';
+    if (wantsJson) {
+      res.status(401).json({ ok: false, error: errorMsg });
+      return;
+    }
+    res.redirect('/public/board-logs?error=' + encodeURIComponent(errorMsg));
+    return;
+  }
+
+  // Verify employee attendance PIN
+  const operator = await verifyEmployeeAttendancePin(pin);
+  if (!operator) {
+    const errorMsg = 'Invalid attendance PIN. Please enter your valid 4-digit Odoo attendance PIN.';
+    if (wantsJson) {
+      res.status(401).json({ ok: false, error: errorMsg });
+      return;
+    }
+    res.redirect('/public/board-logs?error=' + encodeURIComponent(errorMsg));
+    return;
+  }
+
+  const matchedBy = operator.name;
+
+  try {
+    const result = await matchBoardIntakeToClient({
+      id: entryId,
+      partnerId,
+      customerName,
+      matchedBy,
+    });
+
+    const msg = `Board log matched successfully to ${result.customerName} by ${matchedBy}.${result.matchedMoCount > 0 ? ` Allocated and reserved on ${result.matchedMoCount} active MO(s).` : ''}`;
+    if (wantsJson) {
+      res.json({
+        ok: true,
+        message: msg,
+        matchedMoCount: result.matchedMoCount,
+        customerName: result.customerName,
+        matchedBy,
+      });
+      return;
+    }
+    res.redirect('/public/board-logs?message=' + encodeURIComponent(msg));
+  } catch (err) {
+    const errorMsg = err instanceof Error ? err.message : 'Failed to match client to board log.';
+    if (wantsJson) {
+      res.status(500).json({ ok: false, error: errorMsg });
+      return;
+    }
+    res.redirect('/public/board-logs?error=' + encodeURIComponent(errorMsg));
+  }
+});
 
 export interface PublicWorkOrderClientGroup {
   clientName: string;
@@ -5021,9 +5148,26 @@ router.post('/shop-floor/board-intake/:id/revert', async (req: Request, res: Res
 
 router.post('/shop-floor/board-intake/:id/match-client', async (req: Request, res: Response) => {
   const wantsJson = Boolean(req.xhr || req.headers.accept?.includes('application/json') || req.is('json') || req.body?.ajax === 'true');
-  if (!req.authUser) {
+  const pin = String(req.body.pin || '').trim();
+  let matchedBy = '';
+
+  if (pin) {
+    const operator = await verifyEmployeeAttendancePin(pin);
+    if (!operator) {
+      const errorMsg = 'Invalid attendance PIN. Please enter your valid 4-digit Odoo attendance PIN.';
+      if (wantsJson) {
+        res.status(401).json({ ok: false, error: errorMsg });
+        return;
+      }
+      res.redirect('/shop-floor/boards?error=' + encodeURIComponent(errorMsg));
+      return;
+    }
+    matchedBy = operator.name;
+  } else if (req.authUser) {
+    matchedBy = req.authUser.displayName || req.authUser.email || 'Operator';
+  } else {
     if (wantsJson) {
-      res.status(401).json({ ok: false, error: 'Please sign in first.' });
+      res.status(401).json({ ok: false, error: 'Please enter your attendance PIN or sign in.' });
       return;
     }
     res.redirect('/login');
@@ -5054,8 +5198,6 @@ router.post('/shop-floor/board-intake/:id/match-client', async (req: Request, re
     res.redirect('/shop-floor/boards?error=' + encodeURIComponent(errorMsg));
     return;
   }
-
-  const matchedBy = req.authUser.displayName || req.authUser.email || 'Operator';
 
   try {
     const result = await matchBoardIntakeToClient({

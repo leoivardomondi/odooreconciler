@@ -250,24 +250,31 @@
                     </div>
                   </div>
 
-                  <!-- Status Badge -->
-                  <div class="text-end flex-shrink-0">
-                    <% if (status === 'synced') { %>
-                      <span class="badge bg-success-subtle text-success border border-success-subtle rounded-pill fw-semibold px-2.5 py-1" style="font-size: 0.74rem;">
-                        ✓ Synced to Odoo
-                      </span>
-                    <% } else if (status === 'reverted') { %>
-                      <span class="badge bg-secondary-subtle text-secondary border rounded-pill fw-semibold px-2.5 py-1" style="font-size: 0.74rem;" title="<%= item.reverted_at ? 'Reverted at ' + item.reverted_at : '' %>">
-                        Cancelled / Reverted
-                      </span>
-                    <% } else if (status === 'failed') { %>
-                      <span class="badge bg-danger-subtle text-danger border border-danger-subtle rounded-pill fw-semibold px-2.5 py-1" style="font-size: 0.74rem;">
-                        Sync Pending Retry
-                      </span>
-                    <% } else { %>
-                      <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle rounded-pill fw-semibold px-2.5 py-1" style="font-size: 0.74rem;">
-                        ⏳ Syncing
-                      </span>
+                  <!-- Action & Status Badge -->
+                  <div class="d-flex align-items-center gap-2 flex-shrink-0">
+                    <div class="text-end" data-board-log-status-container="<%= item.id %>">
+                      <% if (status === 'synced') { %>
+                        <span class="badge bg-success-subtle text-success border border-success-subtle rounded-pill fw-semibold px-2.5 py-1" style="font-size: 0.74rem;" data-board-log-status="<%= item.id %>">
+                          <%= isPendingClient ? '✓ Synced (Pending Match)' : '✓ Synced to Odoo' %>
+                        </span>
+                      <% } else if (status === 'reverted') { %>
+                        <span class="badge bg-secondary-subtle text-secondary border rounded-pill fw-semibold px-2.5 py-1" style="font-size: 0.74rem;" title="<%= item.reverted_at ? 'Reverted at ' + item.reverted_at : '' %>" data-board-log-status="<%= item.id %>">
+                          Cancelled / Reverted
+                        </span>
+                      <% } else if (status === 'failed') { %>
+                        <span class="badge bg-danger-subtle text-danger border border-danger-subtle rounded-pill fw-semibold px-2.5 py-1" style="font-size: 0.74rem;" data-board-log-status="<%= item.id %>">
+                          Sync Pending Retry
+                        </span>
+                      <% } else { %>
+                        <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle rounded-pill fw-semibold px-2.5 py-1" style="font-size: 0.74rem;" data-board-log-status="<%= item.id %>">
+                          ⏳ Syncing
+                        </span>
+                      <% } %>
+                    </div>
+                    <% if (isPendingClient && status !== 'reverted' && !item.reverted_at) { %>
+                      <button type="button" class="btn btn-sm btn-warning rounded-pill fw-bold btn-open-match-modal px-2.5 shadow-sm d-inline-flex align-items-center gap-1" data-intake-id="<%= item.id %>" data-product-name="<%= item.product_name %>" data-qty="<%= item.quantity %>" style="font-size:0.76rem;">
+                        🔗 Match Client
+                      </button>
                     <% } %>
                   </div>
                 </div>
@@ -289,6 +296,77 @@
         <button type="button" class="btn btn-outline-secondary btn-sm rounded-pill px-4" id="clearSearchBtn">
           Reset Filter &amp; Show All
         </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Match Client Modal (Public View with Attendance PIN) -->
+  <div class="modal fade" id="publicMatchClientModal" tabindex="-1" aria-labelledby="publicMatchClientModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered">
+      <div class="modal-content shadow border-0 rounded-4">
+        <form id="publicMatchClientForm" method="post" action="">
+          <div class="modal-header border-bottom-0 pb-0 pt-4 px-4">
+            <div>
+              <h5 class="modal-title fw-bold text-dark" id="publicMatchClientModalLabel">🔗 Match Board Log to Client</h5>
+              <p class="text-muted small mb-0 mt-1">Assign the client for this board intake and authenticate using your Odoo attendance PIN.</p>
+            </div>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body px-4 py-3">
+            <div id="matchModalAlert" class="alert alert-danger d-none small py-2 px-3 rounded-3 mb-3"></div>
+
+            <div class="p-3 rounded-3 bg-light border mb-3">
+              <div class="small text-muted mb-1">Board Intake Details</div>
+              <div class="fw-bold text-dark" id="matchModalBoardDetails">--</div>
+            </div>
+
+            <!-- Client Combobox -->
+            <div class="mb-3 position-relative" id="publicMatchPartnerCombobox">
+              <label for="publicMatchPartnerSearch" class="form-label fw-semibold" style="font-size: 0.92rem; color: #334155;">
+                Select Client <span class="text-danger">*</span>
+              </label>
+              <div class="input-group rounded-3 border overflow-hidden" style="border-color: #cbd5e1 !important;">
+                <span class="input-group-text bg-white border-0 pe-1" style="color: #94a3b8; font-size: 1.1rem; padding: 0.65rem 0.75rem;">🔍</span>
+                <input type="text" id="publicMatchPartnerSearch" class="form-control border-0 ps-2" placeholder="Type to search clients..." style="font-size: 1rem; padding: 0.65rem 0.75rem;" autocomplete="off" required>
+              </div>
+              <input type="hidden" name="partner_id" id="publicMatchPartnerId" required>
+              <input type="hidden" name="partner_name" id="publicMatchPartnerName" required>
+              <div class="invalid-feedback d-block d-none" id="publicMatchPartnerFeedback">Please choose a valid client from the list.</div>
+              
+              <div class="combobox-dropdown d-none shadow border position-absolute w-100 rounded-3" style="top: 100%; left: 0; max-height: 250px; overflow-y: auto; z-index: 1055; background: #fff;">
+                <div class="list-group list-group-flush" id="publicMatchPartnerList">
+                  <% (typeof customers !== 'undefined' && Array.isArray(customers) ? customers : []).forEach(c => { %>
+                    <button type="button" class="list-group-item list-group-item-action text-start py-2 px-3 combobox-item" data-id="<%= c.id %>" data-name="<%= c.name %>" style="border: none;">
+                      <div class="fw-medium text-dark"><%= c.name %></div>
+                      <div class="small text-muted" style="font-size: 0.74rem;">Odoo partner record</div>
+                    </button>
+                  <% }) %>
+                </div>
+                <div class="text-muted text-center py-3 d-none no-results" style="font-size: 0.85rem;">No clients found</div>
+              </div>
+            </div>
+
+            <!-- Attendance PIN -->
+            <div class="mb-3">
+              <label for="publicMatchOperatorPin" class="form-label fw-semibold" style="font-size: 0.92rem; color: #334155;">
+                Attendance PIN <span class="text-danger">*</span>
+              </label>
+              <input type="password" inputmode="numeric" pattern="[0-9]*" class="form-control rounded-3" id="publicMatchOperatorPin" name="pin" placeholder="Enter your 4-digit attendance PIN" maxlength="8" required autocomplete="off" style="font-size: 1.05rem; letter-spacing: 0.15em; padding: 0.65rem 0.75rem; border-color: #cbd5e1;">
+              <div class="form-text small text-muted">Enter your Odoo attendance kiosk PIN (stored in MySQL).</div>
+            </div>
+
+            <div class="small text-muted">
+              <i class="bi bi-info-circle"></i> Once verified and matched, Odoo links this stock intake to the client and automatically reserves components on open cutting / manufacturing orders.
+            </div>
+          </div>
+          <div class="modal-footer border-top-0 pt-0 pb-4 px-4">
+            <button type="button" class="btn btn-secondary rounded-pill px-3" data-bs-dismiss="modal">Cancel</button>
+            <button type="submit" class="btn btn-primary rounded-pill px-4 fw-semibold" id="btnSubmitPublicMatchClient">
+              <span class="spinner-border spinner-border-sm d-none me-1" id="publicMatchSpinner" role="status"></span>
+              Confirm &amp; Match
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   </div>
@@ -416,7 +494,350 @@
           }
         }, 300);
       }
+    // Handle Match Client modal button clicks from cards
+    let activeMatchIntakeId = null;
+    const matchModalEl = document.getElementById('publicMatchClientModal');
+    const matchForm = document.getElementById('publicMatchClientForm');
+    const matchAlert = document.getElementById('matchModalAlert');
+    const matchDetails = document.getElementById('matchModalBoardDetails');
+    const partnerSearchInput = document.getElementById('publicMatchPartnerSearch');
+    const partnerIdInput = document.getElementById('publicMatchPartnerId');
+    const partnerNameInput = document.getElementById('publicMatchPartnerName');
+    const partnerFeedback = document.getElementById('publicMatchPartnerFeedback');
+    const partnerDropdown = document.querySelector('#publicMatchPartnerCombobox .combobox-dropdown');
+    const partnerList = document.getElementById('publicMatchPartnerList');
+    const noResultsEl = document.querySelector('#publicMatchPartnerCombobox .no-results');
+    const pinInput = document.getElementById('publicMatchOperatorPin');
+    const submitBtn = document.getElementById('btnSubmitPublicMatchClient');
+    const spinner = document.getElementById('publicMatchSpinner');
+
+    document.addEventListener('click', function (e) {
+      const btn = e.target.closest('.btn-open-match-modal');
+      if (!btn) return;
+      activeMatchIntakeId = btn.getAttribute('data-intake-id');
+      const prodName = btn.getAttribute('data-product-name') || '';
+      const qty = btn.getAttribute('data-qty') || '';
+
+      if (matchDetails) {
+        matchDetails.textContent = qty + ' × ' + prodName + ' (Intake #' + activeMatchIntakeId + ')';
+      }
+      if (matchAlert) {
+        matchAlert.classList.add('d-none');
+        matchAlert.textContent = '';
+      }
+      if (partnerSearchInput) {
+        partnerSearchInput.value = '';
+        partnerSearchInput.classList.remove('is-invalid');
+      }
+      if (partnerIdInput) partnerIdInput.value = '';
+      if (partnerNameInput) partnerNameInput.value = '';
+      if (partnerFeedback) partnerFeedback.classList.add('d-none');
+      if (partnerDropdown) partnerDropdown.classList.add('d-none');
+      if (pinInput) {
+        pinInput.value = '';
+        pinInput.classList.remove('is-invalid');
+      }
+      if (submitBtn) submitBtn.disabled = false;
+      if (spinner) spinner.classList.add('d-none');
+
+      if (matchModalEl && window.bootstrap && window.bootstrap.Modal) {
+        const modal = window.bootstrap.Modal.getOrCreateInstance(matchModalEl);
+        modal.show();
+        setTimeout(function () {
+          if (partnerSearchInput) partnerSearchInput.focus();
+        }, 300);
+      }
+    });
+
+    // Client search logic for Match Modal
+    let partnerSearchTimer = null;
+    let partnerRequestSeq = 0;
+
+    function selectPartnerItem(id, name) {
+      if (partnerIdInput) partnerIdInput.value = id;
+      if (partnerNameInput) partnerNameInput.value = name;
+      if (partnerSearchInput) {
+        partnerSearchInput.value = name;
+        partnerSearchInput.classList.remove('is-invalid');
+      }
+      if (partnerFeedback) partnerFeedback.classList.add('d-none');
+      if (partnerDropdown) partnerDropdown.classList.add('d-none');
     }
+
+    if (partnerList) {
+      partnerList.addEventListener('click', function (e) {
+        const item = e.target.closest('.combobox-item');
+        if (!item) return;
+        e.stopPropagation();
+        const id = item.getAttribute('data-id');
+        const name = item.getAttribute('data-name');
+        selectPartnerItem(id, name);
+      });
+    }
+
+    if (partnerSearchInput) {
+      partnerSearchInput.addEventListener('focus', function () {
+        if (partnerDropdown) partnerDropdown.classList.remove('d-none');
+      });
+
+      partnerSearchInput.addEventListener('input', function () {
+        const query = partnerSearchInput.value.trim();
+        if (partnerIdInput) partnerIdInput.value = '';
+        if (partnerNameInput) partnerNameInput.value = '';
+        if (partnerDropdown) partnerDropdown.classList.remove('d-none');
+
+        clearTimeout(partnerSearchTimer);
+        partnerSearchTimer = setTimeout(async function () {
+          const currentSeq = ++partnerRequestSeq;
+          try {
+            const res = await fetch('/public/board-logs/partners/search?q=' + encodeURIComponent(query), {
+              headers: { Accept: 'application/json' },
+            });
+            if (!res.ok || currentSeq !== partnerRequestSeq) return;
+            const payload = await res.json();
+            if (currentSeq !== partnerRequestSeq) return;
+
+            const results = Array.isArray(payload && payload.results) ? payload.results : [];
+            if (partnerList) {
+              partnerList.innerHTML = '';
+              if (results.length === 0) {
+                if (noResultsEl) noResultsEl.classList.remove('d-none');
+              } else {
+                if (noResultsEl) noResultsEl.classList.add('d-none');
+                results.forEach(function (partner) {
+                  const btn = document.createElement('button');
+                  btn.type = 'button';
+                  btn.className = 'list-group-item list-group-item-action text-start py-2 px-3 combobox-item';
+                  btn.setAttribute('data-id', partner.id);
+                  btn.setAttribute('data-name', partner.name || '');
+                  btn.style.border = 'none';
+
+                  const nameEl = document.createElement('div');
+                  nameEl.className = 'fw-medium text-dark';
+                  nameEl.textContent = partner.name || 'Unnamed client';
+
+                  const metaEl = document.createElement('div');
+                  metaEl.className = 'small text-muted';
+                  metaEl.style.fontSize = '0.74rem';
+                  const parts = [];
+                  if (partner.ref) parts.push('Ref: ' + partner.ref);
+                  if (partner.mobile || partner.phone) parts.push('Tel: ' + (partner.mobile || partner.phone));
+                  metaEl.textContent = parts.length ? parts.join(' • ') : 'Odoo partner record';
+
+                  btn.appendChild(nameEl);
+                  btn.appendChild(metaEl);
+                  partnerList.appendChild(btn);
+                });
+              }
+            }
+          } catch (_err) {}
+        }, 220);
+      });
+    }
+
+    document.addEventListener('click', function (e) {
+      if (partnerDropdown && !e.target.closest('#publicMatchPartnerCombobox')) {
+        partnerDropdown.classList.add('d-none');
+      }
+    });
+
+    // Handle Match Form Submission
+    if (matchForm) {
+      matchForm.addEventListener('submit', async function (e) {
+        e.preventDefault();
+        const partnerId = partnerIdInput ? partnerIdInput.value : '';
+        const partnerName = partnerNameInput ? partnerNameInput.value : '';
+        const pin = pinInput ? pinInput.value.trim() : '';
+
+        if (!partnerId || partnerId === '0') {
+          if (partnerSearchInput) {
+            partnerSearchInput.classList.add('is-invalid');
+            partnerSearchInput.focus();
+          }
+          if (partnerFeedback) partnerFeedback.classList.remove('d-none');
+          return;
+        }
+
+        if (!pin) {
+          if (pinInput) {
+            pinInput.classList.add('is-invalid');
+            pinInput.focus();
+          }
+          return;
+        }
+
+        if (submitBtn) submitBtn.disabled = true;
+        if (spinner) spinner.classList.remove('d-none');
+        if (matchAlert) matchAlert.classList.add('d-none');
+
+        try {
+          const response = await fetch('/public/board-logs/match-client', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json',
+            },
+            body: JSON.stringify({
+              id: activeMatchIntakeId,
+              partner_id: Number(partnerId),
+              partner_name: partnerName,
+              pin: pin,
+            }),
+          });
+
+          const data = await response.json();
+          if (!response.ok || !data.ok) {
+            throw new Error(data.error || 'Failed to match client. Please check your PIN.');
+          }
+
+          // Update card in DOM
+          const card = document.querySelector(`.board-log-entry-card[data-entry-id="${activeMatchIntakeId}"]`);
+          if (card) {
+            card.style.setProperty('border-left', '4.5px solid #059669', 'important');
+            card.setAttribute('data-supply', 'client');
+            card.setAttribute('data-client', (data.customerName || partnerName).toLowerCase());
+
+            // 1. Update supply badge
+            const pendingBadge = card.querySelector('.badge.border-warning');
+            if (pendingBadge) {
+              pendingBadge.className = 'badge text-white border-0 shadow-sm rounded-pill';
+              pendingBadge.style.backgroundColor = '#059669 !important';
+              pendingBadge.style.fontSize = '0.72rem';
+              pendingBadge.style.fontWeight = '700';
+              pendingBadge.title = 'Client Supplied Boards (Customer Provided)';
+              pendingBadge.textContent = '📦 CLIENT SUPPLY';
+            }
+
+            // 2. Update line 2 text
+            const clientWarningText = card.querySelector('.fw-bold.text-warning-emphasis');
+            if (clientWarningText) {
+              const matchedSpan = document.createElement('span');
+              matchedSpan.className = 'badge bg-info-subtle text-info-emphasis border border-info-subtle px-2 py-0.5 ms-1';
+              matchedSpan.style.fontSize = '0.70rem';
+              matchedSpan.textContent = 'Matched by ' + (data.matchedBy || 'Operator');
+
+              const clientSpan = document.createElement('span');
+              clientSpan.className = 'fw-bold';
+              clientSpan.style.color = '#0f172a';
+              clientSpan.textContent = data.customerName || partnerName;
+
+              const supplyTypeSpan = document.createElement('span');
+              supplyTypeSpan.className = 'badge bg-light text-success border border-success-subtle px-1.5 py-0.5 ms-1';
+              supplyTypeSpan.style.fontSize = '0.68rem';
+              supplyTypeSpan.style.fontWeight = '600';
+              supplyTypeSpan.textContent = "Customer's Own Material";
+
+              const container = clientWarningText.parentElement;
+              container.insertBefore(clientSpan, clientWarningText);
+              container.insertBefore(supplyTypeSpan, clientWarningText);
+              container.insertBefore(matchedSpan, clientWarningText);
+              clientWarningText.remove();
+            }
+
+            // 3. Update status badge
+            const statusBadge = card.querySelector('[data-board-log-status]');
+            if (statusBadge) {
+              statusBadge.className = 'badge bg-success-subtle text-success border border-success-subtle rounded-pill fw-semibold px-2.5 py-1';
+              statusBadge.textContent = '✓ Synced to Odoo';
+            }
+
+            // 4. Remove Match Client button
+            const matchBtn = card.querySelector('.btn-open-match-modal');
+            if (matchBtn) matchBtn.remove();
+          }
+
+          // Close modal
+          if (matchModalEl && window.bootstrap && window.bootstrap.Modal) {
+            const modal = window.bootstrap.Modal.getInstance(matchModalEl);
+            if (modal) modal.hide();
+          }
+
+          // Show floating success toast
+          const alertContainer = document.createElement('div');
+          alertContainer.className = 'position-fixed bottom-0 end-0 p-3';
+          alertContainer.style.zIndex = '1090';
+          alertContainer.innerHTML = `
+            <div class="toast align-items-center text-bg-success border-0 show shadow-lg" role="alert">
+              <div class="d-flex">
+                <div class="toast-body fw-medium py-2.5 px-3">
+                  ${data.message || 'Board log matched successfully!'}
+                </div>
+                <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+              </div>
+            </div>`;
+          document.body.appendChild(alertContainer);
+          setTimeout(() => alertContainer.remove(), 5000);
+        } catch (err) {
+          if (matchAlert) {
+            matchAlert.textContent = err instanceof Error ? err.message : 'An error occurred while matching the client.';
+            matchAlert.classList.remove('d-none');
+          }
+        } finally {
+          if (submitBtn) submitBtn.disabled = false;
+          if (spinner) spinner.classList.add('d-none');
+        }
+      });
+    }
+
+    // Live polling for cards currently in "Syncing" state
+    function initPublicStatusPolling() {
+      const syncingBadges = document.querySelectorAll('.board-log-entry-card [data-board-log-status]');
+      const syncingIds = [];
+      syncingBadges.forEach(function (badge) {
+        if (badge.textContent.includes('Syncing')) {
+          const id = badge.getAttribute('data-board-log-status');
+          if (id) syncingIds.push(id);
+        }
+      });
+
+      if (syncingIds.length === 0) return;
+
+      let pollCount = 0;
+      const maxPolls = 15;
+      const pollTimer = setInterval(async function () {
+        pollCount++;
+        if (pollCount > maxPolls) {
+          clearInterval(pollTimer);
+          return;
+        }
+
+        try {
+          const res = await fetch('/public/board-logs/status?ids=' + encodeURIComponent(syncingIds.join(',')), {
+            headers: { Accept: 'application/json' },
+          });
+          if (!res.ok) return;
+          const data = await res.json();
+          const statuses = Array.isArray(data && data.statuses) ? data.statuses : [];
+
+          let allDone = true;
+          statuses.forEach(function (item) {
+            const badge = document.querySelector(`[data-board-log-status="${item.id}"]`);
+            if (!badge) return;
+
+            const isPending = !item.partner_id || Number(item.partner_id) === 0 || item.customer_name === 'Pending Client Matching';
+
+            if (item.status === 'synced') {
+              badge.className = 'badge bg-success-subtle text-success border border-success-subtle rounded-pill fw-semibold px-2.5 py-1';
+              badge.textContent = isPending ? '✓ Synced (Pending Match)' : '✓ Synced to Odoo';
+            } else if (item.status === 'reverted' || item.reverted_at) {
+              badge.className = 'badge bg-secondary-subtle text-secondary border rounded-pill fw-semibold px-2.5 py-1';
+              badge.textContent = 'Cancelled / Reverted';
+            } else if (item.status === 'failed') {
+              badge.className = 'badge bg-danger-subtle text-danger border border-danger-subtle rounded-pill fw-semibold px-2.5 py-1';
+              badge.textContent = 'Sync Pending Retry';
+            } else {
+              allDone = false;
+            }
+          });
+
+          if (allDone) {
+            clearInterval(pollTimer);
+          }
+        } catch (_err) {}
+      }, 3500);
+    }
+
+    initPublicStatusPolling();
   })();
 </script>
 

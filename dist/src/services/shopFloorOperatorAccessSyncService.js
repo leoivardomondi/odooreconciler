@@ -153,7 +153,7 @@ async function syncShopFloorOperatorsData(forceRefresh = false) {
                         ['company_id', '=', targetCompanyId],
                         ['active', '=', true],
                     ],
-                    fields: ['id', 'name', 'job_title', 'department_id', 'work_email', 'mobile_phone', 'user_id', 'active'],
+                    fields: ['id', 'name', 'job_title', 'department_id', 'work_email', 'mobile_phone', 'user_id', 'active', 'pin'],
                 }).catch(() => []),
                 client.searchReadRecords('res.users', {
                     domain: [
@@ -222,6 +222,7 @@ async function syncShopFloorOperatorsData(forceRefresh = false) {
                     assignedItems: [],
                     priority,
                     active: true,
+                    pin: linkedEmp.pin ? String(linkedEmp.pin).trim() : null,
                 });
             }
             // Also include any active workcenter operators or operations / management employees from Odoo
@@ -256,6 +257,7 @@ async function syncShopFloorOperatorsData(forceRefresh = false) {
                     assignedItems: [],
                     priority,
                     active: true,
+                    pin: emp.pin ? String(emp.pin).trim() : null,
                 });
             }
             // Sort: Priority first (Management = 0, workcenter = 1, other = 2), then alphabetically

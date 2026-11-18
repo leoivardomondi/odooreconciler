@@ -950,7 +950,7 @@
               </div>
               <div class="d-flex align-items-center gap-2">
                 <div class="text-end">
-                  <span class="badge rounded-pill <%= item.reverted_at || item.status === 'reverted' ? 'bg-secondary text-white' : item.status === 'synced' ? 'bg-success text-white' : item.status === 'failed' ? 'bg-danger text-white' : 'bg-warning text-dark' %> fw-bold px-2.5 py-1" data-board-log-status="<%= item.id %>" title="<%= item.error_message || '' %>" style="font-size:0.74rem;"><%= item.reverted_at || item.status === 'reverted' ? 'Reverted in Odoo' : item.status === 'synced' ? 'Synced to Odoo' : item.status === 'failed' ? 'Sync failed' : item.status === 'reverting' ? 'Reverting' : 'Syncing' %></span>
+                  <span class="badge rounded-pill <%= item.reverted_at || item.status === 'reverted' ? 'bg-secondary text-white' : item.status === 'synced' ? 'bg-success text-white' : item.status === 'failed' ? 'bg-danger text-white' : 'bg-warning text-dark' %> fw-bold px-2.5 py-1" data-board-log-status="<%= item.id %>" title="<%= item.error_message || '' %>" style="font-size:0.74rem;"><%= item.reverted_at || item.status === 'reverted' ? 'Reverted in Odoo' : item.status === 'synced' ? (isPendingClient ? 'Synced (Pending Match)' : 'Synced to Odoo') : item.status === 'failed' ? 'Sync failed' : item.status === 'reverting' ? 'Reverting' : 'Syncing' %></span>
                   <% if (item.status === 'failed' && item.next_retry_at) { %>
                     <div class="small text-danger fw-semibold mt-1" data-board-log-retry="<%= item.id %>">Automatic retry scheduled · attempt <%= item.retry_count || 1 %></div>
                   <% } %>
@@ -1029,6 +1029,13 @@
                   </div>
                   <div class="text-muted text-center py-3 d-none no-results" style="font-size: 0.85rem;">No clients found</div>
                 </div>
+              </div>
+              <div class="mb-3">
+                <label for="matchShopFloorPin" class="form-label fw-semibold" style="font-size: 0.92rem; color: #334155;">
+                  Attendance PIN <span class="text-danger">*</span>
+                </label>
+                <input type="password" inputmode="numeric" pattern="[0-9]*" class="form-control rounded-3" id="matchShopFloorPin" name="pin" placeholder="Enter your 4-digit attendance PIN" maxlength="8" required autocomplete="off" style="font-size: 1rem; padding: 0.65rem 0.75rem; border-color: #cbd5e1;">
+                <div class="form-text small text-muted">Your Odoo attendance PIN is verified against MySQL.</div>
               </div>
               <div class="small text-muted">
                 <i class="bi bi-info-circle"></i> Once matched, Odoo will link this stock intake to the client, look up their open Cutting/Manufacturing Orders for this board, and automatically reserve stock.
@@ -1725,6 +1732,8 @@
       }
       if (matchPartnerId) matchPartnerId.value = '';
       if (matchPartnerName) matchPartnerName.value = '';
+      var matchPinEl = document.getElementById('matchShopFloorPin');
+      if (matchPinEl) matchPinEl.value = '';
 
       var modalEl = document.getElementById('matchClientModal');
       if (modalEl && window.bootstrap && window.bootstrap.Modal) {
@@ -1742,11 +1751,20 @@
       matchClientForm.addEventListener('submit', function(e) {
         var matchPartnerId = document.getElementById('matchPartnerId');
         var matchPartnerSearch = document.getElementById('matchPartnerSearch');
+        var matchPin = document.getElementById('matchShopFloorPin');
         if (!matchPartnerId || !matchPartnerId.value || matchPartnerId.value === '0') {
           e.preventDefault();
           if (matchPartnerSearch) {
             matchPartnerSearch.classList.add('is-invalid');
             matchPartnerSearch.focus();
+          }
+          return;
+        }
+        if (!matchPin || !matchPin.value.trim()) {
+          e.preventDefault();
+          if (matchPin) {
+            matchPin.classList.add('is-invalid');
+            matchPin.focus();
           }
           return;
         }
@@ -2091,7 +2109,9 @@
           if (badge) {
             if (entry.status === 'synced') {
               badge.className = 'badge rounded-pill bg-success-subtle text-success';
-              badge.textContent = 'Synced to Odoo';
+              var row = badge.closest('[data-board-log-row]');
+              var isPending = row && row.textContent.includes('PENDING CLIENT MATCHING');
+              badge.textContent = isPending ? 'Synced (Pending Match)' : 'Synced to Odoo';
               var retryForm = document.querySelector('.board-retry-form[data-intake-id="' + entry.id + '"]');
               if (retryForm) retryForm.remove();
               pendingLogIds.delete(String(entry.id));
@@ -2205,7 +2225,9 @@
           if (badge) {
             if (entry.status === 'synced') {
               badge.className = 'badge rounded-pill bg-success-subtle text-success';
-              badge.textContent = 'Synced to Odoo';
+              var row = badge.closest('[data-board-log-row]');
+              var isPending = row && row.textContent.includes('PENDING CLIENT MATCHING');
+              badge.textContent = isPending ? 'Synced (Pending Match)' : 'Synced to Odoo';
               var retryForm = document.querySelector('.board-retry-form[data-intake-id="' + entry.id + '"]');
               if (retryForm) retryForm.remove();
             } else if (entry.status === 'failed') {
