@@ -4020,7 +4020,20 @@ router.post('/shop-floor/board-intake', async (req, res) => {
         }
         void (async () => {
             if (isPendingClient) {
-                // ONLY AFTER MATCHING SHOULD IT BE SYNCED TO ODOO AND EMAIL SENT TO RECIPIENTS OR ODOO LOG NOTE
+                // Notify Sharon and Candy that attention is required to help match these boards to a known client in Odoo
+                await (0, boardIntakeEmailNotificationService_1.sendPendingClientMatchEmailNotification)({
+                    boardIntakeId: optimisticId,
+                    productName,
+                    quantity: qty,
+                    actorName,
+                    actorEmail: req.authUser?.email || null,
+                    vehicleRegistration,
+                    arrivalTime,
+                    gate,
+                    arrivalDate,
+                }).catch((mailErr) => {
+                    console.warn('[ShopFloor] Pending client match email dispatch error:', mailErr);
+                });
                 return;
             }
             let effectiveIsPurchase = isPurchase;

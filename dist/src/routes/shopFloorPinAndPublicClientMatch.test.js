@@ -8,6 +8,7 @@ const strict_1 = __importDefault(require("node:assert/strict"));
 const repositories_1 = require("../models/repositories");
 const operatorPinVerificationService_1 = require("../services/operatorPinVerificationService");
 const boardIntakeSyncService_1 = require("../services/boardIntakeSyncService");
+const boardIntakeEmailNotificationService_1 = require("../services/boardIntakeEmailNotificationService");
 (0, node_test_1.default)('operator attendance PIN verification and client matching workflow', async () => {
     // 1. Setup mock operator with Odoo attendance PIN in database
     const testPin = '7391';
@@ -66,6 +67,18 @@ const boardIntakeSyncService_1 = require("../services/boardIntakeSyncService");
     // Verify that syncBoardIntakeEntry bypasses unassigned pending intakes to prevent sync to Odoo
     const earlySyncResult = await (0, boardIntakeSyncService_1.syncBoardIntakeEntry)(pendingIntakeId);
     strict_1.default.equal(earlySyncResult.pendingMatch, true, 'syncBoardIntakeEntry must return pendingMatch: true when partner is not yet matched');
+    // Verify that Sharon & Candy notification email is sent for pending client match
+    const pendingEmailResult = await (0, boardIntakeEmailNotificationService_1.sendPendingClientMatchEmailNotification)({
+        boardIntakeId: pendingIntakeId,
+        productName: '2700 * 1800 Particle 18mm',
+        quantity: 5,
+        actorName: 'Gate Operator',
+        gate: 'Gate B',
+        vehicleRegistration: 'KDC 999Z',
+        arrivalDate: '2026-11-18',
+        arrivalTime: '23:08',
+    });
+    strict_1.default.equal(pendingEmailResult.sent, true, 'Pending client match notification email should be dispatched');
     // Verify that background retries exclude unmatched pending logs
     const dueEntries = await (0, repositories_1.getDueBoardIntakeQueueEntries)(50);
     const foundInDue = dueEntries.find((e) => e.id === pendingIntakeId);

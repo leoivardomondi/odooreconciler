@@ -83,7 +83,10 @@ import {
 import { getStockMirrorForPage, recordOptimisticStockAddition, refreshStockMirror, recordExactStockQuantity } from '../services/stockMirrorService';
 import { getCustomersForPage, searchCustomers } from '../services/customerMirrorService';
 import { revertBoardIntakeEntry, syncBoardIntakeEntry, matchBoardIntakeToClient } from '../services/boardIntakeSyncService';
-import { sendBoardIntakeEmailNotification } from '../services/boardIntakeEmailNotificationService';
+import {
+  sendBoardIntakeEmailNotification,
+  sendPendingClientMatchEmailNotification,
+} from '../services/boardIntakeEmailNotificationService';
 import { syncShopFloorOperatorAccess, syncShopFloorOperatorsData } from '../services/shopFloorOperatorAccessSyncService';
 import { syncPendingProcessesFromOdoo } from '../services/shopFloorPendingSyncService';
 import { extractSoNameFromOrigin } from '../services/poJobSummaryAuditService';
@@ -4624,7 +4627,20 @@ router.post('/shop-floor/board-intake', async (req: Request, res: Response) => {
 
     void (async () => {
       if (isPendingClient) {
-        // ONLY AFTER MATCHING SHOULD IT BE SYNCED TO ODOO AND EMAIL SENT TO RECIPIENTS OR ODOO LOG NOTE
+        // Notify Sharon and Candy that attention is required to help match these boards to a known client in Odoo
+        await sendPendingClientMatchEmailNotification({
+          boardIntakeId: optimisticId,
+          productName,
+          quantity: qty,
+          actorName,
+          actorEmail: req.authUser?.email || null,
+          vehicleRegistration,
+          arrivalTime,
+          gate,
+          arrivalDate,
+        }).catch((mailErr) => {
+          console.warn('[ShopFloor] Pending client match email dispatch error:', mailErr);
+        });
         return;
       }
 

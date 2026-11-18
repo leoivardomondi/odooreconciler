@@ -10,6 +10,7 @@ import {
 } from '../models/repositories';
 import { verifyEmployeeAttendancePin } from '../services/operatorPinVerificationService';
 import { matchBoardIntakeToClient, syncBoardIntakeEntry } from '../services/boardIntakeSyncService';
+import { sendPendingClientMatchEmailNotification } from '../services/boardIntakeEmailNotificationService';
 
 test('operator attendance PIN verification and client matching workflow', async () => {
   // 1. Setup mock operator with Odoo attendance PIN in database
@@ -76,6 +77,19 @@ test('operator attendance PIN verification and client matching workflow', async 
   // Verify that syncBoardIntakeEntry bypasses unassigned pending intakes to prevent sync to Odoo
   const earlySyncResult = await syncBoardIntakeEntry(pendingIntakeId);
   assert.equal(earlySyncResult.pendingMatch, true, 'syncBoardIntakeEntry must return pendingMatch: true when partner is not yet matched');
+
+  // Verify that Sharon & Candy notification email is sent for pending client match
+  const pendingEmailResult = await sendPendingClientMatchEmailNotification({
+    boardIntakeId: pendingIntakeId,
+    productName: '2700 * 1800 Particle 18mm',
+    quantity: 5,
+    actorName: 'Gate Operator',
+    gate: 'Gate B',
+    vehicleRegistration: 'KDC 999Z',
+    arrivalDate: '2026-11-18',
+    arrivalTime: '23:08',
+  });
+  assert.equal(pendingEmailResult.sent, true, 'Pending client match notification email should be dispatched');
 
   // Verify that background retries exclude unmatched pending logs
   const dueEntries = await getDueBoardIntakeQueueEntries(50);
