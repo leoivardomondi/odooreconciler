@@ -563,15 +563,42 @@ export async function processBoardIntakePurchaseOrderFulfillment(
     const actorEmail = String(entry.actor_email || 'operator@urbanvibeinteriordesign.co.ke');
     await client.populatePickingValidationMetadata(targetPicking.id, actorEmail).catch(() => null);
 
-    const valResult = await client.callRecordMethod<any>('stock.picking', 'button_validate', [targetPicking.id]).catch(() => null);
-    if (valResult && typeof valResult === 'object' && valResult.res_model && valResult.res_id) {
+    const valResult = await client.callRecordMethod<any>('stock.picking', 'button_validate', [targetPicking.id]).catch((err) => {
+      console.warn('[BoardIntakeSyncService] button_validate error:', err);
+      return null;
+    });
+
+    if (valResult && typeof valResult === 'object' && valResult.res_model) {
       try {
-        await client.callRecordMethod(valResult.res_model, 'process', [valResult.res_id]);
+        const wizardContext = {
+          active_model: 'stock.picking',
+          active_id: targetPicking.id,
+          active_ids: [targetPicking.id],
+          button_validate_picking_ids: [targetPicking.id],
+          ...(valResult.context || {}),
+        };
+        const wizardId = valResult.res_id;
+        if (wizardId) {
+          await client.callRecordMethod(valResult.res_model, 'process', [wizardId], { context: wizardContext });
+        } else {
+          const createdWizId = await client.createRecord(valResult.res_model, {
+            pick_ids: [[6, 0, [targetPicking.id]]],
+          }, { context: wizardContext }).catch(() => null);
+          if (createdWizId) {
+            await client.callRecordMethod(valResult.res_model, 'process', [createdWizId], { context: wizardContext });
+          }
+        }
       } catch (wizErr) {
         console.warn('[BoardIntakeSyncService] Backorder wizard note:', wizErr);
       }
     }
     await client.populatePickingValidationMetadata(targetPicking.id, actorEmail).catch(() => null);
+
+    // Verify whether the picking actually transitioned to 'done' in Odoo
+    const refreshed = typeof (client as any).readRecords === 'function'
+      ? await client.readRecords<{ id: number; state: string }>('stock.picking', [targetPicking.id], ['id', 'state']).catch(() => [])
+      : await client.searchReadRecords<{ id: number; state: string }>('stock.picking', { domain: [['id', '=', targetPicking.id]], fields: ['id', 'state'], limit: 1 }).catch(() => []);
+    const isActuallyValidated = refreshed[0]?.state === 'done' || targetPicking.state === 'done';
 
     const safeCustomerName = escapeHtml(entry.customer_name);
     const safeProductName = escapeHtml(entry.product_name);
@@ -587,6 +614,14 @@ export async function processBoardIntakePurchaseOrderFulfillment(
       cachedCandySharon,
     );
 
+    const validationBadge = isActuallyValidated
+      ? '(Validated in Odoo)'
+      : '(Done quantities staged - Awaiting Backorder Confirmation in Odoo)';
+
+    const validationExplanation = isActuallyValidated
+      ? `<em>Stock was received officially via the supplier receipt. Manual inventory adjustment was bypassed to prevent duplicate stock.</em>`
+      : `<em>Done quantities have been recorded on receipt ${escapeHtml(targetPicking.name || 'WH/IN/...')}. Please confirm the backorder in Odoo to finalize stock. Manual inventory adjustment was bypassed to prevent duplicate stock.</em>`;
+
     const fulfillmentChatterHtml = [
       mentionHtml,
       `<div style="margin-top:8px;padding:12px 14px;background:#f0fdf4;border-left:5px solid #22c55e;color:#166534;border-radius:4px;line-height:1.6;">` +
@@ -596,15 +631,19 @@ export async function processBoardIntakePurchaseOrderFulfillment(
       `• <strong>Responsible Operator:</strong> <strong>${safeActor}</strong><br/>` +
       `• <strong>Client:</strong> ${safeCustomerName}<br/>` +
       `• <strong>Purchase Order:</strong> <strong>${escapeHtml(eligiblePo.name)}</strong> (${autoApproved ? 'Approved automatically from Waiting for Approval' : 'Already Approved'})<br/>` +
-      `• <strong>Receipt:</strong> <strong>${escapeHtml(targetPicking.name || 'WH/IN/...')}</strong> (Validated in Odoo)<br/>` +
+      `• <strong>Receipt:</strong> <strong>${escapeHtml(targetPicking.name || 'WH/IN/...')}</strong> ${validationBadge}<br/>` +
       `• <strong>Gate & Vehicle:</strong> ${escapeHtml(entry.gate || 'Gate')} · ${escapeHtml(entry.vehicle_registration || '—')}<br/>` +
       `<br/>` +
-      `<em>Stock was received officially via the supplier receipt. Manual inventory adjustment was bypassed to prevent duplicate stock.</em>` +
+      validationExplanation +
       `</div>`,
     ].join('<br/>\n');
 
-    await client.postModelChatterMessage('purchase.order', eligiblePo.id, fulfillmentChatterHtml, partnerIds).catch(() => null);
-    await client.postModelChatterMessage('stock.picking', targetPicking.id, fulfillmentChatterHtml).catch(() => null);
+    await client.postModelChatterMessage('purchase.order', eligiblePo.id, fulfillmentChatterHtml, partnerIds, {
+      dedupeSnippet: `Gate Board Intake: Received via Purchase Receipt• Board: ${safeProductName}`,
+    }).catch(() => null);
+    await client.postModelChatterMessage('stock.picking', targetPicking.id, fulfillmentChatterHtml, undefined, {
+      dedupeSnippet: `Gate Board Intake: Received via Purchase Receipt• Board: ${safeProductName}`,
+    }).catch(() => null);
     if (linkedSo?.id) {
       await client.postModelChatterMessage('sale.order', linkedSo.id, fulfillmentChatterHtml, partnerIds).catch(() => null);
     }
