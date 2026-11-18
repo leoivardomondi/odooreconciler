@@ -2751,9 +2751,12 @@ router.post('/shop-floor/assign-item', async (req, res) => {
  */
 async function handlePublicBoardLogs(req, res) {
     try {
-        const rawLogs = await (0, repositories_1.getContinuousBoardIntakeLogs)({ limit: 500 });
         const targetDate = String(req.query.date || '').trim();
         const initialSearch = String(req.query.q || '').trim();
+        const rawLogs = await (0, repositories_1.getContinuousBoardIntakeLogs)({
+            limit: initialSearch ? 1000 : 500,
+            search: initialSearch || undefined,
+        });
         const todayDate = (0, dayjs_1.default)().tz(env_1.env.APP_TIMEZONE || 'Africa/Nairobi').format('YYYY-MM-DD');
         const yesterdayDate = (0, dayjs_1.default)().tz(env_1.env.APP_TIMEZONE || 'Africa/Nairobi').subtract(1, 'day').format('YYYY-MM-DD');
         // Group logs by effective_date (arrival_date || created_at.slice(0, 10))
@@ -3299,10 +3302,11 @@ router.get('/shop-floor/boards', async (req, res) => {
         const nextDateShortLabel = nextDate === todayDate ? 'Today' : dayjs_1.default.tz(nextDate, env_1.env.APP_TIMEZONE || 'Africa/Nairobi').format('D MMM');
         // Ensure pending MO board requirements stay up to date with Odoo (debounced by lastSyncTimestamp)
         void (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(Boolean(isRefresh)).catch(() => null);
+        const searchQuery = String(req.query.q || '').trim();
         const [settings, stockMirror, recentIntakeRows, pendingProcesses, customers, dateCounts] = await Promise.all([
             (0, repositories_1.getSettings)(),
             (0, stockMirrorService_1.getStockMirrorForPage)(isRefresh),
-            (0, repositories_1.getRecentBoardIntakeQueueEntries)(boardLogPageSize + 1, (boardLogPage - 1) * boardLogPageSize, selectedDate),
+            (0, repositories_1.getRecentBoardIntakeQueueEntries)(boardLogPageSize + 1, (boardLogPage - 1) * boardLogPageSize, selectedDate, searchQuery || undefined),
             (0, repositories_1.getPendingShopFloorProcesses)({ status: 'pending' }),
             (0, customerMirrorService_1.getCustomersForPage)(200),
             (0, repositories_1.getBoardIntakeQueueDateCounts)(todayDate, yesterdayDate, selectedDate),
@@ -3369,6 +3373,7 @@ router.get('/shop-floor/boards', async (req, res) => {
             products,
             stockMirror,
             recentIntakes,
+            searchQuery,
             boardLogPage,
             hasNextBoardLogPage,
             stockAlerts: localStockAlerts,

@@ -813,6 +813,34 @@
           </div>
         </div>
 
+        <!-- Recent Board Logs Search Toolbar with Live Client Matching -->
+        <div class="mb-3 position-relative">
+          <form id="recentLogsSearchForm" method="get" action="/shop-floor/boards" class="m-0 position-relative">
+            <input type="hidden" name="date" value="<%= selectedDate %>">
+            <div class="input-group input-group-sm rounded-pill border overflow-hidden bg-white shadow-sm" style="border-color: #cbd5e1 !important;">
+              <span class="input-group-text bg-white border-0 ps-3 pe-1 text-muted">🔍</span>
+              <input
+                type="text"
+                name="q"
+                id="recentLogsSearchInput"
+                class="form-control border-0 py-2 ps-2"
+                placeholder="Search board logs by client name, board material, PO, or vehicle..."
+                value="<%= typeof searchQuery !== 'undefined' ? searchQuery : '' %>"
+                autocomplete="off"
+                style="font-size: 0.85rem;"
+              >
+              <% if (typeof searchQuery !== 'undefined' && searchQuery) { %>
+                <a href="/shop-floor/boards?date=<%= encodeURIComponent(selectedDate) %>#recentBoardLogsSection" class="btn btn-outline-secondary border-0 text-muted px-2.5 py-1" title="Clear search">✕</a>
+              <% } %>
+              <button type="submit" class="btn btn-primary px-3 fw-semibold" style="font-size: 0.80rem;">Search</button>
+            </div>
+            <!-- Live autocomplete dropdown matching local DB -->
+            <div id="recentLogsSearchDropdown" class="combobox-dropdown d-none shadow-lg border rounded-3 position-absolute w-100" style="top: 100%; left: 0; max-height: 250px; overflow-y: auto; z-index: 1050; background: #fff; margin-top: 4px;">
+              <div class="list-group list-group-flush" id="recentLogsSearchSuggestions"></div>
+            </div>
+          </form>
+        </div>
+
         <div class="vstack gap-2" id="recentBoardLogsList">
           <% if (!recentIntakes || !recentIntakes.length) { %>
             <div id="emptyBoardLogsNotice" class="text-center py-5 px-4 my-2 rounded-4" style="background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%); border: 1.5px dashed #cbd5e1;">
@@ -1317,6 +1345,8 @@
           e.preventDefault();
           if (activeIndex >= 0 && activeIndex < visibleItems.length) {
             selectItem(visibleItems[activeIndex]);
+          } else if (visibleItems.length > 0) {
+            selectItem(visibleItems[0]);
           }
         } else if (e.key === 'Escape') {
           closeDropdown();
@@ -1603,6 +1633,8 @@
           e.preventDefault();
           if (activeIndex >= 0 && activeIndex < visibleItems.length) {
             selectItem(visibleItems[activeIndex]);
+          } else if (visibleItems.length > 0) {
+            selectItem(visibleItems[0]);
           }
         } else if (e.key === 'Escape') {
           closeDropdown();
@@ -1699,6 +1731,82 @@
         matchPartnerName.value = selectedItem ? (selectedItem.getAttribute('data-name') || selectedItem.textContent.trim()) : '';
       }
     });
+
+    // Recent Board Logs Live Search with Local DB Matching
+    var recentSearchInput = document.getElementById('recentLogsSearchInput');
+    var recentSearchDropdown = document.getElementById('recentLogsSearchDropdown');
+    var recentSearchSuggestions = document.getElementById('recentLogsSearchSuggestions');
+    var recentSearchTimer = null;
+    var recentSearchReqSeq = 0;
+
+    function applyRecentLogsFilter() {
+      if (!recentSearchInput) return;
+      var query = recentSearchInput.value.trim().toLowerCase();
+      var rows = document.querySelectorAll('#recentBoardLogsList [data-board-log-row]');
+      var visibleCount = 0;
+      rows.forEach(function(row) {
+        var text = (row.textContent || '').toLowerCase();
+        var matches = !query || text.indexOf(query) !== -1;
+        row.classList.toggle('d-none', !matches);
+        if (matches) visibleCount++;
+      });
+    }
+
+    if (recentSearchInput) {
+      recentSearchInput.addEventListener('input', function() {
+        applyRecentLogsFilter();
+        var term = recentSearchInput.value.trim();
+        if (term.length < 2) {
+          if (recentSearchDropdown) recentSearchDropdown.classList.add('d-none');
+          return;
+        }
+        clearTimeout(recentSearchTimer);
+        recentSearchTimer = setTimeout(async function() {
+          var currentSeq = ++recentSearchReqSeq;
+          try {
+            var res = await fetch('/shop-floor/partners/search?q=' + encodeURIComponent(term), {
+              headers: { Accept: 'application/json' },
+            });
+            if (!res.ok || currentSeq !== recentSearchReqSeq) return;
+            var data = await res.json();
+            if (currentSeq !== recentSearchReqSeq) return;
+            var results = Array.isArray(data && data.results) ? data.results : [];
+            if (!results.length) {
+              if (recentSearchDropdown) recentSearchDropdown.classList.add('d-none');
+              return;
+            }
+            if (recentSearchSuggestions) {
+              recentSearchSuggestions.innerHTML = '';
+              results.forEach(function(c) {
+                var btn = document.createElement('button');
+                btn.type = 'button';
+                btn.className = 'list-group-item list-group-item-action py-2 px-3 d-flex align-items-center justify-content-between border-0';
+                btn.style.fontSize = '0.84rem';
+                btn.innerHTML = '<span>👤 <strong>' + escapeHtml(c.name) + '</strong></span><span class="badge bg-light text-secondary border">Client</span>';
+                btn.addEventListener('click', function(e) {
+                  e.stopPropagation();
+                  recentSearchInput.value = c.name;
+                  if (recentSearchDropdown) recentSearchDropdown.classList.add('d-none');
+                  applyRecentLogsFilter();
+                });
+                recentSearchSuggestions.appendChild(btn);
+              });
+              if (recentSearchDropdown) recentSearchDropdown.classList.remove('d-none');
+            }
+          } catch (_e) {}
+        }, 120);
+      });
+
+      document.addEventListener('click', function(e) {
+        if (recentSearchDropdown && !recentSearchDropdown.contains(e.target) && e.target !== recentSearchInput) {
+          recentSearchDropdown.classList.add('d-none');
+        }
+      });
+
+      if (recentSearchInput.value.trim()) {
+        applyRecentLogsFilter();
+      }
+    }
 
     // Handle Match Client modal button clicks from recent intakes table
     document.addEventListener('click', function(e) {

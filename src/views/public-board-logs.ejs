@@ -69,22 +69,34 @@
   <div class="card border-0 rounded-4 shadow-sm mb-4" style="background: #ffffff; border: 1px solid #e2e8f0 !important;">
     <div class="card-body p-3 p-md-4">
       <div class="row g-3 align-items-center">
-        <!-- Search Input with Instant Filtering -->
+        <!-- Search Input with Instant Live Matching & Filtering -->
         <div class="col-12 col-md-6 col-lg-7">
-          <div class="input-group">
-            <span class="input-group-text bg-light border-end-0 rounded-start-pill ps-3 text-muted">
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-            </span>
-            <input
-              type="text"
-              id="boardSearchInput"
-              class="form-control bg-light border-start-0 rounded-end-pill py-2 text-dark"
-              placeholder="Search by client, board material, vehicle, gate, PO, or operator..."
-              value="<%= initialSearch || '' %>"
-              aria-label="Search board logs"
-              style="font-size: 0.88rem;"
-            />
-          </div>
+          <form id="boardSearchForm" method="get" action="/public/board-logs" class="m-0 position-relative">
+            <div class="input-group">
+              <span class="input-group-text bg-light border-end-0 rounded-start-pill ps-3 text-muted">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+              </span>
+              <input
+                type="text"
+                name="q"
+                id="boardSearchInput"
+                class="form-control bg-light border-start-0 py-2 text-dark"
+                placeholder="Search by client, board material, vehicle, gate, PO, or operator..."
+                value="<%= initialSearch || '' %>"
+                aria-label="Search board logs"
+                style="font-size: 0.88rem;"
+                autocomplete="off"
+              />
+              <% if (initialSearch) { %>
+                <a href="/public/board-logs" class="btn btn-outline-secondary border-start-0 py-2 text-muted" title="Clear filter">✕</a>
+              <% } %>
+              <button type="submit" class="btn btn-primary rounded-end-pill px-3 py-2 fw-semibold" style="font-size: 0.84rem;">Search</button>
+            </div>
+            <!-- Live Autocomplete dropdown matching local DB -->
+            <div id="boardSearchDropdown" class="combobox-dropdown d-none shadow-lg border rounded-3 position-absolute w-100" style="top: 100%; left: 0; max-height: 280px; overflow-y: auto; z-index: 1050; background: #fff; margin-top: 4px;">
+              <div class="list-group list-group-flush" id="boardSearchSuggestions"></div>
+            </div>
+          </form>
         </div>
 
         <!-- Filter Pills & Date Selector -->
@@ -443,9 +455,75 @@
       }
     }
 
-    if (searchInput) {
-      searchInput.addEventListener('input', applyFilters);
+    const searchDropdown = document.getElementById('boardSearchDropdown');
+    const searchSuggestions = document.getElementById('boardSearchSuggestions');
+    let searchDebounceTimer = null;
+    let searchReqSeq = 0;
+
+    function renderSuggestions(clients) {
+      if (!searchSuggestions || !searchDropdown) return;
+      if (!clients || clients.length === 0) {
+        searchDropdown.classList.add('d-none');
+        searchSuggestions.innerHTML = '';
+        return;
+      }
+      searchSuggestions.innerHTML = '';
+      clients.forEach(function (c) {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'list-group-item list-group-item-action py-2.5 px-3 d-flex align-items-center justify-content-between border-0';
+        item.style.fontSize = '0.88rem';
+        item.innerHTML = `
+          <div class="d-flex align-items-center gap-2">
+            <span class="text-primary">👤</span>
+            <strong class="text-dark">${c.name}</strong>
+          </div>
+          <span class="badge bg-light text-secondary border rounded-pill" style="font-size:0.70rem;">Client</span>`;
+        item.addEventListener('click', function (e) {
+          e.stopPropagation();
+          if (searchInput) {
+            searchInput.value = c.name;
+          }
+          searchDropdown.classList.add('d-none');
+          applyFilters();
+        });
+        searchSuggestions.appendChild(item);
+      });
+      searchDropdown.classList.remove('d-none');
     }
+
+    if (searchInput) {
+      searchInput.addEventListener('input', function () {
+        applyFilters();
+        const term = searchInput.value.trim();
+        if (term.length < 2) {
+          if (searchDropdown) searchDropdown.classList.add('d-none');
+          return;
+        }
+        clearTimeout(searchDebounceTimer);
+        searchDebounceTimer = setTimeout(async function () {
+          const currentSeq = ++searchReqSeq;
+          try {
+            const res = await fetch('/public/board-logs/partners/search?q=' + encodeURIComponent(term), {
+              headers: { Accept: 'application/json' },
+            });
+            if (!res.ok || currentSeq !== searchReqSeq) return;
+            const data = await res.json();
+            if (currentSeq !== searchReqSeq) return;
+            renderSuggestions(Array.isArray(data && data.results) ? data.results : []);
+          } catch (_err) {}
+        }, 120);
+      });
+
+      document.addEventListener('click', function (e) {
+        if (searchDropdown && !searchDropdown.contains(e.target) && e.target !== searchInput) {
+          searchDropdown.classList.add('d-none');
+        }
+      });
+    }
+
+    // Execute immediately on load to handle pre-filled queries (?q=...)
+    applyFilters();
 
     if (clearBtn) {
       clearBtn.addEventListener('click', function () {

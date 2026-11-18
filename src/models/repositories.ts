@@ -5500,8 +5500,22 @@ function buildBoardIntakeDateCondition(filterDate?: string | null): { whereClaus
   };
 }
 
-export async function getRecentBoardIntakeQueueEntries(limit = 12, offset = 0, filterDate?: string | null) {
-  const { whereClause, filterParams } = buildBoardIntakeDateCondition(filterDate);
+export async function getRecentBoardIntakeQueueEntries(limit = 12, offset = 0, filterDate?: string | null, search?: string | null) {
+  const { whereClause: dateWhere, filterParams: dateParams } = buildBoardIntakeDateCondition(filterDate);
+  const conditions: string[] = [];
+  const filterParams: any[] = [...dateParams];
+
+  if (dateWhere) {
+    conditions.push(dateWhere.replace(/^WHERE\s+/i, ''));
+  }
+
+  if (search && search.trim()) {
+    const term = `%${search.trim()}%`;
+    conditions.push('(customer_name LIKE ? OR product_name LIKE ? OR vehicle_registration LIKE ? OR purchase_order_reference LIKE ? OR actor_name LIKE ?)');
+    filterParams.push(term, term, term, term, term);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
   const query = `SELECT id, product_id, product_name, partner_id, customer_name, quantity, vehicle_registration, arrival_date, arrival_time, gate, is_purchase, purchase_order_reference, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at, reverted_at, reverted_by, matched_at, matched_by, actor_name, actor_email
     FROM board_intake_queue 
     ${whereClause}
@@ -5524,8 +5538,22 @@ export async function getRecentBoardIntakeQueueEntries(limit = 12, offset = 0, f
   }
 }
 
-export async function countBoardIntakeQueueEntries(filterDate?: string | null): Promise<number> {
-  const { whereClause, filterParams } = buildBoardIntakeDateCondition(filterDate);
+export async function countBoardIntakeQueueEntries(filterDate?: string | null, search?: string | null): Promise<number> {
+  const { whereClause: dateWhere, filterParams: dateParams } = buildBoardIntakeDateCondition(filterDate);
+  const conditions: string[] = [];
+  const filterParams: any[] = [...dateParams];
+
+  if (dateWhere) {
+    conditions.push(dateWhere.replace(/^WHERE\s+/i, ''));
+  }
+
+  if (search && search.trim()) {
+    const term = `%${search.trim()}%`;
+    conditions.push('(customer_name LIKE ? OR product_name LIKE ? OR vehicle_registration LIKE ? OR purchase_order_reference LIKE ? OR actor_name LIKE ?)');
+    filterParams.push(term, term, term, term, term);
+  }
+
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
   try {
     const row = await queryOne<{ total: number }>(`SELECT COUNT(*) as total FROM board_intake_queue ${whereClause}`, filterParams);
     return Number(row?.total || 0);

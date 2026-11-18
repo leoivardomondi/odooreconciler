@@ -3206,9 +3206,12 @@ router.post('/shop-floor/assign-item', async (req: Request, res: Response) => {
  */
 async function handlePublicBoardLogs(req: Request, res: Response): Promise<void> {
   try {
-    const rawLogs = await getContinuousBoardIntakeLogs({ limit: 500 });
     const targetDate = String(req.query.date || '').trim();
     const initialSearch = String(req.query.q || '').trim();
+    const rawLogs = await getContinuousBoardIntakeLogs({
+      limit: initialSearch ? 1000 : 500,
+      search: initialSearch || undefined,
+    });
 
     const todayDate = dayjs().tz(env.APP_TIMEZONE || 'Africa/Nairobi').format('YYYY-MM-DD');
     const yesterdayDate = dayjs().tz(env.APP_TIMEZONE || 'Africa/Nairobi').subtract(1, 'day').format('YYYY-MM-DD');
@@ -3854,10 +3857,11 @@ router.get('/shop-floor/boards', async (req: Request, res: Response) => {
     // Ensure pending MO board requirements stay up to date with Odoo (debounced by lastSyncTimestamp)
     void syncPendingProcessesFromOdoo(Boolean(isRefresh)).catch(() => null);
 
+    const searchQuery = String(req.query.q || '').trim();
     const [settings, stockMirror, recentIntakeRows, pendingProcesses, customers, dateCounts] = await Promise.all([
       getSettings(),
       getStockMirrorForPage(isRefresh),
-      getRecentBoardIntakeQueueEntries(boardLogPageSize + 1, (boardLogPage - 1) * boardLogPageSize, selectedDate),
+      getRecentBoardIntakeQueueEntries(boardLogPageSize + 1, (boardLogPage - 1) * boardLogPageSize, selectedDate, searchQuery || undefined),
       getPendingShopFloorProcesses({ status: 'pending' }),
       getCustomersForPage(200),
       getBoardIntakeQueueDateCounts(todayDate, yesterdayDate, selectedDate),
@@ -3942,6 +3946,7 @@ router.get('/shop-floor/boards', async (req: Request, res: Response) => {
       products,
       stockMirror,
       recentIntakes,
+      searchQuery,
       boardLogPage,
       hasNextBoardLogPage,
       stockAlerts: localStockAlerts,
