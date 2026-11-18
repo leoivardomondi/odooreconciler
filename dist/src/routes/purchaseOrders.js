@@ -58,6 +58,7 @@ async function buildPurchaseOrderListItems(orderSummaries) {
 }
 router.get('/purchase-orders', async (req, res) => {
     const query = String(req.query.q || '').trim();
+    const activeTab = req.query.tab === 'company3' ? 'company3' : 'all';
     const hasExplicitFromDate = typeof req.query.from === 'string';
     const hasExplicitToDate = typeof req.query.to === 'string';
     const fromDate = String(req.query.from || currentYearStartDate()).trim();
@@ -65,6 +66,27 @@ router.get('/purchase-orders', async (req, res) => {
     const page = Math.max(1, Number(req.query.page || 1) || 1);
     const pageSize = 25;
     const offset = (page - 1) * pageSize;
+    const crossCompanyCount = await (0, repositories_1.getCrossCompanyPoLogsCount)().catch(() => 0);
+    if (activeTab === 'company3') {
+        const crossCompanyLogs = await (0, repositories_1.getCrossCompanyPoLogs)({ search: query, limit: 100 }).catch(() => []);
+        res.render('purchase-orders', {
+            pageTitle: 'Purchase Orders — Company 3 ETR Moves',
+            query,
+            fromDate,
+            toDate,
+            orders: [],
+            crossCompanyLogs,
+            crossCompanyCount,
+            activeTab: 'company3',
+            page: 1,
+            hasPreviousPage: false,
+            hasNextPage: false,
+            hasLoaded: true,
+            buildPurchaseOrderQuerySuffix,
+            status: null,
+        });
+        return;
+    }
     const shouldLoad = req.query.load === '1' || query.length > 0 || hasExplicitFromDate || hasExplicitToDate || page > 1;
     if (!shouldLoad) {
         res.render('purchase-orders', {
@@ -73,6 +95,9 @@ router.get('/purchase-orders', async (req, res) => {
             fromDate,
             toDate,
             orders: [],
+            crossCompanyLogs: [],
+            crossCompanyCount,
+            activeTab: 'all',
             page,
             hasPreviousPage: false,
             hasNextPage: false,
@@ -99,6 +124,9 @@ router.get('/purchase-orders', async (req, res) => {
             fromDate,
             toDate,
             orders,
+            crossCompanyLogs: [],
+            crossCompanyCount,
+            activeTab: 'all',
             page,
             hasPreviousPage: page > 1,
             hasNextPage,
@@ -115,6 +143,9 @@ router.get('/purchase-orders', async (req, res) => {
             fromDate,
             toDate,
             orders: [],
+            crossCompanyLogs: [],
+            crossCompanyCount,
+            activeTab: 'all',
             page,
             hasPreviousPage: page > 1,
             hasNextPage: false,
@@ -122,6 +153,19 @@ router.get('/purchase-orders', async (req, res) => {
             buildPurchaseOrderQuerySuffix,
             status: { type: 'danger', message },
         });
+    }
+});
+router.get('/api/purchase-orders/company-3-etr-logs', async (req, res) => {
+    try {
+        const search = typeof req.query.q === 'string' ? req.query.q : undefined;
+        const limit = Math.max(1, Math.min(200, Number(req.query.limit) || 50));
+        const offset = Math.max(0, Number(req.query.offset) || 0);
+        const logs = await (0, repositories_1.getCrossCompanyPoLogs)({ search, limit, offset });
+        const total = await (0, repositories_1.getCrossCompanyPoLogsCount)({ search });
+        res.json({ ok: true, total, count: logs.length, logs });
+    }
+    catch (err) {
+        res.status(500).json({ ok: false, error: err instanceof Error ? err.message : String(err) });
     }
 });
 exports.default = router;

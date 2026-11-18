@@ -990,6 +990,37 @@ async function ensureSqliteDatabase(config: RuntimeDatabaseConfig) {
     CREATE INDEX IF NOT EXISTS idx_sf_pending_status_partner ON shop_floor_pending_processes(status, partner_id);
     CREATE INDEX IF NOT EXISTS idx_sf_pending_mo_product ON shop_floor_pending_processes(mo_id, product_id);
 
+    CREATE TABLE IF NOT EXISTS cross_company_po_logs (
+      id TEXT PRIMARY KEY,
+      source_po_id INTEGER NOT NULL,
+      source_po_name TEXT NOT NULL,
+      source_company_id INTEGER NOT NULL DEFAULT 1,
+      target_company_id INTEGER NOT NULL DEFAULT 3,
+      target_po_id INTEGER,
+      target_po_name TEXT,
+      partner_id INTEGER,
+      partner_name TEXT,
+      tax_option TEXT NOT NULL DEFAULT 'ETR',
+      amount_total REAL,
+      currency TEXT DEFAULT 'KES',
+      source_state TEXT,
+      target_state TEXT,
+      origin TEXT,
+      bill_id INTEGER,
+      bill_name TEXT,
+      payment_id INTEGER,
+      payment_name TEXT,
+      action TEXT NOT NULL,
+      message TEXT,
+      moved_at TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_cc_po_logs_source ON cross_company_po_logs(source_po_id);
+    CREATE INDEX IF NOT EXISTS idx_cc_po_logs_target ON cross_company_po_logs(target_po_id);
+    CREATE INDEX IF NOT EXISTS idx_cc_po_logs_tax ON cross_company_po_logs(tax_option, target_company_id);
+
     CREATE INDEX IF NOT EXISTS idx_board_intake_queue_status ON board_intake_queue(status, created_at);
     CREATE INDEX IF NOT EXISTS idx_board_intake_arrival ON board_intake_queue(arrival_date);
     CREATE INDEX IF NOT EXISTS idx_board_intake_created ON board_intake_queue(created_at);
@@ -1660,6 +1691,38 @@ async function ensureMysqlDatabase(config: RuntimeDatabaseConfig) {
       KEY idx_sf_operators_active (active, priority, name),
       KEY idx_sf_operators_email (work_email),
       KEY idx_sf_operators_pin (pin)
+    )
+  `);
+
+  await query('create cross company po logs table', `
+    CREATE TABLE IF NOT EXISTS cross_company_po_logs (
+      id VARCHAR(64) PRIMARY KEY,
+      source_po_id INT NOT NULL,
+      source_po_name VARCHAR(64) NOT NULL,
+      source_company_id INT NOT NULL DEFAULT 1,
+      target_company_id INT NOT NULL DEFAULT 3,
+      target_po_id INT NULL,
+      target_po_name VARCHAR(64) NULL,
+      partner_id INT NULL,
+      partner_name VARCHAR(255) NULL,
+      tax_option VARCHAR(64) NOT NULL DEFAULT 'ETR',
+      amount_total DECIMAL(12,2) NULL,
+      currency VARCHAR(16) NULL DEFAULT 'KES',
+      source_state VARCHAR(32) NULL,
+      target_state VARCHAR(32) NULL,
+      origin VARCHAR(255) NULL,
+      bill_id INT NULL,
+      bill_name VARCHAR(64) NULL,
+      payment_id INT NULL,
+      payment_name VARCHAR(64) NULL,
+      action VARCHAR(64) NOT NULL,
+      message TEXT NULL,
+      moved_at DATETIME NOT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      KEY idx_cc_po_logs_source (source_po_id),
+      KEY idx_cc_po_logs_target (target_po_id),
+      KEY idx_cc_po_logs_tax (tax_option, target_company_id)
     )
   `);
 

@@ -1,5 +1,6 @@
 import { OdooClient } from './odooClient.js';
 import { logEvent } from './logService.js';
+import { upsertCrossCompanyPoLog } from '../models/repositories.js';
 
 export interface StandalonePoMirrorSyncResult {
   sourcePoId: number;
@@ -200,6 +201,25 @@ export async function syncStandaloneEtrPoToCompany3(
   // 2. If source PO is still draft or to approve, target PO stays in draft
   const isSourceApproved = ['purchase', 'done'].includes(sourcePo.state);
   if (!isSourceApproved) {
+    await upsertCrossCompanyPoLog({
+      source_po_id: sourcePo.id,
+      source_po_name: sourcePo.name,
+      source_company_id: URBAN_VIBE_1_COMPANY_ID,
+      target_company_id: URBAN_VIBE_2_COMPANY_ID,
+      target_po_id: targetPo.id,
+      target_po_name: targetPo.name,
+      partner_id: sourcePo.partner_id ? sourcePo.partner_id[0] : null,
+      partner_name: sourcePo.partner_id ? sourcePo.partner_id[1] : null,
+      tax_option: 'ETR',
+      amount_total: sourcePo.amount_total,
+      source_state: sourcePo.state,
+      target_state: targetPo.state,
+      origin: sourcePo.name,
+      action: 'created_draft',
+      message: `Mirror PO ${targetPo.name} created/kept in draft in Company 3 awaiting source PO approval.`,
+      moved_at: sourcePo.date_order || undefined,
+    }).catch(() => null);
+
     return {
       sourcePoId: sourcePo.id,
       sourcePoName: sourcePo.name,
@@ -426,6 +446,56 @@ export async function syncStandaloneEtrPoToCompany3(
   const resultAction = paidBillCount > 0 ? 'approved_and_paid' : 'already_up_to_date';
   const message = `PO ${sourcePo.name} successfully mirrored to Company 3 (${targetPo.name}). Bill: ${lastBillName || 'none'}, Paid: ${paidBillCount > 0}.`;
 
+  // Prevent duplicate chatter notes on the source PO
+  const sourceChatterMessages = await client.searchReadRecords<{ id: number; body: string }>('mail.message', {
+    domain: [
+      ['model', '=', 'purchase.order'],
+      ['res_id', '=', sourcePo.id],
+    ],
+    fields: ['id', 'body'],
+    limit: 15,
+    order: 'id desc',
+  }).catch(() => []);
+
+  const alreadyLoggedOnSource = sourceChatterMessages.some((m) =>
+    m.body && (m.body.includes('Cross-Company Transfer') || m.body.includes('URBAN VIBE 2') || (targetPo?.name && m.body.includes(targetPo.name)))
+  );
+
+  if (!alreadyLoggedOnSource && targetPo) {
+    await client.postModelChatterMessage(
+      'purchase.order',
+      sourcePo.id,
+      `🏢 <b>Cross-Company Transfer / Mirror:</b> This Purchase Order (Tax Option: <b>ETR</b>) has been mirrored to <b>URBAN VIBE 2 (Company 3)</b> as <b>${targetPo.name}</b>.` +
+      (paidBillCount > 0 ? `<br>• Bill: <b>${lastBillName || 'Created'}</b> | Payment: <b>${lastPaymentName || 'Paid via Bank Journal 25'}</b>.` : ''),
+    ).catch(() => null);
+  }
+
+  // Persist log of PO moved to Company 3
+  await upsertCrossCompanyPoLog({
+    source_po_id: sourcePo.id,
+    source_po_name: sourcePo.name,
+    source_company_id: URBAN_VIBE_1_COMPANY_ID,
+    target_company_id: URBAN_VIBE_2_COMPANY_ID,
+    target_po_id: targetPo?.id,
+    target_po_name: targetPo?.name,
+    partner_id: sourcePo.partner_id ? sourcePo.partner_id[0] : null,
+    partner_name: sourcePo.partner_id ? sourcePo.partner_id[1] : null,
+    tax_option: 'ETR',
+    amount_total: sourcePo.amount_total,
+    source_state: sourcePo.state,
+    target_state: targetPo?.state,
+    origin: sourcePo.name,
+    bill_id: lastBillId,
+    bill_name: lastBillName,
+    payment_id: lastPaymentId,
+    payment_name: lastPaymentName,
+    action: resultAction,
+    message,
+    moved_at: sourcePo.date_order || undefined,
+  }).catch((err) => {
+    console.warn('[CrossCompanySync] Error saving cross-company PO log:', err);
+  });
+
   await logEvent('info', 'Standalone ETR PO mirrored to URBAN VIBE 2', {
     sourcePo: sourcePo.name,
     targetPo: targetPo.name,
@@ -495,9 +565,160 @@ export async function syncAllPendingStandaloneEtrPos(
     }
   }
 
+  // Also sweep Company 3 to discover and log any already moved ETR POs
+  await discoverAndLogMovedCompany3EtrPos(client).catch((err) => {
+    console.warn('[CrossCompanySync] Error discovering Company 3 ETR POs:', err);
+  });
+
   return {
     timestamp: new Date().toISOString(),
     processedCount: results.length,
     results,
   };
+}
+
+/**
+ * Scans Odoo Company 3 to discover all Purchase Orders that have Tax Option ETR or originated from Company 1,
+ * ensuring they are all persistently tracked in cross_company_po_logs and logged in Odoo chatter.
+ */
+export async function discoverAndLogMovedCompany3EtrPos(
+  client: OdooClient,
+): Promise<{ loggedCount: number; entries: Array<{ sourcePoName: string; targetPoName: string; taxOption: string }> }> {
+  const company3Pos = await client.searchReadRecords<{
+    id: number;
+    name: string;
+    partner_id: [number, string];
+    company_id: [number, string];
+    date_order: string;
+    origin: string | false;
+    state: string;
+    amount_total: number;
+    invoice_ids: number[];
+    [key: string]: any;
+  }>('purchase.order', {
+    domain: [['company_id', '=', URBAN_VIBE_2_COMPANY_ID]],
+    fields: [
+      'id',
+      'name',
+      'partner_id',
+      'company_id',
+      'date_order',
+      'origin',
+      'state',
+      'amount_total',
+      'invoice_ids',
+      PO_TAX_OPTION_FIELD,
+    ],
+    order: 'date_order desc',
+    limit: 200,
+    context: { allowed_company_ids: [URBAN_VIBE_2_COMPANY_ID] },
+  }).catch(() => []);
+
+  const entries: Array<{ sourcePoName: string; targetPoName: string; taxOption: string }> = [];
+
+  for (const c3Po of company3Pos) {
+    const taxOption = String(c3Po[PO_TAX_OPTION_FIELD] || '').trim().toUpperCase();
+    const origin = String(c3Po.origin || '').trim();
+
+    // Check if origin matches a Company 1 PO name (e.g. P01432)
+    let sourcePo: SourcePoRecord | null = null;
+    if (origin && origin.startsWith('P')) {
+      const [found] = await client.searchReadRecords<SourcePoRecord>('purchase.order', {
+        domain: [
+          ['company_id', '=', URBAN_VIBE_1_COMPANY_ID],
+          ['name', '=', origin],
+        ],
+        fields: [
+          'id',
+          'name',
+          'partner_id',
+          'company_id',
+          'date_order',
+          'origin',
+          'state',
+          'amount_total',
+          PO_TAX_OPTION_FIELD,
+        ],
+        limit: 1,
+      }).catch(() => []);
+      sourcePo = found || null;
+    }
+
+    const effectiveTaxOption = sourcePo
+      ? String(sourcePo[PO_TAX_OPTION_FIELD] || '').trim().toUpperCase() || taxOption || 'ETR'
+      : (taxOption || 'ETR');
+
+    // Only log if it involves ETR
+    if (effectiveTaxOption !== 'ETR') continue;
+
+    // Check bills in Company 3 if any
+    let billName: string | undefined;
+    let billId: number | undefined;
+    if (c3Po.invoice_ids && c3Po.invoice_ids.length > 0) {
+      const bills = await client.searchReadRecords<{ id: number; name: string }>('account.move', {
+        domain: [['id', 'in', c3Po.invoice_ids], ['move_type', '=', 'in_invoice']],
+        fields: ['id', 'name'],
+        limit: 1,
+        context: { allowed_company_ids: [URBAN_VIBE_2_COMPANY_ID] },
+      }).catch(() => []);
+      if (bills[0]) {
+        billId = bills[0].id;
+        billName = bills[0].name;
+      }
+    }
+
+    const sourcePoId = sourcePo?.id ?? c3Po.id;
+    const sourcePoName = sourcePo?.name ?? origin ?? c3Po.name;
+
+    await upsertCrossCompanyPoLog({
+      source_po_id: sourcePoId,
+      source_po_name: sourcePoName,
+      source_company_id: URBAN_VIBE_1_COMPANY_ID,
+      target_company_id: URBAN_VIBE_2_COMPANY_ID,
+      target_po_id: c3Po.id,
+      target_po_name: c3Po.name,
+      partner_id: c3Po.partner_id ? c3Po.partner_id[0] : (sourcePo?.partner_id ? sourcePo.partner_id[0] : null),
+      partner_name: c3Po.partner_id ? c3Po.partner_id[1] : (sourcePo?.partner_id ? sourcePo.partner_id[1] : null),
+      tax_option: 'ETR',
+      amount_total: c3Po.amount_total,
+      source_state: sourcePo?.state ?? 'unknown',
+      target_state: c3Po.state,
+      origin: origin || null,
+      bill_id: billId,
+      bill_name: billName,
+      action: c3Po.state === 'purchase' || c3Po.state === 'done' ? 'approved_and_paid' : 'created_draft',
+      message: `Discovered and logged ETR PO moved to Company 3 (${c3Po.name}) from ${sourcePoName}.`,
+      moved_at: c3Po.date_order || sourcePo?.date_order || undefined,
+    }).catch(() => null);
+
+    // Also check and ensure log note on source PO in Company 1
+    if (sourcePo) {
+      const sourceMessages = await client.searchReadRecords<{ id: number; body: string }>('mail.message', {
+        domain: [
+          ['model', '=', 'purchase.order'],
+          ['res_id', '=', sourcePo.id],
+        ],
+        fields: ['id', 'body'],
+        limit: 15,
+        order: 'id desc',
+      }).catch(() => []);
+
+      const alreadyHasNote = sourceMessages.some((m) =>
+        m.body && (m.body.includes('Cross-Company') || m.body.includes('URBAN VIBE 2') || m.body.includes(c3Po.name))
+      );
+
+      if (!alreadyHasNote) {
+        await client.postModelChatterMessage(
+          'purchase.order',
+          sourcePo.id,
+          `🏢 <b>Cross-Company Transfer / Mirror:</b> This Purchase Order (Tax Option: <b>ETR</b>) has been mirrored to <b>URBAN VIBE 2 (Company 3)</b> as <b>${c3Po.name}</b>.` +
+          (billName ? `<br>• Vendor Bill: <b>${billName}</b>` : ''),
+        ).catch(() => null);
+      }
+    }
+
+    entries.push({ sourcePoName, targetPoName: c3Po.name, taxOption: 'ETR' });
+  }
+
+  return { loggedCount: entries.length, entries };
 }

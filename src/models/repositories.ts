@@ -39,6 +39,7 @@ import {
   ShopFloorFeatureKey,
   PendingShopFloorProcess,
   PendingShopFloorProcessStatus,
+  CrossCompanyPoLogEntry,
 } from './types';
 import { execute, getDatabaseDialect, queryAll, queryOne } from './db';
 import { decryptSecret, encryptSecret } from '../utils/crypto';
@@ -6687,5 +6688,189 @@ export async function pruneStalePendingProcessesForActiveMos(
       await execute('DELETE FROM shop_floor_pending_processes WHERE id = ?', [id]);
     }
   }
+}
+
+// ─── Cross-Company PO Logs (Tax Option: ETR moved to Company 3) ───────
+
+export async function upsertCrossCompanyPoLog(entry: {
+  source_po_id: number;
+  source_po_name: string;
+  source_company_id?: number;
+  target_company_id?: number;
+  target_po_id?: number | null;
+  target_po_name?: string | null;
+  partner_id?: number | null;
+  partner_name?: string | null;
+  tax_option?: string;
+  amount_total?: number | null;
+  currency?: string | null;
+  source_state?: string | null;
+  target_state?: string | null;
+  origin?: string | null;
+  bill_id?: number | null;
+  bill_name?: string | null;
+  payment_id?: number | null;
+  payment_name?: string | null;
+  action: string;
+  message?: string | null;
+  moved_at?: string;
+}): Promise<string> {
+  const targetCompanyId = entry.target_company_id ?? 3;
+  const sourceCompanyId = entry.source_company_id ?? 1;
+  const taxOption = entry.tax_option || 'ETR';
+  const movedAt = entry.moved_at || new Date().toISOString().replace('T', ' ').slice(0, 19);
+
+  const existing = await queryOne<{ id: string }>(
+    `SELECT id FROM cross_company_po_logs WHERE source_po_id = ? AND target_company_id = ? LIMIT 1`,
+    [entry.source_po_id, targetCompanyId],
+  );
+
+  if (existing) {
+    await execute(
+      `UPDATE cross_company_po_logs
+       SET source_po_name = ?,
+           target_po_id = COALESCE(?, target_po_id),
+           target_po_name = COALESCE(?, target_po_name),
+           partner_id = COALESCE(?, partner_id),
+           partner_name = COALESCE(?, partner_name),
+           tax_option = ?,
+           amount_total = COALESCE(?, amount_total),
+           currency = COALESCE(?, currency),
+           source_state = COALESCE(?, source_state),
+           target_state = COALESCE(?, target_state),
+           origin = COALESCE(?, origin),
+           bill_id = COALESCE(?, bill_id),
+           bill_name = COALESCE(?, bill_name),
+           payment_id = COALESCE(?, payment_id),
+           payment_name = COALESCE(?, payment_name),
+           action = ?,
+           message = ?,
+           updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+      [
+        entry.source_po_name,
+        entry.target_po_id ?? null,
+        entry.target_po_name ?? null,
+        entry.partner_id ?? null,
+        entry.partner_name ?? null,
+        taxOption,
+        entry.amount_total ?? null,
+        entry.currency ?? 'KES',
+        entry.source_state ?? null,
+        entry.target_state ?? null,
+        entry.origin ?? null,
+        entry.bill_id ?? null,
+        entry.bill_name ?? null,
+        entry.payment_id ?? null,
+        entry.payment_name ?? null,
+        entry.action,
+        entry.message ?? null,
+        existing.id,
+      ],
+    );
+    return existing.id;
+  }
+
+  const id = randomUUID();
+  await execute(
+    `INSERT INTO cross_company_po_logs (
+       id, source_po_id, source_po_name, source_company_id, target_company_id,
+       target_po_id, target_po_name, partner_id, partner_name, tax_option,
+       amount_total, currency, source_state, target_state, origin,
+       bill_id, bill_name, payment_id, payment_name, action, message, moved_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      id,
+      entry.source_po_id,
+      entry.source_po_name,
+      sourceCompanyId,
+      targetCompanyId,
+      entry.target_po_id ?? null,
+      entry.target_po_name ?? null,
+      entry.partner_id ?? null,
+      entry.partner_name ?? null,
+      taxOption,
+      entry.amount_total ?? null,
+      entry.currency ?? 'KES',
+      entry.source_state ?? null,
+      entry.target_state ?? null,
+      entry.origin ?? null,
+      entry.bill_id ?? null,
+      entry.bill_name ?? null,
+      entry.payment_id ?? null,
+      entry.payment_name ?? null,
+      entry.action,
+      entry.message ?? null,
+      movedAt,
+    ],
+  );
+  return id;
+}
+
+export async function getCrossCompanyPoLogs(options: {
+  limit?: number;
+  offset?: number;
+  search?: string;
+  targetCompanyId?: number;
+} = {}): Promise<CrossCompanyPoLogEntry[]> {
+  const limit = Math.max(1, Math.min(200, options.limit ?? 50));
+  const offset = Math.max(0, options.offset ?? 0);
+  const targetCompanyId = options.targetCompanyId ?? 3;
+  const search = options.search?.trim();
+
+  if (search) {
+    const term = `%${search}%`;
+    return queryAll<CrossCompanyPoLogEntry>(
+      `SELECT * FROM cross_company_po_logs
+       WHERE target_company_id = ?
+         AND (source_po_name LIKE ? OR target_po_name LIKE ? OR partner_name LIKE ? OR bill_name LIKE ? OR payment_name LIKE ?)
+       ORDER BY moved_at DESC, created_at DESC
+       LIMIT ? OFFSET ?`,
+      [targetCompanyId, term, term, term, term, term, limit, offset],
+    );
+  }
+
+  return queryAll<CrossCompanyPoLogEntry>(
+    `SELECT * FROM cross_company_po_logs
+     WHERE target_company_id = ?
+     ORDER BY moved_at DESC, created_at DESC
+     LIMIT ? OFFSET ?`,
+    [targetCompanyId, limit, offset],
+  );
+}
+
+export async function getCrossCompanyPoLogsCount(options: {
+  search?: string;
+  targetCompanyId?: number;
+} = {}): Promise<number> {
+  const targetCompanyId = options.targetCompanyId ?? 3;
+  const search = options.search?.trim();
+
+  if (search) {
+    const term = `%${search}%`;
+    const row = await queryOne<{ count: number }>(
+      `SELECT COUNT(*) as count FROM cross_company_po_logs
+       WHERE target_company_id = ?
+         AND (source_po_name LIKE ? OR target_po_name LIKE ? OR partner_name LIKE ? OR bill_name LIKE ? OR payment_name LIKE ?)`,
+      [targetCompanyId, term, term, term, term, term],
+    );
+    return Number(row?.count || 0);
+  }
+
+  const row = await queryOne<{ count: number }>(
+    `SELECT COUNT(*) as count FROM cross_company_po_logs WHERE target_company_id = ?`,
+    [targetCompanyId],
+  );
+  return Number(row?.count || 0);
+}
+
+export async function getCrossCompanyPoLogBySourcePoId(
+  sourcePoId: number,
+  targetCompanyId = 3,
+): Promise<CrossCompanyPoLogEntry | null> {
+  return queryOne<CrossCompanyPoLogEntry>(
+    `SELECT * FROM cross_company_po_logs WHERE source_po_id = ? AND target_company_id = ? LIMIT 1`,
+    [sourcePoId, targetCompanyId],
+  );
 }
 

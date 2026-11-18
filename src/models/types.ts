@@ -236,6 +236,34 @@ export interface AppSettings {
   updatedAt: string | null;
 }
 
+export interface CrossCompanyPoLogEntry {
+  [key: string]: unknown;
+  id: string;
+  source_po_id: number;
+  source_po_name: string;
+  source_company_id: number;
+  target_company_id: number;
+  target_po_id?: number | null;
+  target_po_name?: string | null;
+  partner_id?: number | null;
+  partner_name?: string | null;
+  tax_option: string;
+  amount_total?: number | null;
+  currency?: string | null;
+  source_state?: string | null;
+  target_state?: string | null;
+  origin?: string | null;
+  bill_id?: number | null;
+  bill_name?: string | null;
+  payment_id?: number | null;
+  payment_name?: string | null;
+  action: string;
+  message?: string | null;
+  moved_at: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
 export type ShopFloorFeatureKey =
   | 'start-finish'
   | 'add-stock'
