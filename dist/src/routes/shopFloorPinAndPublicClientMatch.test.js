@@ -59,12 +59,17 @@ const boardIntakeSyncService_1 = require("../services/boardIntakeSyncService");
         arrivalDate: '2026-11-18',
         arrivalTime: '23:08',
     });
-    // Mark as synced to simulate initial gate stock intake completion
-    await (0, repositories_1.updateBoardIntakeQueueEntry)(pendingIntakeId, { status: 'synced', stockQuantity: 50 });
     const initialEntry = await (0, repositories_1.getBoardIntakeQueueEntry)(pendingIntakeId);
     strict_1.default.ok(initialEntry, 'Intake must be in queue');
-    strict_1.default.equal(initialEntry?.status, 'synced', 'Intake should be in synced status while awaiting client match');
+    strict_1.default.equal(initialEntry?.status, 'pending', 'Intake should remain in pending status while awaiting client match');
     strict_1.default.equal(Number(initialEntry?.partner_id), 0, 'Partner ID should be 0 before matching');
+    // Verify that syncBoardIntakeEntry bypasses unassigned pending intakes to prevent sync to Odoo
+    const earlySyncResult = await (0, boardIntakeSyncService_1.syncBoardIntakeEntry)(pendingIntakeId);
+    strict_1.default.equal(earlySyncResult.pendingMatch, true, 'syncBoardIntakeEntry must return pendingMatch: true when partner is not yet matched');
+    // Verify that background retries exclude unmatched pending logs
+    const dueEntries = await (0, repositories_1.getDueBoardIntakeQueueEntries)(50);
+    const foundInDue = dueEntries.find((e) => e.id === pendingIntakeId);
+    strict_1.default.equal(foundInDue, undefined, 'Unmatched pending intake must be excluded from due background queue');
     // 5. Match the client using operator identified by PIN
     const matchResult = await (0, boardIntakeSyncService_1.matchBoardIntakeToClient)({
         id: pendingIntakeId,
@@ -79,5 +84,4 @@ const boardIntakeSyncService_1 = require("../services/boardIntakeSyncService");
     strict_1.default.equal(finalEntry?.customer_name, 'Enos Otieno', 'Customer name must be updated');
     strict_1.default.equal(finalEntry?.matched_by, 'Onyango Test Operator', 'Matched by must record operator from PIN');
     strict_1.default.ok(finalEntry?.matched_at, 'matched_at must be populated');
-    strict_1.default.equal(finalEntry?.status, 'synced', 'Status must remain synced');
 });

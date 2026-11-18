@@ -265,6 +265,10 @@
                         <span class="badge bg-danger-subtle text-danger border border-danger-subtle rounded-pill fw-semibold px-2.5 py-1" style="font-size: 0.74rem;" data-board-log-status="<%= item.id %>">
                           Sync Pending Retry
                         </span>
+                      <% } else if (isPendingClient) { %>
+                        <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle rounded-pill fw-semibold px-2.5 py-1" style="font-size: 0.74rem;" data-board-log-status="<%= item.id %>">
+                          ⏳ Waiting Client Match
+                        </span>
                       <% } else { %>
                         <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle rounded-pill fw-semibold px-2.5 py-1" style="font-size: 0.74rem;" data-board-log-status="<%= item.id %>">
                           ⏳ Syncing

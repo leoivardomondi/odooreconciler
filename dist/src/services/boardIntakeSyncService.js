@@ -55,6 +55,7 @@ const logService_1 = require("./logService");
 const odooClient_1 = require("./odooClient");
 const boardProductClassifier_1 = require("./boardProductClassifier");
 const poJobSummaryAuditService_1 = require("./poJobSummaryAuditService");
+const boardIntakeEmailNotificationService_1 = require("./boardIntakeEmailNotificationService");
 const AUTO_RETRY_INTERVAL_MS = 2 * 60 * 1000;
 let intervalHandle = null;
 let batchPromise = null;
@@ -785,6 +786,11 @@ async function syncBoardIntakeEntry(id) {
         return { alreadyReverted: true };
     if (entry.status === 'synced')
         return { alreadySynced: true, stockQuantity: entry.odoo_stock_quantity };
+    const partnerId = Number(entry.partner_id || 0);
+    if (!partnerId || partnerId <= 0 || entry.customer_name === 'Pending Client Matching') {
+        // Unmatched pending client intakes must not sync to Odoo or post notes until matched to a client
+        return { pendingMatch: true };
+    }
     if (entry.status === 'processing') {
         throw new Error('This board log is already synchronizing with Odoo.');
     }
@@ -879,6 +885,9 @@ async function syncBoardIntakeEntry(id) {
                 month: '2-digit',
                 day: '2-digit',
             }).format(new Date());
+            const displayActorName = activeEntry.matched_by
+                ? `${activeEntry.actor_name || activeEntry.actor_email || 'Operator'} (Matched to ${activeEntry.customer_name} by ${activeEntry.matched_by})`
+                : (activeEntry.actor_name || activeEntry.actor_email || 'Operator');
             // 1. Post to mrp.production chatter for all matching MOs
             await Promise.all(matchingMOs.map(async (mo) => {
                 const { mentionHtml, partnerIds } = await resolveBoardIntakeStakeholders(client, mo.soUserId, candySharonPromise);
@@ -898,7 +907,7 @@ async function syncBoardIntakeEntry(id) {
                     vehicleRegistration: activeEntry.vehicle_registration,
                     arrivalTime: activeEntry.arrival_time,
                     reportDate,
-                    actorName: activeEntry.actor_name || activeEntry.actor_email,
+                    actorName: displayActorName,
                     mentionHtml,
                     hasBoardPo: mo.hasBoardPo,
                     boardPoNames: mo.boardPoNames,
@@ -927,7 +936,7 @@ async function syncBoardIntakeEntry(id) {
                         vehicleRegistration: activeEntry.vehicle_registration,
                         arrivalTime: activeEntry.arrival_time,
                         reportDate,
-                        actorName: activeEntry.actor_name || activeEntry.actor_email,
+                        actorName: displayActorName,
                         mentionHtml,
                         hasBoardPo: mo.hasBoardPo,
                         boardPoNames: mo.boardPoNames,
@@ -1020,7 +1029,7 @@ async function matchBoardIntakeToClient(input) {
         matchedBy: input.matchedBy,
     });
     // 2. Mark matching pending shop floor processes loaded
-    await (0, repositories_1.markPendingShopFloorProcessesLoaded)({
+    const loadedRequirements = await (0, repositories_1.markPendingShopFloorProcessesLoaded)({
         partnerId,
         productId: Number(entry.product_id),
         customerName,
@@ -1031,80 +1040,131 @@ async function matchBoardIntakeToClient(input) {
         moName: input.moName,
     });
     // 3. Match in Odoo & reserve components on MOs
-    const settings = await (0, repositories_1.getSettings)();
-    const client = new odooClient_1.OdooClient(settings.odoo);
-    const candySharonPromise = Promise.all([
-        (0, poJobSummaryAuditService_1.findOdooUserByTerm)(client, 'Candy').catch(() => null),
-        (0, poJobSummaryAuditService_1.findOdooUserByTerm)(client, 'Sharon').catch(() => null),
-    ]);
-    const matchingMOs = await client.findMOsForBoardIntake({
-        productId: Number(entry.product_id),
-        partnerId,
-    });
-    if (matchingMOs.length) {
-        const reportDate = entry.arrival_date || new Intl.DateTimeFormat('en-CA', {
-            timeZone: 'Africa/Nairobi',
-            year: 'numeric',
-            month: '2-digit',
-            day: '2-digit',
-        }).format(new Date());
-        await Promise.all(matchingMOs.map(async (mo) => {
-            const { mentionHtml, partnerIds } = await resolveBoardIntakeStakeholders(client, mo.soUserId, candySharonPromise);
-            const qtyNeeded = Number(mo.qtyNeeded || 0);
-            const qtyLogged = Number(entry.quantity || 0);
-            const previousReserved = Number(mo.qtyReserved || 0);
-            const totalSupplied = previousReserved + qtyLogged;
-            const balanceRemaining = Math.max(0, qtyNeeded - totalSupplied);
-            const chatterHtml = buildBoardIntakeChatterHtml({
-                customerName,
-                productName: entry.product_name,
-                quantity: entry.quantity,
-                moName: mo.moName,
-                qtyNeeded: qtyNeeded > 0 ? qtyNeeded : null,
-                balanceRemaining: qtyNeeded > 0 ? balanceRemaining : null,
-                gate: entry.gate,
-                vehicleRegistration: entry.vehicle_registration,
-                arrivalTime: entry.arrival_time,
-                reportDate,
-                actorName: `${entry.actor_name || entry.actor_email} (Matched to ${customerName} by ${input.matchedBy})`,
-                mentionHtml,
-                hasBoardPo: mo.hasBoardPo,
-                boardPoNames: mo.boardPoNames,
-            });
-            return client.postModelChatterMessage('mrp.production', mo.moId, chatterHtml, partnerIds).catch(() => null);
-        }));
-        // Post to related sale.order chatter if matching MO has a linked Sales Order
-        const postedSoIds = new Set();
-        for (const mo of matchingMOs) {
-            if (mo.soId && !postedSoIds.has(mo.soId)) {
-                postedSoIds.add(mo.soId);
-                const { mentionHtml, partnerIds } = await resolveBoardIntakeStakeholders(client, mo.soUserId, candySharonPromise);
-                const qtyNeeded = Number(mo.qtyNeeded || 0);
-                const qtyLogged = Number(entry.quantity || 0);
-                const previousReserved = Number(mo.qtyReserved || 0);
-                const totalSupplied = previousReserved + qtyLogged;
-                const balanceRemaining = Math.max(0, qtyNeeded - totalSupplied);
-                const chatterHtml = buildBoardIntakeChatterHtml({
-                    customerName,
-                    productName: entry.product_name,
-                    quantity: entry.quantity,
-                    moName: mo.moName,
-                    qtyNeeded: qtyNeeded > 0 ? qtyNeeded : null,
-                    balanceRemaining: qtyNeeded > 0 ? balanceRemaining : null,
-                    gate: entry.gate,
-                    vehicleRegistration: entry.vehicle_registration,
-                    arrivalTime: entry.arrival_time,
-                    reportDate,
-                    actorName: `${entry.actor_name || entry.actor_email} (Matched to ${customerName} by ${input.matchedBy})`,
-                    mentionHtml,
-                    hasBoardPo: mo.hasBoardPo,
-                    boardPoNames: mo.boardPoNames,
-                });
-                await client.postModelChatterMessage('sale.order', mo.soId, chatterHtml, partnerIds).catch(() => null);
+    let syncResult = null;
+    let matchingMoCount = 0;
+    let matchingMOs = [];
+    if (entry.status !== 'synced') {
+        // If not yet synced (was waiting for client match), execute full Odoo stock sync and chatter now
+        syncResult = await syncBoardIntakeEntry(input.id).catch((err) => {
+            console.warn('[BoardIntakeSyncService] Error during sync after matching client:', err);
+            return null;
+        });
+        matchingMoCount = syncResult?.matchingMoCount ?? 0;
+    }
+    if (entry.status === 'synced' || syncResult?.alreadySynced) {
+        try {
+            const settings = await (0, repositories_1.getSettings)();
+            const client = new odooClient_1.OdooClient(settings.odoo);
+            const candySharonPromise = Promise.all([
+                (0, poJobSummaryAuditService_1.findOdooUserByTerm)(client, 'Candy').catch(() => null),
+                (0, poJobSummaryAuditService_1.findOdooUserByTerm)(client, 'Sharon').catch(() => null),
+            ]);
+            matchingMOs = await client.findMOsForBoardIntake({
+                productId: Number(entry.product_id),
+                partnerId,
+            }).catch(() => []);
+            matchingMoCount = matchingMOs.length;
+            if (matchingMOs.length) {
+                const reportDate = entry.arrival_date || new Intl.DateTimeFormat('en-CA', {
+                    timeZone: 'Africa/Nairobi',
+                    year: 'numeric',
+                    month: '2-digit',
+                    day: '2-digit',
+                }).format(new Date());
+                const displayActor = `${entry.actor_name || entry.actor_email || 'Operator'} (Matched to ${customerName} by ${input.matchedBy})`;
+                await Promise.all(matchingMOs.map(async (mo) => {
+                    const { mentionHtml, partnerIds } = await resolveBoardIntakeStakeholders(client, mo.soUserId, candySharonPromise);
+                    const qtyNeeded = Number(mo.qtyNeeded || 0);
+                    const qtyLogged = Number(entry.quantity || 0);
+                    const previousReserved = Number(mo.qtyReserved || 0);
+                    const totalSupplied = previousReserved + qtyLogged;
+                    const balanceRemaining = Math.max(0, qtyNeeded - totalSupplied);
+                    const chatterHtml = buildBoardIntakeChatterHtml({
+                        customerName,
+                        productName: entry.product_name,
+                        quantity: entry.quantity,
+                        moName: mo.moName,
+                        qtyNeeded: qtyNeeded > 0 ? qtyNeeded : null,
+                        balanceRemaining: qtyNeeded > 0 ? balanceRemaining : null,
+                        gate: entry.gate,
+                        vehicleRegistration: entry.vehicle_registration,
+                        arrivalTime: entry.arrival_time,
+                        reportDate,
+                        actorName: displayActor,
+                        mentionHtml,
+                        hasBoardPo: mo.hasBoardPo,
+                        boardPoNames: mo.boardPoNames,
+                    });
+                    return client.postModelChatterMessage('mrp.production', mo.moId, chatterHtml, partnerIds).catch(() => null);
+                }));
+                // Post to related sale.order chatter if matching MO has a linked Sales Order
+                const postedSoIds = new Set();
+                for (const mo of matchingMOs) {
+                    if (mo.soId && !postedSoIds.has(mo.soId)) {
+                        postedSoIds.add(mo.soId);
+                        const { mentionHtml, partnerIds } = await resolveBoardIntakeStakeholders(client, mo.soUserId, candySharonPromise);
+                        const qtyNeeded = Number(mo.qtyNeeded || 0);
+                        const qtyLogged = Number(entry.quantity || 0);
+                        const previousReserved = Number(mo.qtyReserved || 0);
+                        const totalSupplied = previousReserved + qtyLogged;
+                        const balanceRemaining = Math.max(0, qtyNeeded - totalSupplied);
+                        const chatterHtml = buildBoardIntakeChatterHtml({
+                            customerName,
+                            productName: entry.product_name,
+                            quantity: entry.quantity,
+                            moName: mo.moName,
+                            qtyNeeded: qtyNeeded > 0 ? qtyNeeded : null,
+                            balanceRemaining: qtyNeeded > 0 ? balanceRemaining : null,
+                            gate: entry.gate,
+                            vehicleRegistration: entry.vehicle_registration,
+                            arrivalTime: entry.arrival_time,
+                            reportDate,
+                            actorName: displayActor,
+                            mentionHtml,
+                            hasBoardPo: mo.hasBoardPo,
+                            boardPoNames: mo.boardPoNames,
+                        });
+                        await client.postModelChatterMessage('sale.order', mo.soId, chatterHtml, partnerIds).catch(() => null);
+                    }
+                }
+                await client.reserveStockOnMOs(matchingMOs.map((mo) => mo.moId)).catch(() => null);
             }
         }
-        await client.reserveStockOnMOs(matchingMOs.map((mo) => mo.moId));
+        catch (clientErr) {
+            console.warn('[BoardIntakeSyncService] MO linking warning after client match:', clientErr);
+        }
     }
+    // 4. Dispatch email notification now that the client is matched
+    const refreshedEntry = await (0, repositories_1.getBoardIntakeQueueEntry)(input.id);
+    const totalNeeded = loadedRequirements && loadedRequirements.length > 0
+        ? loadedRequirements.reduce((sum, r) => sum + Number(r.qty_needed || 0), 0)
+        : null;
+    const totalMissing = loadedRequirements && loadedRequirements.length > 0
+        ? loadedRequirements.reduce((sum, r) => sum + Number(r.qty_missing || 0), 0)
+        : null;
+    const moNames = loadedRequirements && loadedRequirements.length > 0
+        ? [...new Set(loadedRequirements.map((r) => r.mo_name).filter(Boolean))].join(', ')
+        : (input.moName || null);
+    await (0, boardIntakeEmailNotificationService_1.sendBoardIntakeEmailNotification)({
+        boardIntakeId: input.id,
+        customerName,
+        productName: entry.product_name,
+        quantity: Number(entry.quantity),
+        actorName: entry.actor_name || entry.actor_email || 'Operator',
+        actorEmail: entry.actor_email,
+        matchedBy: input.matchedBy,
+        vehicleRegistration: entry.vehicle_registration,
+        arrivalTime: entry.arrival_time,
+        gate: entry.gate,
+        arrivalDate: entry.arrival_date,
+        isPurchase: refreshedEntry ? Boolean(refreshedEntry.is_purchase) : Boolean(entry.is_purchase),
+        purchaseOrderReference: refreshedEntry?.purchase_order_reference || entry.purchase_order_reference,
+        moNames,
+        totalNeeded,
+        totalMissing,
+    }).catch((emailErr) => {
+        console.warn('[BoardIntakeSyncService] Email notification after client match warning:', emailErr);
+    });
     // 4. Invalidate caches
     shopFloor_1.shopFloorCache.clearPrefix('shop-floor-dashboard:');
     void Promise.allSettled([

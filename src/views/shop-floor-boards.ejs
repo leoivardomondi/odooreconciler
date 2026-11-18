@@ -950,7 +950,7 @@
               </div>
               <div class="d-flex align-items-center gap-2">
                 <div class="text-end">
-                  <span class="badge rounded-pill <%= item.reverted_at || item.status === 'reverted' ? 'bg-secondary text-white' : item.status === 'synced' ? 'bg-success text-white' : item.status === 'failed' ? 'bg-danger text-white' : 'bg-warning text-dark' %> fw-bold px-2.5 py-1" data-board-log-status="<%= item.id %>" title="<%= item.error_message || '' %>" style="font-size:0.74rem;"><%= item.reverted_at || item.status === 'reverted' ? 'Reverted in Odoo' : item.status === 'synced' ? (isPendingClient ? 'Synced (Pending Match)' : 'Synced to Odoo') : item.status === 'failed' ? 'Sync failed' : item.status === 'reverting' ? 'Reverting' : 'Syncing' %></span>
+                  <span class="badge rounded-pill <%= item.reverted_at || item.status === 'reverted' ? 'bg-secondary text-white' : item.status === 'synced' ? 'bg-success text-white' : item.status === 'failed' ? 'bg-danger text-white' : 'bg-warning text-dark' %> fw-bold px-2.5 py-1" data-board-log-status="<%= item.id %>" title="<%= item.error_message || '' %>" style="font-size:0.74rem;"><%= item.reverted_at || item.status === 'reverted' ? 'Reverted in Odoo' : item.status === 'synced' ? 'Synced to Odoo' : item.status === 'failed' ? 'Sync failed' : item.status === 'reverting' ? 'Reverting' : (isPendingClient ? 'Waiting Client Match' : 'Syncing') %></span>
                   <% if (item.status === 'failed' && item.next_retry_at) { %>
                     <div class="small text-danger fw-semibold mt-1" data-board-log-retry="<%= item.id %>">Automatic retry scheduled · attempt <%= item.retry_count || 1 %></div>
                   <% } %>
@@ -2671,8 +2671,9 @@
               '</div>' +
               '<div class="d-flex align-items-center gap-2">' +
                 '<div class="text-end">' +
-                  '<span class="badge rounded-pill bg-warning text-dark fw-bold px-2.5 py-1" data-board-log-status="' + escapeHtml(result.item.id) + '" style="font-size:0.74rem;">Syncing to Odoo</span>' +
+                  '<span class="badge rounded-pill bg-warning text-dark fw-bold px-2.5 py-1" data-board-log-status="' + escapeHtml(result.item.id) + '" style="font-size:0.74rem;">' + ((Number(result.item.partner_id || 0) <= 0 || result.item.customer_name === 'Pending Client Matching') ? 'Waiting Client Match' : 'Syncing to Odoo') + '</span>' +
                 '</div>' +
+                ((Number(result.item.partner_id || 0) <= 0 || result.item.customer_name === 'Pending Client Matching') ? '<button type="button" class="btn btn-sm btn-warning rounded-pill fw-bold btn-open-match-modal px-2.5 shadow-sm" data-intake-id="' + escapeHtml(result.item.id) + '" data-product-name="' + escapeHtml(result.item.product_name) + '" data-qty="' + escapeHtml(result.item.quantity) + '" style="font-size:0.76rem;">🔗 Match Client</button>' : '') +
               '</div>';
             list.prepend(row);
             window.setTimeout(function() { row.style.background = '#ffffff'; }, 2000);

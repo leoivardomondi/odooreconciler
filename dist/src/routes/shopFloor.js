@@ -44,6 +44,7 @@ const dailyBoardReportService_1 = require("../services/dailyBoardReportService")
 const stockMirrorService_1 = require("../services/stockMirrorService");
 const customerMirrorService_1 = require("../services/customerMirrorService");
 const boardIntakeSyncService_1 = require("../services/boardIntakeSyncService");
+const boardIntakeEmailNotificationService_1 = require("../services/boardIntakeEmailNotificationService");
 const shopFloorOperatorAccessSyncService_1 = require("../services/shopFloorOperatorAccessSyncService");
 const shopFloorPendingSyncService_1 = require("../services/shopFloorPendingSyncService");
 const poJobSummaryAuditService_1 = require("../services/poJobSummaryAuditService");
@@ -4018,6 +4019,10 @@ router.post('/shop-floor/board-intake', async (req, res) => {
             res.redirect('/shop-floor/boards?message=' + encodeURIComponent(successMessage));
         }
         void (async () => {
+            if (isPendingClient) {
+                // ONLY AFTER MATCHING SHOULD IT BE SYNCED TO ODOO AND EMAIL SENT TO RECIPIENTS OR ODOO LOG NOTE
+                return;
+            }
             let effectiveIsPurchase = isPurchase;
             let effectivePoRef = purchaseOrderReference;
             // 1. Launch Odoo synchronization in background
@@ -4057,87 +4062,24 @@ router.post('/shop-floor/board-intake', async (req, res) => {
                 syncPromise,
                 new Promise((resolve) => setTimeout(resolve, 8000)),
             ]);
-            // 2. Dispatch email alert immediately (never blocked beyond 8s even if Odoo is busy)
-            try {
-                const settings = await (0, repositories_1.getSettings)();
-                const rawRecipients = (0, helpers_1.normalizeBoardLogRecipients)(settings.stock?.boardLogNotificationEmail);
-                const recipientList = [...new Set(rawRecipients.split(/[,\s;\n]+/).map((e) => e.trim().toLowerCase()).filter((e) => e.includes('@')))];
-                const toRecipients = recipientList.join(', ');
-                const reportDate = new Intl.DateTimeFormat('en-CA', { timeZone: env_1.env.APP_TIMEZONE || 'Africa/Nairobi', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
-                const safeCustomerName = escapeHtml(customerName);
-                const safeProductName = escapeHtml(productName);
-                const safeVehicleReg = escapeHtml(vehicleRegistration || '—');
-                const safeArrivalTime = escapeHtml(arrivalTime || '—');
-                const safeGate = escapeHtml(gate || '—');
-                const safeActorEmail = escapeHtml(actorName);
-                const subjectCustomerName = customerName.replace(/[\r\n]+/g, ' ').trim();
-                const partialSubjectTag = (effectiveHasMoReq && totalMissing != null && totalMissing > 0)
-                    ? ` (Partial: ${qty} Logged, Balance ${totalMissing} Needed)`
-                    : (resolvedMoNames ? ` (${resolvedMoNames})` : '');
-                let reqDetailsHtml = '';
-                if (effectiveHasMoReq && totalNeeded != null) {
-                    reqDetailsHtml += `<br>Total Required: ${totalNeeded} sheets`;
-                    if (totalMissing != null) {
-                        if (totalMissing > 0) {
-                            reqDetailsHtml += `<br>Balance Remaining: <strong style="color:#b91c1c;">${totalMissing} sheet${totalMissing === 1 ? '' : 's'} needed</strong>`;
-                        }
-                        else {
-                            reqDetailsHtml += `<br>Balance Remaining: <strong style="color:#15803d;">0 sheets (Fully supplied)</strong>`;
-                        }
-                    }
-                }
-                if (resolvedMoNames) {
-                    reqDetailsHtml += `<br>Manufacturing Order: ${escapeHtml(resolvedMoNames)}`;
-                }
-                let calloutHtml = '';
-                if (effectiveHasMoReq && totalNeeded != null && totalMissing != null) {
-                    if (totalMissing > 0) {
-                        calloutHtml = `<p style="margin-top:12px;padding:8px 12px;background:#fef2f2;border-left:4px solid #ef4444;color:#991b1b;border-radius:4px;">` +
-                            `⚠️ <strong>PARTIAL INTAKE:</strong> ${qty} sheet${qty === 1 ? '' : 's'} logged, balance <strong>${totalMissing} sheet${totalMissing === 1 ? '' : 's'}</strong> still required for ${escapeHtml(resolvedMoNames || 'MO')}. Stock requirement of ${totalMissing} board${totalMissing === 1 ? '' : 's'} remains active before cutting/completion can start.` +
-                            `</p>`;
-                    }
-                    else {
-                        calloutHtml = `<p style="margin-top:12px;padding:8px 12px;background:#f0fdf4;border-left:4px solid #22c55e;color:#166534;border-radius:4px;">` +
-                            `✅ <strong>COMPLETE INTAKE:</strong> All ${totalNeeded} sheets received and allocated in stock for ${escapeHtml(resolvedMoNames || 'MO')}.` +
-                            `</p>`;
-                    }
-                }
-                else if (resolvedMoNames) {
-                    calloutHtml = `<p style="margin-top:12px;padding:8px 12px;background:#f0fdf4;border-left:4px solid #22c55e;color:#166534;border-radius:4px;">` +
-                        `✅ <strong>BOARD INTAKE:</strong> ${qty} sheet${qty === 1 ? '' : 's'} logged and allocated for ${escapeHtml(resolvedMoNames)}.` +
-                        `</p>`;
-                }
-                const purchaseSubjectTag = effectiveIsPurchase ? ' [PURCHASE]' : ' [CLIENT SUPPLY]';
-                const purchaseLabel = effectiveIsPurchase
-                    ? (effectivePoRef ? `Yes (PO: ${escapeHtml(effectivePoRef)})` : 'Yes (Company Purchase)')
-                    : 'No (Client Supplied)';
-                const appBaseUrl = String(env_1.env.APP_BASE_URL || 'https://app.urbanvibeinteriordesign.co.ke').replace(/\/+$/, '');
-                const fullListUrl = `${appBaseUrl}/public/board-logs?date=${encodeURIComponent(reportDate)}#date-${encodeURIComponent(reportDate)}`;
-                const buttonHtml = `<div style="margin-top:20px;margin-bottom:12px;">` +
-                    `<a href="${fullListUrl}" style="display:inline-block;background-color:#0f172a;color:#ffffff;text-decoration:none;padding:10px 22px;font-size:14px;font-weight:600;border-radius:8px;box-shadow:0 1px 2px rgba(0,0,0,0.08);letter-spacing:0.01em;" target="_blank">` +
-                    `📋 View Full Board Logs List &rarr;` +
-                    `</a>` +
-                    `</div>`;
-                await (0, mailTransport_1.sendMailWithConfig)(settings.mail, {
-                    to: toRecipients,
-                    subject: `${subjectCustomerName} - Board Log${purchaseSubjectTag}${partialSubjectTag} - ${reportDate}`,
-                    html: `<p><strong>Board log completed</strong></p><p>Client: ${safeCustomerName}<br>Board: ${safeProductName}<br>Purchase: <strong style="${effectiveIsPurchase ? 'color:#1d4ed8;' : 'color:#475569;'}">${purchaseLabel}</strong><br>Quantity: ${qty} sheet${qty === 1 ? '' : 's'}${reqDetailsHtml}<br>Gate: ${safeGate}<br>Vehicle Reg: ${safeVehicleReg}<br>Arrival Time: ${safeArrivalTime}<br>Date: ${reportDate}<br>Logged by: ${safeActorEmail}</p>${calloutHtml}${buttonHtml}`,
-                });
-                await (0, logService_1.logEvent)('info', 'Board log notification email sent', {
-                    boardIntakeId: optimisticId,
-                    to: toRecipients,
-                    customerName,
-                    productName,
-                    quantity: qty,
-                    actor: actorName,
-                }).catch(() => undefined);
-            }
-            catch (mailError) {
-                await (0, logService_1.logEvent)('error', `Board log email failed`, {
-                    customerName, productName, quantity: qty, vehicleRegistration, arrivalTime, gate, actor: actorName, actorEmail: req.authUser?.email,
-                    error: mailError instanceof Error ? mailError.message : String(mailError),
-                });
-            }
+            // 2. Dispatch email alert (only for confirmed client intakes)
+            await (0, boardIntakeEmailNotificationService_1.sendBoardIntakeEmailNotification)({
+                boardIntakeId: optimisticId,
+                customerName,
+                productName,
+                quantity: qty,
+                actorName,
+                actorEmail: req.authUser?.email || null,
+                vehicleRegistration,
+                arrivalTime,
+                gate,
+                arrivalDate,
+                isPurchase: effectiveIsPurchase,
+                purchaseOrderReference: effectivePoRef,
+                moNames: resolvedMoNames || null,
+                totalNeeded,
+                totalMissing,
+            });
         })();
         return;
     }

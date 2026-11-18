@@ -5741,9 +5741,11 @@ export async function claimBoardIntakeQueueEntry(id: string) {
 
 export async function getDueBoardIntakeQueueEntries(limit = 5) {
   return queryAll<BoardIntakeQueueEntry>(`SELECT * FROM board_intake_queue
-    WHERE (status = 'pending')
+    WHERE ((status = 'pending')
        OR (status = 'failed' AND (next_retry_at IS NULL OR next_retry_at <= CURRENT_TIMESTAMP))
-       OR (status = 'processing' AND updated_at < ${getDatabaseDialect() === 'mysql' ? 'DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 10 MINUTE)' : "datetime(CURRENT_TIMESTAMP, '-10 minutes')"})
+       OR (status = 'processing' AND updated_at < ${getDatabaseDialect() === 'mysql' ? 'DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 10 MINUTE)' : "datetime(CURRENT_TIMESTAMP, '-10 minutes')"}))
+      AND partner_id > 0
+      AND customer_name != 'Pending Client Matching'
     ORDER BY created_at ASC LIMIT ?`, [Math.max(1, Math.min(20, limit))]);
 }
 

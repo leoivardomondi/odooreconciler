@@ -4,11 +4,12 @@ import {
   createBoardIntakeQueueEntry,
   getBoardIntakeQueueEntry,
   updateBoardIntakeQueueEntry,
+  getDueBoardIntakeQueueEntries,
   upsertShopFloorOperators,
   getShopFloorOperatorByPin,
 } from '../models/repositories';
 import { verifyEmployeeAttendancePin } from '../services/operatorPinVerificationService';
-import { matchBoardIntakeToClient } from '../services/boardIntakeSyncService';
+import { matchBoardIntakeToClient, syncBoardIntakeEntry } from '../services/boardIntakeSyncService';
 
 test('operator attendance PIN verification and client matching workflow', async () => {
   // 1. Setup mock operator with Odoo attendance PIN in database
@@ -67,13 +68,19 @@ test('operator attendance PIN verification and client matching workflow', async 
     arrivalTime: '23:08',
   });
 
-  // Mark as synced to simulate initial gate stock intake completion
-  await updateBoardIntakeQueueEntry(pendingIntakeId, { status: 'synced', stockQuantity: 50 });
-
   const initialEntry = await getBoardIntakeQueueEntry(pendingIntakeId);
   assert.ok(initialEntry, 'Intake must be in queue');
-  assert.equal(initialEntry?.status, 'synced', 'Intake should be in synced status while awaiting client match');
+  assert.equal(initialEntry?.status, 'pending', 'Intake should remain in pending status while awaiting client match');
   assert.equal(Number(initialEntry?.partner_id), 0, 'Partner ID should be 0 before matching');
+
+  // Verify that syncBoardIntakeEntry bypasses unassigned pending intakes to prevent sync to Odoo
+  const earlySyncResult = await syncBoardIntakeEntry(pendingIntakeId);
+  assert.equal(earlySyncResult.pendingMatch, true, 'syncBoardIntakeEntry must return pendingMatch: true when partner is not yet matched');
+
+  // Verify that background retries exclude unmatched pending logs
+  const dueEntries = await getDueBoardIntakeQueueEntries(50);
+  const foundInDue = dueEntries.find((e) => e.id === pendingIntakeId);
+  assert.equal(foundInDue, undefined, 'Unmatched pending intake must be excluded from due background queue');
 
   // 5. Match the client using operator identified by PIN
   const matchResult = await matchBoardIntakeToClient({
@@ -91,5 +98,4 @@ test('operator attendance PIN verification and client matching workflow', async 
   assert.equal(finalEntry?.customer_name, 'Enos Otieno', 'Customer name must be updated');
   assert.equal(finalEntry?.matched_by, 'Onyango Test Operator', 'Matched by must record operator from PIN');
   assert.ok(finalEntry?.matched_at, 'matched_at must be populated');
-  assert.equal(finalEntry?.status, 'synced', 'Status must remain synced');
 });
