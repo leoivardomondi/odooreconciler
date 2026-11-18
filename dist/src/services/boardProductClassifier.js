@@ -182,7 +182,20 @@ function scoreBoardLineAgainstMaterial(lineName, material) {
             score -= 80;
         }
     }
-    // 2. Substrate check
+    // 2. Keyword / Material term extraction (exclude generic attributes, substrates, common colors, and thickness numbers)
+    const nonMaterialWords = new Set([
+        'board', 'boards', 'sheet', 'sheets', 'panel', 'panels', 'cutting',
+        'mdf', 'hdf', 'particle', 'chipboard', 'pb', 'mfc', 'plywood', 'ply', 'marine',
+        'blockboard', 'block', 'hardboard', 'backer', 'waterproof', 'wpc', 'pvc', 'eco', 'fixo',
+        'white', 'black', 'grey', 'gray', 'offwhite', 'cream',
+    ]);
+    const matWords = normMat
+        .split(/[\s_\-/]+/)
+        .filter((w) => w.length > 2 &&
+        !nonMaterialWords.has(w) &&
+        !/^\d+(?:\.\d+)?mm$/.test(w) &&
+        !/^\d+$/.test(w));
+    // 3. Substrate check
     if (matAttr.substrate !== 'other' && lineAttr.substrate !== 'other') {
         const isBackerPair = (normLine.includes('backer') || lineAttr.substrate === 'hardboard') &&
             (normMat.includes('backer') || matAttr.substrate === 'hardboard') &&
@@ -194,20 +207,14 @@ function scoreBoardLineAgainstMaterial(lineName, material) {
         }
         else {
             score -= 40;
+            // If there are no specific decor keywords (e.g. plain color like White MDF vs White Waterproof),
+            // a substrate clash disqualifies the match so distinct plain boards of different substrates are not conflated.
+            if (matWords.length === 0) {
+                score -= 50;
+            }
         }
     }
-    // 3. Keyword / Material term checks (exclude generic attributes, substrates, and thickness numbers)
-    const nonMaterialWords = new Set([
-        'board', 'boards', 'sheet', 'sheets', 'panel', 'panels', 'cutting',
-        'mdf', 'hdf', 'particle', 'chipboard', 'pb', 'mfc', 'plywood', 'ply', 'marine',
-        'blockboard', 'block', 'hardboard', 'backer', 'waterproof', 'wpc', 'pvc', 'eco', 'fixo',
-    ]);
-    const matWords = normMat
-        .split(/[\s_\-/]+/)
-        .filter((w) => w.length > 2 &&
-        !nonMaterialWords.has(w) &&
-        !/^\d+(?:\.\d+)?mm$/.test(w) &&
-        !/^\d+$/.test(w));
+    // 4. Keyword / Material term scoring
     for (const word of matWords) {
         if (normLine.includes(word)) {
             score += 15;

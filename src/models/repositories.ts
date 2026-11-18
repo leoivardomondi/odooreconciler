@@ -6632,6 +6632,12 @@ export async function pruneStalePendingProcessesForActiveMos(
     const compositeKey = `${row.mo_id}_${row.product_id}`;
     const nameKey = `${row.mo_name}_${row.product_id}`;
 
+    // 1. If requirement is covered by a confirmed/received Purchase Order, it must not show as needed from client
+    if (poCoveredKeySet.has(row.id) || poCoveredKeySet.has(compositeKey) || poCoveredKeySet.has(nameKey)) {
+      idsToDelete.push(row.id);
+      continue;
+    }
+
     // 2. Check if a matching history log exists in board_intake_queue
     const cleanCustomer = String(row.partner_name || '').trim().toLowerCase();
     const cleanProduct = String(row.product_name || '').trim().toLowerCase();

@@ -201,12 +201,27 @@ function findMatchingSheetMaterial(input) {
     return bestMatch && bestMatch.matchScore > 0 ? bestMatch : null;
 }
 /**
- * Determines the target quantity to process from the matched Job Summary material
- * or approved Purchase Order.
+ * Determines the target quantity to process from the matched Job Summary material,
+ * approved Purchase Order, or Sales Order quoted lines (accounting for offcut allowances).
  */
 function determineTargetCuttingQuantity(input) {
-    const { matchedMaterial, parsedJobSummary, approvedPoQuantity } = input;
-    // 1. Primary from matched sheet material sheets count
+    const { matchedMaterial, parsedJobSummary, approvedPoQuantity, soBoardQuantity } = input;
+    const matSheets = matchedMaterial && typeof matchedMaterial.sheets === 'number' && matchedMaterial.sheets > 0
+        ? matchedMaterial.sheets
+        : null;
+    // 1. Offcut Rule: If approved PO or Sales Order quoted exactly matSheets - 1
+    // (e.g. Job Summary has 4 sheets, but Sales Order / PO has 3 because the final layout
+    // page has 1-2 small panels acquired from workshop offcuts without charging the customer),
+    // honor the 3 full boards to prevent over-consuming raw boards or generating false shortages.
+    if (matSheets && matSheets >= 2) {
+        if (typeof approvedPoQuantity === 'number' && approvedPoQuantity === matSheets - 1) {
+            return approvedPoQuantity;
+        }
+        if (typeof soBoardQuantity === 'number' && soBoardQuantity === matSheets - 1) {
+            return soBoardQuantity;
+        }
+    }
+    // 2. Primary from matched sheet material sheets count
     if (matchedMaterial) {
         if (typeof matchedMaterial.sheets === 'number' && matchedMaterial.sheets > 0) {
             return matchedMaterial.sheets;
@@ -215,17 +230,21 @@ function determineTargetCuttingQuantity(input) {
             return matchedMaterial.panels;
         }
     }
-    // 2. Approved PO quantity if available
+    // 3. Approved PO quantity if available
     if (typeof approvedPoQuantity === 'number' && approvedPoQuantity > 0) {
         return approvedPoQuantity;
     }
-    // 3. Fallback to optimizedSheets from Job Summary
+    // 4. Sales Order board quantity if available
+    if (typeof soBoardQuantity === 'number' && soBoardQuantity > 0) {
+        return soBoardQuantity;
+    }
+    // 5. Fallback to optimizedSheets from Job Summary
     if (parsedJobSummary &&
         typeof parsedJobSummary.optimizedSheets === 'number' &&
         parsedJobSummary.optimizedSheets > 0) {
         return parsedJobSummary.optimizedSheets;
     }
-    // 4. Fallback to totalPanels from Job Summary
+    // 6. Fallback to totalPanels from Job Summary
     if (parsedJobSummary &&
         typeof parsedJobSummary.totalPanels === 'number' &&
         parsedJobSummary.totalPanels > 0) {
@@ -407,10 +426,50 @@ async function reconcileWorkOrderQuantitiesForMo(client, moId, options) {
         currentMoQty: mo.product_qty,
         excludedMaterialNames: options?.excludedMaterialNames,
     });
+    // Check if Sales Order has board lines for this material (offcut rule support)
+    let soBoardQty = null;
+    if (soId) {
+        try {
+            const soLines = await client.searchReadRecords('sale.order.line', {
+                domain: [['order_id', '=', soId]],
+                fields: ['id', 'name', 'product_id', 'product_uom_qty', 'display_type'],
+                limit: 100,
+            });
+            const productSoLines = soLines.filter((l) => !l.display_type);
+            const matchingSoLines = productSoLines.filter((l) => {
+                const prodName = relationLabel(l.product_id) || l.name || '';
+                return ((0, boardProductClassifier_1.isBoardProductName)(prodName) &&
+                    !/example\s+board/i.test(prodName) &&
+                    !/optimis?ed\s+panels?/i.test(prodName));
+            });
+            if (matchingSoLines.length > 0) {
+                if (matchResult?.material) {
+                    const matClean = (0, boardProductClassifier_1.normalizeBoardProductName)(matchResult.material.name);
+                    const specificLines = matchingSoLines.filter((l) => {
+                        const pName = (0, boardProductClassifier_1.normalizeBoardProductName)(relationLabel(l.product_id) || l.name || '');
+                        return pName.includes(matClean) || matClean.includes(pName);
+                    });
+                    if (specificLines.length > 0) {
+                        soBoardQty = specificLines.reduce((sum, l) => sum + (Number(l.product_uom_qty) || 0), 0);
+                    }
+                    else {
+                        soBoardQty = matchingSoLines.reduce((sum, l) => sum + (Number(l.product_uom_qty) || 0), 0);
+                    }
+                }
+                else {
+                    soBoardQty = matchingSoLines.reduce((sum, l) => sum + (Number(l.product_uom_qty) || 0), 0);
+                }
+            }
+        }
+        catch {
+            // Non-blocking SO line lookup
+        }
+    }
     const targetQty = determineTargetCuttingQuantity({
         matchedMaterial: matchResult?.material,
         parsedJobSummary: parsed,
         approvedPoQuantity: approvedPoQty,
+        soBoardQuantity: soBoardQty,
     });
     if (!targetQty || targetQty <= 0) {
         // If no Job Summary or PO determined a target, but user manually set mo.product_qty in Odoo:

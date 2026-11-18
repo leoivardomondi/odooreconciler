@@ -158,6 +158,21 @@ const workOrderQuantityReconciliationService_1 = require("./workOrderQuantityRec
         parsedJobSummary: { ...parsedJobSummary, optimizedSheets: 3 },
     });
     strict_1.default.equal(qty3, 3);
+    // Case 4: Offcut allowance via Sales Order: Job Summary has 4 sheets, but SO has 3
+    // (Customer not charged for 4th board because small final panels are from workshop offcuts)
+    const qty4 = (0, workOrderQuantityReconciliationService_1.determineTargetCuttingQuantity)({
+        matchedMaterial: material, // 4 sheets
+        parsedJobSummary,
+        soBoardQuantity: 3,
+    });
+    strict_1.default.equal(qty4, 3, 'Must honor 3 full boards from Sales Order under offcut policy');
+    // Case 5: Offcut allowance via Approved PO: Job Summary has 4 sheets, but approved PO ordered 3
+    const qty5 = (0, workOrderQuantityReconciliationService_1.determineTargetCuttingQuantity)({
+        matchedMaterial: material, // 4 sheets
+        parsedJobSummary,
+        approvedPoQuantity: 3,
+    });
+    strict_1.default.equal(qty5, 3, 'Must honor 3 full boards from approved PO under offcut policy');
 });
 (0, node_test_1.default)('reconcileWorkOrderQuantitiesForMo updates MO, work order, and component stock moves when Sales Order has 6 but Job Summary has 4', async () => {
     const writtenRecords = [];

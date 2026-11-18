@@ -118,10 +118,13 @@ function selectBestBoardComponent(input) {
                 if (moveAttr.substrate && matAttr.substrate && moveAttr.substrate === matAttr.substrate) {
                     score += 30;
                 }
-                // Quantity similarity match to Job Summary sheets
+                // Quantity similarity match to Job Summary sheets (or offcut allowance: sheets - 1)
                 if (typeof mat.sheets === 'number' && mat.sheets > 0) {
                     if (Math.abs(Number(move.product_uom_qty || 0) - mat.sheets) < 0.001) {
                         score += 25;
+                    }
+                    else if (mat.sheets >= 2 && Math.abs(Number(move.product_uom_qty || 0) - (mat.sheets - 1)) < 0.001) {
+                        score += 20; // Offcut allowance match
                     }
                 }
                 if (score > bestScore) {
@@ -134,7 +137,13 @@ function selectBestBoardComponent(input) {
         // Determine aligned quantity
         let alignedQty = targetMoQty > 0 ? targetMoQty : Number(bestMove.product_uom_qty || 0);
         if (bestMat && typeof bestMat.sheets === 'number' && bestMat.sheets > 0) {
-            alignedQty = bestMat.sheets;
+            if (targetMoQty > 0 && bestMat.sheets >= 2 && targetMoQty === bestMat.sheets - 1) {
+                // Offcut allowance: MO target quantity is 1 sheet less than Job Summary because final layout page is offcuts
+                alignedQty = targetMoQty;
+            }
+            else {
+                alignedQty = bestMat.sheets;
+            }
         }
         else if (targetMoQty > 0) {
             alignedQty = targetMoQty;

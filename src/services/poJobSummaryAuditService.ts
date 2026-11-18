@@ -20,6 +20,7 @@ import { parseJobSummaryPdf } from './pdfParser';
 import { DEFAULT_PARSER_CONFIG, isJobSummaryAttachment } from '../utils/helpers';
 import { normalizeColor } from './stockProcessingService';
 import { reconcileWorkOrderQuantitiesForSaleOrder } from './workOrderQuantityReconciliationService';
+import { compareQuotationLinesWithJobSummary } from './quotationSyncService';
 import { env } from '../utils/env';
 
 export const PO_JOB_SUMMARY_DISCREPANCY_ACTIVITY_SUMMARY = 'PO PROCUREMENT MISMATCH: CLARIFICATION NEEDED';
@@ -206,6 +207,9 @@ export function comparePoLinesWithSheetMaterials(
   sheetMaterials: ParsedSheetMaterial[],
   edgingItems: ParsedJobSummaryResult['items'] = [],
   otherPoLines: PurchaseOrderLine[] = [],
+  options?: {
+    allowOffcutDifference?: boolean;
+  },
 ): {
   shortfalls: string[];
   verified: string[];
@@ -221,6 +225,7 @@ export function comparePoLinesWithSheetMaterials(
     isMatch: boolean;
   }>;
 } {
+  const allowOffcut = Boolean(options?.allowOffcutDifference);
   const shortfalls: string[] = [];
   const verified: string[] = [];
   const substrateMismatches: BoardSubstrateMismatch[] = [];
@@ -339,9 +344,15 @@ export function comparePoLinesWithSheetMaterials(
           }
         } else if (totalOrderedAcrossOrder < requiredSheets) {
           const shortfallCount = Math.round((requiredSheets - totalOrderedAcrossOrder) * 100) / 100;
-          shortfalls.push(
-            `${label}: PO ordered ${orderedSheets} sheet(s) (${otherOrderedSheets} sheet(s) on other linked PO, Total: ${totalOrderedAcrossOrder}/${requiredSheets} sheets — Overall Shortfall: ${shortfallCount} sheet(s)).`,
-          );
+          if (allowOffcut && requiredSheets >= 2 && totalOrderedAcrossOrder === requiredSheets - 1 && !hasSubstrateMismatch) {
+            verified.push(
+              `${label}: PO ordered ${orderedSheets} sheet(s) (${otherOrderedSheets} sheet(s) on other linked PO, Total: ${totalOrderedAcrossOrder}/${requiredSheets} sheet(s) — 1-sheet offcut allowance: final panel(s) acquired from workshop offcuts).`,
+            );
+          } else {
+            shortfalls.push(
+              `${label}: PO ordered ${orderedSheets} sheet(s) (${otherOrderedSheets} sheet(s) on other linked PO, Total: ${totalOrderedAcrossOrder}/${requiredSheets} sheets — Overall Shortfall: ${shortfallCount} sheet(s)).`,
+            );
+          }
         } else {
           const excessCount = Math.round((totalOrderedAcrossOrder - requiredSheets) * 100) / 100;
           shortfalls.push(
@@ -352,9 +363,15 @@ export function comparePoLinesWithSheetMaterials(
     } else {
       if (orderedSheets < requiredSheets) {
         const shortfallCount = Math.round((requiredSheets - orderedSheets) * 100) / 100;
-        shortfalls.push(
-          `${label}: PO ordered ${orderedSheets} sheet(s), but Job Summary requires ${requiredSheets} sheet(s) (Shortfall: ${shortfallCount} sheet(s)).`,
-        );
+        if (allowOffcut && requiredSheets >= 2 && orderedSheets === requiredSheets - 1 && !hasSubstrateMismatch) {
+          verified.push(
+            `${label}: PO ordered ${orderedSheets} sheet(s) vs Job Summary ${requiredSheets} sheet(s) (1-sheet offcut allowance: final panel(s) acquired from workshop offcuts, no procurement needed).`,
+          );
+        } else {
+          shortfalls.push(
+            `${label}: PO ordered ${orderedSheets} sheet(s), but Job Summary requires ${requiredSheets} sheet(s) (Shortfall: ${shortfallCount} sheet(s)).`,
+          );
+        }
       } else if (orderedSheets > requiredSheets) {
         const excessCount = Math.round((orderedSheets - requiredSheets) * 100) / 100;
         shortfalls.push(
@@ -369,6 +386,10 @@ export function comparePoLinesWithSheetMaterials(
       }
     }
 
+    const isBoardQtyMatched =
+      totalOrderedAcrossOrder === requiredSheets ||
+      (allowOffcut && requiredSheets >= 2 && totalOrderedAcrossOrder === requiredSheets - 1);
+
     details.push({
       itemType: 'board',
       materialName: material.name,
@@ -376,7 +397,7 @@ export function comparePoLinesWithSheetMaterials(
       requiredQty: requiredSheets,
       orderedQty: totalOrderedAcrossOrder,
       unit: 'sheet(s)',
-      isMatch: totalOrderedAcrossOrder === requiredSheets && !hasSubstrateMismatch,
+      isMatch: isBoardQtyMatched && !hasSubstrateMismatch,
     });
   }
 
@@ -736,11 +757,33 @@ export async function auditPurchaseOrderAgainstJobSummary(
     // Non-blocking
   }
 
+  let allowOffcutDifference = false;
+  try {
+    const soLines = await client.searchReadRecords<{
+      id: number;
+      product_id: [number, string] | false;
+      product_uom_qty: number;
+      display_type: string | false;
+      name: string;
+    }>('sale.order.line', {
+      domain: [['order_id', '=', so.id]],
+      fields: ['id', 'product_id', 'product_uom_qty', 'display_type', 'name'],
+      limit: 100,
+    });
+    const soComp = compareQuotationLinesWithJobSummary(soLines as any, parsed);
+    if (!soComp.hasShortfall && soComp.offcutAllowances.length > 0) {
+      allowOffcutDifference = true;
+    }
+  } catch {
+    // Non-blocking
+  }
+
   const comparison = comparePoLinesWithSheetMaterials(
     poLines,
     parsed.sheetMaterials || [],
     parsed.items || [],
     otherPoLines,
+    { allowOffcutDifference },
   );
 
   // Resolve the 4 key stakeholders: Charles, Leoivard Ongule, Salesperson, Raphael Onyango

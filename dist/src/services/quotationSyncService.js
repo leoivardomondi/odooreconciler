@@ -47,6 +47,7 @@ function isTemplateOnlyQuotation(lines) {
  */
 function compareQuotationLinesWithJobSummary(lines, parsed) {
     const shortfalls = [];
+    const offcutAllowances = [];
     const productLines = lines.filter((line) => !line.display_type);
     // 1. Compare Board Sheets
     const sheetMaterials = parsed.sheetMaterials || [];
@@ -57,8 +58,13 @@ function compareQuotationLinesWithJobSummary(lines, parsed) {
         const matchingBoardLines = assignedBoardLines.get(material) || [];
         const quotedSheets = matchingBoardLines.reduce((sum, l) => sum + (Number(l.product_uom_qty) || 0), 0);
         // Rule: "Not less, but can be more" — only mention quantity if it's lower than Job Summary
-        const isSufficient = quotedSheets >= requiredSheets;
-        if (quotedSheets < requiredSheets) {
+        const isExactOrSurplus = quotedSheets >= requiredSheets;
+        // Offcut Rule: Sometimes a Job Summary has 4 sheets and Sales Order has 3 (or N and N-1 for N >= 2),
+        // because the last page of the layout is 1-2 small panels acquired from an offcut,
+        // thus we do not charge the customer for cutting or providing that full board.
+        const isOffcutAllowance = !isExactOrSurplus && requiredSheets >= 2 && quotedSheets === requiredSheets - 1;
+        const isSufficient = isExactOrSurplus || isOffcutAllowance;
+        if (!isSufficient) {
             if (quotedSheets === 0) {
                 const existingBoards = productLines
                     .map(lineDisplayName)
@@ -70,20 +76,32 @@ function compareQuotationLinesWithJobSummary(lines, parsed) {
                 shortfalls.push(`Board Shortfall (${material.name} ${material.thickness_mm ? `${material.thickness_mm}mm` : ''}): Quotation has ${quotedSheets} sheet(s), but Job Summary requires ${requiredSheets} sheet(s) (Shortfall: ${Math.round((requiredSheets - quotedSheets) * 100) / 100} sheet(s)).`);
             }
         }
+        else if (isOffcutAllowance) {
+            offcutAllowances.push(`Board Offcut Allowance (${material.name}${material.thickness_mm ? ` ${material.thickness_mm}mm` : ''}): Quotation has ${quotedSheets} sheet(s) vs Job Summary ${requiredSheets} sheet(s) (1 sheet difference accepted: final layout panel(s) acquired from workshop offcuts; customer not charged for full board).`);
+        }
         boardDetails.push({
             sheetMaterial: material.name,
             requiredSheets,
             quotedSheets,
             isSufficient,
+            isOffcutCovered: isOffcutAllowance,
         });
     }
     // 2. Compare Optimised Panels
     const requiredPanels = Number(parsed.optimizedSheets ?? parsed.totalPanels ?? 0);
     const panelsLine = productLines.find((line) => /optimis?ed\s+panels?/i.test(lineDisplayName(line)));
     const quotedPanels = panelsLine ? Number(panelsLine.product_uom_qty) || 0 : 0;
-    const panelsSufficient = quotedPanels >= requiredPanels;
+    const totalOffcutBoards = boardDetails.filter((b) => b.isOffcutCovered).length;
+    const panelsExactOrSurplus = quotedPanels >= requiredPanels;
+    const panelsOffcutAllowance = !panelsExactOrSurplus &&
+        requiredPanels >= 2 &&
+        (quotedPanels === requiredPanels - 1 || (totalOffcutBoards > 0 && quotedPanels >= requiredPanels - totalOffcutBoards));
+    const panelsSufficient = panelsExactOrSurplus || panelsOffcutAllowance;
     if (!panelsSufficient && requiredPanels > 0) {
         shortfalls.push(`Optimised Panels: Quotation has ${quotedPanels} piece(s), but Job Summary requires ${requiredPanels} sheet(s).`);
+    }
+    else if (panelsOffcutAllowance) {
+        offcutAllowances.push(`Cutting Service Offcut Allowance: Quotation has ${quotedPanels} piece(s) vs Job Summary ${requiredPanels} sheet(s) (cutting waived for offcut board).`);
     }
     // 3. Compare Edging Meters
     const edgingDetails = [];
@@ -117,11 +135,13 @@ function compareQuotationLinesWithJobSummary(lines, parsed) {
     return {
         hasShortfall: shortfalls.length > 0,
         shortfalls,
+        offcutAllowances,
         boardDetails,
         panelsDetail: {
             requiredPanels,
             quotedPanels,
             isSufficient: panelsSufficient,
+            isOffcutCovered: panelsOffcutAllowance,
         },
         edgingDetails,
     };
@@ -613,10 +633,22 @@ async function syncQuotationWithJobSummary(client, orderId, parsed) {
             summary: `Discrepancy detected: ${comparison.shortfalls.length} shortfall(s) flagged to salesperson.`,
         };
     }
-    // All lines exist and quantities are sufficient (equal or more)
+    // All lines exist and quantities are sufficient (equal, more, or with offcut allowance)
+    const hasOffcutAllowance = Boolean(comparison.offcutAllowances && comparison.offcutAllowances.length > 0);
+    if (hasOffcutAllowance) {
+        const alreadyNotified = typeof client.hasModelChatterMessage === 'function'
+            ? await client.hasModelChatterMessage('sale.order', orderId, 'Job Summary Offcut Allowance Notice')
+            : false;
+        if (!alreadyNotified) {
+            await client.postModelChatterMessage('sale.order', orderId, `<p>🪵 <strong>Job Summary Offcut Allowance Verified:</strong></p><ul>${comparison.offcutAllowances
+                .map((s) => `<li>${s}</li>`)
+                .join('')}</ul><p><em>Quotation quantities are verified. Customer was not charged for full boards or cutting where small final layout panels are acquired from workshop offcuts.</em></p>`, undefined, { dedupeSnippet: 'Job Summary Offcut Allowance Notice' });
+        }
+    }
     await (0, logService_1.logEvent)('info', 'Quotation lines verified against Job Summary (quantities sufficient)', {
         orderId,
         orderName: order.name,
+        offcutAllowances: comparison.offcutAllowances,
     });
     return {
         orderId,
@@ -627,6 +659,8 @@ async function syncQuotationWithJobSummary(client, orderId, parsed) {
         createdLinesCount: 0,
         updatedLinesCount: 0,
         shortfalls: [],
-        summary: 'Quotation lines verified: all quantities are correct and sufficient.',
+        summary: hasOffcutAllowance
+            ? `Quotation lines verified with offcut allowance (${comparison.offcutAllowances.join('; ')}).`
+            : 'Quotation lines verified: all quantities are correct and sufficient.',
     };
 }

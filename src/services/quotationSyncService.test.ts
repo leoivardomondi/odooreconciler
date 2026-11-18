@@ -439,3 +439,97 @@ test('getScopedQuotationCategories correctly groups categories into boards and s
   assert.equal(result.allRelevantIds.includes(8), false);
   assert.equal(result.allRelevantIds.includes(1), false);
 });
+
+test('compareQuotationLinesWithJobSummary accepts 1-sheet offcut allowance when final layout panels are cut from offcuts (4 sheets in JS vs 3 in SO)', () => {
+  const parsedJobSummary: ParsedJobSummaryResult = {
+    items: [
+      {
+        color: 'White',
+        thickness_mm: 1,
+        length_mm: 16000,
+        roll_length_mm: 15000,
+      },
+    ],
+    sectionFound: true,
+    sectionText: '',
+    rawText: '',
+    logs: [],
+    clientName: 'KENNEDY',
+    optimizedSheets: 4,
+    totalPanels: 4,
+    sheetMaterials: [
+      {
+        name: 'WHITE MDF',
+        thickness_mm: 18,
+        sheets: 4,
+        panels: 4,
+        length_mm: 2440,
+        width_mm: 1220,
+      },
+    ],
+  };
+
+  // Case 1: Sales order has 3 sheets and 3 panels (customer not charged for 4th board / cutting since 2 small panels come from offcut)
+  const offcutLines: SaleOrderLine[] = [
+    {
+      id: 1,
+      name: 'White MDF 18mm',
+      product_id: [201, 'White MDF 18mm'],
+      product_uom_qty: 3, // 3 vs 4 in JS -> Offcut allowance
+      display_type: false,
+    },
+    {
+      id: 2,
+      name: 'Optimised Panels',
+      product_id: [102, 'Optimised Panels'],
+      product_uom_qty: 3, // 3 vs 4 in JS -> Cutting waived for offcut
+      display_type: false,
+    },
+    {
+      id: 3,
+      name: 'Edge Banding Service White',
+      product_id: [301, 'Edge Banding Service White'],
+      product_uom_qty: 16,
+      display_type: false,
+    },
+  ];
+
+  const comparison = compareQuotationLinesWithJobSummary(offcutLines, parsedJobSummary);
+  assert.equal(comparison.hasShortfall, false, '1-sheet offcut variance must NOT trigger a shortfall error');
+  assert.equal(comparison.shortfalls.length, 0);
+  assert.ok(comparison.offcutAllowances.length >= 1, 'Must record offcut allowance');
+  assert.ok(comparison.boardDetails[0].isSufficient, 'Board must be marked sufficient under offcut policy');
+  assert.equal(comparison.boardDetails[0].isOffcutCovered, true);
+  assert.ok(comparison.panelsDetail.isSufficient, 'Panels must be marked sufficient under offcut policy');
+  assert.equal(comparison.panelsDetail.isOffcutCovered, true);
+
+  // Case 2: Sales order only has 2 sheets (2-sheet variance is a REAL shortfall, cannot be offcut)
+  const genuineShortfallLines: SaleOrderLine[] = [
+    {
+      id: 1,
+      name: 'White MDF 18mm',
+      product_id: [201, 'White MDF 18mm'],
+      product_uom_qty: 2, // 2 vs 4 in JS -> Deficit of 2 sheets
+      display_type: false,
+    },
+    {
+      id: 2,
+      name: 'Optimised Panels',
+      product_id: [102, 'Optimised Panels'],
+      product_uom_qty: 2,
+      display_type: false,
+    },
+    {
+      id: 3,
+      name: 'Edge Banding Service White',
+      product_id: [301, 'Edge Banding Service White'],
+      product_uom_qty: 16,
+      display_type: false,
+    },
+  ];
+
+  const shortfallComp = compareQuotationLinesWithJobSummary(genuineShortfallLines, parsedJobSummary);
+  assert.equal(shortfallComp.hasShortfall, true, '2-sheet deficit must be flagged as a genuine shortfall');
+  assert.ok(shortfallComp.shortfalls.some(s => s.includes('Board Shortfall')));
+  assert.ok(shortfallComp.shortfalls.some(s => s.includes('Optimised Panels')));
+});

@@ -16,6 +16,7 @@ const pdfParser_1 = require("./pdfParser");
 const helpers_1 = require("../utils/helpers");
 const stockProcessingService_1 = require("./stockProcessingService");
 const workOrderQuantityReconciliationService_1 = require("./workOrderQuantityReconciliationService");
+const quotationSyncService_1 = require("./quotationSyncService");
 exports.PO_JOB_SUMMARY_DISCREPANCY_ACTIVITY_SUMMARY = 'PO PROCUREMENT MISMATCH: CLARIFICATION NEEDED';
 exports.PO_JOB_SUMMARY_MISSING_ACTIVITY_SUMMARY = 'AWAIT JOB SUMMARY ATTACHMENT BEFORE APPROVING PO';
 function relationLabel(value) {
@@ -132,7 +133,8 @@ async function resolveNotificationStakeholders(client, soUserId) {
  * - Boards (particle board, MDF, etc.) MUST BE AN EXACT MATCH (orderedSheets === requiredSheets).
  *   Both under-ordering (shortfall) and over-ordering (excess) are flagged as mismatches.
  */
-function comparePoLinesWithSheetMaterials(poLines, sheetMaterials, edgingItems = [], otherPoLines = []) {
+function comparePoLinesWithSheetMaterials(poLines, sheetMaterials, edgingItems = [], otherPoLines = [], options) {
+    const allowOffcut = Boolean(options?.allowOffcutDifference);
     const shortfalls = [];
     const verified = [];
     const substrateMismatches = [];
@@ -217,7 +219,12 @@ function comparePoLinesWithSheetMaterials(poLines, sheetMaterials, edgingItems =
                 }
                 else if (totalOrderedAcrossOrder < requiredSheets) {
                     const shortfallCount = Math.round((requiredSheets - totalOrderedAcrossOrder) * 100) / 100;
-                    shortfalls.push(`${label}: PO ordered ${orderedSheets} sheet(s) (${otherOrderedSheets} sheet(s) on other linked PO, Total: ${totalOrderedAcrossOrder}/${requiredSheets} sheets — Overall Shortfall: ${shortfallCount} sheet(s)).`);
+                    if (allowOffcut && requiredSheets >= 2 && totalOrderedAcrossOrder === requiredSheets - 1 && !hasSubstrateMismatch) {
+                        verified.push(`${label}: PO ordered ${orderedSheets} sheet(s) (${otherOrderedSheets} sheet(s) on other linked PO, Total: ${totalOrderedAcrossOrder}/${requiredSheets} sheet(s) — 1-sheet offcut allowance: final panel(s) acquired from workshop offcuts).`);
+                    }
+                    else {
+                        shortfalls.push(`${label}: PO ordered ${orderedSheets} sheet(s) (${otherOrderedSheets} sheet(s) on other linked PO, Total: ${totalOrderedAcrossOrder}/${requiredSheets} sheets — Overall Shortfall: ${shortfallCount} sheet(s)).`);
+                    }
                 }
                 else {
                     const excessCount = Math.round((totalOrderedAcrossOrder - requiredSheets) * 100) / 100;
@@ -228,7 +235,12 @@ function comparePoLinesWithSheetMaterials(poLines, sheetMaterials, edgingItems =
         else {
             if (orderedSheets < requiredSheets) {
                 const shortfallCount = Math.round((requiredSheets - orderedSheets) * 100) / 100;
-                shortfalls.push(`${label}: PO ordered ${orderedSheets} sheet(s), but Job Summary requires ${requiredSheets} sheet(s) (Shortfall: ${shortfallCount} sheet(s)).`);
+                if (allowOffcut && requiredSheets >= 2 && orderedSheets === requiredSheets - 1 && !hasSubstrateMismatch) {
+                    verified.push(`${label}: PO ordered ${orderedSheets} sheet(s) vs Job Summary ${requiredSheets} sheet(s) (1-sheet offcut allowance: final panel(s) acquired from workshop offcuts, no procurement needed).`);
+                }
+                else {
+                    shortfalls.push(`${label}: PO ordered ${orderedSheets} sheet(s), but Job Summary requires ${requiredSheets} sheet(s) (Shortfall: ${shortfallCount} sheet(s)).`);
+                }
             }
             else if (orderedSheets > requiredSheets) {
                 const excessCount = Math.round((orderedSheets - requiredSheets) * 100) / 100;
@@ -240,6 +252,8 @@ function comparePoLinesWithSheetMaterials(poLines, sheetMaterials, edgingItems =
                 }
             }
         }
+        const isBoardQtyMatched = totalOrderedAcrossOrder === requiredSheets ||
+            (allowOffcut && requiredSheets >= 2 && totalOrderedAcrossOrder === requiredSheets - 1);
         details.push({
             itemType: 'board',
             materialName: material.name,
@@ -247,7 +261,7 @@ function comparePoLinesWithSheetMaterials(poLines, sheetMaterials, edgingItems =
             requiredQty: requiredSheets,
             orderedQty: totalOrderedAcrossOrder,
             unit: 'sheet(s)',
-            isMatch: totalOrderedAcrossOrder === requiredSheets && !hasSubstrateMismatch,
+            isMatch: isBoardQtyMatched && !hasSubstrateMismatch,
         });
     }
     // 2. Edge Banding: "Not less, but can be more"
@@ -527,7 +541,22 @@ async function auditPurchaseOrderAgainstJobSummary(client, purchaseOrderId, prov
     catch {
         // Non-blocking
     }
-    const comparison = comparePoLinesWithSheetMaterials(poLines, parsed.sheetMaterials || [], parsed.items || [], otherPoLines);
+    let allowOffcutDifference = false;
+    try {
+        const soLines = await client.searchReadRecords('sale.order.line', {
+            domain: [['order_id', '=', so.id]],
+            fields: ['id', 'product_id', 'product_uom_qty', 'display_type', 'name'],
+            limit: 100,
+        });
+        const soComp = (0, quotationSyncService_1.compareQuotationLinesWithJobSummary)(soLines, parsed);
+        if (!soComp.hasShortfall && soComp.offcutAllowances.length > 0) {
+            allowOffcutDifference = true;
+        }
+    }
+    catch {
+        // Non-blocking
+    }
+    const comparison = comparePoLinesWithSheetMaterials(poLines, parsed.sheetMaterials || [], parsed.items || [], otherPoLines, { allowOffcutDifference });
     // Resolve the 4 key stakeholders: Charles, Leoivard Ongule, Salesperson, Raphael Onyango
     const { partnerIds, mentionHtml } = await resolveNotificationStakeholders(client, soUserId);
     if (comparison.hasShortfall) {

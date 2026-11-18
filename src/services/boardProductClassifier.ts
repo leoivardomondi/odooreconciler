@@ -219,27 +219,12 @@ export function scoreBoardLineAgainstMaterial(
     }
   }
 
-  // 2. Substrate check
-  if (matAttr.substrate !== 'other' && lineAttr.substrate !== 'other') {
-    const isBackerPair =
-      (normLine.includes('backer') || lineAttr.substrate === 'hardboard') &&
-      (normMat.includes('backer') || matAttr.substrate === 'hardboard') &&
-      ((lineAttr.substrate === 'mdf' && matAttr.substrate === 'hardboard') ||
-        (lineAttr.substrate === 'hardboard' && matAttr.substrate === 'mdf') ||
-        lineAttr.substrate === matAttr.substrate);
-
-    if (matAttr.substrate === lineAttr.substrate || isBackerPair) {
-      score += 50;
-    } else {
-      score -= 40;
-    }
-  }
-
-  // 3. Keyword / Material term checks (exclude generic attributes, substrates, and thickness numbers)
+  // 2. Keyword / Material term extraction (exclude generic attributes, substrates, common colors, and thickness numbers)
   const nonMaterialWords = new Set([
     'board', 'boards', 'sheet', 'sheets', 'panel', 'panels', 'cutting',
     'mdf', 'hdf', 'particle', 'chipboard', 'pb', 'mfc', 'plywood', 'ply', 'marine',
     'blockboard', 'block', 'hardboard', 'backer', 'waterproof', 'wpc', 'pvc', 'eco', 'fixo',
+    'white', 'black', 'grey', 'gray', 'offwhite', 'cream',
   ]);
 
   const matWords = normMat
@@ -252,6 +237,28 @@ export function scoreBoardLineAgainstMaterial(
         !/^\d+$/.test(w),
     );
 
+  // 3. Substrate check
+  if (matAttr.substrate !== 'other' && lineAttr.substrate !== 'other') {
+    const isBackerPair =
+      (normLine.includes('backer') || lineAttr.substrate === 'hardboard') &&
+      (normMat.includes('backer') || matAttr.substrate === 'hardboard') &&
+      ((lineAttr.substrate === 'mdf' && matAttr.substrate === 'hardboard') ||
+        (lineAttr.substrate === 'hardboard' && matAttr.substrate === 'mdf') ||
+        lineAttr.substrate === matAttr.substrate);
+
+    if (matAttr.substrate === lineAttr.substrate || isBackerPair) {
+      score += 50;
+    } else {
+      score -= 40;
+      // If there are no specific decor keywords (e.g. plain color like White MDF vs White Waterproof),
+      // a substrate clash disqualifies the match so distinct plain boards of different substrates are not conflated.
+      if (matWords.length === 0) {
+        score -= 50;
+      }
+    }
+  }
+
+  // 4. Keyword / Material term scoring
   for (const word of matWords) {
     if (normLine.includes(word)) {
       score += 15;
