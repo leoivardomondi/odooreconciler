@@ -70,7 +70,43 @@ test('Activity and Chatter Deduplication Suite', async (t) => {
     assert.equal(resultId, 777);
     assert.ok(createdValues);
     assert.equal((createdValues as any).res_id, 2002);
-    assert.equal((createdValues as any).summary, 'PO APPROVAL REQUIRED');
+    assert.match(String((createdValues as any).summary), /^PO APPROVAL REQUIRED/);
+    assert.match(String((createdValues as any).summary), /·/);
+    assert.match(String((createdValues as any).note), /Timestamp:\s+\d{4}-\d{2}-\d{2}/);
+  });
+
+  await t.test('createTodoActivity deduplicates open activities that have timestamps attached', async () => {
+    let createRecordCalls = 0;
+    const mockClient = {
+      searchReadRecords: async (model: string) => {
+        if (model === 'mail.activity') {
+          return [
+            {
+              id: 602,
+              summary: 'Upload Job Summary · 18 Nov 14:30',
+              note: '<p>Existing note with timestamp</p>',
+              user_id: [10, 'Charles'],
+            },
+          ];
+        }
+        return [];
+      },
+      createRecord: async () => {
+        createRecordCalls++;
+        return 999;
+      },
+    } as unknown as OdooClient;
+
+    const resultId = await createTodoActivity(mockClient, {
+      modelName: 'sale.order',
+      recordId: 1001,
+      userId: 10,
+      summary: 'Upload Job Summary',
+      noteLines: ['Sales Order: S0001', 'Please attach job summary'],
+    });
+
+    assert.equal(resultId, 602, 'Must match and return existing activity id regardless of timestamp in existing summary');
+    assert.equal(createRecordCalls, 0, 'Must NOT call createRecord when timestamped open activity exists');
   });
 
   await t.test('hasModelChatterMessage correctly queries mail.message for matching text snippets', async () => {

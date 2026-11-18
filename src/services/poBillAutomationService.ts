@@ -27,7 +27,7 @@ import {
   notifyUnreadableDocument,
 } from './unreadableDocumentNotificationService';
 import { notifyAiCredentialFailures } from './aiCredentialFailureNotificationService';
-import { findOpenActivities, closeActivities } from './odooActivityService';
+import { findOpenActivities, closeActivities, createTodoActivity } from './odooActivityService';
 import { sendPoBillSuccessNotification } from './poBillNotificationService';
 
 const TOTAL_TOLERANCE = 1;
@@ -3363,23 +3363,18 @@ async function createPurchaseOrderActivity(
     console.warn('[poBillAutomation] Failed to check existing activities, proceeding safely:', err);
   }
 
-  const resModelId = await getPurchaseOrderModelId(client);
-  const activityTypeId = await getTodoActivityTypeId(client);
   const allowedUser = await client.findUserByNameLoginOrEmail(ALLOWED_NOTIFICATION_USER_NAME);
   if (!allowedUser) {
     throw new Error(`Could not create notification activity because ${ALLOWED_NOTIFICATION_USER_NAME} was not found in Odoo.`);
   }
-  const values: Record<string, unknown> = {
-    res_model_id: resModelId,
-    res_id: purchaseOrder.id,
-    activity_type_id: activityTypeId,
-    user_id: allowedUser.id,
-    summary,
-    note: `<p>${noteLines.map(escapeHtml).join('<br/>')}</p>`,
-    date_deadline: formatDateOnly(new Date()),
-  };
 
-  const createdId = await client.createRecord('mail.activity', values);
+  const createdId = await createTodoActivity(client, {
+    modelName: 'purchase.order',
+    recordId: purchaseOrder.id,
+    userId: allowedUser.id,
+    summary,
+    noteLines,
+  });
   poBillActivityCooldown.set(dedupeKey, Date.now());
   return createdId;
 }
