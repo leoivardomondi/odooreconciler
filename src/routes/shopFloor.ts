@@ -317,7 +317,7 @@ function toEAT(utcStr: string | null): string | null {
       hour12: false,
       hourCycle: 'h23',
     }).formatToParts(parsedDate);
-    
+
     const value = (type: string) => parts.find((part) => part.type === type)?.value || '00';
     return `${value('year')}-${value('month')}-${value('day')} ${value('hour')}:${value('minute')}`;
   } catch {
@@ -509,7 +509,7 @@ class MemoryCache {
 
   delete(key: string): void {
     this.cache.delete(key);
-    void deleteShopFloorSharedCache(key).catch(() => {});
+    void deleteShopFloorSharedCache(key).catch(() => { });
   }
 
   keys(): IterableIterator<string> {
@@ -1026,9 +1026,9 @@ export async function buildInstantMysqlOperatorDashboard(userEmail: string): Pro
 
   const cachedOp = Array.isArray(operatorsListEntry?.data)
     ? operatorsListEntry.data.find((o: any) => {
-        const em = o.workEmail || o.email;
-        return em && String(em).trim().toLowerCase() === normalizedEmail;
-      })
+      const em = o.workEmail || o.email;
+      return em && String(em).trim().toLowerCase() === normalizedEmail;
+    })
     : null;
 
   const resolvedName = cachedOp?.name || userProfile?.displayName || emailDisplayName(normalizedEmail) || 'Operator';
@@ -1036,22 +1036,22 @@ export async function buildInstantMysqlOperatorDashboard(userEmail: string): Pro
 
   const employee = (userSnapshot?.data?.employee && userSnapshot.data.employee.id > 0)
     ? {
-        ...userSnapshot.data.employee,
-        name: (userSnapshot.data.employee.name && userSnapshot.data.employee.name !== normalizedEmail.split('@')[0])
-          ? userSnapshot.data.employee.name
-          : resolvedName,
-        photoUrl: resolvedPhoto || userSnapshot.data.employee.photoUrl || null,
-      }
+      ...userSnapshot.data.employee,
+      name: (userSnapshot.data.employee.name && userSnapshot.data.employee.name !== normalizedEmail.split('@')[0])
+        ? userSnapshot.data.employee.name
+        : resolvedName,
+      photoUrl: resolvedPhoto || userSnapshot.data.employee.photoUrl || null,
+    }
     : {
-        id: cachedOp?.id || 0,
-        name: resolvedName,
-        jobTitle: cachedOp?.jobTitle || 'Operator',
-        department: cachedOp?.department || null,
-        workEmail: normalizedEmail,
-        mobilePhone: cachedOp?.phone || null,
-        manager: cachedOp?.manager || null,
-        photoUrl: resolvedPhoto,
-      };
+      id: cachedOp?.id || 0,
+      name: resolvedName,
+      jobTitle: cachedOp?.jobTitle || 'Operator',
+      department: cachedOp?.department || null,
+      workEmail: normalizedEmail,
+      mobilePhone: cachedOp?.phone || null,
+      manager: cachedOp?.manager || null,
+      photoUrl: resolvedPhoto,
+    };
 
   const attendance = userSnapshot?.data?.attendance || null;
   const areaPerformanceRates = sharedMo?.areaPerformanceRates || [];
@@ -2012,14 +2012,14 @@ router.get('/shop-floor', async (req: Request, res: Response) => {
   const normalizedEmail = viewedEmail.trim().toLowerCase();
   const cacheKey = `shop-floor-dashboard:v3:${normalizedEmail}`;
   const featureFlagsPromise = getShopFloorFeatureFlags();
-    const isExplicitRefresh = req.query.refresh === 'true';
-    if (isExplicitRefresh) {
-      dailyManufacturingAnalytics.clear();
-      const sharedMoEntry = shopFloorCache.getEntry('shop-floor:shared-work-orders:v1');
-      if (sharedMoEntry) {
-        sharedMoEntry.freshUntil = 0;
-      }
+  const isExplicitRefresh = req.query.refresh === 'true';
+  if (isExplicitRefresh) {
+    dailyManufacturingAnalytics.clear();
+    const sharedMoEntry = shopFloorCache.getEntry('shop-floor:shared-work-orders:v1');
+    if (sharedMoEntry) {
+      sharedMoEntry.freshUntil = 0;
     }
+  }
 
   try {
     const settings = await getSettings();
@@ -2137,7 +2137,7 @@ router.get('/shop-floor', async (req: Request, res: Response) => {
             undoneReceipts: openReceipts,
             unmarkedDeliveries: openDeliveries,
           };
-        } catch (_e) {}
+        } catch (_e) { }
       }
 
       if (!data.workOrders || data.workOrders.length === 0) {
@@ -2146,7 +2146,7 @@ router.get('/shop-floor', async (req: Request, res: Response) => {
           if (sharedMo?.data?.workOrders?.length) {
             data.workOrders = sharedMo.data.workOrders;
           }
-        } catch (_e) {}
+        } catch (_e) { }
       }
 
       try {
@@ -2169,7 +2169,7 @@ router.get('/shop-floor', async (req: Request, res: Response) => {
             isSyncing: false,
             isMoClosed: Boolean(p.is_mo_closed),
           }));
-      } catch (_e) {}
+      } catch (_e) { }
 
       if (data.boardRegistrationSummary) {
         data.boardRegistrationSummary = reconcileBoardRegistrationWithStockAlerts(
@@ -2216,7 +2216,7 @@ async function resolveShopFloorEmployeeRecord(email: string, client?: OdooClient
     if (snapshot?.data?.employee?.id && snapshot.data.employee.id > 0) {
       return { id: snapshot.data.employee.id, name: snapshot.data.employee.name };
     }
-  } catch (_e) {}
+  } catch (_e) { }
 
   // Check persistent MySQL shop_floor_operators table (<2ms)
   try {
@@ -2227,7 +2227,7 @@ async function resolveShopFloorEmployeeRecord(email: string, client?: OdooClient
     if (match && match.id > 0) {
       return { id: match.id, name: match.name };
     }
-  } catch (_e) {}
+  } catch (_e) { }
 
   if (client) {
     const found = await client.findEmployeeForShopFloorEmail(email).catch(() => null);
@@ -2287,7 +2287,7 @@ router.post('/shop-floor/attendance/check-in', async (req: Request, res: Respons
         cached.attendance.todayRecord = { check_in: checkInTime, check_out: null };
       }
       shopFloorCache.set(cacheKey, cached, 30 * 60 * 1000);
-      saveShopFloorDashboardSnapshot(viewedEmail, cached).catch(() => {});
+      saveShopFloorDashboardSnapshot(viewedEmail, cached).catch(() => { });
     }
 
     if (!wantsJson) {
@@ -2350,7 +2350,7 @@ router.post('/shop-floor/attendance/check-out', async (req: Request, res: Respon
         }
       }
       shopFloorCache.set(cacheKey, cached, 30 * 60 * 1000);
-      saveShopFloorDashboardSnapshot(viewedEmail, cached).catch(() => {});
+      saveShopFloorDashboardSnapshot(viewedEmail, cached).catch(() => { });
     }
 
     if (!wantsJson) {
@@ -2382,16 +2382,16 @@ router.get('/shop-floor/stock-alerts/notifications', async (req: Request, res: R
     const alerts = !data || data.isLimitedDashboard
       ? []
       : data.stockAlerts.map((alert) => ({
-          id: `${alert.moId}:${alert.component}`,
-          moName: alert.moName,
-          product: alert.product,
-          component: alert.component,
-          qtyNeeded: alert.qtyNeeded,
-          client: alert.client,
-          confirmedAt: alert.confirmedAt,
-          overdueDays: alert.overdueDays,
-          message: `${alert.component}: count first, then key in ${alert.qtyNeeded} incoming board(s).`,
-        }));
+        id: `${alert.moId}:${alert.component}`,
+        moName: alert.moName,
+        product: alert.product,
+        component: alert.component,
+        qtyNeeded: alert.qtyNeeded,
+        client: alert.client,
+        confirmedAt: alert.confirmedAt,
+        overdueDays: alert.overdueDays,
+        message: `${alert.component}: count first, then key in ${alert.qtyNeeded} incoming board(s).`,
+      }));
 
     res.setHeader('Cache-Control', 'no-store');
     res.json({
@@ -2719,7 +2719,7 @@ router.get('/shop-floor/operators', async (req: Request, res: Response) => {
     const departments = [...new Set(allOperators.map((op) => op.department).filter((d): d is string => Boolean(d)))];
 
     // Non-blocking background warmup of weekly PDF snapshot so download is instant (<50ms)
-    void getOrBuildWeeklyShopFloorReportPdf().catch(() => {});
+    void getOrBuildWeeklyShopFloorReportPdf().catch(() => { });
 
     const csrfToken = req.csrfToken || '';
 
@@ -3103,7 +3103,7 @@ router.post('/shop-floor/incident', async (req: Request, res: Response) => {
     void Promise.allSettled([
       deleteShopFloorSharedCache('shop-floor:shared-incidents:v1'),
       deleteShopFloorDashboardSnapshot(),
-    ]).catch(() => {});
+    ]).catch(() => { });
     res.redirect('/shop-floor?message=' + encodeURIComponent('Incident reported.'));
   } catch (err) {
     res.redirect('/shop-floor?error=' + encodeURIComponent(err instanceof Error ? err.message : 'Failed.'));
@@ -3131,7 +3131,7 @@ router.post('/shop-floor/incident/:id/resolve', async (req: Request, res: Respon
     void Promise.allSettled([
       deleteShopFloorSharedCache('shop-floor:shared-incidents:v1'),
       deleteShopFloorDashboardSnapshot(),
-    ]).catch(() => {});
+    ]).catch(() => { });
     res.redirect('/shop-floor?message=' + encodeURIComponent('Incident resolved.'));
   } catch (err) {
     res.redirect('/shop-floor?error=' + encodeURIComponent(err instanceof Error ? err.message : 'Failed.'));
@@ -3570,7 +3570,7 @@ export async function handlePublicShopFloor(req: Request, res: Response) {
         if (instant?.workOrders?.length) {
           workOrders = instant.workOrders;
         }
-      } catch (_) {}
+      } catch (_) { }
     }
 
     const operators = await getShopFloorOperatorsFromDb().catch(() => []);
@@ -4169,7 +4169,7 @@ async function handleAdvanceMo(req: Request, res: Response) {
               if (pendingPurchaseOrders.length) {
                 await client.approvePurchaseOrdersForShopFloor(pendingPurchaseOrders);
               }
-            } catch (_) {}
+            } catch (_) { }
           })();
         }
 
@@ -4245,8 +4245,8 @@ async function handleAdvanceMo(req: Request, res: Response) {
           && typeof advanceResult === 'object'
           && 'operatorLinked' in advanceResult
           && !advanceResult.operatorLinked
-            ? 'The job is In Progress in Odoo, but Odoo did not allow this app to update the employee tracking field.'
-            : null;
+          ? 'The job is In Progress in Odoo, but Odoo did not allow this app to update the employee tracking field.'
+          : null;
         if (operatorTrackingWarning) {
           void logEvent('warn', 'Odoo work order started without employee tracking attribution', {
             moId,
@@ -4558,22 +4558,22 @@ router.post('/shop-floor/board-intake', async (req: Request, res: Response) => {
     // Mark matching pending board requirements loaded in MySQL immediately (if client known)
     const updatedRequirements = partnerId > 0
       ? await markPendingShopFloorProcessesLoaded({
-          partnerId,
-          productId,
-          customerName,
-          productName,
-          loadedBy: actorName,
-          quantity: qty,
-          moId,
-          moName,
-        })
+        partnerId,
+        productId,
+        customerName,
+        productName,
+        loadedBy: actorName,
+        quantity: qty,
+        moId,
+        moName,
+      })
       : [];
     optimisticBoardIntakes.push({ id: optimisticId, partnerId, productId, productName, customerName, quantity: qty, expiresAt: Date.now() + 10 * 60 * 1000 });
     shopFloorCache.clearPrefix('shop-floor-dashboard:');
     void Promise.allSettled([
       deleteShopFloorDashboardSnapshot(),
       deleteShopFloorSharedCachePrefix('shop-floor:shared-board-reg:'),
-    ]).catch(() => {});
+    ]).catch(() => { });
 
     const hasMoReq = updatedRequirements && updatedRequirements.length > 0;
     const totalNeeded = hasMoReq ? updatedRequirements.reduce((sum, r) => sum + Number(r.qty_needed || 0), 0) : null;
@@ -4966,7 +4966,7 @@ router.post('/shop-floor/board-intake/:id/revert', async (req: Request, res: Res
   void Promise.allSettled([
     deleteShopFloorDashboardSnapshot(),
     deleteShopFloorSharedCachePrefix('shop-floor:shared-board-reg:'),
-  ]).catch(() => {});
+  ]).catch(() => { });
 
   // Launch the Odoo stock removal in the background (NON-BLOCKING)
   void (async () => {
@@ -5051,18 +5051,18 @@ router.post('/shop-floor/board-intake/:id/revert', async (req: Request, res: Res
         to: toRecipients,
         subject: `[REVERTED] ${subjectCustomerName} - Board Intake Cancelled${purchaseSubjectTag} - ${reportDate}`,
         html: `<p style="color:#b91c1c;"><strong>⚠️ Board Intake Cancelled &amp; Reverted in Odoo</strong></p>` +
-              `<p>` +
-              `<strong>Client:</strong> ${safeCustomerName}<br>` +
-              `<strong>Board:</strong> ${safeProductName}<br>` +
-              `<strong>Purchase:</strong> ${purchaseLabel}<br>` +
-              `<strong>Quantity Reverted:</strong> -${qtyNum} sheets<br>` +
-              `<strong>Remaining Odoo Stock:</strong> ${result.newQty}<br>` +
-              `<strong>Originally Logged By:</strong> ${safeOriginalActor}<br>` +
-              `<strong>Reverted By:</strong> ${safeRevertedBy}<br>` +
-              `<strong>Date:</strong> ${escapeHtml(reportDate)}<br>` +
-              `</p>` +
-              `<p style="font-size:0.9em;color:#475569;"><em>Comprehensive note: The previous board entry was reverted. ${qtyNum} sheets of ${safeProductName} have been deducted from inventory and component reservation released.</em></p>` +
-              buttonHtml,
+          `<p>` +
+          `<strong>Client:</strong> ${safeCustomerName}<br>` +
+          `<strong>Board:</strong> ${safeProductName}<br>` +
+          `<strong>Purchase:</strong> ${purchaseLabel}<br>` +
+          `<strong>Quantity Reverted:</strong> -${qtyNum} sheets<br>` +
+          `<strong>Remaining Odoo Stock:</strong> ${result.newQty}<br>` +
+          `<strong>Originally Logged By:</strong> ${safeOriginalActor}<br>` +
+          `<strong>Reverted By:</strong> ${safeRevertedBy}<br>` +
+          `<strong>Date:</strong> ${escapeHtml(reportDate)}<br>` +
+          `</p>` +
+          `<p style="font-size:0.9em;color:#475569;"><em>Comprehensive note: The previous board entry was reverted. ${qtyNum} sheets of ${safeProductName} have been deducted from inventory and component reservation released.</em></p>` +
+          buttonHtml,
       }).catch((mailError) => logEvent('error', `Board intake revert email to ${toRecipients} failed`, {
         customerName: entry.customer_name,
         productName: entry.product_name,
@@ -5306,7 +5306,7 @@ router.post('/shop-floor/deliveries/:id/validate', async (req: Request, res: Res
     await Promise.allSettled([
       deleteShopFloorSharedCachePrefix('shop-floor:deliveries:'),
       deleteShopFloorDashboardSnapshot(),
-    ]).catch(() => {});
+    ]).catch(() => { });
     void refreshStockMirror();
     await logEvent('info', 'Odoo delivery validated', { pickingId, actor: actorName, actorEmail: req.authUser.email });
     res.redirect('/shop-floor/deliveries?message=' + encodeURIComponent('Delivery validated in Odoo.'));

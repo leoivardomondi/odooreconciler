@@ -743,7 +743,9 @@
 
     window.removeBoardLogEmailDirect = function(emailToRemove) {
       if ((emailToRemove || '').toLowerCase() === HARDCODED_BOARD_LOG_EMAIL) {
-        alert('urbanvibeinteriordesign@gmail.com is hardcoded to receive all board logs and cannot be removed.');
+        if (typeof window.appNotify === 'function') {
+          window.appNotify('urbanvibeinteriordesign@gmail.com is hardcoded to receive all board logs and cannot be removed.', { type: 'warning', title: 'Protected Recipient' });
+        }
         return;
       }
       const hiddenInput = document.getElementById('stockBoardLogNotificationEmail');
@@ -2169,12 +2171,18 @@
       });
       const data = await res.json();
       if (data.success) {
-        alert(data.message);
+        if (typeof window.appNotify === 'function') {
+          window.appNotify(data.message, { type: 'success', title: 'Test Reminder Sent' });
+        }
       } else {
-        alert('Error: ' + (data.error || 'Failed to send test reminder'));
+        if (typeof window.appNotify === 'function') {
+          window.appNotify(data.error || 'Failed to send test reminder', { type: 'error', title: 'Reminder Failed' });
+        }
       }
     } catch (err) {
-      alert('Network error: ' + err.message);
+      if (typeof window.appNotify === 'function') {
+        window.appNotify('Network error: ' + err.message, { type: 'error', title: 'Network Error' });
+      }
     } finally {
       btn.disabled = false;
       btn.innerHTML = origText;

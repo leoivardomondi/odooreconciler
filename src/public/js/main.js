@@ -118,7 +118,10 @@ function setupPopupErrors() {
   document.querySelectorAll('[data-popup-error="true"]').forEach((element) => {
     if (!(element instanceof HTMLElement) || element.dataset.popupShown === 'true') return;
     element.dataset.popupShown = 'true';
-    window.alert(element.textContent.replace(/\s+/g, ' ').trim());
+    appNotify(element.textContent.replace(/\s+/g, ' ').trim(), {
+      type: 'error',
+      title: 'Attention Required',
+    });
   });
 }
 
@@ -454,7 +457,7 @@ document.addEventListener('click', async (event) => {
         copyTrigger.textContent = originalLabel;
       }, 1200);
     } catch (_error) {
-      window.alert('Could not copy the JSON payload.');
+      appNotify('Could not copy the JSON payload.', { type: 'error', title: 'Copy Failed' });
     }
   }
 
@@ -548,12 +551,6 @@ document.addEventListener('submit', (event) => {
   const submitter = event.submitter instanceof HTMLElement ? event.submitter : null;
 
   if (submitter && submitter.dataset.submitting === 'true') {
-    event.preventDefault();
-    return;
-  }
-
-  const message = submitter?.getAttribute('data-confirm') || form.getAttribute('data-confirm');
-  if (message && !window.confirm(message)) {
     event.preventDefault();
     return;
   }
@@ -1020,7 +1017,7 @@ function setupAppPermissionsPrompt() {
         }
         await refreshAppPermissionsPrompt();
       } else {
-        window.alert('Use your browser menu to install this app.');
+        appNotify('Use your browser menu to install this app.', { type: 'info', title: 'Install App' });
       }
       return;
     }
@@ -1341,55 +1338,190 @@ if ('serviceWorker' in navigator) {
   });
 }
 
-// ─── Confirmation Dialog (replaces browser confirm()) ──────────────
+// ─── In-App Notifications & Confirmation Dialogs ────────────────────
 
-function setupConfirmDialogs() {
-  document.addEventListener('submit', function (e) {
-    var form = e.target.closest('form[data-confirm]');
-    if (!form) return;
+function ensureAppToastStack() {
+  var stack = document.getElementById('appToastStack');
+  if (stack instanceof HTMLElement) return stack;
+  stack = document.createElement('div');
+  stack.id = 'appToastStack';
+  stack.className = 'app-toast-stack';
+  stack.setAttribute('aria-live', 'polite');
+  stack.setAttribute('aria-atomic', 'false');
+  document.body.appendChild(stack);
+  return stack;
+}
 
-    var message = form.getAttribute('data-confirm');
-    if (!message) return;
-    var submitter = e.submitter || null;
+function appNotify(message, options) {
+  var text = String(message || '').trim();
+  if (!text) return;
 
-    e.preventDefault();
-    e.stopImmediatePropagation();
+  var opts = typeof options === 'string' ? { type: options } : (options || {});
+  var type = ['success', 'error', 'warning', 'info'].includes(opts.type) ? opts.type : 'info';
+  var defaultTitles = {
+    success: 'Success',
+    error: 'Error',
+    warning: 'Warning',
+    info: 'Notice',
+  };
+  var icons = {
+    success: '✓',
+    error: '!',
+    warning: '⚠',
+    info: 'i',
+  };
+  var title = opts.title || defaultTitles[type];
+  var duration = typeof opts.duration === 'number'
+    ? opts.duration
+    : (type === 'error' || type === 'warning' ? 6500 : 4200);
 
-    // Remove any existing overlay
+  var stack = ensureAppToastStack();
+  var toast = document.createElement('div');
+  toast.className = 'app-toast app-toast--' + type;
+  toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
+  toast.innerHTML =
+    '<span class="app-toast-icon" aria-hidden="true">' + icons[type] + '</span>' +
+    '<div class="app-toast-body">' +
+      '<div class="app-toast-title">' + escapeHtml(title) + '</div>' +
+      '<div class="app-toast-message">' + escapeHtml(text) + '</div>' +
+    '</div>' +
+    '<button type="button" class="app-toast-close" aria-label="Close">&times;</button>';
+
+  var removed = false;
+  var timer = null;
+  function dismiss() {
+    if (removed) return;
+    removed = true;
+    if (timer) window.clearTimeout(timer);
+    toast.classList.add('is-leaving');
+    window.setTimeout(function () {
+      toast.remove();
+    }, 220);
+  }
+
+  toast.querySelector('.app-toast-close').addEventListener('click', dismiss);
+
+  if (duration > 0) {
+    timer = window.setTimeout(dismiss, duration);
+    toast.addEventListener('mouseenter', function () {
+      if (timer) {
+        window.clearTimeout(timer);
+        timer = null;
+      }
+    });
+    toast.addEventListener('mouseleave', function () {
+      if (!removed) {
+        timer = window.setTimeout(dismiss, 2200);
+      }
+    });
+  }
+
+  stack.appendChild(toast);
+  while (stack.children.length > 5) {
+    stack.firstElementChild.remove();
+  }
+}
+
+function appConfirm(message, options) {
+  return new Promise(function (resolve) {
+    var text = String(message || '').trim();
+    var opts = options || {};
+    var lower = text.toLowerCase();
+    var inferredDanger = /\b(revert|delete|remove|reverse|disconnect|cancel|destroy)\b/.test(lower);
+    var variant = opts.variant || (inferredDanger ? 'danger' : 'primary');
+    var title = opts.title || (variant === 'danger' ? 'Confirm Action' : 'Please Confirm');
+    var confirmText = opts.confirmText || (variant === 'danger' ? 'Confirm' : 'Continue');
+    var cancelText = opts.cancelText || 'Cancel';
+    var iconMap = { danger: '!', warning: '⚠', primary: '?' };
+    var btnClass = variant === 'danger'
+      ? 'btn btn-danger confirm-ok'
+      : (variant === 'warning' ? 'btn btn-warning confirm-ok' : 'btn btn-primary confirm-ok');
+
     var existing = document.querySelector('.confirm-overlay');
     if (existing) existing.remove();
 
     var overlay = document.createElement('div');
     overlay.className = 'confirm-overlay';
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
     overlay.innerHTML =
       '<div class="confirm-dialog">' +
-      '<p>' + escapeHtml(message) + '</p>' +
-      '<div class="confirm-dialog-footer">' +
-      '<button class="btn btn-outline-secondary btn-sm confirm-cancel">Cancel</button>' +
-      '<button class="btn btn-primary btn-sm confirm-ok">Confirm</button>' +
-      '</div>' +
+        '<div class="confirm-dialog-body">' +
+          '<span class="confirm-dialog-icon confirm-dialog-icon--' + variant + '" aria-hidden="true">' + (iconMap[variant] || '?') + '</span>' +
+          '<div class="confirm-dialog-content">' +
+            '<h6 class="confirm-dialog-title">' + escapeHtml(title) + '</h6>' +
+            '<p>' + escapeHtml(text) + '</p>' +
+          '</div>' +
+        '</div>' +
+        '<div class="confirm-dialog-footer">' +
+          '<button type="button" class="btn btn-outline-secondary confirm-cancel">' + escapeHtml(cancelText) + '</button>' +
+          '<button type="button" class="' + btnClass + '">' + escapeHtml(confirmText) + '</button>' +
+        '</div>' +
       '</div>';
 
-    overlay.querySelector('.confirm-cancel').addEventListener('click', function () {
+    var settled = false;
+    function finish(result) {
+      if (settled) return;
+      settled = true;
+      document.removeEventListener('keydown', onKeyDown, true);
       overlay.remove();
+      resolve(result);
+    }
+
+    function onKeyDown(ev) {
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        finish(false);
+      }
+    }
+
+    overlay.querySelector('.confirm-cancel').addEventListener('click', function () {
+      finish(false);
+    });
+    overlay.querySelector('.confirm-ok').addEventListener('click', function () {
+      finish(true);
+    });
+    overlay.addEventListener('click', function (ev) {
+      if (ev.target === overlay) finish(false);
     });
 
-    overlay.querySelector('.confirm-ok').addEventListener('click', function () {
-      overlay.remove();
-      form.removeAttribute('data-confirm');
-      form.removeAttribute('onsubmit');
+    document.addEventListener('keydown', onKeyDown, true);
+    document.body.appendChild(overlay);
+    var okBtn = overlay.querySelector('.confirm-ok');
+    if (okBtn instanceof HTMLElement) okBtn.focus();
+  });
+}
+
+window.appNotify = appNotify;
+window.showAppToast = appNotify;
+window.appConfirm = appConfirm;
+
+function setupConfirmDialogs() {
+  document.addEventListener('submit', function (e) {
+    var form = e.target instanceof HTMLFormElement ? e.target : null;
+    if (!form) return;
+
+    if (form.dataset.appConfirmedOnce === 'true') {
+      delete form.dataset.appConfirmedOnce;
+      return;
+    }
+
+    var submitter = e.submitter instanceof HTMLElement ? e.submitter : null;
+    var message = submitter?.getAttribute('data-confirm') || form.getAttribute('data-confirm');
+    if (!message) return;
+
+    e.preventDefault();
+    e.stopImmediatePropagation();
+
+    appConfirm(message).then(function (confirmed) {
+      if (!confirmed) return;
+      form.dataset.appConfirmedOnce = 'true';
       if (typeof form.requestSubmit === 'function') {
-        form.requestSubmit(submitter);
+        form.requestSubmit(submitter || undefined);
       } else {
         form.submit();
       }
     });
-
-    overlay.addEventListener('click', function (ev) {
-      if (ev.target === overlay) overlay.remove();
-    });
-
-    document.body.appendChild(overlay);
   }, true);
 }
 

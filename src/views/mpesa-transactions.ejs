@@ -337,7 +337,9 @@
           body.transactionIds = allIds;
           btn.innerHTML = '🤖 Categorizing all ' + allIds.length + ' transactions...';
         } else {
-          alert('No transactions found on this page.');
+          if (typeof window.appNotify === 'function') {
+            window.appNotify('No transactions found on this page.', { type: 'info', title: 'No Transactions' });
+          }
           btn.disabled = false;
           btn.innerHTML = originalText;
           return;
@@ -374,14 +376,20 @@
             msg += '\\nCategories: ' + cats;
           }
         }
-        alert(msg);
-        // Reload to show updated categories
-        window.location.reload();
+        if (typeof window.appNotify === 'function') {
+          window.appNotify(msg, { type: 'success', title: 'AI Categorization Complete' });
+        }
+        // Reload shortly so the user sees the notification
+        window.setTimeout(() => window.location.reload(), 1100);
       } else {
-        alert('AI categorization failed: ' + (result.error || 'Unknown error'));
+        if (typeof window.appNotify === 'function') {
+          window.appNotify(result.error || 'Unknown error', { type: 'error', title: 'AI Categorization Failed' });
+        }
       }
     } catch (err) {
-      alert('AI categorization request failed: ' + (err.message || 'Network error'));
+      if (typeof window.appNotify === 'function') {
+        window.appNotify(err.message || 'Network error', { type: 'error', title: 'Request Failed' });
+      }
     } finally {
       btn.disabled = false;
       btn.innerHTML = originalText;
@@ -399,14 +407,20 @@
       const text = await response.text();
       const cleanText = text.trim();
       if (!cleanText) {
-        alert('No non-empty notes found in current view/filters.');
+        if (typeof window.appNotify === 'function') {
+          window.appNotify('No non-empty notes found in current view/filters.', { type: 'info', title: 'No Notes Found' });
+        }
         return;
       }
       await navigator.clipboard.writeText(cleanText);
       const count = cleanText.split('\n').filter(Boolean).length;
-      alert('Copied ' + count + ' notes to clipboard! You can paste them directly into the chat.');
+      if (typeof window.appNotify === 'function') {
+        window.appNotify('Copied ' + count + ' notes to clipboard! You can paste them directly into the chat.', { type: 'success', title: 'Copied to Clipboard' });
+      }
     } catch (err) {
-      alert('Could not copy notes to clipboard: ' + (err.message || 'Unknown error'));
+      if (typeof window.appNotify === 'function') {
+        window.appNotify(err.message || 'Unknown error', { type: 'error', title: 'Copy Failed' });
+      }
     }
   }
 </script>

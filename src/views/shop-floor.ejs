@@ -1374,8 +1374,8 @@
                   }
                   if (typeof showToast === 'function') {
                     showToast(errorMsg);
-                  } else {
-                    alert(errorMsg);
+                  } else if (typeof window.appNotify === 'function') {
+                    window.appNotify(errorMsg, { type: 'error', title: 'Attendance Error' });
                   }
                 } finally {
                   allButtons.forEach(b => b.disabled = false);
