@@ -320,6 +320,12 @@
         </ul>
       </div>
 
+      <!-- Install Desktop PWA Button (shown when installable) -->
+      <button type="button" class="odoo-nav-pill d-none align-items-center gap-1" id="installShopFloorPwaBtn" title="Install SHOP FLOOR desktop app">
+        <img src="/public/icons/odoo-shop-floor-192.png" alt="" width="15" height="15" style="border-radius: 3px;" />
+        <span>Install App</span>
+      </button>
+
       <!-- Link to Public Board Logs -->
       <a href="/public/board-logs" class="odoo-nav-pill d-inline-flex align-items-center gap-1" title="View gate arrivals of whole boards">
         <span>📋</span>
@@ -1281,6 +1287,46 @@
     if (refreshBtn) {
       refreshBtn.addEventListener('click', function () {
         window.location.reload();
+      });
+    }
+
+    // 4. Standalone SHOP FLOOR PWA Registration & One-Click Desktop Install
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function () {
+        navigator.serviceWorker
+          .register('/public/shop-floor/sw.js', { scope: '/public/shop-floor' })
+          .catch(function () {});
+      });
+    }
+
+    let deferredShopFloorInstallPrompt = null;
+    const installPwaBtn = document.getElementById('installShopFloorPwaBtn');
+    window.addEventListener('beforeinstallprompt', function (event) {
+      event.preventDefault();
+      deferredShopFloorInstallPrompt = event;
+      if (installPwaBtn) {
+        installPwaBtn.classList.remove('d-none');
+        installPwaBtn.classList.add('d-inline-flex');
+      }
+    });
+    window.addEventListener('appinstalled', function () {
+      deferredShopFloorInstallPrompt = null;
+      if (installPwaBtn) {
+        installPwaBtn.classList.add('d-none');
+        installPwaBtn.classList.remove('d-inline-flex');
+      }
+      if (typeof window.appNotify === 'function') {
+        window.appNotify('SHOP FLOOR desktop app installed!', { type: 'success', title: 'Installed' });
+      }
+    });
+    if (installPwaBtn) {
+      installPwaBtn.addEventListener('click', async function () {
+        if (!deferredShopFloorInstallPrompt) return;
+        deferredShopFloorInstallPrompt.prompt();
+        await deferredShopFloorInstallPrompt.userChoice.catch(function () { return null; });
+        deferredShopFloorInstallPrompt = null;
+        installPwaBtn.classList.add('d-none');
+        installPwaBtn.classList.remove('d-inline-flex');
       });
     }
   })();

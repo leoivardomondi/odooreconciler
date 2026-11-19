@@ -3096,8 +3096,14 @@ async function handlePublicShopFloor(req, res) {
             return;
         }
         res.render('public-shop-floor', {
-            pageTitle: 'Shop Floor · Operations',
-            appName: env_1.env.APP_NAME || 'Urban Vibe',
+            pageTitle: 'SHOP FLOOR',
+            appName: 'SHOP FLOOR',
+            pwaManifest: '/public/shop-floor/manifest.webmanifest',
+            pwaAppName: 'SHOP FLOOR',
+            pwaThemeColor: '#714B67',
+            pwaFavicon: '/public/icons/odoo-shop-floor-192.png',
+            pwaIcon512: '/public/icons/odoo-shop-floor-512.png',
+            pwaSkipRootSw: true,
             summary,
             areaGroups,
             operators,

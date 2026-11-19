@@ -1330,7 +1330,7 @@ setupHourlyShopFloorTaskNotifications();
 setupConfirmDialogs();
 setupPopupErrors();
 
-if ('serviceWorker' in navigator) {
+if ('serviceWorker' in navigator && !document.querySelector('meta[name="pwa-skip-root-sw"]')) {
   window.addEventListener('load', () => {
     navigator.serviceWorker.register('/service-worker.js').catch(() => {
       // The app remains fully usable without the install/offline shell.

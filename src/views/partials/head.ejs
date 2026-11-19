@@ -4,18 +4,25 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <% const safeCsrfToken = typeof csrfToken === 'undefined' ? '' : (csrfToken || ''); %>
+    <% const resolvedManifest = typeof pwaManifest === 'string' && pwaManifest ? pwaManifest : '/manifest.webmanifest'; %>
+    <% const resolvedAppName = typeof pwaAppName === 'string' && pwaAppName ? pwaAppName : 'Urban Vibe Reconcile'; %>
+    <% const resolvedThemeColor = typeof pwaThemeColor === 'string' && pwaThemeColor ? pwaThemeColor : '#22213f'; %>
+    <% const resolvedFavicon = typeof pwaFavicon === 'string' && pwaFavicon ? pwaFavicon : '/public/icons/urban-vibe-favicon.png'; %>
+    <% const resolvedAppIcon = typeof pwaIcon512 === 'string' && pwaIcon512 ? pwaIcon512 : '/public/icons/urban-vibe-pwa-dark.png'; %>
+    <% const skipRootSw = typeof pwaSkipRootSw !== 'undefined' && Boolean(pwaSkipRootSw); %>
     <meta name="csrf-token" content="<%= safeCsrfToken %>" />
-    <meta name="theme-color" content="#22213f" />
-    <meta name="msapplication-TileColor" content="#22213f" />
+    <% if (skipRootSw) { %><meta name="pwa-skip-root-sw" content="true" /><% } %>
+    <meta name="theme-color" content="<%= resolvedThemeColor %>" />
+    <meta name="msapplication-TileColor" content="<%= resolvedThemeColor %>" />
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-title" content="Urban Vibe Reconcile" />
-    <meta name="application-name" content="Urban Vibe Reconcile" />
+    <meta name="apple-mobile-web-app-title" content="<%= resolvedAppName %>" />
+    <meta name="application-name" content="<%= resolvedAppName %>" />
     <title><%= pageTitle %> | <%= appName %></title>
-    <link rel="manifest" href="/manifest.webmanifest" />
-    <link rel="icon" href="/public/icons/urban-vibe-favicon.png" type="image/png" />
-    <link rel="icon" href="/public/icons/urban-vibe-pwa-dark.png" type="image/png" sizes="512x512" />
-    <link rel="apple-touch-icon" href="/public/icons/urban-vibe-pwa-dark.png" />
+    <link rel="manifest" href="<%= resolvedManifest %>" />
+    <link rel="icon" href="<%= resolvedFavicon %>" type="image/png" />
+    <link rel="icon" href="<%= resolvedAppIcon %>" type="image/png" sizes="512x512" />
+    <link rel="apple-touch-icon" href="<%= resolvedAppIcon %>" />
     <link href="/public/vendor/bootstrap/bootstrap.min.css" rel="stylesheet" />
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" />
     <link href="/public/css/app.css?v=20260816-grid-performance" rel="stylesheet" />

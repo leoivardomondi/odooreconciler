@@ -1,0 +1,28 @@
+{
+  "name": "SHOP FLOOR",
+  "short_name": "SHOP FLOOR",
+  "description": "Urban Vibe Shop Floor kiosk app for starting, pausing, and finishing Odoo manufacturing work orders.",
+  "id": "/public/shop-floor",
+  "start_url": "/public/shop-floor",
+  "scope": "/public/shop-floor",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone"],
+  "orientation": "any",
+  "background_color": "#f0f2f5",
+  "theme_color": "#714B67",
+  "categories": ["business", "productivity"],
+  "icons": [
+    {
+      "src": "/public/icons/odoo-shop-floor-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/public/icons/odoo-shop-floor-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

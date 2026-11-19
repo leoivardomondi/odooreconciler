@@ -281,6 +281,13 @@
               </svg>
               <span>Public Log List ↗</span>
             </a>
+            <a href="/public/shop-floor" target="_blank"
+              class="btn btn-sm rounded-pill px-3 d-inline-flex align-items-center gap-1.5 shadow-sm fw-semibold"
+              style="background:#714B67;color:#fff;border:1px solid #583a50;"
+              title="Open SHOP FLOOR public kiosk app">
+              <img src="/public/icons/odoo-shop-floor-192.png" alt="" width="15" height="15" style="border-radius:3px;" />
+              <span>SHOP FLOOR ↗</span>
+            </a>
             <span
               class="badge rounded-pill <%= stockMirror.isFresh ? 'bg-success-subtle text-success' : 'bg-warning-subtle text-warning-emphasis' %> border px-3 py-2">
               <%= stockMirror.isFresh ? 'Stock current' : (stockMirror.isRefreshing ? 'Stock refreshing'
@@ -1173,6 +1180,14 @@
                                   <line x1="10" y1="14" x2="21" y2="3" />
                                 </svg>
                                 <span>Public Continuous View ↗</span>
+                              </a>
+                              <a href="/public/shop-floor"
+                                target="_blank"
+                                class="btn btn-sm rounded-pill px-3 py-1 shadow-sm d-inline-flex align-items-center gap-1.5 fw-semibold"
+                                style="background:#714B67;color:#fff;border:1px solid #583a50;font-size: 0.80rem;"
+                                title="Open SHOP FLOOR public kiosk app">
+                                <img src="/public/icons/odoo-shop-floor-192.png" alt="" width="14" height="14" style="border-radius:3px;" />
+                                <span>SHOP FLOOR ↗</span>
                               </a>
                       </div>
                     </div>

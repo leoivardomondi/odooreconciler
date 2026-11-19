@@ -1,4 +1,4 @@
-const CACHE_NAME = 'urban-vibe-reconcile-v29';
+const CACHE_NAME = 'urban-vibe-reconcile-v30';
 const STATIC_ASSETS = [
   '/public/vendor/bootstrap/bootstrap.min.css',
   '/public/vendor/bootstrap/bootstrap.bundle.min.js',
@@ -34,7 +34,12 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  if (url.pathname.startsWith('/public/')) {
+  if (
+    url.pathname.startsWith('/public/vendor/') ||
+    url.pathname.startsWith('/public/css/') ||
+    url.pathname.startsWith('/public/js/') ||
+    url.pathname.startsWith('/public/icons/')
+  ) {
     event.respondWith(
       caches.match(request).then((cached) => {
         if (cached) return cached;

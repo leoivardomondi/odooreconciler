@@ -133,6 +133,15 @@ app.get('/service-worker.js', (_req, res) => {
     res.type('application/javascript');
     res.sendFile('sw.js', { root: paths_1.publicPath });
 });
+app.get('/public/shop-floor/manifest.webmanifest', (_req, res) => {
+    res.type('application/manifest+json');
+    res.sendFile('shop-floor-manifest.webmanifest', { root: paths_1.publicPath });
+});
+app.get('/public/shop-floor/sw.js', (_req, res) => {
+    res.setHeader('Service-Worker-Allowed', '/public/shop-floor');
+    res.type('application/javascript');
+    res.sendFile('shop-floor-sw.js', { root: paths_1.publicPath });
+});
 app.locals.formatDateTime = helpers_1.formatDateTime;
 app.locals.formatFileSize = helpers_1.formatFileSize;
 app.locals.getRelationLabel = helpers_1.getRelationLabel;
