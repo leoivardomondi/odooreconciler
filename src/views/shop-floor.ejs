@@ -2516,7 +2516,14 @@
 
       if (!response.ok || !result.ok) {
         if (rollback) rollback();
-        showToast(result.message || 'Could not update this job.');
+        if (typeof window.appNotify === 'function') {
+          var errTitle = result.code === 'workcenter_not_allowed'
+            ? 'Work Center Permission'
+            : (result.code === 'employee_not_linked' ? 'Employee Not Linked' : 'Action Blocked');
+          window.appNotify(result.message || 'Could not update this job.', { type: 'error', title: errTitle });
+        } else {
+          showToast(result.message || 'Could not update this job.');
+        }
         if (result.code === 'stock_missing') {
           currentStockStatus = 'no_stock';
           var reopenModal = bootstrap.Modal.getOrCreateInstance(actionModal);

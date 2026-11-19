@@ -893,11 +893,19 @@
         return;
       }
 
-      // App Rule 2: Ensure operator is selected
-      if (!currentOperatorName && action === 'start') {
-        pendingStartWoId = woId;
-        pendingStartStockStatus = stockStatus;
-        if (opModal) opModal.show();
+      // App Rule 2: Ensure a valid Odoo operator is selected for start/finish
+      if ((!currentOperatorId || !currentOperatorName) && (action === 'start' || action === 'finish')) {
+        if (action === 'start') {
+          pendingStartWoId = woId;
+          pendingStartStockStatus = stockStatus;
+        }
+        if (opModal) {
+          opModal.show();
+        } else if (typeof window.appNotify === 'function') {
+          window.appNotify('Please select an operator before starting or finishing a work order.', { type: 'warning', title: 'Operator Required' });
+        } else {
+          showToast('Please select an operator first.', true);
+        }
         return;
       }
 
@@ -984,6 +992,18 @@
           if (result.code === 'stock_missing') {
             if (stockMsgEl) stockMsgEl.textContent = result.message || 'Cannot start: Required components are missing from stock.';
             if (stockModal) stockModal.show();
+          } else if (result.code === 'operator_required') {
+            if (opModal) opModal.show();
+            if (typeof window.appNotify === 'function') {
+              window.appNotify(result.message || 'Please select an operator first.', { type: 'warning', title: 'Operator Required' });
+            } else {
+              showToast(result.message || 'Please select an operator first.', true);
+            }
+          } else if (typeof window.appNotify === 'function') {
+            window.appNotify(result.message || 'Action failed.', {
+              type: 'error',
+              title: result.code === 'workcenter_not_allowed' ? 'Work Center Permission' : 'Action Blocked',
+            });
           } else {
             showToast(result.message || 'Action failed.', true);
           }

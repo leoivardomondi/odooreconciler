@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { groupWorkOrdersByAreaAndClient } from './shopFloor';
+import { groupWorkOrdersByAreaAndClient, handlePublicWorkOrderAction } from './shopFloor';
 
 test('groupWorkOrdersByAreaAndClient groups work orders by operation area and then by client name', () => {
   const sampleWorkOrders = [
@@ -134,4 +134,43 @@ test('groupWorkOrdersByAreaAndClient normalizes fallback client names', () => {
   assert.ok(ts);
   assert.equal(ts.clientGroups.length, 1);
   assert.equal(ts.clientGroups[0].clientName, 'Direct / Unassigned Client');
+});
+
+function createMockRes() {
+  let statusCode = 200;
+  let payload: any = null;
+  const res: any = {
+    status(code: number) {
+      statusCode = code;
+      return res;
+    },
+    json(body: any) {
+      payload = body;
+      return res;
+    },
+  };
+  return { res, getStatus: () => statusCode, getPayload: () => payload };
+}
+
+test('handlePublicWorkOrderAction rejects start/finish without a valid operatorId', async () => {
+  for (const action of ['start', 'finish']) {
+    const req: any = { params: { id: '7063' }, body: { action, operatorName: 'Factory Operator' } };
+    const { res, getStatus, getPayload } = createMockRes();
+    await handlePublicWorkOrderAction(req, res);
+    assert.equal(getStatus(), 400);
+    assert.equal(getPayload()?.ok, false);
+    assert.equal(getPayload()?.code, 'operator_required');
+  }
+});
+
+test('handlePublicWorkOrderAction rejects invalid moId and unsupported actions', async () => {
+  const badId = createMockRes();
+  await handlePublicWorkOrderAction({ params: { id: '0' }, body: { action: 'start', operatorId: 4 } } as any, badId.res);
+  assert.equal(badId.getStatus(), 400);
+  assert.equal(badId.getPayload()?.ok, false);
+
+  const badAction = createMockRes();
+  await handlePublicWorkOrderAction({ params: { id: '7063' }, body: { action: 'delete', operatorId: 4 } } as any, badAction.res);
+  assert.equal(badAction.getStatus(), 400);
+  assert.equal(badAction.getPayload()?.ok, false);
 });

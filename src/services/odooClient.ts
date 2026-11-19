@@ -5648,6 +5648,75 @@ export class OdooClient {
     return result;
   }
 
+  async checkManufacturingOrderWorkcenterPermission(
+    moId: number,
+    action: 'start' | 'finish',
+    employeeId?: number,
+  ): Promise<{ allowed: boolean; code?: string; message?: string; workcenterName?: string }> {
+    if (!employeeId || !Number.isSafeInteger(employeeId) || employeeId <= 0) {
+      return {
+        allowed: false,
+        code: 'employee_not_linked',
+        message: 'Your account is not linked to a valid Odoo employee. Ask an administrator to link your account before starting or finishing work orders.',
+      };
+    }
+
+    const workorders = await this.searchReadRecords<{
+      id: number;
+      state: string;
+      workcenter_id: [number, string] | false;
+    }>('mrp.workorder', {
+      domain: [['production_id', '=', moId], ['state', 'not in', ['done', 'cancel']]],
+      fields: ['id', 'state', 'workcenter_id'],
+      limit: 50,
+      order: 'id asc',
+    });
+
+    const targetWorkorder = action === 'start'
+      ? (workorders.find((item) => item.state === 'ready' || item.state === 'pending') ||
+        workorders.find((item) => item.state === 'progress') ||
+        workorders[0])
+      : (workorders.find((item) => item.state === 'progress') || workorders[0]);
+
+    if (!targetWorkorder) {
+      if (action === 'finish') {
+        return { allowed: true };
+      }
+      return {
+        allowed: false,
+        code: 'no_active_workorder',
+        message: 'No active work operation is available to start for this manufacturing order.',
+      };
+    }
+
+    if (!Array.isArray(targetWorkorder.workcenter_id)) {
+      return {
+        allowed: false,
+        code: 'workcenter_missing',
+        message: 'This operation has no Odoo work centre assigned.',
+      };
+    }
+
+    const workcenterId = targetWorkorder.workcenter_id[0];
+    const workcenterName = targetWorkorder.workcenter_id[1];
+    const workcenters = await this.searchReadRecords<{ id: number; employee_ids: number[] }>('mrp.workcenter', {
+      domain: [['id', '=', workcenterId]],
+      fields: ['id', 'employee_ids'],
+      limit: 1,
+    });
+    const allowedEmployees = workcenters[0]?.employee_ids || [];
+    if (allowedEmployees.length && !allowedEmployees.includes(employeeId)) {
+      return {
+        allowed: false,
+        code: 'workcenter_not_allowed',
+        workcenterName,
+        message: `You are not assigned to ${workcenterName} in Odoo. Ask an administrator to add you under Allowed Employees.`,
+      };
+    }
+
+    return { allowed: true, workcenterName };
+  }
+
   async advanceManufacturingOrder(
     moId: number,
     action: 'start' | 'finish',

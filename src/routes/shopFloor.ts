@@ -3679,16 +3679,42 @@ export async function handlePublicWorkOrderAction(req: Request, res: Response) {
     return;
   }
 
+  if ((action === 'start' || action === 'finish') && (!operatorId || !Number.isSafeInteger(operatorId) || operatorId <= 0)) {
+    res.status(400).json({
+      ok: false,
+      code: 'operator_required',
+      message: 'Please select an operator before starting or finishing a work order.',
+    });
+    return;
+  }
+
   try {
     const isResuming = manuallyPausedMoIds.has(moId);
     const targetState = action === 'finish' ? 'done' : action === 'pause' ? 'paused' : 'progress';
 
     let stockCheck: any = null;
-    if (action === 'start' && !isResuming) {
+    if (action === 'start' || action === 'finish') {
       const settings = await getSettings();
       const client = new OdooClient(settings.odoo);
-      stockCheck = await client.checkManufacturingOrderStockAvailability(moId);
-      if (!stockCheck.isFullyAvailable) {
+      const shouldCheckStock = action === 'start' && !isResuming;
+      const [permCheck, fetchedStockCheck] = await Promise.all([
+        client.checkManufacturingOrderWorkcenterPermission(moId, action, operatorId),
+        shouldCheckStock ? client.checkManufacturingOrderStockAvailability(moId) : Promise.resolve(null),
+      ]);
+      stockCheck = fetchedStockCheck;
+
+      if (!permCheck.allowed) {
+        res.status(403).json({
+          ok: false,
+          code: permCheck.code || 'workcenter_not_allowed',
+          action,
+          moId,
+          message: permCheck.message || 'You are not allowed to run this operation in Odoo.',
+        });
+        return;
+      }
+
+      if (stockCheck && !stockCheck.isFullyAvailable) {
         const missingSummary = stockCheck.missingComponents
           .slice(0, 5)
           .map((c: any) => `${c.productName} (Need ${c.missingQty} ${c.uom})`)
@@ -4149,62 +4175,88 @@ async function handleAdvanceMo(req: Request, res: Response) {
     const actorName = employee?.name || req.authUser?.displayName || req.authUser?.email || emailDisplayName(viewedEmail) || 'Operator';
     const employeeId = employee?.id;
 
+    if (!employeeId || !Number.isSafeInteger(employeeId) || employeeId <= 0) {
+      const msg = 'Your account is not linked to a valid Odoo employee. Ask an administrator to link your account before starting or finishing work orders.';
+      if (wantsJson) {
+        res.status(403).json({ ok: false, code: 'employee_not_linked', action, moId, message: msg });
+        return;
+      }
+      res.redirect('/shop-floor?error=' + encodeURIComponent(msg) + '#manufacturing-orders');
+      return;
+    }
+
     const isResuming = manuallyPausedMoIds.has(moId);
     const targetState = action === 'finish' ? 'done' : 'progress';
 
-    // If resuming a paused MO, components were already verified and allocated upon initial start.
-    // Skip slow synchronous re-checking to ensure instantaneous resume (<10ms).
-    let stockCheck: any = null;
-    if (!isResuming) {
-      const settings = await getSettings();
-      const client = new OdooClient(settings.odoo);
-      stockCheck = await client.checkManufacturingOrderStockAvailability(moId);
-      if (!stockCheck.isFullyAvailable) {
-        if (stockCheck.hasMissingBoards) {
-          // Run pending PO auto-approval asynchronously in the background so operator gets instant feedback
-          void (async () => {
-            try {
-              const procurement = await client.getManufacturingOrderBoardProcurement(moId);
-              const pendingPurchaseOrders = procurement.purchaseOrders.filter((po) => ['draft', 'sent', 'to approve'].includes(po.state));
-              if (pendingPurchaseOrders.length) {
-                await client.approvePurchaseOrdersForShopFloor(pendingPurchaseOrders);
-              }
-            } catch (_) { }
-          })();
-        }
+    // Validate workcenter permission (and stock availability when not resuming) before responding
+    const settings = await getSettings();
+    const client = new OdooClient(settings.odoo);
+    const [permCheck, stockCheck] = await Promise.all([
+      client.checkManufacturingOrderWorkcenterPermission(moId, action, employeeId),
+      !isResuming ? client.checkManufacturingOrderStockAvailability(moId) : Promise.resolve(null),
+    ]);
 
-        const missingSummary = stockCheck.missingComponents
-          .slice(0, 5)
-          .map((c: any) => `${c.productName} (Need ${c.missingQty} ${c.uom})`)
-          .join(', ') + (stockCheck.missingComponents.length > 5 ? ` and ${stockCheck.missingComponents.length - 5} more` : '');
-        const actionVerb = action === 'finish' ? 'finish or close' : 'start';
-        const message = `Cannot ${actionVerb} ${stockCheck.moName}: Missing required components in stock (${missingSummary}). Add or receive the required stock before proceeding.`;
-
-        let redirectTo = '/shop-floor';
-        if (stockCheck.hasMissingBoards) {
-          redirectTo = `/shop-floor/boards?message=${encodeURIComponent(message)}`;
-        } else if (stockCheck.hasMissingHardware) {
-          redirectTo = `/shop-floor/receipts?message=${encodeURIComponent(message)}`;
-        }
-
-        if (wantsJson) {
-          res.status(409).json({
-            ok: false,
-            code: 'stock_missing',
-            action,
-            moId,
-            moName: stockCheck.moName,
-            message,
-            missingComponents: stockCheck.missingComponents,
-            hasMissingBoards: stockCheck.hasMissingBoards,
-            hasMissingHardware: stockCheck.hasMissingHardware,
-            redirectTo,
-          });
-          return;
-        }
-        res.redirect(redirectTo);
+    if (!permCheck.allowed) {
+      const permMsg = permCheck.message || 'You are not assigned to this work center in Odoo.';
+      if (wantsJson) {
+        res.status(403).json({
+          ok: false,
+          code: permCheck.code || 'workcenter_not_allowed',
+          action,
+          moId,
+          message: permMsg,
+        });
         return;
       }
+      res.redirect('/shop-floor?error=' + encodeURIComponent(permMsg) + '#manufacturing-orders');
+      return;
+    }
+
+    if (stockCheck && !stockCheck.isFullyAvailable) {
+      if (stockCheck.hasMissingBoards) {
+        // Run pending PO auto-approval asynchronously in the background so operator gets instant feedback
+        void (async () => {
+          try {
+            const procurement = await client.getManufacturingOrderBoardProcurement(moId);
+            const pendingPurchaseOrders = procurement.purchaseOrders.filter((po) => ['draft', 'sent', 'to approve'].includes(po.state));
+            if (pendingPurchaseOrders.length) {
+              await client.approvePurchaseOrdersForShopFloor(pendingPurchaseOrders);
+            }
+          } catch (_) { }
+        })();
+      }
+
+      const missingSummary = stockCheck.missingComponents
+        .slice(0, 5)
+        .map((c: any) => `${c.productName} (Need ${c.missingQty} ${c.uom})`)
+        .join(', ') + (stockCheck.missingComponents.length > 5 ? ` and ${stockCheck.missingComponents.length - 5} more` : '');
+      const actionVerb = action === 'finish' ? 'finish or close' : 'start';
+      const message = `Cannot ${actionVerb} ${stockCheck.moName}: Missing required components in stock (${missingSummary}). Add or receive the required stock before proceeding.`;
+
+      let redirectTo = '/shop-floor';
+      if (stockCheck.hasMissingBoards) {
+        redirectTo = `/shop-floor/boards?message=${encodeURIComponent(message)}`;
+      } else if (stockCheck.hasMissingHardware) {
+        redirectTo = `/shop-floor/receipts?message=${encodeURIComponent(message)}`;
+      }
+
+      if (wantsJson) {
+        res.status(409).json({
+          ok: false,
+          code: 'stock_missing',
+          action,
+          moId,
+          moName: stockCheck.moName,
+          message,
+          missingComponents: stockCheck.missingComponents,
+          hasMissingBoards: stockCheck.hasMissingBoards,
+          hasMissingHardware: stockCheck.hasMissingHardware,
+          redirectTo,
+        });
+        return;
+      }
+      res.redirect(redirectTo);
+      return;
     }
 
     // Stock check passed or resuming: Respond instantly for zero-wait operator feedback (<15ms)
@@ -4233,7 +4285,7 @@ async function handleAdvanceMo(req: Request, res: Response) {
       try {
         const settings = await getSettings();
         const client = new OdooClient(settings.odoo);
-        const advanceResult = await client.advanceManufacturingOrder(moId, action, employeeId, stockCheck);
+        const advanceResult = await client.advanceManufacturingOrder(moId, action, employeeId, stockCheck || undefined);
         await optimisticallyUpdateSharedWorkOrderState(moId, targetState, actorName, viewedEmail);
         const sharedMoEntry = shopFloorCache.getEntry('shop-floor:shared-work-orders:v1');
         if (sharedMoEntry) {
