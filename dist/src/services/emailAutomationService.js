@@ -5,12 +5,14 @@ exports.isDue = isDue;
 exports.runEmailAutomations = runEmailAutomations;
 exports.startEmailAutomationInterval = startEmailAutomationInterval;
 const repositories_1 = require("../models/repositories");
+const db_1 = require("../models/db");
 const logService_1 = require("./logService");
 const mailTransport_1 = require("./mailTransport");
 const mpesaReviewNotificationService_1 = require("./mpesaReviewNotificationService");
 const moOvertimeSuggestionService_1 = require("./moOvertimeSuggestionService");
 const shopFloorTaskReminderService_1 = require("./shopFloorTaskReminderService");
 const weeklyShopFloorReportService_1 = require("./weeklyShopFloorReportService");
+const operatorProfileReportService_1 = require("./operatorProfileReportService");
 const moStockShortageReportService_1 = require("./moStockShortageReportService");
 const nvidiaApiKeyExpirationReminderService_1 = require("./nvidiaApiKeyExpirationReminderService");
 let timer = null;
@@ -131,11 +133,33 @@ async function runEmailAutomations(now = new Date()) {
                 continue;
             try {
                 if (item.systemKey === 'weekly-shop-floor-report') {
+                    // Cross-process / restart-safe deduplication: check persistent DB claim AND audit logs
+                    const claimKey = `weekly-report-dispatch:${local.dateKey}`;
+                    const existingClaim = await (0, repositories_1.getShopFloorSharedCache)(claimKey).catch(() => null);
+                    const existingLog = await (0, db_1.queryOne)(`SELECT id FROM logs WHERE message = 'Wednesday Shop Floor report sent' AND substr(created_at, 1, 10) = ? LIMIT 1`, [local.dateKey]).catch(() => null);
+                    if (existingClaim?.data?.claimedAt || existingLog?.id) {
+                        lastSentWeeklyReportDateKey = local.dateKey;
+                        continue;
+                    }
                     lastSentWeeklyReportDateKey = local.dateKey;
+                    await (0, repositories_1.saveShopFloorSharedCache)(claimKey, { claimedAt: new Date().toISOString() }).catch(() => undefined);
                 }
                 const result = await dispatch(item);
                 if (result && typeof result === 'object' && 'skipped' in result && result.skipped) {
                     continue;
+                }
+                if (item.systemKey === 'weekly-shop-floor-report') {
+                    // Also dispatch individual Shop Floor & Board Log mastery profile PDFs to Leoivard (once per Wednesday)
+                    const profileClaimKey = `weekly-operator-profiles-dispatch:${local.dateKey}`;
+                    const existingProfileClaim = await (0, repositories_1.getShopFloorSharedCache)(profileClaimKey).catch(() => null);
+                    if (!existingProfileClaim?.data?.claimedAt) {
+                        await (0, repositories_1.saveShopFloorSharedCache)(profileClaimKey, { claimedAt: new Date().toISOString() }).catch(() => undefined);
+                        void (0, operatorProfileReportService_1.sendAllOperatorProfileReports)().catch((profileErr) => {
+                            void (0, logService_1.logEvent)('error', 'Weekly operator mastery profile reports failed', {
+                                error: profileErr instanceof Error ? profileErr.message : String(profileErr),
+                            }).catch(() => undefined);
+                        });
+                    }
                 }
                 settings = await (0, repositories_1.getSettings)();
                 settings.mail.automations = settings.mail.automations.map((current) => current.id === item.id ? { ...current, lastSentAt: new Date().toISOString() } : current);

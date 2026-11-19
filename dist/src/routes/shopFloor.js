@@ -39,6 +39,7 @@ const env_1 = require("../utils/env");
 const paths_1 = require("../utils/paths");
 const userIdentityService_1 = require("../services/userIdentityService");
 const weeklyShopFloorReportService_1 = require("../services/weeklyShopFloorReportService");
+const operatorProfileReportService_1 = require("../services/operatorProfileReportService");
 const moOverdueService_1 = require("../services/moOverdueService");
 const boardProductClassifier_1 = require("../services/boardProductClassifier");
 const moStockShortageReportService_1 = require("../services/moStockShortageReportService");
@@ -3992,6 +3993,66 @@ router.post('/shop-floor/operators/send-weekly-report', async (req, res) => {
     }
     catch (error) {
         res.redirect(`/shop-floor/operators?error=${encodeURIComponent(error instanceof Error ? error.message : 'Could not send report.')}`);
+    }
+});
+router.get('/shop-floor/operators/:id/profile-report.pdf', async (req, res) => {
+    if (!canManageShopFloor(req)) {
+        res.status(403).send('Administrator access required.');
+        return;
+    }
+    const operatorId = Number(req.params.id);
+    if (!Number.isSafeInteger(operatorId) || operatorId <= 0) {
+        res.status(400).send('Invalid operator ID.');
+        return;
+    }
+    try {
+        const fromDate = typeof req.query.fromDate === 'string' ? req.query.fromDate : undefined;
+        const toDate = typeof req.query.toDate === 'string' ? req.query.toDate : undefined;
+        const profile = await (0, operatorProfileReportService_1.buildOperatorProfileReport)(operatorId, { fromDate, toDate });
+        const { pdf, filename } = await (0, operatorProfileReportService_1.renderOperatorProfilePdf)(profile);
+        res.setHeader('Content-Type', 'application/pdf');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        res.send(pdf);
+    }
+    catch (error) {
+        res.status(500).send(error instanceof Error ? error.message : 'Could not generate operator profile report.');
+    }
+});
+router.post('/shop-floor/operators/:id/send-profile-report', async (req, res) => {
+    if (!canManageShopFloor(req)) {
+        res.status(403).send('Administrator access required.');
+        return;
+    }
+    const operatorId = Number(req.params.id);
+    if (!Number.isSafeInteger(operatorId) || operatorId <= 0) {
+        res.redirect(`/shop-floor/operators?error=${encodeURIComponent('Invalid operator ID.')}`);
+        return;
+    }
+    try {
+        const recipientEmail = String(req.body?.recipientEmail || operatorProfileReportService_1.LEOIVARD_REPORT_EMAIL).trim().toLowerCase();
+        const fromDate = typeof req.body?.fromDate === 'string' ? req.body.fromDate : undefined;
+        const toDate = typeof req.body?.toDate === 'string' ? req.body.toDate : undefined;
+        const { profile, recipient } = await (0, operatorProfileReportService_1.sendOperatorProfileReport)(operatorId, recipientEmail, { fromDate, toDate });
+        res.redirect(`/shop-floor/operators?message=${encodeURIComponent(`${profile.operator.name}'s mastery profile (${profile.overallMasteryScore}% · ${profile.masteryTier}) emailed to ${recipient}.`)}`);
+    }
+    catch (error) {
+        res.redirect(`/shop-floor/operators?error=${encodeURIComponent(error instanceof Error ? error.message : 'Could not send operator profile report.')}`);
+    }
+});
+router.post('/shop-floor/operators/send-all-profile-reports', async (req, res) => {
+    if (!canManageShopFloor(req)) {
+        res.status(403).send('Administrator access required.');
+        return;
+    }
+    try {
+        const recipientEmail = String(req.body?.recipientEmail || operatorProfileReportService_1.LEOIVARD_REPORT_EMAIL).trim().toLowerCase();
+        const fromDate = typeof req.body?.fromDate === 'string' ? req.body.fromDate : undefined;
+        const toDate = typeof req.body?.toDate === 'string' ? req.body.toDate : undefined;
+        const result = await (0, operatorProfileReportService_1.sendAllOperatorProfileReports)(recipientEmail, { fromDate, toDate });
+        res.redirect(`/shop-floor/operators?message=${encodeURIComponent(`Sent ${result.attachmentCount} operator mastery profile PDFs to ${result.recipient}.`)}`);
+    }
+    catch (error) {
+        res.redirect(`/shop-floor/operators?error=${encodeURIComponent(error instanceof Error ? error.message : 'Could not send operator profile reports.')}`);
     }
 });
 router.post('/shop-floor/features', async (req, res) => {

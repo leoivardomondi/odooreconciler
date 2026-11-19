@@ -67,6 +67,13 @@ import {
   getOrBuildWeeklyShopFloorReportPdf,
   generateAndCacheWeeklyReportPdf,
 } from '../services/weeklyShopFloorReportService';
+import {
+  buildOperatorProfileReport,
+  renderOperatorProfilePdf,
+  sendOperatorProfileReport,
+  sendAllOperatorProfileReports,
+  LEOIVARD_REPORT_EMAIL,
+} from '../services/operatorProfileReportService';
 import { getConfirmedMoQueueSchedule, getMoOverdueState } from '../services/moOverdueService';
 import { isBoardProductName } from '../services/boardProductClassifier';
 import {
@@ -4603,6 +4610,57 @@ router.post('/shop-floor/operators/send-weekly-report', async (req: Request, res
     res.redirect(`/shop-floor/operators?message=${encodeURIComponent(`Report sent to ${recipients.join(', ')}.`)}`);
   } catch (error) {
     res.redirect(`/shop-floor/operators?error=${encodeURIComponent(error instanceof Error ? error.message : 'Could not send report.')}`);
+  }
+});
+
+router.get('/shop-floor/operators/:id/profile-report.pdf', async (req: Request, res: Response) => {
+  if (!canManageShopFloor(req)) { res.status(403).send('Administrator access required.'); return; }
+  const operatorId = Number(req.params.id);
+  if (!Number.isSafeInteger(operatorId) || operatorId <= 0) {
+    res.status(400).send('Invalid operator ID.');
+    return;
+  }
+  try {
+    const fromDate = typeof req.query.fromDate === 'string' ? req.query.fromDate : undefined;
+    const toDate = typeof req.query.toDate === 'string' ? req.query.toDate : undefined;
+    const profile = await buildOperatorProfileReport(operatorId, { fromDate, toDate });
+    const { pdf, filename } = await renderOperatorProfilePdf(profile);
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(pdf);
+  } catch (error) {
+    res.status(500).send(error instanceof Error ? error.message : 'Could not generate operator profile report.');
+  }
+});
+
+router.post('/shop-floor/operators/:id/send-profile-report', async (req: Request, res: Response) => {
+  if (!canManageShopFloor(req)) { res.status(403).send('Administrator access required.'); return; }
+  const operatorId = Number(req.params.id);
+  if (!Number.isSafeInteger(operatorId) || operatorId <= 0) {
+    res.redirect(`/shop-floor/operators?error=${encodeURIComponent('Invalid operator ID.')}`);
+    return;
+  }
+  try {
+    const recipientEmail = String(req.body?.recipientEmail || LEOIVARD_REPORT_EMAIL).trim().toLowerCase();
+    const fromDate = typeof req.body?.fromDate === 'string' ? req.body.fromDate : undefined;
+    const toDate = typeof req.body?.toDate === 'string' ? req.body.toDate : undefined;
+    const { profile, recipient } = await sendOperatorProfileReport(operatorId, recipientEmail, { fromDate, toDate });
+    res.redirect(`/shop-floor/operators?message=${encodeURIComponent(`${profile.operator.name}'s mastery profile (${profile.overallMasteryScore}% · ${profile.masteryTier}) emailed to ${recipient}.`)}`);
+  } catch (error) {
+    res.redirect(`/shop-floor/operators?error=${encodeURIComponent(error instanceof Error ? error.message : 'Could not send operator profile report.')}`);
+  }
+});
+
+router.post('/shop-floor/operators/send-all-profile-reports', async (req: Request, res: Response) => {
+  if (!canManageShopFloor(req)) { res.status(403).send('Administrator access required.'); return; }
+  try {
+    const recipientEmail = String(req.body?.recipientEmail || LEOIVARD_REPORT_EMAIL).trim().toLowerCase();
+    const fromDate = typeof req.body?.fromDate === 'string' ? req.body.fromDate : undefined;
+    const toDate = typeof req.body?.toDate === 'string' ? req.body.toDate : undefined;
+    const result = await sendAllOperatorProfileReports(recipientEmail, { fromDate, toDate });
+    res.redirect(`/shop-floor/operators?message=${encodeURIComponent(`Sent ${result.attachmentCount} operator mastery profile PDFs to ${result.recipient}.`)}`);
+  } catch (error) {
+    res.redirect(`/shop-floor/operators?error=${encodeURIComponent(error instanceof Error ? error.message : 'Could not send operator profile reports.')}`);
   }
 });
 

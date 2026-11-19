@@ -1,4 +1,5 @@
-import { getSettings, saveSettings } from '../models/repositories';
+import { getSettings, getShopFloorSharedCache, saveSettings, saveShopFloorSharedCache } from '../models/repositories';
+import { queryOne } from '../models/db';
 import { EmailAutomation } from '../models/types';
 import { logEvent } from './logService';
 import { sendMailWithConfig } from './mailTransport';
@@ -6,6 +7,7 @@ import { sendDailyMpesaReviewNotification } from './mpesaReviewNotificationServi
 import { sendMoOvertimeSuggestion } from './moOvertimeSuggestionService';
 import { sendHourlyShopFloorTaskReminders } from './shopFloorTaskReminderService';
 import { sendWeeklyShopFloorReport } from './weeklyShopFloorReportService';
+import { sendAllOperatorProfileReports } from './operatorProfileReportService';
 import { sendDailyMoStockShortageReport } from './moStockShortageReportService';
 import { checkAndSendNvidiaApiKeyExpirationReminders } from './nvidiaApiKeyExpirationReminderService';
 
@@ -132,11 +134,36 @@ export async function runEmailAutomations(now = new Date()) {
       if (!isDue(item, now)) continue;
       try {
         if (item.systemKey === 'weekly-shop-floor-report') {
+          // Cross-process / restart-safe deduplication: check persistent DB claim AND audit logs
+          const claimKey = `weekly-report-dispatch:${local.dateKey}`;
+          const existingClaim = await getShopFloorSharedCache<{ claimedAt: string }>(claimKey).catch(() => null);
+          const existingLog = await queryOne<{ id: number }>(
+            `SELECT id FROM logs WHERE message = 'Wednesday Shop Floor report sent' AND substr(created_at, 1, 10) = ? LIMIT 1`,
+            [local.dateKey],
+          ).catch(() => null);
+          if (existingClaim?.data?.claimedAt || existingLog?.id) {
+            lastSentWeeklyReportDateKey = local.dateKey;
+            continue;
+          }
           lastSentWeeklyReportDateKey = local.dateKey;
+          await saveShopFloorSharedCache(claimKey, { claimedAt: new Date().toISOString() }).catch(() => undefined);
         }
         const result = await dispatch(item);
         if (result && typeof result === 'object' && 'skipped' in result && result.skipped) {
           continue;
+        }
+        if (item.systemKey === 'weekly-shop-floor-report') {
+          // Also dispatch individual Shop Floor & Board Log mastery profile PDFs to Leoivard (once per Wednesday)
+          const profileClaimKey = `weekly-operator-profiles-dispatch:${local.dateKey}`;
+          const existingProfileClaim = await getShopFloorSharedCache<{ claimedAt: string }>(profileClaimKey).catch(() => null);
+          if (!existingProfileClaim?.data?.claimedAt) {
+            await saveShopFloorSharedCache(profileClaimKey, { claimedAt: new Date().toISOString() }).catch(() => undefined);
+            void sendAllOperatorProfileReports().catch((profileErr) => {
+              void logEvent('error', 'Weekly operator mastery profile reports failed', {
+                error: profileErr instanceof Error ? profileErr.message : String(profileErr),
+              }).catch(() => undefined);
+            });
+          }
         }
         settings = await getSettings();
         settings.mail.automations = settings.mail.automations.map((current) =>

@@ -80,6 +80,13 @@
               <button type="submit" class="btn btn-primary px-3 btn-send-all" data-loading-label="Sending to all..." onclick="this.form.querySelector('.report-send-mode').value='all'">Send Report to All</button>
             </div>
           </form>
+
+          <form method="post" action="/shop-floor/operators/send-all-profile-reports" data-confirm="Email all 4 individual operator Shop Floor & Board Log mastery profile PDFs to Leoivard?" class="mt-2" data-no-loading="true">
+            <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+            <button type="submit" class="btn btn-sm btn-outline-primary w-100 rounded-pill fw-semibold">
+              📊 Email All 4 Operator Mastery Profiles to Leoivard
+            </button>
+          </form>
         </div>
       </div>
 
@@ -252,6 +259,17 @@
                 </button>
               </form>
               <button class="btn w-100 rounded-pill mt-1" style="background:#f0f9ff;color:#0369a1;border:1px solid #bae6fd;font-size:0.75rem;font-weight:500;padding:0.35rem 0" data-bs-toggle="collapse" data-bs-target="#assignItem<%= op.workEmail.replace(/[^a-zA-Z0-9]/g,'_') %>">+ Item</button>
+              <div class="d-flex gap-1 mt-1">
+                <a href="/shop-floor/operators/<%= op.id %>/profile-report.pdf" class="btn btn-sm flex-grow-1 rounded-pill" style="background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;font-size:0.72rem;font-weight:600;padding:0.32rem 0.5rem" download title="Download Shop Floor & Board Log mastery profile PDF">
+                  📄 Profile PDF
+                </a>
+                <form method="post" action="/shop-floor/operators/<%= op.id %>/send-profile-report" data-confirm="Email <%= op.name %>'s mastery profile PDF to Leoivard?" class="flex-grow-1" data-no-loading="true">
+                  <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+                  <button type="submit" class="btn btn-sm w-100 rounded-pill" style="background:#eef2ff;color:#4338ca;border:1px solid #c7d2fe;font-size:0.72rem;font-weight:600;padding:0.32rem 0.5rem" title="Email profile PDF to Leoivard">
+                    ✉ Email Profile
+                  </button>
+                </form>
+              </div>
               <div class="collapse mt-2" id="assignItem<%= op.workEmail.replace(/[^a-zA-Z0-9]/g,'_') %>">
                 <form method="post" action="/shop-floor/assign-item" class="p-2 rounded-3" style="background:#f8fafc">
                   <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
