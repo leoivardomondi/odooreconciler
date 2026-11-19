@@ -116,6 +116,14 @@
   .client-group-header:hover {
     background: #f4f4f5;
   }
+  .client-group-chevron {
+    display: inline-block;
+    transition: transform 0.2s ease;
+  }
+  .client-group-header.collapsed .client-group-chevron,
+  .client-group-header[aria-expanded="false"] .client-group-chevron {
+    transform: rotate(-90deg);
+  }
 
   .client-avatar {
     width: 34px;
@@ -523,10 +531,10 @@
                 >
                   <!-- Client Group Header -->
                   <div
-                    class="client-group-header d-flex flex-wrap justify-content-between align-items-center gap-2"
+                    class="client-group-header collapsed d-flex flex-wrap justify-content-between align-items-center gap-2"
                     data-bs-toggle="collapse"
                     data-bs-target="#clientCollapse-<%= area.areaKey %>-<%= cIdx %>"
-                    aria-expanded="true"
+                    aria-expanded="false"
                   >
                     <div class="d-flex align-items-center gap-2.5">
                       <div class="client-avatar">
@@ -559,12 +567,12 @@
                           <%= cg.readyOrders %> Ready
                         </span>
                       <% } %>
-                      <span class="text-muted ms-1" style="font-size: 0.8rem;">▼</span>
+                      <span class="text-muted ms-1 client-group-chevron" style="font-size: 0.8rem;">▼</span>
                     </div>
                   </div>
 
                   <!-- Client Work Orders Grid -->
-                  <div class="collapse show" id="clientCollapse-<%= area.areaKey %>-<%= cIdx %>">
+                  <div class="collapse" id="clientCollapse-<%= area.areaKey %>-<%= cIdx %>">
                     <div class="p-3 bg-white">
                       <div class="row g-3">
                         <% cg.workOrders.forEach((wo) => { 
@@ -860,7 +868,7 @@
 </div>
 
 <script>
-  (function () {
+  document.addEventListener('DOMContentLoaded', function () {
     // 1. Operator PIN-Activated Session Persistence
     // Clear legacy unverified localStorage keys so a 4-digit PIN is always required to activate a profile
     localStorage.removeItem('public_shop_floor_operator_id');
@@ -1247,14 +1255,31 @@
             }
           });
 
-          cc.style.display = visibleInClient > 0 ? '' : 'none';
+          const clientVisible = visibleInClient > 0;
+          cc.style.display = clientVisible ? '' : 'none';
+
+          // Auto-expand matching client groups when searching; keep collapsed by default otherwise
+          const collapseEl = cc.querySelector('.collapse');
+          const headerEl = cc.querySelector('.client-group-header');
+          if (collapseEl && q) {
+            if (clientVisible) {
+              collapseEl.classList.add('show');
+              if (headerEl) {
+                headerEl.classList.remove('collapsed');
+                headerEl.setAttribute('aria-expanded', 'true');
+              }
+            }
+          }
         });
 
-        sec.style.display = visibleInArea > 0 ? '' : 'none';
+        // Show selected work centre section even if it currently has 0 orders (unless filtered out by search/status)
+        const isEmptyWithoutFilter = !q && st === 'all' && activeAreaKey !== 'all' && areaMatches;
+        sec.style.display = (visibleInArea > 0 || isEmptyWithoutFilter) ? '' : 'none';
       });
 
       if (noResultsAlert) {
-        if (totalVisible === 0) {
+        const showNoResults = totalVisible === 0 && (Boolean(q) || st !== 'all');
+        if (showNoResults) {
           noResultsAlert.classList.remove('d-none');
         } else {
           noResultsAlert.classList.add('d-none');
@@ -1262,14 +1287,51 @@
       }
     }
 
+    function selectWorkCenterArea(areaKey, shouldScroll) {
+      activeAreaKey = areaKey || 'all';
+      areaTabButtons.forEach(function (b) {
+        b.classList.toggle('active', b.getAttribute('data-area-filter') === activeAreaKey);
+      });
+      applyFilters();
+
+      try {
+        const url = new URL(window.location.href);
+        if (activeAreaKey === 'all') {
+          url.searchParams.delete('area');
+        } else {
+          url.searchParams.set('area', activeAreaKey);
+        }
+        window.history.replaceState({}, '', url.toString());
+      } catch (_err) {}
+
+      if (shouldScroll) {
+        const targetEl = activeAreaKey === 'all'
+          ? document.getElementById('operationAreasContainer')
+          : document.getElementById('areaSection-' + activeAreaKey);
+        if (targetEl) {
+          const topOffset = targetEl.getBoundingClientRect().top + window.scrollY - 78;
+          window.scrollTo({ top: Math.max(0, topOffset), behavior: 'smooth' });
+        }
+      }
+    }
+
     areaTabButtons.forEach(function (tab) {
       tab.addEventListener('click', function () {
-        areaTabButtons.forEach(b => b.classList.remove('active'));
-        this.classList.add('active');
-        activeAreaKey = this.getAttribute('data-area-filter');
-        applyFilters();
+        const targetArea = this.getAttribute('data-area-filter') || 'all';
+        selectWorkCenterArea(targetArea, true);
       });
     });
+
+    // Respect ?area=... query parameter on initial load
+    const initialAreaParam = new URLSearchParams(window.location.search).get('area');
+    if (initialAreaParam && initialAreaParam !== 'all') {
+      const matchingTab = Array.from(areaTabButtons).find(function (b) {
+        return b.getAttribute('data-area-filter') === initialAreaParam;
+      });
+      if (matchingTab) {
+        selectWorkCenterArea(initialAreaParam, false);
+      }
+    }
 
     if (searchInput) searchInput.addEventListener('input', applyFilters);
     if (statusFilter) statusFilter.addEventListener('change', applyFilters);
@@ -1277,9 +1339,14 @@
       clearSearchBtn.addEventListener('click', function () {
         if (searchInput) searchInput.value = '';
         if (statusFilter) statusFilter.value = 'all';
-        activeAreaKey = 'all';
-        areaTabButtons.forEach(b => b.classList.toggle('active', b.getAttribute('data-area-filter') === 'all'));
-        applyFilters();
+        document.querySelectorAll('.client-group-card .collapse.show').forEach(function (el) {
+          el.classList.remove('show');
+        });
+        document.querySelectorAll('.client-group-header').forEach(function (hdr) {
+          hdr.classList.add('collapsed');
+          hdr.setAttribute('aria-expanded', 'false');
+        });
+        selectWorkCenterArea('all', false);
       });
     }
 
@@ -1289,8 +1356,10 @@
         window.location.reload();
       });
     }
+  });
 
-    // 4. Standalone SHOP FLOOR PWA Registration & One-Click Desktop Install
+  // 4. Standalone SHOP FLOOR PWA Registration & One-Click Desktop Install
+  (function () {
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', function () {
         navigator.serviceWorker
@@ -1300,10 +1369,10 @@
     }
 
     let deferredShopFloorInstallPrompt = null;
-    const installPwaBtn = document.getElementById('installShopFloorPwaBtn');
     window.addEventListener('beforeinstallprompt', function (event) {
       event.preventDefault();
       deferredShopFloorInstallPrompt = event;
+      const installPwaBtn = document.getElementById('installShopFloorPwaBtn');
       if (installPwaBtn) {
         installPwaBtn.classList.remove('d-none');
         installPwaBtn.classList.add('d-inline-flex');
@@ -1311,6 +1380,7 @@
     });
     window.addEventListener('appinstalled', function () {
       deferredShopFloorInstallPrompt = null;
+      const installPwaBtn = document.getElementById('installShopFloorPwaBtn');
       if (installPwaBtn) {
         installPwaBtn.classList.add('d-none');
         installPwaBtn.classList.remove('d-inline-flex');
@@ -1319,16 +1389,19 @@
         window.appNotify('SHOP FLOOR desktop app installed!', { type: 'success', title: 'Installed' });
       }
     });
-    if (installPwaBtn) {
-      installPwaBtn.addEventListener('click', async function () {
-        if (!deferredShopFloorInstallPrompt) return;
-        deferredShopFloorInstallPrompt.prompt();
-        await deferredShopFloorInstallPrompt.userChoice.catch(function () { return null; });
-        deferredShopFloorInstallPrompt = null;
-        installPwaBtn.classList.add('d-none');
-        installPwaBtn.classList.remove('d-inline-flex');
-      });
-    }
+    document.addEventListener('DOMContentLoaded', function () {
+      const installPwaBtn = document.getElementById('installShopFloorPwaBtn');
+      if (installPwaBtn) {
+        installPwaBtn.addEventListener('click', async function () {
+          if (!deferredShopFloorInstallPrompt) return;
+          deferredShopFloorInstallPrompt.prompt();
+          await deferredShopFloorInstallPrompt.userChoice.catch(function () { return null; });
+          deferredShopFloorInstallPrompt = null;
+          installPwaBtn.classList.add('d-none');
+          installPwaBtn.classList.remove('d-inline-flex');
+        });
+      }
+    });
   })();
 </script>
 
