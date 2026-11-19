@@ -3694,6 +3694,66 @@ export async function handlePublicShopFloorData(req: Request, res: Response) {
   }
 }
 
+export async function handlePublicShopFloorVerifyPin(req: Request, res: Response) {
+  const pin = String(req.body?.pin || '').trim();
+  const requestedOperatorId = req.body?.operatorId ? Number(req.body.operatorId) : 0;
+
+  if (!pin || !/^\d{4,8}$/.test(pin)) {
+    res.status(400).json({
+      ok: false,
+      code: 'invalid_pin_format',
+      message: 'Please enter your 4-digit attendance PIN.',
+    });
+    return;
+  }
+
+  try {
+    const operator = await verifyEmployeeAttendancePin(pin);
+    if (!operator) {
+      res.status(401).json({
+        ok: false,
+        code: 'invalid_pin',
+        message: 'Invalid attendance PIN. Please check your 4-digit Odoo PIN and try again.',
+      });
+      return;
+    }
+
+    const allowed = filterPublicShopFloorOperators([operator]);
+    if (allowed.length === 0) {
+      res.status(403).json({
+        ok: false,
+        code: 'operator_not_allowed',
+        message: 'Only authorized factory operators (Bitcher, Joel, Thomas, Michael) can activate a profile here.',
+      });
+      return;
+    }
+
+    if (requestedOperatorId > 0 && Number(operator.id) !== requestedOperatorId) {
+      res.status(401).json({
+        ok: false,
+        code: 'pin_mismatch',
+        message: 'That PIN does not match the selected operator. Please enter the correct 4-digit PIN.',
+      });
+      return;
+    }
+
+    res.json({
+      ok: true,
+      operator: {
+        id: operator.id,
+        name: operator.name,
+        jobTitle: operator.jobTitle || 'Operator',
+      },
+      message: `Profile activated for ${operator.name}.`,
+    });
+  } catch (err) {
+    res.status(500).json({
+      ok: false,
+      message: err instanceof Error ? err.message : 'Could not verify attendance PIN.',
+    });
+  }
+}
+
 export async function handlePublicWorkOrderAction(req: Request, res: Response) {
   const moId = Number(req.params.id || req.body.moId || req.body.id);
   const action = req.body.action;
@@ -3710,11 +3770,11 @@ export async function handlePublicWorkOrderAction(req: Request, res: Response) {
     return;
   }
 
-  if ((action === 'start' || action === 'finish') && (!operatorId || !Number.isSafeInteger(operatorId) || operatorId <= 0)) {
-    res.status(400).json({
+  if (!operatorId || !Number.isSafeInteger(operatorId) || !PUBLIC_SHOP_FLOOR_ALLOWED_OPERATOR_IDS.has(operatorId)) {
+    res.status(401).json({
       ok: false,
       code: 'operator_required',
-      message: 'Please select an operator before starting or finishing a work order.',
+      message: 'Please activate your operator profile with your 4-digit PIN first.',
     });
     return;
   }
@@ -3724,28 +3784,11 @@ export async function handlePublicWorkOrderAction(req: Request, res: Response) {
     const targetState = action === 'finish' ? 'done' : action === 'pause' ? 'paused' : 'progress';
 
     let stockCheck: any = null;
-    if (action === 'start' || action === 'finish') {
+    if (action === 'start' && !isResuming) {
       const settings = await getSettings();
       const client = new OdooClient(settings.odoo);
-      const shouldCheckStock = action === 'start' && !isResuming;
-      const [permCheck, fetchedStockCheck] = await Promise.all([
-        client.checkManufacturingOrderWorkcenterPermission(moId, action, operatorId),
-        shouldCheckStock ? client.checkManufacturingOrderStockAvailability(moId) : Promise.resolve(null),
-      ]);
-      stockCheck = fetchedStockCheck;
-
-      if (!permCheck.allowed) {
-        res.status(403).json({
-          ok: false,
-          code: permCheck.code || 'workcenter_not_allowed',
-          action,
-          moId,
-          message: permCheck.message || 'You are not allowed to run this operation in Odoo.',
-        });
-        return;
-      }
-
-      if (stockCheck && !stockCheck.isFullyAvailable) {
+      stockCheck = await client.checkManufacturingOrderStockAvailability(moId);
+      if (!stockCheck.isFullyAvailable) {
         const missingSummary = stockCheck.missingComponents
           .slice(0, 5)
           .map((c: any) => `${c.productName} (Need ${c.missingQty} ${c.uom})`)
@@ -3826,6 +3869,7 @@ export async function handlePublicWorkOrderAction(req: Request, res: Response) {
 router.get('/public/shop-floor', handlePublicShopFloor);
 router.get('/public-shop-floor', handlePublicShopFloor);
 router.get('/public/shop-floor/data', handlePublicShopFloorData);
+router.post('/public/shop-floor/verify-pin', handlePublicShopFloorVerifyPin);
 router.post('/public/shop-floor/work-order/:id/action', handlePublicWorkOrderAction);
 router.post('/public/shop-floor/work-order/:id/start', (req: Request, res: Response) => { req.body.action = 'start'; return handlePublicWorkOrderAction(req, res); });
 router.post('/public/shop-floor/work-order/:id/pause', (req: Request, res: Response) => { req.body.action = 'pause'; return handlePublicWorkOrderAction(req, res); });

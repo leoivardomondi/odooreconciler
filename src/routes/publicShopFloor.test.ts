@@ -1,6 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { filterPublicShopFloorOperators, groupWorkOrdersByAreaAndClient, handlePublicWorkOrderAction } from './shopFloor';
+import {
+  filterPublicShopFloorOperators,
+  groupWorkOrdersByAreaAndClient,
+  handlePublicShopFloorVerifyPin,
+  handlePublicWorkOrderAction,
+} from './shopFloor';
 
 test('groupWorkOrdersByAreaAndClient groups work orders by operation area and then by client name', () => {
   const sampleWorkOrders = [
@@ -152,15 +157,33 @@ function createMockRes() {
   return { res, getStatus: () => statusCode, getPayload: () => payload };
 }
 
-test('handlePublicWorkOrderAction rejects start/finish without a valid operatorId', async () => {
-  for (const action of ['start', 'finish']) {
+test('handlePublicWorkOrderAction rejects start/pause/finish without an authorized operatorId', async () => {
+  for (const action of ['start', 'pause', 'finish']) {
     const req: any = { params: { id: '7063' }, body: { action, operatorName: 'Factory Operator' } };
     const { res, getStatus, getPayload } = createMockRes();
     await handlePublicWorkOrderAction(req, res);
-    assert.equal(getStatus(), 400);
+    assert.equal(getStatus(), 401);
     assert.equal(getPayload()?.ok, false);
     assert.equal(getPayload()?.code, 'operator_required');
   }
+
+  // Non-factory-operator ID (e.g. director/admin) is also rejected on public kiosk
+  const nonOp = createMockRes();
+  await handlePublicWorkOrderAction({ params: { id: '7063' }, body: { action: 'start', operatorId: 1 } } as any, nonOp.res);
+  assert.equal(nonOp.getStatus(), 401);
+  assert.equal(nonOp.getPayload()?.code, 'operator_required');
+});
+
+test('handlePublicShopFloorVerifyPin validates 4-digit PIN format', async () => {
+  const emptyPin = createMockRes();
+  await handlePublicShopFloorVerifyPin({ body: { pin: '' } } as any, emptyPin.res);
+  assert.equal(emptyPin.getStatus(), 400);
+  assert.equal(emptyPin.getPayload()?.code, 'invalid_pin_format');
+
+  const shortPin = createMockRes();
+  await handlePublicShopFloorVerifyPin({ body: { pin: '12' } } as any, shortPin.res);
+  assert.equal(shortPin.getStatus(), 400);
+  assert.equal(shortPin.getPayload()?.code, 'invalid_pin_format');
 });
 
 test('handlePublicWorkOrderAction rejects invalid moId and unsupported actions', async () => {

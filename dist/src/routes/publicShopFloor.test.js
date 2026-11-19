@@ -145,15 +145,30 @@ function createMockRes() {
     };
     return { res, getStatus: () => statusCode, getPayload: () => payload };
 }
-(0, node_test_1.default)('handlePublicWorkOrderAction rejects start/finish without a valid operatorId', async () => {
-    for (const action of ['start', 'finish']) {
+(0, node_test_1.default)('handlePublicWorkOrderAction rejects start/pause/finish without an authorized operatorId', async () => {
+    for (const action of ['start', 'pause', 'finish']) {
         const req = { params: { id: '7063' }, body: { action, operatorName: 'Factory Operator' } };
         const { res, getStatus, getPayload } = createMockRes();
         await (0, shopFloor_1.handlePublicWorkOrderAction)(req, res);
-        strict_1.default.equal(getStatus(), 400);
+        strict_1.default.equal(getStatus(), 401);
         strict_1.default.equal(getPayload()?.ok, false);
         strict_1.default.equal(getPayload()?.code, 'operator_required');
     }
+    // Non-factory-operator ID (e.g. director/admin) is also rejected on public kiosk
+    const nonOp = createMockRes();
+    await (0, shopFloor_1.handlePublicWorkOrderAction)({ params: { id: '7063' }, body: { action: 'start', operatorId: 1 } }, nonOp.res);
+    strict_1.default.equal(nonOp.getStatus(), 401);
+    strict_1.default.equal(nonOp.getPayload()?.code, 'operator_required');
+});
+(0, node_test_1.default)('handlePublicShopFloorVerifyPin validates 4-digit PIN format', async () => {
+    const emptyPin = createMockRes();
+    await (0, shopFloor_1.handlePublicShopFloorVerifyPin)({ body: { pin: '' } }, emptyPin.res);
+    strict_1.default.equal(emptyPin.getStatus(), 400);
+    strict_1.default.equal(emptyPin.getPayload()?.code, 'invalid_pin_format');
+    const shortPin = createMockRes();
+    await (0, shopFloor_1.handlePublicShopFloorVerifyPin)({ body: { pin: '12' } }, shortPin.res);
+    strict_1.default.equal(shortPin.getStatus(), 400);
+    strict_1.default.equal(shortPin.getPayload()?.code, 'invalid_pin_format');
 });
 (0, node_test_1.default)('handlePublicWorkOrderAction rejects invalid moId and unsupported actions', async () => {
     const badId = createMockRes();
