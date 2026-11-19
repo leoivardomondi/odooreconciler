@@ -203,6 +203,9 @@ export function findMatchingSheetMaterial(input: {
       ) {
         score += 15;
         reasons.push(`Substrate compatible (${moSub}/${matSub})`);
+      } else if (moSub === 'block_board' || matSub === 'block_board') {
+        score -= 100;
+        reasons.push(`Incompatible block board substrate (${moSub} vs ${matSub})`);
       } else {
         score -= 25;
         reasons.push(`Substrate mismatch (${moSub} vs ${matSub})`);
