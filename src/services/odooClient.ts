@@ -208,8 +208,10 @@ export class OdooClient {
   private webSessionCookie: string | null = null;
   private webSessionContext: Record<string, unknown> = {};
   private webRpcSequence = 0;
-  private readonly recentSoChatterDedupe = new Map<string, number>();
-  private readonly recentChatterDedupe = new Map<string, number>();
+  private static readonly sharedRecentSoChatterDedupe = new Map<string, number>();
+  private static readonly sharedRecentChatterDedupe = new Map<string, number>();
+  private readonly recentSoChatterDedupe = OdooClient.sharedRecentSoChatterDedupe;
+  private readonly recentChatterDedupe = OdooClient.sharedRecentChatterDedupe;
   private static verifiedWarehouseCache = new Map<string, { id: number; name: string; code: string; companyId: number; cachedAt: number }>();
 
   constructor(private readonly credentials: OdooCredentials) {
@@ -1491,6 +1493,10 @@ export class OdooClient {
     recordId: number,
     message: string,
     partnerIds?: number[],
+    options?: {
+      dedupeSnippet?: string;
+      checkExisting?: boolean;
+    },
   ): Promise<void> {
     const targetCompanyId = await this.getTargetCompanyIdValue();
     let soName: string | null = null;
@@ -1585,7 +1591,11 @@ export class OdooClient {
       so.id,
       crossPostHtml,
       partnerIds,
-      { skipSoSync: true },
+      {
+        skipSoSync: true,
+        dedupeSnippet: options?.dedupeSnippet,
+        checkExisting: options?.checkExisting,
+      },
     );
   }
 
@@ -1639,7 +1649,16 @@ export class OdooClient {
     const result = await this.request<number>(model, 'message_post', kwargs);
 
     if ((model === 'mrp.production' || model === 'purchase.order') && !options?.skipSoSync) {
-      await this.crossPostChatterToRelatedSalesOrder(model as 'mrp.production' | 'purchase.order', recordId, message, partnerIds).catch((err) => {
+      await this.crossPostChatterToRelatedSalesOrder(
+        model as 'mrp.production' | 'purchase.order',
+        recordId,
+        message,
+        partnerIds,
+        {
+          dedupeSnippet: options?.dedupeSnippet,
+          checkExisting: options?.checkExisting,
+        },
+      ).catch((err) => {
         console.error(`[OdooClient] Failed to cross-post chatter from ${model} #${recordId} to sale.order:`, err);
       });
     }

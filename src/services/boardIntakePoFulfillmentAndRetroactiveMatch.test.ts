@@ -244,9 +244,10 @@ test('matchRetroactiveBoardLogsForActiveMos finds prior board log history and tr
 
   const originProductPOKeys = new Set<string>(); // No PO!
 
+  const uniqueLogId = `log-001-${Date.now()}`;
   const activeBoardLogs = [
     {
-      id: 'log-001',
+      id: uniqueLogId,
       actor_name: 'John Gate',
       actor_email: 'john@urbanvibe.co.ke',
       gate: 'Gate A',
@@ -275,6 +276,84 @@ test('matchRetroactiveBoardLogsForActiveMos finds prior board log history and tr
   assert.deepEqual(assignedMoIds, [501]);
   assert.ok(postedChatters.some((c) => c.model === 'mrp.production' && c.id === 501 && c.msg.includes('Found Matching Prior Board Log History')));
   assert.ok(postedChatters.some((c) => c.model === 'sale.order' && c.msg.includes('Prior Gate Board Log Matched to Manufacturing Order')));
+
+  // Second run (even if in-memory cache was cleared) must NOT repost or re-match due to persistent DB cache
+  const matchedAgain = await matchRetroactiveBoardLogsForActiveMos(
+    mockClient,
+    activeMOs,
+    boardMoves,
+    soPartnerMap,
+    originProductPOKeys,
+    activeBoardLogs,
+  );
+  assert.equal(matchedAgain, 0);
+  assert.equal(postedChatters.length, 2);
+});
+
+test('matchRetroactiveBoardLogsForActiveMos ignores stale board logs older than 72 hours (e.g. 14-day-old S03935 board log)', async () => {
+  const postedChatters: Array<{ model: string; id: number; msg: string }> = [];
+  const mockClient = {
+    getTargetCompanyIdValue: async () => 1,
+    searchReadRecords: async () => [{ id: 4118 }],
+    callRecordMethod: async () => true,
+    postModelChatterMessage: async (model: string, id: number, msg: string) => {
+      postedChatters.push({ model, id, msg });
+      return 1;
+    },
+  } as unknown as OdooClient;
+
+  const activeMOs = [
+    {
+      id: 7043,
+      name: 'WH/MO/06374',
+      state: 'confirmed',
+      origin: 'S03935',
+      create_date: '2026-11-18 09:53:33',
+    },
+  ];
+
+  const boardMoves = [
+    {
+      id: 2001,
+      raw_material_production_id: [7043, 'WH/MO/06374'] as [number, string],
+      product_id: [24910, 'Versasca Particle 18mm'] as [number, string],
+      product_uom_qty: 2,
+      quantity: 0,
+    },
+  ];
+
+  const soPartnerMap = new Map<string, { partnerId: number; partnerName: string }>();
+  soPartnerMap.set('S03935', { partnerId: 51, partnerName: 'JANAMBA WOOD WORKS' });
+
+  const staleBoardLogs = [
+    {
+      id: `stale-log-${Date.now()}`,
+      actor_name: 'Joel Ochango',
+      actor_email: 'joel@urbanvibe.co.ke',
+      gate: 'Gate',
+      vehicle_registration: '—',
+      arrival_date: '2026-11-04',
+      arrival_time: null,
+      product_id: 24910,
+      product_name: 'Versasca Particle 18mm',
+      partner_id: 51,
+      customer_name: 'JANAMBA WOOD WORKS',
+      quantity: 2,
+      created_at: '2026-11-04 11:00:00', // 14 days before S03935 was created!
+    },
+  ];
+
+  const matched = await matchRetroactiveBoardLogsForActiveMos(
+    mockClient,
+    activeMOs,
+    boardMoves,
+    soPartnerMap,
+    new Set<string>(),
+    staleBoardLogs,
+  );
+
+  assert.equal(matched, 0, 'Must not match a 14-day-old board log from a prior completed job');
+  assert.equal(postedChatters.length, 0);
 });
 
 test('reconcileRetroactiveBoardLogsForLinkedPos validates PO receipt for prior manual log when MO has linked PO', async () => {

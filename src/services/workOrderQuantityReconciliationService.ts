@@ -915,13 +915,21 @@ export async function reconcileWorkOrderQuantitiesForMo(
     `<p>Raw material component stock requirement updated to <strong>${targetQty}</strong> and re-reserved.</p>` +
     (actorInfo ? `<p><em>${actorInfo}</em></p>` : '');
 
-  await client.postModelChatterMessage('mrp.production', mo.id, moChatterHtml).catch(() => null);
+  await client.postModelChatterMessage('mrp.production', mo.id, moChatterHtml, undefined, {
+    skipSoSync: Boolean(soId),
+    checkExisting: true,
+    dedupeSnippet: `adjusted from ${currentQty} to ${targetQty}`,
+  }).catch(() => null);
 
   // 6. Cross-alert note on Sales Order chatter
   if (soId) {
     const soChatterHtml =
       `<p>✂️ <strong>Work Order Cutting Quantity Adjusted:</strong> MO <strong>${mo.name}</strong> (${moProductName}) work order quantity modified from <strong>${currentQty}</strong> to <strong>${targetQty}</strong> to match Job Summary requirements.</p>`;
-    await client.postModelChatterMessage('sale.order', soId, soChatterHtml).catch(() => null);
+    await client.postModelChatterMessage('sale.order', soId, soChatterHtml, undefined, {
+      skipSoSync: true,
+      checkExisting: true,
+      dedupeSnippet: `MO ${mo.name} (${moProductName}) work order quantity modified from ${currentQty} to ${targetQty}`,
+    }).catch(() => null);
   }
 
   await logEvent('info', 'Work order cutting quantity reconciled with Job Summary', {

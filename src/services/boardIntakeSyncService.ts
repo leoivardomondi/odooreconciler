@@ -640,17 +640,28 @@ export async function processBoardIntakePurchaseOrderFulfillment(
     ].join('<br/>\n');
 
     await client.postModelChatterMessage('purchase.order', eligiblePo.id, fulfillmentChatterHtml, partnerIds, {
+      skipSoSync: Boolean(linkedSo?.id),
       dedupeSnippet: `Gate Board Intake: Received via Purchase Receipt• Board: ${safeProductName}`,
+      checkExisting: true,
     }).catch(() => null);
     await client.postModelChatterMessage('stock.picking', targetPicking.id, fulfillmentChatterHtml, undefined, {
       dedupeSnippet: `Gate Board Intake: Received via Purchase Receipt• Board: ${safeProductName}`,
+      checkExisting: true,
     }).catch(() => null);
     if (linkedSo?.id) {
-      await client.postModelChatterMessage('sale.order', linkedSo.id, fulfillmentChatterHtml, partnerIds).catch(() => null);
+      await client.postModelChatterMessage('sale.order', linkedSo.id, fulfillmentChatterHtml, partnerIds, {
+        skipSoSync: true,
+        dedupeSnippet: `Gate Board Intake: Received via Purchase Receipt• Board: ${safeProductName}`,
+        checkExisting: true,
+      }).catch(() => null);
     }
     const moId = (orig ? moMap.get(orig) : undefined) ?? (extractedSo ? moMap.get(extractedSo) : undefined);
     if (moId) {
-      await client.postModelChatterMessage('mrp.production', moId, fulfillmentChatterHtml, partnerIds).catch(() => null);
+      await client.postModelChatterMessage('mrp.production', moId, fulfillmentChatterHtml, partnerIds, {
+        skipSoSync: true,
+        dedupeSnippet: `Gate Board Intake: Received via Purchase Receipt• Board: ${safeProductName}`,
+        checkExisting: true,
+      }).catch(() => null);
     }
 
     await logEvent('info', 'Board intake fulfilled via purchase order receipt', {
@@ -1182,7 +1193,9 @@ export async function syncBoardIntakeEntry(id: string) {
           hasBoardPo: mo.hasBoardPo,
           boardPoNames: mo.boardPoNames,
         });
-        return client.postModelChatterMessage('mrp.production', mo.moId, chatterHtml, partnerIds).catch(() => null);
+        return client.postModelChatterMessage('mrp.production', mo.moId, chatterHtml, partnerIds, {
+          skipSoSync: Boolean(mo.soId),
+        }).catch(() => null);
       }));
 
       // 2. Post to related sale.order chatter if matching MO has a linked Sales Order
@@ -1391,7 +1404,9 @@ export async function matchBoardIntakeToClient(input: {
             hasBoardPo: mo.hasBoardPo,
             boardPoNames: mo.boardPoNames,
           });
-          return client.postModelChatterMessage('mrp.production', mo.moId, chatterHtml, partnerIds).catch(() => null);
+          return client.postModelChatterMessage('mrp.production', mo.moId, chatterHtml, partnerIds, {
+          skipSoSync: Boolean(mo.soId),
+        }).catch(() => null);
         }));
 
         // Post to related sale.order chatter if matching MO has a linked Sales Order

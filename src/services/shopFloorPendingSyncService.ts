@@ -6,6 +6,8 @@ import {
   getActiveBoardIntakeLogs,
   markPendingShopFloorProcessesLoaded,
   deleteShopFloorSharedCachePrefix,
+  getShopFloorSharedCache,
+  saveShopFloorSharedCache,
 } from '../models/repositories';
 import { queryAll, execute } from '../models/db';
 import { OdooClient, isOdooTrafficPaused } from './odooClient';
@@ -680,6 +682,11 @@ export async function matchRetroactiveBoardLogsForActiveMos(
     moMap.set(mo.id, mo);
   }
 
+  // Maximum lookback window for retroactive gate board logs before MO creation (72 hours).
+  // Prevents old board logs from completed orders weeks ago from falsely matching brand-new MOs.
+  const MAX_RETROACTIVE_LOOKBACK_MS = 72 * 60 * 60 * 1000;
+  const claimedLogIdsInRun = new Set<string>();
+
   for (const move of boardMoves) {
     const moId = Array.isArray(move.raw_material_production_id)
       ? move.raw_material_production_id[0]
@@ -692,6 +699,15 @@ export async function matchRetroactiveBoardLogsForActiveMos(
     const normalizedMoveProdName = normalizeBoardProductName(productName);
     const soOrigin = mo.origin ? extractSoNameFromOrigin(mo.origin) : null;
 
+    // Skip moves covered by an active or received Purchase Order
+    const candidateOrigins = [mo.origin, soOrigin, mo.name].filter(Boolean) as string[];
+    const isCoveredByPo = candidateOrigins.some(
+      (orig) =>
+        (productId > 0 && (originProductPOKeys.has(`${orig}_${productId}`) || originProductPOKeys.has(`${orig.toUpperCase()}_${productId}`))) ||
+        (normalizedMoveProdName && (originProductPOKeys.has(`${orig}_${normalizedMoveProdName}`) || originProductPOKeys.has(`${orig.toUpperCase()}_${normalizedMoveProdName}`))),
+    );
+    if (isCoveredByPo) continue;
+
     const partnerInfo = mo.origin ? (soPartnerMap.get(mo.origin) || (soOrigin ? soPartnerMap.get(soOrigin) : null)) : null;
     const partnerId = partnerInfo?.partnerId || 0;
     const partnerName = partnerInfo?.partnerName || '';
@@ -701,6 +717,8 @@ export async function matchRetroactiveBoardLogsForActiveMos(
     const moveAttr = extractBoardAttributes(productName);
 
     for (const log of activeLogs) {
+      if (claimedLogIdsInRun.has(log.id)) continue;
+
       const logPid = Number(log.partner_id || 0);
       const logProdId = Number(log.product_id || 0);
       const logQty = Number(log.quantity || 0);
@@ -733,17 +751,45 @@ export async function matchRetroactiveBoardLogsForActiveMos(
       const qtyVeryClose = diff <= 2 || (logQty >= moveQtyNeeded * 0.8 && logQty <= moveQtyNeeded * 1.5);
       if (!qtyVeryClose) continue;
 
-      // 4. Logged before or right around when MO was created
+      // 4. Logged shortly before or right around when MO was created (within 72 hours prior, up to 15 mins after)
       const moCreateTime = mo.create_date ? new Date(mo.create_date).getTime() : Date.now();
       const logCreateTime = log.created_at ? new Date(log.created_at).getTime() : 0;
-      const loggedBeforeMo = logCreateTime <= moCreateTime + 15 * 60 * 1000;
+      const loggedBeforeMo =
+        logCreateTime > 0 &&
+        logCreateTime <= moCreateTime + 15 * 60 * 1000 &&
+        moCreateTime - logCreateTime <= MAX_RETROACTIVE_LOOKBACK_MS;
       if (!loggedBeforeMo) continue;
 
-      // 5. Deduplication check: only post once per MO + log
+      // 5. Persistent + in-memory deduplication check: only match and post once per MO + log
       const dedupKey = `retro-mo-match:${mo.id}:${log.id}`;
-      if (shopFloorCache.get(dedupKey)) continue;
+      const logClaimKey = `retro-log-claimed:${log.id}`;
+      if (shopFloorCache.get(dedupKey)) {
+        claimedLogIdsInRun.add(log.id);
+        continue;
+      }
 
-      shopFloorCache.set(dedupKey, true, 30 * 24 * 3600); // Cache for 30 days
+      const [persistedPair, persistedClaim] = await Promise.all([
+        getShopFloorSharedCache<{ moId: number }>(dedupKey).catch(() => null),
+        getShopFloorSharedCache<{ moId: number }>(logClaimKey).catch(() => null),
+      ]);
+      if (persistedPair?.data || persistedClaim?.data?.moId) {
+        shopFloorCache.set(dedupKey, true, 30 * 24 * 3600);
+        claimedLogIdsInRun.add(log.id);
+        continue;
+      }
+
+      shopFloorCache.set(dedupKey, true, 30 * 24 * 3600); // Cache in memory for 30 days
+      claimedLogIdsInRun.add(log.id);
+      const matchedMetadata = {
+        moId: mo.id,
+        moName: mo.name,
+        boardLogId: log.id,
+        matchedAt: new Date().toISOString(),
+      };
+      await Promise.all([
+        saveShopFloorSharedCache(dedupKey, matchedMetadata).catch(() => null),
+        saveShopFloorSharedCache(logClaimKey, matchedMetadata).catch(() => null),
+      ]);
 
       const logDateStr = log.arrival_date || (log.created_at ? log.created_at.slice(0, 10) : 'Earlier');
       const logTimeStr = log.arrival_time ? ` at ${log.arrival_time}` : '';
@@ -768,8 +814,14 @@ export async function matchRetroactiveBoardLogsForActiveMos(
         `</div>`,
       ].join('\n');
 
-      // Post on mrp.production
-      await client.postModelChatterMessage('mrp.production', mo.id, moChatterHtml).catch(() => null);
+      // Post on mrp.production with skipSoSync: true (since we post a dedicated Sales Order summary note below)
+      // and checkExisting: true so Odoo chatter is checked against duplicates even if caches are cleared.
+      await client.postModelChatterMessage('mrp.production', mo.id, moChatterHtml, undefined, {
+        skipSoSync: true,
+        dedupeSnippet: `Board Log #${log.id}`,
+        checkExisting: true,
+        dedupeWindowMs: 30 * 24 * 3600 * 1000,
+      }).catch(() => null);
 
       // Post on sale.order if linked
       if (soOrigin) {
@@ -788,7 +840,12 @@ export async function matchRetroactiveBoardLogsForActiveMos(
             `<em>Boards were already received at the gate before the MO was created, and have now been assigned.</em>`,
             `</div>`,
           ].join('\n');
-          await client.postModelChatterMessage('sale.order', soRecords[0].id, soChatterHtml).catch(() => null);
+          await client.postModelChatterMessage('sale.order', soRecords[0].id, soChatterHtml, undefined, {
+            skipSoSync: true,
+            dedupeSnippet: `Prior Gate Board Log Matched to Manufacturing Order ${mo.name}`,
+            checkExisting: true,
+            dedupeWindowMs: 30 * 24 * 3600 * 1000,
+          }).catch(() => null);
         }
       }
 
