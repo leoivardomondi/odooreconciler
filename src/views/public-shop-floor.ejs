@@ -869,13 +869,24 @@
 
 <script>
   document.addEventListener('DOMContentLoaded', function () {
-    // 1. Operator PIN-Activated Session Persistence
+    // 1. Operator PIN-Activated Session Persistence & 60-Second Auto-Lock
     // Clear legacy unverified localStorage keys so a 4-digit PIN is always required to activate a profile
     localStorage.removeItem('public_shop_floor_operator_id');
     localStorage.removeItem('public_shop_floor_operator_name');
 
+    const AUTO_LOCK_IDLE_MS = 60 * 1000;
+    let autoLockTimer = null;
+
     let currentOperatorId = sessionStorage.getItem('public_shop_floor_verified_operator_id') || '';
     let currentOperatorName = sessionStorage.getItem('public_shop_floor_verified_operator_name') || '';
+    const savedLastActive = Number(sessionStorage.getItem('public_shop_floor_verified_last_active') || 0);
+    if (currentOperatorId && (!savedLastActive || Date.now() - savedLastActive >= AUTO_LOCK_IDLE_MS)) {
+      currentOperatorId = '';
+      currentOperatorName = '';
+      sessionStorage.removeItem('public_shop_floor_verified_operator_id');
+      sessionStorage.removeItem('public_shop_floor_verified_operator_name');
+      sessionStorage.removeItem('public_shop_floor_verified_last_active');
+    }
 
     const operatorNameLabel = document.getElementById('activeOperatorNameLabel');
     const lockOperatorDivider = document.getElementById('lockOperatorDivider');
@@ -890,20 +901,60 @@
       if (lockOperatorDivider) lockOperatorDivider.classList.toggle('d-none', !isActive);
       if (lockOperatorMenuItem) lockOperatorMenuItem.classList.toggle('d-none', !isActive);
     }
+
+    function lockOperatorProfile(isAutoLock) {
+      if (autoLockTimer) {
+        window.clearTimeout(autoLockTimer);
+        autoLockTimer = null;
+      }
+      const hadActiveOperator = Boolean(currentOperatorId && currentOperatorName);
+      const lockedName = currentOperatorName;
+      currentOperatorId = '';
+      currentOperatorName = '';
+      sessionStorage.removeItem('public_shop_floor_verified_operator_id');
+      sessionStorage.removeItem('public_shop_floor_verified_operator_name');
+      sessionStorage.removeItem('public_shop_floor_verified_last_active');
+      updateOperatorLabel();
+
+      if (!hadActiveOperator) return;
+      const msg = isAutoLock
+        ? (lockedName + '\'s profile auto-locked after 60 seconds of inactivity.')
+        : 'Operator profile locked. Enter your 4-digit PIN to manage jobs.';
+      if (typeof window.appNotify === 'function') {
+        window.appNotify(msg, { type: 'info', title: isAutoLock ? 'Auto-Locked (60s)' : 'Profile Locked' });
+      } else {
+        showToast(msg);
+      }
+    }
+
+    function resetOperatorAutoLockTimer() {
+      if (autoLockTimer) {
+        window.clearTimeout(autoLockTimer);
+        autoLockTimer = null;
+      }
+      if (!currentOperatorId || !currentOperatorName) return;
+      sessionStorage.setItem('public_shop_floor_verified_last_active', String(Date.now()));
+      autoLockTimer = window.setTimeout(function () {
+        lockOperatorProfile(true);
+      }, AUTO_LOCK_IDLE_MS);
+    }
+
+    ['pointerdown', 'keydown', 'touchstart'].forEach(function (evtName) {
+      document.addEventListener(evtName, function () {
+        if (currentOperatorId && currentOperatorName) {
+          resetOperatorAutoLockTimer();
+        }
+      }, { passive: true });
+    });
+
     updateOperatorLabel();
+    if (currentOperatorId && currentOperatorName) {
+      resetOperatorAutoLockTimer();
+    }
 
     if (lockOperatorBtn) {
       lockOperatorBtn.addEventListener('click', function () {
-        currentOperatorId = '';
-        currentOperatorName = '';
-        sessionStorage.removeItem('public_shop_floor_verified_operator_id');
-        sessionStorage.removeItem('public_shop_floor_verified_operator_name');
-        updateOperatorLabel();
-        if (typeof window.appNotify === 'function') {
-          window.appNotify('Operator profile locked. Enter your 4-digit PIN to manage jobs.', { type: 'info', title: 'Profile Locked' });
-        } else {
-          showToast('Operator profile locked.');
-        }
+        lockOperatorProfile(false);
       });
     }
 
@@ -1019,6 +1070,7 @@
           sessionStorage.setItem('public_shop_floor_verified_operator_id', currentOperatorId);
           sessionStorage.setItem('public_shop_floor_verified_operator_name', currentOperatorName);
           updateOperatorLabel();
+          resetOperatorAutoLockTimer();
 
           if (opModal) opModal.hide();
 
