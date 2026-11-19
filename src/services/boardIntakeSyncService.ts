@@ -10,7 +10,9 @@ import {
   updateBoardIntakeQueueEntry,
   markPendingShopFloorProcessesLoaded,
   deleteShopFloorDashboardSnapshot,
+  deleteShopFloorSharedCache,
   deleteShopFloorSharedCachePrefix,
+  saveShopFloorSharedCache,
   getSettings,
 } from '../models/repositories';
 import { shopFloorCache } from '../routes/shopFloor';
@@ -1235,6 +1237,23 @@ export async function syncBoardIntakeEntry(id: string) {
       }
 
       await client.reserveStockOnMOs(matchingMOs.map((mo) => mo.moId));
+      const firstMo = matchingMOs[0];
+      const boundSoName = (firstMo.soName || extractSoNameFromOrigin(firstMo.origin) || firstMo.moName || `MO-${firstMo.moId}`).trim().toUpperCase();
+      await saveShopFloorSharedCache(`retro-log-claimed:${id}`, {
+        moId: firstMo.moId,
+        moName: firstMo.moName,
+        soName: boundSoName,
+        boardLogId: id,
+        matchedAt: new Date().toISOString(),
+      }).catch(() => null);
+    } else if (poFulfillment?.fulfilledViaReceipt) {
+      await saveShopFloorSharedCache(`retro-log-claimed:${id}`, {
+        moId: 0,
+        moName: poFulfillment.poName,
+        soName: String(poFulfillment.poName || '').trim().toUpperCase(),
+        boardLogId: id,
+        matchedAt: new Date().toISOString(),
+      }).catch(() => null);
     }
 
     await updateBoardIntakeQueueEntry(id, {
@@ -1280,6 +1299,7 @@ export async function revertBoardIntakeEntry(id: string, revertedBy: string) {
       quantity: Number(entry.quantity),
     });
     await finishBoardIntakeRevert(id, revertedBy, result.newQty);
+    await deleteShopFloorSharedCache(`retro-log-claimed:${id}`).catch(() => null);
     await recordExactStockQuantity(Number(entry.product_id), entry.product_name, result.newQty, -Number(entry.quantity));
     void refreshStockMirror();
     await logEvent('warn', 'Board intake reverted in Odoo', {
@@ -1446,6 +1466,25 @@ export async function matchBoardIntakeToClient(input: {
         }
 
         await client.reserveStockOnMOs(matchingMOs.map((mo) => mo.moId)).catch(() => null);
+        const firstMo = matchingMOs[0];
+        const boundSoName = (firstMo.soName || extractSoNameFromOrigin(firstMo.origin) || firstMo.moName || `MO-${firstMo.moId}`).trim().toUpperCase();
+        await saveShopFloorSharedCache(`retro-log-claimed:${input.id}`, {
+          moId: firstMo.moId,
+          moName: firstMo.moName,
+          soName: boundSoName,
+          boardLogId: input.id,
+          matchedAt: new Date().toISOString(),
+        }).catch(() => null);
+      } else if (loadedRequirements && loadedRequirements.length > 0) {
+        const firstReq = loadedRequirements[0];
+        const boundSoName = (extractSoNameFromOrigin(firstReq.origin || null) || firstReq.origin || firstReq.mo_name || `MO-${firstReq.mo_id}`).trim().toUpperCase();
+        await saveShopFloorSharedCache(`retro-log-claimed:${input.id}`, {
+          moId: firstReq.mo_id,
+          moName: firstReq.mo_name,
+          soName: boundSoName,
+          boardLogId: input.id,
+          matchedAt: new Date().toISOString(),
+        }).catch(() => null);
       }
     } catch (clientErr) {
       console.warn('[BoardIntakeSyncService] MO linking warning after client match:', clientErr);

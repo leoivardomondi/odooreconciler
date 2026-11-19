@@ -290,11 +290,16 @@ test('matchRetroactiveBoardLogsForActiveMos finds prior board log history and tr
   assert.equal(postedChatters.length, 2);
 });
 
-test('matchRetroactiveBoardLogsForActiveMos ignores stale board logs older than 72 hours (e.g. 14-day-old S03935 board log)', async () => {
+test('matchRetroactiveBoardLogsForActiveMos matches an unclaimed board log regardless of age (no 72h limit) and prevents reusing that log ID for a different Sales Order', async () => {
   const postedChatters: Array<{ model: string; id: number; msg: string }> = [];
   const mockClient = {
     getTargetCompanyIdValue: async () => 1,
-    searchReadRecords: async () => [{ id: 4118 }],
+    searchReadRecords: async (_model: string, opts?: any) => {
+      const domainStr = JSON.stringify(opts?.domain || []);
+      if (domainStr.includes('S03500')) return [{ id: 3500 }];
+      if (domainStr.includes('S03935')) return [{ id: 4118 }];
+      return [{ id: 4118 }];
+    },
     callRecordMethod: async () => true,
     postModelChatterMessage: async (model: string, id: number, msg: string) => {
       postedChatters.push({ model, id, msg });
@@ -302,32 +307,10 @@ test('matchRetroactiveBoardLogsForActiveMos ignores stale board logs older than 
     },
   } as unknown as OdooClient;
 
-  const activeMOs = [
+  const sharedLogId = `single-claim-log-${Date.now()}`;
+  const boardLogs = [
     {
-      id: 7043,
-      name: 'WH/MO/06374',
-      state: 'confirmed',
-      origin: 'S03935',
-      create_date: '2026-11-18 09:53:33',
-    },
-  ];
-
-  const boardMoves = [
-    {
-      id: 2001,
-      raw_material_production_id: [7043, 'WH/MO/06374'] as [number, string],
-      product_id: [24910, 'Versasca Particle 18mm'] as [number, string],
-      product_uom_qty: 2,
-      quantity: 0,
-    },
-  ];
-
-  const soPartnerMap = new Map<string, { partnerId: number; partnerName: string }>();
-  soPartnerMap.set('S03935', { partnerId: 51, partnerName: 'JANAMBA WOOD WORKS' });
-
-  const staleBoardLogs = [
-    {
-      id: `stale-log-${Date.now()}`,
+      id: sharedLogId,
       actor_name: 'Joel Ochango',
       actor_email: 'joel@urbanvibe.co.ke',
       gate: 'Gate',
@@ -339,21 +322,75 @@ test('matchRetroactiveBoardLogsForActiveMos ignores stale board logs older than 
       partner_id: 51,
       customer_name: 'JANAMBA WOOD WORKS',
       quantity: 2,
-      created_at: '2026-11-04 11:00:00', // 14 days before S03935 was created!
+      created_at: '2026-11-04 11:00:00', // Logged 14 days earlier, no 72-hour restriction
     },
   ];
 
-  const matched = await matchRetroactiveBoardLogsForActiveMos(
+  const soPartnerMap = new Map<string, { partnerId: number; partnerName: string }>();
+  soPartnerMap.set('S03500', { partnerId: 51, partnerName: 'JANAMBA WOOD WORKS' });
+  soPartnerMap.set('S03935', { partnerId: 51, partnerName: 'JANAMBA WOOD WORKS' });
+
+  // 1. First Sales Order (S03500) matches the unclaimed log ID (even if >72h after log creation)
+  const firstOrderMOs = [
+    {
+      id: 6100,
+      name: 'WH/MO/05900',
+      state: 'confirmed',
+      origin: 'S03500',
+      create_date: '2026-11-10 09:00:00', // 6 days after log (>72h)
+    },
+  ];
+  const firstOrderMoves = [
+    {
+      id: 1901,
+      raw_material_production_id: [6100, 'WH/MO/05900'] as [number, string],
+      product_id: [24910, 'Versasca Particle 18mm'] as [number, string],
+      product_uom_qty: 2,
+      quantity: 0,
+    },
+  ];
+
+  const matchedFirst = await matchRetroactiveBoardLogsForActiveMos(
     mockClient,
-    activeMOs,
-    boardMoves,
+    firstOrderMOs,
+    firstOrderMoves,
     soPartnerMap,
     new Set<string>(),
-    staleBoardLogs,
+    boardLogs,
   );
+  assert.equal(matchedFirst, 1, 'Unclaimed board log must match the first Sales Order regardless of 72h age');
+  assert.equal(postedChatters.length, 2);
 
-  assert.equal(matched, 0, 'Must not match a 14-day-old board log from a prior completed job');
-  assert.equal(postedChatters.length, 0);
+  // 2. Second, different Sales Order (S03935) for the same client and board must NOT reuse the already-matched log ID
+  const secondOrderMOs = [
+    {
+      id: 7043,
+      name: 'WH/MO/06374',
+      state: 'confirmed',
+      origin: 'S03935',
+      create_date: '2026-11-18 09:53:33',
+    },
+  ];
+  const secondOrderMoves = [
+    {
+      id: 2001,
+      raw_material_production_id: [7043, 'WH/MO/06374'] as [number, string],
+      product_id: [24910, 'Versasca Particle 18mm'] as [number, string],
+      product_uom_qty: 2,
+      quantity: 0,
+    },
+  ];
+
+  const matchedSecond = await matchRetroactiveBoardLogsForActiveMos(
+    mockClient,
+    secondOrderMOs,
+    secondOrderMoves,
+    soPartnerMap,
+    new Set<string>(),
+    boardLogs,
+  );
+  assert.equal(matchedSecond, 0, 'Once matched to S03500, the board log ID must NEVER be reused by a different Sales Order (S03935)');
+  assert.equal(postedChatters.length, 2);
 });
 
 test('reconcileRetroactiveBoardLogsForLinkedPos validates PO receipt for prior manual log when MO has linked PO', async () => {
