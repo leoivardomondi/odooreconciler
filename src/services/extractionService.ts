@@ -36,6 +36,7 @@ import {
 } from './signatureService';
 import { syncQuotationWithJobSummary } from './quotationSyncService';
 import { reconcileWorkOrderQuantitiesForSaleOrder } from './workOrderQuantityReconciliationService';
+import { resolveCombinedJobSummaryFromOdooAttachments } from './multiJobSummaryCombiner';
 
 async function getConfiguredClient() {
   const settings = await getSettings();
@@ -156,7 +157,28 @@ export async function extractAttachmentForOrder(orderId: number, attachmentId: n
 
   try {
     const downloaded = await client.downloadAttachment(selectedAttachment.id);
-    const computedSignature = computePdfSignature(downloaded.content);
+    const jobSummaryAttachments = attachments.filter((att) =>
+      isJobSummaryAttachment(att, settings.parser.filenameKeyword),
+    );
+
+    let parsed = await parseJobSummaryPdf(downloaded.content, settings.parser);
+    let computedSignature = computePdfSignature(downloaded.content);
+    let multiSummaryNote = '';
+
+    if (jobSummaryAttachments.length > 1) {
+      const multiResult = await resolveCombinedJobSummaryFromOdooAttachments(
+        client,
+        orderId,
+        settings.parser,
+      ).catch(() => null);
+
+      if (multiResult && multiResult.mode === 'combined_sum') {
+        parsed = multiResult.combined;
+        computedSignature = computePdfSignature(Buffer.from(parsed.rawText || '', 'utf8'));
+        multiSummaryNote = ` (${multiResult.comparisonSummary})`;
+      }
+    }
+
     const signatureContext = await getSignatureContext(
       client,
       orderId,
@@ -174,14 +196,14 @@ export async function extractAttachmentForOrder(orderId: number, attachmentId: n
         computedSignature,
         storedOdooSignature: signatureContext.storedSignature,
         signatureComparison: signatureContext.comparisonResult,
+        jobSummaryAttachmentCount: jobSummaryAttachments.length,
       },
       history.id,
     );
 
-    const parsed = await parseJobSummaryPdf(downloaded.content, settings.parser);
-    const summary = parsed.items.length
+    const summary = (parsed.items.length
       ? `Extracted ${parsed.items.length} edging item(s).`
-      : 'No edging items were found in the Job Summary section.';
+      : 'No edging items were found in the Job Summary section.') + multiSummaryNote;
 
     await insertExtractedResult({
       historyId: history.id,

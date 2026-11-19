@@ -39,6 +39,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const node_test_1 = __importDefault(require("node:test"));
 const strict_1 = __importDefault(require("node:assert/strict"));
 const workOrderQuantityReconciliationService_1 = require("./workOrderQuantityReconciliationService");
+const multiJobSummaryCombiner_1 = require("./multiJobSummaryCombiner");
+const boardProductClassifier_1 = require("./boardProductClassifier");
 (0, node_test_1.default)('isCuttingProductOrWorkOrder correctly identifies cutting products and operations', () => {
     // Positive cases (MO product names)
     strict_1.default.equal((0, workOrderQuantityReconciliationService_1.isCuttingProductOrWorkOrder)('Cutting White Mdf 18mm 6 panels'), true);
@@ -529,4 +531,86 @@ const workOrderQuantityReconciliationService_1 = require("./workOrderQuantityRec
     // Verify it is no longer returned in pending list for Board Needed page
     const afterPending = await getPendingShopFloorProcesses({ status: 'pending' });
     strict_1.default.ok(!afterPending.some((p) => p.id === key), 'Process must disappear from pending list on boards needed page');
+});
+(0, node_test_1.default)('S03902 regression: combines 2 Job Summaries (291 + 294) and prevents Backer 3mm from inflating to 148 (16 + 41 + 91)', () => {
+    // 1. Grooving 3mm must NEVER be classified as a physical board
+    strict_1.default.equal((0, boardProductClassifier_1.isBoardProductName)('Grooving 3mm'), false);
+    strict_1.default.equal((0, boardProductClassifier_1.isBoardProductName)('Backer White MDF 3mm'), true);
+    // 2. Compare and combine the 2 Job Summaries from S03902 (MILLICENT)
+    const summary291 = {
+        items: [{ color: 'Cherry', thickness_mm: 1, length_mm: 341881, roll_length_mm: 15000 }],
+        sectionFound: true,
+        sectionText: '',
+        rawText: 'Job Summary - 291\nClient Name : MILLICENT',
+        logs: [],
+        clientName: 'MILLICENT',
+        optimizedSheets: 54,
+        totalPanels: 320,
+        sheetMaterials: [
+            { name: 'Backer White MDF 3mm', thickness_mm: 3, sheets: 16, panels: 34, length_mm: 2440, width_mm: 1220 },
+            { name: 'Cherry Particle 18mm', thickness_mm: 18, sheets: 38, panels: 286, length_mm: 2440, width_mm: 1220 },
+        ],
+    };
+    const summary294 = {
+        items: [{ color: 'Cherry', thickness_mm: 1, length_mm: 48080, roll_length_mm: 15000 }],
+        sectionFound: true,
+        sectionText: '',
+        rawText: 'Job Summary - 294\nClient Name : MILLICENT',
+        logs: [],
+        clientName: 'MILLICENT',
+        optimizedSheets: 3,
+        totalPanels: 16,
+        sheetMaterials: [
+            { name: 'Cherry Particle 18mm', thickness_mm: 18, sheets: 3, panels: 16, length_mm: 2440, width_mm: 1220 },
+        ],
+    };
+    const soLines = [
+        { productName: 'Optimised Panels', quantity: 320 },
+        { productName: 'Cutting Backer White Mdf 3mm', quantity: 16 },
+        { productName: 'Cutting Cherry Particle 18mm', quantity: 41 },
+        { productName: 'Edge Banding Service Cherry', quantity: 475 },
+        { productName: 'Grooving 3mm', quantity: 91 },
+    ];
+    const combinedRes = (0, multiJobSummaryCombiner_1.compareAndCombineJobSummaries)([
+        { attachmentId: 16440, attachmentName: 'Job Summary2f85c2db.pdf', parsed: summary294 },
+        { attachmentId: 16414, attachmentName: 'Job Summaryc5bde16e.pdf', parsed: summary291 },
+    ], soLines);
+    strict_1.default.equal(combinedRes.mode, 'combined_sum');
+    const combinedSheets = combinedRes.combined.sheetMaterials || [];
+    const backerMat = combinedSheets.find((m) => m.name.includes('Backer'));
+    const cherryMat = combinedSheets.find((m) => m.name.includes('Cherry'));
+    strict_1.default.ok(backerMat);
+    strict_1.default.equal(backerMat.sheets, 16);
+    strict_1.default.ok(cherryMat);
+    strict_1.default.equal(cherryMat.sheets, 41, '38 + 3 sheets of Cherry Particle 18mm must sum to 41');
+    strict_1.default.equal(combinedRes.combined.items[0]?.length_mm, 389961, '341881 + 48080 edging length must sum');
+    // 3. Even if only summary294 (no Backer 3mm) was inspected, Backer 3mm MO must NOT match Cherry 18mm,
+    //    must NOT sum unrelated SO lines (16 + 41 + 91 = 148), and must NOT fall back to optimizedSheets (3)!
+    strict_1.default.equal((0, workOrderQuantityReconciliationService_1.doesLineMatchMoBoardMaterial)({
+        lineProductName: 'Cutting Backer White Mdf 3mm',
+        moProductName: 'Cutting Backer White Mdf 3mm',
+        componentNames: ['Backer White MDF 3mm'],
+        matchedMaterial: null,
+    }), true);
+    strict_1.default.equal((0, workOrderQuantityReconciliationService_1.doesLineMatchMoBoardMaterial)({
+        lineProductName: 'Cutting Cherry Particle 18mm',
+        moProductName: 'Cutting Backer White Mdf 3mm',
+        componentNames: ['Backer White MDF 3mm'],
+        matchedMaterial: null,
+    }), false);
+    strict_1.default.equal((0, workOrderQuantityReconciliationService_1.doesLineMatchMoBoardMaterial)({
+        lineProductName: 'Grooving 3mm',
+        moProductName: 'Cutting Backer White Mdf 3mm',
+        componentNames: ['Backer White MDF 3mm'],
+        matchedMaterial: null,
+    }), false);
+    // When Job Summary had other sheetMaterials (Cherry 18mm = 3) and none matched Backer 3mm,
+    // determineTargetCuttingQuantity without SO/PO match must return null (NOT 3 from optimizedSheets!)
+    const unmatchedTarget = (0, workOrderQuantityReconciliationService_1.determineTargetCuttingQuantity)({
+        matchedMaterial: null,
+        parsedJobSummary: summary294,
+        approvedPoQuantity: null,
+        soBoardQuantity: null,
+    });
+    strict_1.default.equal(unmatchedTarget, null);
 });

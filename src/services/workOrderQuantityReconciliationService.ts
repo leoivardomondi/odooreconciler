@@ -21,6 +21,7 @@ import { logEvent } from './logService';
 import { OdooClient } from './odooClient';
 import { parseJobSummaryPdf } from './pdfParser';
 import { DEFAULT_PARSER_CONFIG, isJobSummaryAttachment, extractSoNameFromOrigin } from '../utils/helpers';
+import { resolveCombinedJobSummaryFromOdooAttachments } from './multiJobSummaryCombiner';
 
 export interface WorkOrderReconciliationResult {
   moId: number;
@@ -261,6 +262,70 @@ export function findMatchingSheetMaterial(input: {
 }
 
 /**
+ * Checks whether a Sales Order line or Purchase Order line matches the specific board material
+ * of a cutting Manufacturing Order (or its matched Job Summary material).
+ * Prevents summing unrelated boards (e.g. Backer 3mm + Cherry 18mm + Grooving 3mm = 148).
+ */
+export function doesLineMatchMoBoardMaterial(input: {
+  lineProductName: string;
+  moProductName?: string | null;
+  componentNames?: string[];
+  matchedMaterial?: ParsedSheetMaterial | null;
+}): boolean {
+  const lineRaw = String(input.lineProductName || '').trim();
+  if (!lineRaw) return false;
+  if (/example\s+board/i.test(lineRaw) || /optimis?ed\s+panels?/i.test(lineRaw) || /\bgroov(?:ing|e)\b/i.test(lineRaw)) {
+    return false;
+  }
+  if (!isBoardProductName(lineRaw) && !/^cutting\b/i.test(lineRaw)) {
+    return false;
+  }
+
+  const lineNorm = normalizeBoardProductName(lineRaw);
+  const lineThick = extractThicknessMm(lineRaw);
+  const lineAttr = extractBoardAttributes(lineRaw);
+  const lineColor = cleanMoColor(lineAttr.colorFamily);
+
+  if (input.matchedMaterial) {
+    const matNorm = normalizeBoardProductName(input.matchedMaterial.name);
+    if (lineNorm.includes(matNorm) || matNorm.includes(lineNorm)) {
+      return true;
+    }
+    const matThick = extractThicknessMm(input.matchedMaterial.name) ?? input.matchedMaterial.thickness_mm;
+    if (lineThick !== null && matThick !== null && Math.abs(lineThick - matThick) > 2.1) {
+      return false;
+    }
+    const matColor = cleanMoColor(extractBoardAttributes(input.matchedMaterial.name).colorFamily);
+    if (lineColor && matColor) {
+      return areSameColorFamily(lineColor, matColor);
+    }
+  }
+
+  // Compare against MO product name and board components
+  const references = [
+    String(input.moProductName || '').trim(),
+    ...(input.componentNames || []).filter((c) => isBoardProductName(c)),
+  ].filter(Boolean);
+
+  for (const ref of references) {
+    const refNorm = normalizeBoardProductName(ref);
+    if (refNorm && (lineNorm === refNorm || lineNorm.includes(refNorm) || refNorm.includes(lineNorm))) {
+      return true;
+    }
+    const refThick = extractThicknessMm(ref);
+    if (lineThick !== null && refThick !== null && Math.abs(lineThick - refThick) > 2.1) {
+      continue;
+    }
+    const refColor = cleanMoColor(extractBoardAttributes(ref).colorFamily);
+    if (lineColor && refColor && areSameColorFamily(lineColor, refColor)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
  * Determines the target quantity to process from the matched Job Summary material,
  * approved Purchase Order, or Sales Order quoted lines (accounting for offcut allowances).
  */
@@ -300,32 +365,40 @@ export function determineTargetCuttingQuantity(input: {
     }
   }
 
-  // 3. Approved PO quantity if available
+  // 3. Material-specific Approved PO quantity if available
   if (typeof approvedPoQuantity === 'number' && approvedPoQuantity > 0) {
     return approvedPoQuantity;
   }
 
-  // 4. Sales Order board quantity if available
+  // 4. Material-specific Sales Order board quantity if available
   if (typeof soBoardQuantity === 'number' && soBoardQuantity > 0) {
     return soBoardQuantity;
   }
 
-  // 5. Fallback to optimizedSheets from Job Summary
-  if (
-    parsedJobSummary &&
-    typeof parsedJobSummary.optimizedSheets === 'number' &&
-    parsedJobSummary.optimizedSheets > 0
-  ) {
-    return parsedJobSummary.optimizedSheets;
-  }
+  // 5 & 6. Fallback to optimizedSheets / totalPanels ONLY when the Job Summary had NO
+  // sheetMaterials breakdown at all. If sheetMaterials existed (>0) and none matched this MO,
+  // optimizedSheets/totalPanels belong to OTHER board materials and must never overwrite this MO!
+  const hasUnmatchedSheetMaterials =
+    !matchedMaterial &&
+    Array.isArray(parsedJobSummary?.sheetMaterials) &&
+    parsedJobSummary!.sheetMaterials.length > 0;
 
-  // 6. Fallback to totalPanels from Job Summary
-  if (
-    parsedJobSummary &&
-    typeof parsedJobSummary.totalPanels === 'number' &&
-    parsedJobSummary.totalPanels > 0
-  ) {
-    return parsedJobSummary.totalPanels;
+  if (!hasUnmatchedSheetMaterials) {
+    if (
+      parsedJobSummary &&
+      typeof parsedJobSummary.optimizedSheets === 'number' &&
+      parsedJobSummary.optimizedSheets > 0
+    ) {
+      return parsedJobSummary.optimizedSheets;
+    }
+
+    if (
+      parsedJobSummary &&
+      typeof parsedJobSummary.totalPanels === 'number' &&
+      parsedJobSummary.totalPanels > 0
+    ) {
+      return parsedJobSummary.totalPanels;
+    }
   }
 
   return null;
@@ -489,8 +562,23 @@ export async function reconcileWorkOrderQuantitiesForMo(
     }
   }
 
-  // Obtain Job Summary
+  // Obtain Job Summary (comparing & combining multiple Job Summary PDFs if >1 are attached)
   let parsed: ParsedJobSummaryResult | null = options?.parsedJobSummary || null;
+
+  if (!parsed && soId) {
+    try {
+      const combinedResult = await resolveCombinedJobSummaryFromOdooAttachments(
+        client,
+        soId,
+        DEFAULT_PARSER_CONFIG as any,
+      );
+      if (combinedResult?.combined) {
+        parsed = combinedResult.combined;
+      }
+    } catch {
+      // Fall back to local extraction history below
+    }
+  }
 
   if (!parsed && soId) {
     const latestExtracted = await getLatestExtractedResultByOrderId(soId);
@@ -499,20 +587,16 @@ export async function reconcileWorkOrderQuantitiesForMo(
     }
   }
 
-  if (!parsed && soId) {
-    try {
-      const attachments = await client.getAttachments(soId);
-      const targetAttachment = attachments.find((a) => isJobSummaryAttachment(a, 'job summary'));
-      if (targetAttachment) {
-        const downloaded = await client.downloadAttachment(targetAttachment.id);
-        parsed = await parseJobSummaryPdf(downloaded.content, DEFAULT_PARSER_CONFIG as any);
-      }
-    } catch {
-      // Non-blocking attachment retrieval
-    }
-  }
+  // Find matching sheet material from Job Summary first so PO and SO line checks can filter by material
+  const matchResult = findMatchingSheetMaterial({
+    moProductName,
+    componentNames,
+    sheetMaterials: parsed?.sheetMaterials || [],
+    currentMoQty: mo.product_qty,
+    excludedMaterialNames: options?.excludedMaterialNames,
+  });
 
-  // Check if there is an approved Purchase Order linked to this SO/MO
+  // Check if there is an approved Purchase Order linked to this SO/MO for THIS board material
   let approvedPoQty: number | null = null;
   try {
     const originFilter = soName || originStr;
@@ -540,10 +624,18 @@ export async function reconcileWorkOrderQuantitiesForMo(
           limit: 100,
         });
 
-        // Sum matching board quantities from approved PO
+        // Sum only PO lines that match THIS MO's specific board material
         const matchingPoLines = poLines.filter((l) => {
-          const name = relationLabel(l.product_id).toLowerCase();
-          return isBoardProductName(name);
+          const prodName = relationLabel(l.product_id);
+          return (
+            isBoardProductName(prodName) &&
+            doesLineMatchMoBoardMaterial({
+              lineProductName: prodName,
+              moProductName,
+              componentNames,
+              matchedMaterial: matchResult?.material,
+            })
+          );
         });
 
         if (matchingPoLines.length > 0) {
@@ -558,16 +650,7 @@ export async function reconcileWorkOrderQuantitiesForMo(
     // Non-blocking PO check
   }
 
-  // Find matching sheet material from Job Summary
-  const matchResult = findMatchingSheetMaterial({
-    moProductName,
-    componentNames,
-    sheetMaterials: parsed?.sheetMaterials || [],
-    currentMoQty: mo.product_qty,
-    excludedMaterialNames: options?.excludedMaterialNames,
-  });
-
-  // Check if Sales Order has board lines for this material (offcut rule support)
+  // Check if Sales Order has board/cutting lines for THIS specific material (offcut rule support)
   let soBoardQty: number | null = null;
   if (soId) {
     try {
@@ -584,30 +667,18 @@ export async function reconcileWorkOrderQuantitiesForMo(
       });
 
       const productSoLines = soLines.filter((l) => !l.display_type);
-      const matchingSoLines = productSoLines.filter((l) => {
+      const specificLines = productSoLines.filter((l) => {
         const prodName = relationLabel(l.product_id) || l.name || '';
-        return (
-          isBoardProductName(prodName) &&
-          !/example\s+board/i.test(prodName) &&
-          !/optimis?ed\s+panels?/i.test(prodName)
-        );
+        return doesLineMatchMoBoardMaterial({
+          lineProductName: prodName,
+          moProductName,
+          componentNames,
+          matchedMaterial: matchResult?.material,
+        });
       });
 
-      if (matchingSoLines.length > 0) {
-        if (matchResult?.material) {
-          const matClean = normalizeBoardProductName(matchResult.material.name);
-          const specificLines = matchingSoLines.filter((l) => {
-            const pName = normalizeBoardProductName(relationLabel(l.product_id) || l.name || '');
-            return pName.includes(matClean) || matClean.includes(pName);
-          });
-          if (specificLines.length > 0) {
-            soBoardQty = specificLines.reduce((sum, l) => sum + (Number(l.product_uom_qty) || 0), 0);
-          } else {
-            soBoardQty = matchingSoLines.reduce((sum, l) => sum + (Number(l.product_uom_qty) || 0), 0);
-          }
-        } else {
-          soBoardQty = matchingSoLines.reduce((sum, l) => sum + (Number(l.product_uom_qty) || 0), 0);
-        }
+      if (specificLines.length > 0) {
+        soBoardQty = specificLines.reduce((sum, l) => sum + (Number(l.product_uom_qty) || 0), 0);
       }
     } catch {
       // Non-blocking SO line lookup
@@ -903,6 +974,22 @@ export async function reconcileWorkOrderQuantitiesForSaleOrder(
   const so = saleOrders[0];
   if (!so) return [];
 
+  let resolvedJobSummary: ParsedJobSummaryResult | undefined = options?.parsedJobSummary;
+  if (!resolvedJobSummary) {
+    try {
+      const combinedResult = await resolveCombinedJobSummaryFromOdooAttachments(
+        client,
+        so.id,
+        DEFAULT_PARSER_CONFIG as any,
+      );
+      if (combinedResult?.combined) {
+        resolvedJobSummary = combinedResult.combined;
+      }
+    } catch {
+      // Fall back inside reconcileWorkOrderQuantitiesForMo
+    }
+  }
+
   // Search active MOs linked to this Sales Order (origin === SO name or contains it)
   const candidateMos = await client.searchReadRecords<{ id: number; name: string }>(
     'mrp.production',
@@ -921,7 +1008,7 @@ export async function reconcileWorkOrderQuantitiesForSaleOrder(
   for (const candidate of candidateMos) {
     try {
       const res = await reconcileWorkOrderQuantitiesForMo(client, candidate.id, {
-        parsedJobSummary: options?.parsedJobSummary,
+        parsedJobSummary: resolvedJobSummary,
         soId: so.id,
         soName: so.name,
         actorName: options?.actorName,

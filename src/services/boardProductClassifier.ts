@@ -6,8 +6,13 @@ export function isBoardProductName(value: string | null | undefined): boolean {
   const name = normalizeBoardProductName(value);
   if (!name) return false;
 
-  // Services and edge-banding materials are never physical boards.
-  if (/\b(service|services)\b/.test(name) || name.includes('edge band') || name.includes('edgeband') || name.includes('edging band')) {
+  // Services, grooving, drilling, and edge-banding materials are never physical boards.
+  if (
+    /\b(service|services|grooving|groove|drilling|hinge|edging)\b/.test(name) ||
+    name.includes('edge band') ||
+    name.includes('edgeband') ||
+    name.includes('edging band')
+  ) {
     return false;
   }
 

@@ -12,7 +12,7 @@ const boardProductClassifier_1 = require("./boardProductClassifier");
 const logService_1 = require("./logService");
 const odooActivityService_1 = require("./odooActivityService");
 const poBillAutomationService_1 = require("./poBillAutomationService");
-const pdfParser_1 = require("./pdfParser");
+const multiJobSummaryCombiner_1 = require("./multiJobSummaryCombiner");
 const helpers_1 = require("../utils/helpers");
 const stockProcessingService_1 = require("./stockProcessingService");
 const workOrderQuantityReconciliationService_1 = require("./workOrderQuantityReconciliationService");
@@ -410,21 +410,23 @@ async function auditPurchaseOrderAgainstJobSummary(client, purchaseOrderId, prov
     }
     const soUserId = relationId(so.user_id);
     const buyerUserId = relationId(po.user_id) || relationId(po.create_uid);
-    // Obtain Job Summary
+    // Obtain Job Summary (comparing & combining multiple Job Summary PDFs if >1 are attached)
     let parsed = providedParsed || null;
+    if (!parsed) {
+        try {
+            const combinedResult = await (0, multiJobSummaryCombiner_1.resolveCombinedJobSummaryFromOdooAttachments)(client, so.id, helpers_1.DEFAULT_PARSER_CONFIG);
+            if (combinedResult?.combined) {
+                parsed = combinedResult.combined;
+            }
+        }
+        catch {
+            // Fall back to local extraction history below
+        }
+    }
     if (!parsed) {
         const latestExtracted = await (0, repositories_1.getLatestExtractedResultByOrderId)(so.id);
         if (latestExtracted?.resultJson) {
             parsed = latestExtracted.resultJson;
-        }
-    }
-    if (!parsed) {
-        // Attempt on-the-fly download & extraction of Job Summary attachment
-        const attachments = await client.getAttachments(so.id);
-        const targetAttachment = attachments.find((a) => (0, helpers_1.isJobSummaryAttachment)(a, 'job summary'));
-        if (targetAttachment) {
-            const downloaded = await client.downloadAttachment(targetAttachment.id);
-            parsed = await (0, pdfParser_1.parseJobSummaryPdf)(downloaded.content, helpers_1.DEFAULT_PARSER_CONFIG);
         }
     }
     // CASE 1: Job Summary is NOT FOUND

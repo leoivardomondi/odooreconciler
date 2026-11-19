@@ -14,6 +14,7 @@ const pdfParser_1 = require("./pdfParser");
 const signatureService_1 = require("./signatureService");
 const quotationSyncService_1 = require("./quotationSyncService");
 const workOrderQuantityReconciliationService_1 = require("./workOrderQuantityReconciliationService");
+const multiJobSummaryCombiner_1 = require("./multiJobSummaryCombiner");
 async function getConfiguredClient() {
     const settings = await (0, repositories_1.getSettings)();
     if (!(0, helpers_1.hasOdooConfiguration)(settings)) {
@@ -104,7 +105,18 @@ async function extractAttachmentForOrder(orderId, attachmentId) {
     }, history.id);
     try {
         const downloaded = await client.downloadAttachment(selectedAttachment.id);
-        const computedSignature = (0, signatureService_1.computePdfSignature)(downloaded.content);
+        const jobSummaryAttachments = attachments.filter((att) => (0, helpers_1.isJobSummaryAttachment)(att, settings.parser.filenameKeyword));
+        let parsed = await (0, pdfParser_1.parseJobSummaryPdf)(downloaded.content, settings.parser);
+        let computedSignature = (0, signatureService_1.computePdfSignature)(downloaded.content);
+        let multiSummaryNote = '';
+        if (jobSummaryAttachments.length > 1) {
+            const multiResult = await (0, multiJobSummaryCombiner_1.resolveCombinedJobSummaryFromOdooAttachments)(client, orderId, settings.parser).catch(() => null);
+            if (multiResult && multiResult.mode === 'combined_sum') {
+                parsed = multiResult.combined;
+                computedSignature = (0, signatureService_1.computePdfSignature)(Buffer.from(parsed.rawText || '', 'utf8'));
+                multiSummaryNote = ` (${multiResult.comparisonSummary})`;
+            }
+        }
         const signatureContext = await getSignatureContext(client, orderId, settings.fieldMappings, computedSignature);
         await (0, logService_1.logEvent)('info', 'Attachment downloaded from Odoo', {
             attachmentId: downloaded.id,
@@ -113,11 +125,11 @@ async function extractAttachmentForOrder(orderId, attachmentId) {
             computedSignature,
             storedOdooSignature: signatureContext.storedSignature,
             signatureComparison: signatureContext.comparisonResult,
+            jobSummaryAttachmentCount: jobSummaryAttachments.length,
         }, history.id);
-        const parsed = await (0, pdfParser_1.parseJobSummaryPdf)(downloaded.content, settings.parser);
-        const summary = parsed.items.length
+        const summary = (parsed.items.length
             ? `Extracted ${parsed.items.length} edging item(s).`
-            : 'No edging items were found in the Job Summary section.';
+            : 'No edging items were found in the Job Summary section.') + multiSummaryNote;
         await (0, repositories_1.insertExtractedResult)({
             historyId: history.id,
             orderId,

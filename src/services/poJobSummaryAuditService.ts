@@ -17,6 +17,7 @@ import { createTodoActivity, findOpenActivities, closeActivities } from './odooA
 import { OdooClient } from './odooClient';
 import { getPurchaseOrderLines } from './poBillAutomationService';
 import { parseJobSummaryPdf } from './pdfParser';
+import { resolveCombinedJobSummaryFromOdooAttachments } from './multiJobSummaryCombiner';
 import { DEFAULT_PARSER_CONFIG, isJobSummaryAttachment } from '../utils/helpers';
 import { normalizeColor } from './stockProcessingService';
 import { reconcileWorkOrderQuantitiesForSaleOrder } from './workOrderQuantityReconciliationService';
@@ -593,23 +594,28 @@ export async function auditPurchaseOrderAgainstJobSummary(
   const soUserId = relationId(so.user_id);
   const buyerUserId = relationId(po.user_id) || relationId(po.create_uid);
 
-  // Obtain Job Summary
+  // Obtain Job Summary (comparing & combining multiple Job Summary PDFs if >1 are attached)
   let parsed: ParsedJobSummaryResult | null = providedParsed || null;
+
+  if (!parsed) {
+    try {
+      const combinedResult = await resolveCombinedJobSummaryFromOdooAttachments(
+        client,
+        so.id,
+        DEFAULT_PARSER_CONFIG as any,
+      );
+      if (combinedResult?.combined) {
+        parsed = combinedResult.combined;
+      }
+    } catch {
+      // Fall back to local extraction history below
+    }
+  }
 
   if (!parsed) {
     const latestExtracted = await getLatestExtractedResultByOrderId(so.id);
     if (latestExtracted?.resultJson) {
       parsed = latestExtracted.resultJson as ParsedJobSummaryResult;
-    }
-  }
-
-  if (!parsed) {
-    // Attempt on-the-fly download & extraction of Job Summary attachment
-    const attachments = await client.getAttachments(so.id);
-    const targetAttachment = attachments.find((a) => isJobSummaryAttachment(a, 'job summary'));
-    if (targetAttachment) {
-      const downloaded = await client.downloadAttachment(targetAttachment.id);
-      parsed = await parseJobSummaryPdf(downloaded.content, DEFAULT_PARSER_CONFIG as any);
     }
   }
 
