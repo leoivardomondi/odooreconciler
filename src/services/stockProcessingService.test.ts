@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { matchSoLine, matchSoLines } from './stockProcessingService';
+import {
+  computeHotMeltGlueQuantityToAdd,
+  isHotMeltAdhesiveComponentName,
+  matchSoLine,
+  matchSoLines,
+  resolveHotMeltAdhesiveFromBOM,
+} from './stockProcessingService';
 
 const marbleItem = {
   extractedColor: 'Marble',
@@ -98,4 +104,50 @@ test('leaves equally close colors unmatched instead of guessing', () => {
   const result = matchSoLines([marbleA, marbleB], [white, black]);
 
   assert.equal(result.size, 0);
+});
+
+test('identifies Hot Melt Adhesive BOM components and computes unused glue difference (6g/m)', async () => {
+  assert.equal(isHotMeltAdhesiveComponentName('Hot Melt Adhesive'), true);
+  assert.equal(isHotMeltAdhesiveComponentName('Adhesive Hot Melt Glue'), true);
+  assert.equal(isHotMeltAdhesiveComponentName('Edge Band Rolls 1mm (Cherry)'), false);
+  assert.equal(isHotMeltAdhesiveComponentName('Labour edging'), false);
+
+  // S03902 example: 475m ordered - 390m used = 85m unused -> 85 * 6g/m = 510g Hot Melt Adhesive to add back
+  assert.equal(computeHotMeltGlueQuantityToAdd(85, 6), 510);
+  assert.equal(computeHotMeltGlueQuantityToAdd(0, 6), 0);
+  assert.equal(computeHotMeltGlueQuantityToAdd(-10, 6), 0);
+
+  const mockClient: any = {
+    getProductVariant: async (id: number) => ({
+      id,
+      name: 'Edge Banding Service Cherry',
+      product_tmpl_id: [220, 'Edge Banding Service Cherry'],
+    }),
+    getBomCandidatesForProduct: async () => [
+      {
+        id: 37,
+        product_id: false,
+        product_tmpl_id: [220, 'Edge Banding Service Cherry'],
+        company_id: [1, 'URBAN VIBE INTERIOR DESIGN COMPANY LTD'],
+        active: true,
+      },
+    ],
+    getBomLines: async () => [
+      { id: 137, product_id: [313, 'Edge Band Rolls 1mm (Cherry)'], product_tmpl_id: [16, 'Edge Band Rolls 1mm'], product_qty: 1 },
+      { id: 138, product_id: [19, 'Hot Melt Adhesive'], product_tmpl_id: [19, 'Hot Melt Adhesive'], product_qty: 6 },
+    ],
+  };
+
+  const line: any = {
+    id: 24613,
+    product_id: [311, 'Edge Banding Service Cherry'],
+    name: 'Edge Banding Service Cherry',
+    product_uom_qty: 475,
+  };
+
+  const glue = await resolveHotMeltAdhesiveFromBOM(mockClient, line);
+  assert.equal(glue.found, true);
+  assert.equal(glue.variantId, 19);
+  assert.equal(glue.componentName, 'Hot Melt Adhesive');
+  assert.equal(glue.qtyPerMeter, 6);
 });

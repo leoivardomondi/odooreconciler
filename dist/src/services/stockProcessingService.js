@@ -1,5 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.DEFAULT_HOT_MELT_GLUE_GRAMS_PER_METER = void 0;
 exports.normalizeColor = normalizeColor;
 exports.normalizeServiceProductName = normalizeServiceProductName;
 exports.getLineDescriptionCandidates = getLineDescriptionCandidates;
@@ -8,6 +9,9 @@ exports.matchSoLine = matchSoLine;
 exports.matchSoLines = matchSoLines;
 exports.computeExtractedMeters = computeExtractedMeters;
 exports.computeQuantityToAdd = computeQuantityToAdd;
+exports.isHotMeltAdhesiveComponentName = isHotMeltAdhesiveComponentName;
+exports.computeHotMeltGlueQuantityToAdd = computeHotMeltGlueQuantityToAdd;
+exports.resolveHotMeltAdhesiveFromBOM = resolveHotMeltAdhesiveFromBOM;
 exports.logMissingItemsToChatter = logMissingItemsToChatter;
 exports.processStockItem = processStockItem;
 exports.processAllItems = processAllItems;
@@ -21,6 +25,8 @@ const logService_1 = require("./logService");
 const manufacturingStatus_1 = require("./manufacturingStatus");
 const odooClient_1 = require("./odooClient");
 const odooActivityService_1 = require("./odooActivityService");
+const multiJobSummaryCombiner_1 = require("./multiJobSummaryCombiner");
+const signatureService_1 = require("./signatureService");
 const ALLOWED_NOTIFICATION_USER_NAME = 'Leoivard Ongule';
 const MISSING_EDGE_BANDING_ACTIVITY_SUMMARY = 'MISSING EDGE BANDING ITEM(S)';
 async function getConfiguredClient() {
@@ -570,6 +576,162 @@ async function resolveComponentFromBOM(client, item, matchedLine, cache) {
         reason: '',
     };
 }
+exports.DEFAULT_HOT_MELT_GLUE_GRAMS_PER_METER = 6;
+function isHotMeltAdhesiveComponentName(value) {
+    const normalized = String(value || '').trim().toLowerCase();
+    if (!normalized)
+        return false;
+    return (normalized.includes('hot melt') ||
+        (normalized.includes('adhesive') && !normalized.includes('tape')) ||
+        normalized === 'hot melt glue' ||
+        normalized === 'adhesive hot melt glue');
+}
+function computeHotMeltGlueQuantityToAdd(unusedMeters, gluePerMeter = exports.DEFAULT_HOT_MELT_GLUE_GRAMS_PER_METER) {
+    const rate = Number(gluePerMeter) > 0 ? Number(gluePerMeter) : exports.DEFAULT_HOT_MELT_GLUE_GRAMS_PER_METER;
+    return Math.round(Math.max(0, Number(unusedMeters || 0)) * rate);
+}
+async function resolveHotMeltAdhesiveFromBOM(client, matchedLine, cache) {
+    const matchedProductId = Array.isArray(matchedLine.product_id) ? matchedLine.product_id[0] : 0;
+    if (!matchedProductId) {
+        return {
+            found: false,
+            componentName: '',
+            variantId: null,
+            qtyPerMeter: exports.DEFAULT_HOT_MELT_GLUE_GRAMS_PER_METER,
+            failed: true,
+            reason: 'Matched Sales Order line does not have a product',
+        };
+    }
+    let product = null;
+    if (cache && cache.productVariantsById.has(matchedProductId)) {
+        product = cache.productVariantsById.get(matchedProductId);
+    }
+    else {
+        product = await client.getProductVariant(matchedProductId);
+        if (cache)
+            cache.productVariantsById.set(matchedProductId, product);
+    }
+    const templateId = Array.isArray(product?.product_tmpl_id) ? product.product_tmpl_id[0] : 0;
+    if (!product || !templateId) {
+        return {
+            found: false,
+            componentName: '',
+            variantId: null,
+            qtyPerMeter: exports.DEFAULT_HOT_MELT_GLUE_GRAMS_PER_METER,
+            failed: true,
+            reason: 'Could not load the Sales Order product for Hot Melt Adhesive lookup',
+        };
+    }
+    const bomCacheKey = `${product.id}:${templateId}`;
+    let bomCandidates = [];
+    if (cache && cache.bomCandidatesByProductKey.has(bomCacheKey)) {
+        bomCandidates = cache.bomCandidatesByProductKey.get(bomCacheKey);
+    }
+    else {
+        bomCandidates = await client.getBomCandidatesForProduct(product.id, templateId);
+        if (cache)
+            cache.bomCandidatesByProductKey.set(bomCacheKey, bomCandidates);
+    }
+    const companySpecificBoms = bomCandidates.filter((candidate) => Array.isArray(candidate.company_id));
+    const scopedBomCandidates = companySpecificBoms.length > 0 ? companySpecificBoms : bomCandidates;
+    const exactVariantBoms = scopedBomCandidates.filter((candidate) => Array.isArray(candidate.product_id) && candidate.product_id[0] === product.id);
+    const templateBoms = scopedBomCandidates.filter((candidate) => !Array.isArray(candidate.product_id) &&
+        Array.isArray(candidate.product_tmpl_id) &&
+        candidate.product_tmpl_id[0] === templateId);
+    const selectedBom = exactVariantBoms.length === 1
+        ? exactVariantBoms[0]
+        : templateBoms.length === 1
+            ? templateBoms[0]
+            : null;
+    if (!selectedBom) {
+        return {
+            found: false,
+            componentName: '',
+            variantId: null,
+            qtyPerMeter: exports.DEFAULT_HOT_MELT_GLUE_GRAMS_PER_METER,
+            failed: true,
+            reason: 'No unique BOM found for Hot Melt Adhesive lookup',
+        };
+    }
+    let bomLines = [];
+    if (cache && cache.bomLinesByBomId.has(selectedBom.id)) {
+        bomLines = cache.bomLinesByBomId.get(selectedBom.id);
+    }
+    else {
+        bomLines = await client.getBomLines(selectedBom.id);
+        if (cache)
+            cache.bomLinesByBomId.set(selectedBom.id, bomLines);
+    }
+    const glueLine = bomLines.find((line) => {
+        const label = Array.isArray(line.product_id)
+            ? line.product_id[1]
+            : Array.isArray(line.product_tmpl_id)
+                ? line.product_tmpl_id[1]
+                : '';
+        return isHotMeltAdhesiveComponentName(label);
+    });
+    if (!glueLine) {
+        return {
+            found: false,
+            componentName: '',
+            variantId: null,
+            qtyPerMeter: exports.DEFAULT_HOT_MELT_GLUE_GRAMS_PER_METER,
+            failed: false,
+            reason: 'Hot Melt Adhesive is not listed in this BOM',
+        };
+    }
+    const qtyPerMeter = Number(glueLine.product_qty || 0) > 0
+        ? Number(glueLine.product_qty)
+        : exports.DEFAULT_HOT_MELT_GLUE_GRAMS_PER_METER;
+    if (Array.isArray(glueLine.product_id)) {
+        return {
+            found: true,
+            componentName: glueLine.product_id[1],
+            variantId: glueLine.product_id[0],
+            qtyPerMeter,
+            failed: false,
+            reason: '',
+        };
+    }
+    const tmplId = Array.isArray(glueLine.product_tmpl_id) ? glueLine.product_tmpl_id[0] : 0;
+    if (!tmplId) {
+        return {
+            found: false,
+            componentName: '',
+            variantId: null,
+            qtyPerMeter,
+            failed: true,
+            reason: 'Could not resolve Hot Melt Adhesive variant from BOM',
+        };
+    }
+    let variants = [];
+    if (cache && cache.productVariantsByTemplateId.has(tmplId)) {
+        variants = cache.productVariantsByTemplateId.get(tmplId);
+    }
+    else {
+        variants = await client.getProductVariantsByTemplate(tmplId);
+        if (cache)
+            cache.productVariantsByTemplateId.set(tmplId, variants);
+    }
+    if (variants.length === 0) {
+        return {
+            found: false,
+            componentName: '',
+            variantId: null,
+            qtyPerMeter,
+            failed: true,
+            reason: 'No product variant found for Hot Melt Adhesive template',
+        };
+    }
+    return {
+        found: true,
+        componentName: variants[0].display_name || variants[0].name,
+        variantId: variants[0].id,
+        qtyPerMeter,
+        failed: false,
+        reason: '',
+    };
+}
 async function ensureSignatureStillCurrent(client, orderId, signature) {
     const settings = await (0, repositories_1.getSettings)();
     const availableFields = await client.getSaleOrderFields();
@@ -663,6 +825,20 @@ async function buildStockRun(orderId) {
     else if (latestExtracted) {
         sourceItems = latestExtracted.resultJson.items || [];
         signature = signature || latestExtracted.pdfSignature || '';
+    }
+    // If the Sales Order has 2+ distinct Job Summary PDFs attached that combine (e.g. main summary + addendum),
+    // use the combined edging items so edging rolls and Hot Melt Adhesive are calculated from total actual usage.
+    try {
+        const multiSummary = await (0, multiJobSummaryCombiner_1.resolveCombinedJobSummaryFromOdooAttachments)(client, orderId, settings.parser);
+        if (multiSummary && multiSummary.mode === 'combined_sum' && multiSummary.combined.items.length > 0) {
+            sourceItems = multiSummary.combined.items;
+            if (!signature.trim()) {
+                signature = (0, signatureService_1.computePdfSignature)(Buffer.from(multiSummary.combined.rawText || '', 'utf8'));
+            }
+        }
+    }
+    catch {
+        // Non-blocking multi-summary resolution
     }
     if (!signature.trim()) {
         throw new Error('No Job Summary signature is available for stock reconciliation.');
@@ -890,8 +1066,10 @@ async function processAllItems(orderId, options = {}) {
             bomLinesByBomId: new Map(),
             productVariantsByTemplateId: new Map(),
         };
+        const glueContributions = [];
         for (const item of run.items) {
-            const result = await processStockItem(client, orderId, item, lines, location, run.signature, preview, processedVariantIds, matchedLines.get(item) || null, cache);
+            const matchedLine = matchedLines.get(item) || null;
+            const result = await processStockItem(client, orderId, item, lines, location, run.signature, preview, processedVariantIds, matchedLine, cache);
             if (!preview && result.status === 'processed' && result.variantId) {
                 await (0, repositories_1.insertProcessedStockItem)({
                     orderId,
@@ -909,6 +1087,100 @@ async function processAllItems(orderId, options = {}) {
                 componentMissingMessages.add(result.skipReason);
             }
             results.push(result);
+            // Calculate Adhesive Hot Melt Glue difference for matched edging lines with ready MOs
+            if (matchedLine && result.soMatched && result.moMatched && (0, manufacturingStatus_1.isManufacturingOrderReady)(result.moState)) {
+                const glue = await resolveHotMeltAdhesiveFromBOM(client, matchedLine, cache);
+                if (glue.found && glue.variantId) {
+                    const orderedMeters = result.orderedMeters ?? 0;
+                    const usedMeters = result.usedMeters;
+                    const unusedMeters = orderedMeters - usedMeters;
+                    glueContributions.push({
+                        matchedLine,
+                        edgingResult: result,
+                        glue,
+                        usedGlueGrams: Math.round(usedMeters * glue.qtyPerMeter),
+                        orderedGlueGrams: Math.round(orderedMeters * glue.qtyPerMeter),
+                        unusedGlueGrams: computeHotMeltGlueQuantityToAdd(unusedMeters, glue.qtyPerMeter),
+                    });
+                }
+            }
+        }
+        // Group Adhesive Hot Melt Glue contributions by glue variantId (e.g. Hot Melt Adhesive #19)
+        // and update its stock using the exact same difference-from-Job-Summary logic.
+        const glueByVariant = new Map();
+        for (const contrib of glueContributions) {
+            const vid = contrib.glue.variantId;
+            const list = glueByVariant.get(vid) || [];
+            list.push(contrib);
+            glueByVariant.set(vid, list);
+        }
+        for (const [glueVariantId, group] of glueByVariant.entries()) {
+            const first = group[0];
+            const totalUsedGlue = group.reduce((s, c) => s + c.usedGlueGrams, 0);
+            const totalOrderedGlue = group.reduce((s, c) => s + c.orderedGlueGrams, 0);
+            const totalUnusedGlue = group.reduce((s, c) => s + c.unusedGlueGrams, 0);
+            const totalLengthMm = group.reduce((s, c) => s + c.edgingResult.lengthMm, 0);
+            const matchedSoNames = [...new Set(group.map((c) => c.edgingResult.matchedSoProductName).filter(Boolean))].join(', ');
+            const glueResult = {
+                extractedColor: 'Hot Melt Adhesive',
+                normalizedColor: 'Hot Melt Adhesive',
+                lengthMm: totalLengthMm,
+                usedMeters: totalUsedGlue,
+                orderedMeters: totalOrderedGlue,
+                expectedSoProduct: matchedSoNames || first.edgingResult.expectedSoProduct,
+                soMatched: true,
+                matchedSoProductName: matchedSoNames,
+                moMatched: true,
+                moState: first.edgingResult.moState,
+                componentFound: true,
+                componentName: first.glue.componentName,
+                variantId: glueVariantId,
+                quantityToAddMeters: totalUnusedGlue,
+                currentStock: null,
+                newStock: null,
+                status: 'preview',
+                skipReason: '',
+            };
+            if (totalUnusedGlue <= 0) {
+                glueResult.status = 'skipped';
+                glueResult.skipReason =
+                    totalUnusedGlue < 0
+                        ? 'Job Summary glue usage exceeds Sales Order glue allocation'
+                        : 'No unused quantity to add';
+                results.push(glueResult);
+                continue;
+            }
+            if (processedVariantIds.has(glueVariantId)) {
+                glueResult.status = 'skipped';
+                glueResult.skipReason = 'Already processed for this Job Summary signature';
+                results.push(glueResult);
+                continue;
+            }
+            const quants = await client.getStockQuants(glueVariantId, location.id);
+            if (quants.length > 1) {
+                glueResult.status = 'failed';
+                glueResult.skipReason = `Multiple stock quants found at ${location.label}`;
+                results.push(glueResult);
+                continue;
+            }
+            const currentStock = Number(quants[0]?.quantity || 0);
+            glueResult.currentStock = currentStock;
+            glueResult.newStock = currentStock + totalUnusedGlue;
+            if (!preview) {
+                await ensureSignatureStillCurrent(client, orderId, run.signature);
+                await client.adjustStockAtLocation(glueVariantId, location.id, glueResult.newStock);
+                processedVariantIds.add(glueVariantId);
+                glueResult.status = 'processed';
+                await (0, repositories_1.insertProcessedStockItem)({
+                    orderId,
+                    extractionSignature: run.signature,
+                    variantId: glueVariantId,
+                    normalizedColor: glueResult.normalizedColor,
+                    quantityAddedMeters: glueResult.quantityToAddMeters,
+                    historyId: (await (0, repositories_1.getLatestExtractedResultByOrderId)(orderId))?.historyId || null,
+                });
+            }
+            results.push(glueResult);
         }
         const summary = {
             totalItems: results.length,
