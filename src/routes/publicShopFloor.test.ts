@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { groupWorkOrdersByAreaAndClient, handlePublicWorkOrderAction } from './shopFloor';
+import { filterPublicShopFloorOperators, groupWorkOrdersByAreaAndClient, handlePublicWorkOrderAction } from './shopFloor';
 
 test('groupWorkOrdersByAreaAndClient groups work orders by operation area and then by client name', () => {
   const sampleWorkOrders = [
@@ -173,4 +173,23 @@ test('handlePublicWorkOrderAction rejects invalid moId and unsupported actions',
   await handlePublicWorkOrderAction({ params: { id: '7063' }, body: { action: 'delete', operatorId: 4 } } as any, badAction.res);
   assert.equal(badAction.getStatus(), 400);
   assert.equal(badAction.getPayload()?.ok, false);
+});
+
+test('filterPublicShopFloorOperators keeps only Bitcher, Joel, Thomas, and Michael', () => {
+  const all = [
+    { odoo_employee_id: 1, name: 'Charles Ogola', job_title: 'Managing Director' },
+    { odoo_employee_id: 2, name: 'Raphael Onyango', job_title: 'Director' },
+    { odoo_employee_id: 5, name: 'Joel Ochango', job_title: 'Junior Operator' },
+    { odoo_employee_id: 4, name: 'Leoivard Ongule', job_title: 'Information Systems' },
+    { odoo_employee_id: 23, name: 'Michael Ochieng Okoth', job_title: 'Helper' },
+    { odoo_employee_id: 6, name: 'Onyango Bitcher Akulo', job_title: 'Senior Operator' },
+    { odoo_employee_id: 7, name: 'Thomas Ollinga', job_title: 'Assistant Jr Operator' },
+    { odoo_employee_id: 9, name: 'Janet Awino Amollo', job_title: 'Operations Assistant' },
+  ];
+
+  const filtered = filterPublicShopFloorOperators(all);
+  assert.deepEqual(
+    filtered.map((op) => op.name),
+    ['Onyango Bitcher Akulo', 'Joel Ochango', 'Thomas Ollinga', 'Michael Ochieng Okoth'],
+  );
 });

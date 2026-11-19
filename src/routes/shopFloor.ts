@@ -3551,6 +3551,35 @@ export function groupWorkOrdersByAreaAndClient(workOrders: any[]): PublicOperati
   return result;
 }
 
+const PUBLIC_SHOP_FLOOR_ALLOWED_OPERATOR_IDS = new Set([6, 5, 7, 23]); // Onyango Bitcher Akulo, Joel Ochango, Thomas Ollinga, Michael Ochieng Okoth
+const PUBLIC_SHOP_FLOOR_ALLOWED_NAME_ORDER = ['bitcher', 'joel', 'thomas', 'michael'];
+
+export function filterPublicShopFloorOperators<T extends { id?: number; odoo_employee_id?: number; name?: string | null }>(
+  operators: T[],
+): T[] {
+  const matched = (operators || []).filter((op) => {
+    const empId = Number(op.odoo_employee_id || op.id || 0);
+    if (empId > 0 && PUBLIC_SHOP_FLOOR_ALLOWED_OPERATOR_IDS.has(empId)) {
+      return true;
+    }
+    const lowerName = String(op.name || '').toLowerCase();
+    return (
+      lowerName.includes('bitcher') ||
+      (lowerName.includes('joel') && lowerName.includes('ochango')) ||
+      (lowerName.includes('thomas') && lowerName.includes('ollinga')) ||
+      (lowerName.includes('michael') && lowerName.includes('ochieng'))
+    );
+  });
+
+  return matched.sort((a, b) => {
+    const aName = String(a.name || '').toLowerCase();
+    const bName = String(b.name || '').toLowerCase();
+    const aIdx = PUBLIC_SHOP_FLOOR_ALLOWED_NAME_ORDER.findIndex((k) => aName.includes(k));
+    const bIdx = PUBLIC_SHOP_FLOOR_ALLOWED_NAME_ORDER.findIndex((k) => bName.includes(k));
+    return (aIdx === -1 ? 99 : aIdx) - (bIdx === -1 ? 99 : bIdx);
+  });
+}
+
 export async function handlePublicShopFloor(req: Request, res: Response) {
   try {
     const settings = await getSettings();
@@ -3573,7 +3602,8 @@ export async function handlePublicShopFloor(req: Request, res: Response) {
       } catch (_) { }
     }
 
-    const operators = await getShopFloorOperatorsFromDb().catch(() => []);
+    const allOperators = await getShopFloorOperatorsFromDb().catch(() => []);
+    const operators = filterPublicShopFloorOperators(allOperators);
     const areaGroups = groupWorkOrdersByAreaAndClient(workOrders);
 
     const totalOrders = workOrders.length;
@@ -3634,7 +3664,8 @@ export async function handlePublicShopFloorData(req: Request, res: Response) {
     );
 
     const workOrders = sharedData?.workOrders || [];
-    const operators = await getShopFloorOperatorsFromDb().catch(() => []);
+    const allOperators = await getShopFloorOperatorsFromDb().catch(() => []);
+    const operators = filterPublicShopFloorOperators(allOperators);
     const areaGroups = groupWorkOrdersByAreaAndClient(workOrders);
 
     const totalOrders = workOrders.length;

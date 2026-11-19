@@ -15,6 +15,7 @@ exports.refreshSharedWorkOrders = refreshSharedWorkOrders;
 exports.fetchFastOperatorProfile = fetchFastOperatorProfile;
 exports.buildOperatorDashboard = buildOperatorDashboard;
 exports.groupWorkOrdersByAreaAndClient = groupWorkOrdersByAreaAndClient;
+exports.filterPublicShopFloorOperators = filterPublicShopFloorOperators;
 exports.handlePublicShopFloor = handlePublicShopFloor;
 exports.handlePublicShopFloorData = handlePublicShopFloorData;
 exports.handlePublicWorkOrderAction = handlePublicWorkOrderAction;
@@ -3032,6 +3033,28 @@ function groupWorkOrdersByAreaAndClient(workOrders) {
     }
     return result;
 }
+const PUBLIC_SHOP_FLOOR_ALLOWED_OPERATOR_IDS = new Set([6, 5, 7, 23]); // Onyango Bitcher Akulo, Joel Ochango, Thomas Ollinga, Michael Ochieng Okoth
+const PUBLIC_SHOP_FLOOR_ALLOWED_NAME_ORDER = ['bitcher', 'joel', 'thomas', 'michael'];
+function filterPublicShopFloorOperators(operators) {
+    const matched = (operators || []).filter((op) => {
+        const empId = Number(op.odoo_employee_id || op.id || 0);
+        if (empId > 0 && PUBLIC_SHOP_FLOOR_ALLOWED_OPERATOR_IDS.has(empId)) {
+            return true;
+        }
+        const lowerName = String(op.name || '').toLowerCase();
+        return (lowerName.includes('bitcher') ||
+            (lowerName.includes('joel') && lowerName.includes('ochango')) ||
+            (lowerName.includes('thomas') && lowerName.includes('ollinga')) ||
+            (lowerName.includes('michael') && lowerName.includes('ochieng')));
+    });
+    return matched.sort((a, b) => {
+        const aName = String(a.name || '').toLowerCase();
+        const bName = String(b.name || '').toLowerCase();
+        const aIdx = PUBLIC_SHOP_FLOOR_ALLOWED_NAME_ORDER.findIndex((k) => aName.includes(k));
+        const bIdx = PUBLIC_SHOP_FLOOR_ALLOWED_NAME_ORDER.findIndex((k) => bName.includes(k));
+        return (aIdx === -1 ? 99 : aIdx) - (bIdx === -1 ? 99 : bIdx);
+    });
+}
 async function handlePublicShopFloor(req, res) {
     try {
         const settings = await (0, repositories_1.getSettings)();
@@ -3047,7 +3070,8 @@ async function handlePublicShopFloor(req, res) {
             }
             catch (_) { }
         }
-        const operators = await (0, repositories_1.getShopFloorOperatorsFromDb)().catch(() => []);
+        const allOperators = await (0, repositories_1.getShopFloorOperatorsFromDb)().catch(() => []);
+        const operators = filterPublicShopFloorOperators(allOperators);
         const areaGroups = groupWorkOrdersByAreaAndClient(workOrders);
         const totalOrders = workOrders.length;
         const inProgressTotal = workOrders.filter((w) => w.state === 'progress').length;
@@ -3097,7 +3121,8 @@ async function handlePublicShopFloorData(req, res) {
         const client = new odooClient_1.OdooClient(settings.odoo);
         const sharedData = await exports.shopFloorCache.getOrFetchTieredSWR('shop-floor:shared-work-orders:v1', 15 * 1000, 30 * 60 * 1000, () => fetchLiveSharedWorkOrders(client));
         const workOrders = sharedData?.workOrders || [];
-        const operators = await (0, repositories_1.getShopFloorOperatorsFromDb)().catch(() => []);
+        const allOperators = await (0, repositories_1.getShopFloorOperatorsFromDb)().catch(() => []);
+        const operators = filterPublicShopFloorOperators(allOperators);
         const areaGroups = groupWorkOrdersByAreaAndClient(workOrders);
         const totalOrders = workOrders.length;
         const inProgressTotal = workOrders.filter((w) => w.state === 'progress').length;
@@ -3137,15 +3162,38 @@ async function handlePublicWorkOrderAction(req, res) {
         res.status(400).json({ ok: false, message: 'Invalid action. Supported actions are start, pause, finish.' });
         return;
     }
+    if ((action === 'start' || action === 'finish') && (!operatorId || !Number.isSafeInteger(operatorId) || operatorId <= 0)) {
+        res.status(400).json({
+            ok: false,
+            code: 'operator_required',
+            message: 'Please select an operator before starting or finishing a work order.',
+        });
+        return;
+    }
     try {
         const isResuming = exports.manuallyPausedMoIds.has(moId);
         const targetState = action === 'finish' ? 'done' : action === 'pause' ? 'paused' : 'progress';
         let stockCheck = null;
-        if (action === 'start' && !isResuming) {
+        if (action === 'start' || action === 'finish') {
             const settings = await (0, repositories_1.getSettings)();
             const client = new odooClient_1.OdooClient(settings.odoo);
-            stockCheck = await client.checkManufacturingOrderStockAvailability(moId);
-            if (!stockCheck.isFullyAvailable) {
+            const shouldCheckStock = action === 'start' && !isResuming;
+            const [permCheck, fetchedStockCheck] = await Promise.all([
+                client.checkManufacturingOrderWorkcenterPermission(moId, action, operatorId),
+                shouldCheckStock ? client.checkManufacturingOrderStockAvailability(moId) : Promise.resolve(null),
+            ]);
+            stockCheck = fetchedStockCheck;
+            if (!permCheck.allowed) {
+                res.status(403).json({
+                    ok: false,
+                    code: permCheck.code || 'workcenter_not_allowed',
+                    action,
+                    moId,
+                    message: permCheck.message || 'You are not allowed to run this operation in Odoo.',
+                });
+                return;
+            }
+            if (stockCheck && !stockCheck.isFullyAvailable) {
                 const missingSummary = stockCheck.missingComponents
                     .slice(0, 5)
                     .map((c) => `${c.productName} (Need ${c.missingQty} ${c.uom})`)
@@ -3561,60 +3609,83 @@ async function handleAdvanceMo(req, res) {
         const employee = await resolveShopFloorEmployeeRecord(viewedEmail);
         const actorName = employee?.name || req.authUser?.displayName || req.authUser?.email || (0, userIdentityService_1.emailDisplayName)(viewedEmail) || 'Operator';
         const employeeId = employee?.id;
-        const isResuming = exports.manuallyPausedMoIds.has(moId);
-        const targetState = action === 'finish' ? 'done' : 'progress';
-        // If resuming a paused MO, components were already verified and allocated upon initial start.
-        // Skip slow synchronous re-checking to ensure instantaneous resume (<10ms).
-        let stockCheck = null;
-        if (!isResuming) {
-            const settings = await (0, repositories_1.getSettings)();
-            const client = new odooClient_1.OdooClient(settings.odoo);
-            stockCheck = await client.checkManufacturingOrderStockAvailability(moId);
-            if (!stockCheck.isFullyAvailable) {
-                if (stockCheck.hasMissingBoards) {
-                    // Run pending PO auto-approval asynchronously in the background so operator gets instant feedback
-                    void (async () => {
-                        try {
-                            const procurement = await client.getManufacturingOrderBoardProcurement(moId);
-                            const pendingPurchaseOrders = procurement.purchaseOrders.filter((po) => ['draft', 'sent', 'to approve'].includes(po.state));
-                            if (pendingPurchaseOrders.length) {
-                                await client.approvePurchaseOrdersForShopFloor(pendingPurchaseOrders);
-                            }
-                        }
-                        catch (_) { }
-                    })();
-                }
-                const missingSummary = stockCheck.missingComponents
-                    .slice(0, 5)
-                    .map((c) => `${c.productName} (Need ${c.missingQty} ${c.uom})`)
-                    .join(', ') + (stockCheck.missingComponents.length > 5 ? ` and ${stockCheck.missingComponents.length - 5} more` : '');
-                const actionVerb = action === 'finish' ? 'finish or close' : 'start';
-                const message = `Cannot ${actionVerb} ${stockCheck.moName}: Missing required components in stock (${missingSummary}). Add or receive the required stock before proceeding.`;
-                let redirectTo = '/shop-floor';
-                if (stockCheck.hasMissingBoards) {
-                    redirectTo = `/shop-floor/boards?message=${encodeURIComponent(message)}`;
-                }
-                else if (stockCheck.hasMissingHardware) {
-                    redirectTo = `/shop-floor/receipts?message=${encodeURIComponent(message)}`;
-                }
-                if (wantsJson) {
-                    res.status(409).json({
-                        ok: false,
-                        code: 'stock_missing',
-                        action,
-                        moId,
-                        moName: stockCheck.moName,
-                        message,
-                        missingComponents: stockCheck.missingComponents,
-                        hasMissingBoards: stockCheck.hasMissingBoards,
-                        hasMissingHardware: stockCheck.hasMissingHardware,
-                        redirectTo,
-                    });
-                    return;
-                }
-                res.redirect(redirectTo);
+        if (!employeeId || !Number.isSafeInteger(employeeId) || employeeId <= 0) {
+            const msg = 'Your account is not linked to a valid Odoo employee. Ask an administrator to link your account before starting or finishing work orders.';
+            if (wantsJson) {
+                res.status(403).json({ ok: false, code: 'employee_not_linked', action, moId, message: msg });
                 return;
             }
+            res.redirect('/shop-floor?error=' + encodeURIComponent(msg) + '#manufacturing-orders');
+            return;
+        }
+        const isResuming = exports.manuallyPausedMoIds.has(moId);
+        const targetState = action === 'finish' ? 'done' : 'progress';
+        // Validate workcenter permission (and stock availability when not resuming) before responding
+        const settings = await (0, repositories_1.getSettings)();
+        const client = new odooClient_1.OdooClient(settings.odoo);
+        const [permCheck, stockCheck] = await Promise.all([
+            client.checkManufacturingOrderWorkcenterPermission(moId, action, employeeId),
+            !isResuming ? client.checkManufacturingOrderStockAvailability(moId) : Promise.resolve(null),
+        ]);
+        if (!permCheck.allowed) {
+            const permMsg = permCheck.message || 'You are not assigned to this work center in Odoo.';
+            if (wantsJson) {
+                res.status(403).json({
+                    ok: false,
+                    code: permCheck.code || 'workcenter_not_allowed',
+                    action,
+                    moId,
+                    message: permMsg,
+                });
+                return;
+            }
+            res.redirect('/shop-floor?error=' + encodeURIComponent(permMsg) + '#manufacturing-orders');
+            return;
+        }
+        if (stockCheck && !stockCheck.isFullyAvailable) {
+            if (stockCheck.hasMissingBoards) {
+                // Run pending PO auto-approval asynchronously in the background so operator gets instant feedback
+                void (async () => {
+                    try {
+                        const procurement = await client.getManufacturingOrderBoardProcurement(moId);
+                        const pendingPurchaseOrders = procurement.purchaseOrders.filter((po) => ['draft', 'sent', 'to approve'].includes(po.state));
+                        if (pendingPurchaseOrders.length) {
+                            await client.approvePurchaseOrdersForShopFloor(pendingPurchaseOrders);
+                        }
+                    }
+                    catch (_) { }
+                })();
+            }
+            const missingSummary = stockCheck.missingComponents
+                .slice(0, 5)
+                .map((c) => `${c.productName} (Need ${c.missingQty} ${c.uom})`)
+                .join(', ') + (stockCheck.missingComponents.length > 5 ? ` and ${stockCheck.missingComponents.length - 5} more` : '');
+            const actionVerb = action === 'finish' ? 'finish or close' : 'start';
+            const message = `Cannot ${actionVerb} ${stockCheck.moName}: Missing required components in stock (${missingSummary}). Add or receive the required stock before proceeding.`;
+            let redirectTo = '/shop-floor';
+            if (stockCheck.hasMissingBoards) {
+                redirectTo = `/shop-floor/boards?message=${encodeURIComponent(message)}`;
+            }
+            else if (stockCheck.hasMissingHardware) {
+                redirectTo = `/shop-floor/receipts?message=${encodeURIComponent(message)}`;
+            }
+            if (wantsJson) {
+                res.status(409).json({
+                    ok: false,
+                    code: 'stock_missing',
+                    action,
+                    moId,
+                    moName: stockCheck.moName,
+                    message,
+                    missingComponents: stockCheck.missingComponents,
+                    hasMissingBoards: stockCheck.hasMissingBoards,
+                    hasMissingHardware: stockCheck.hasMissingHardware,
+                    redirectTo,
+                });
+                return;
+            }
+            res.redirect(redirectTo);
+            return;
         }
         // Stock check passed or resuming: Respond instantly for zero-wait operator feedback (<15ms)
         await optimisticallyUpdateSharedWorkOrderState(moId, targetState, actorName, viewedEmail);
@@ -3641,7 +3712,7 @@ async function handleAdvanceMo(req, res) {
             try {
                 const settings = await (0, repositories_1.getSettings)();
                 const client = new odooClient_1.OdooClient(settings.odoo);
-                const advanceResult = await client.advanceManufacturingOrder(moId, action, employeeId, stockCheck);
+                const advanceResult = await client.advanceManufacturingOrder(moId, action, employeeId, stockCheck || undefined);
                 await optimisticallyUpdateSharedWorkOrderState(moId, targetState, actorName, viewedEmail);
                 const sharedMoEntry = exports.shopFloorCache.getEntry('shop-floor:shared-work-orders:v1');
                 if (sharedMoEntry) {
