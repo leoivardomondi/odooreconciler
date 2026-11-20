@@ -727,7 +727,9 @@
               }
             }, 300);
           }
-          // Handle Match Client modal button clicks from cards
+        }
+
+        // Handle Match Client modal button clicks from cards
           let activeMatchIntakeId = null;
           const matchModalEl = document.getElementById('publicMatchClientModal');
           const matchForm = document.getElementById('publicMatchClientForm');
@@ -809,8 +811,60 @@
           }
 
           if (partnerSearchInput) {
+            async function loadPublicPartnerResults(query) {
+              const currentSeq = ++partnerRequestSeq;
+              try {
+                const res = await fetch('/public/board-logs/partners/search?q=' + encodeURIComponent(query || ''), {
+                  headers: { Accept: 'application/json' },
+                });
+                if (!res.ok || currentSeq !== partnerRequestSeq) return;
+                const payload = await res.json();
+                if (currentSeq !== partnerRequestSeq) return;
+
+                const results = Array.isArray(payload && payload.results) ? payload.results : [];
+                if (partnerList) {
+                  partnerList.innerHTML = '';
+                  if (results.length === 0) {
+                    if (noResultsEl) noResultsEl.classList.remove('d-none');
+                  } else {
+                    if (noResultsEl) noResultsEl.classList.add('d-none');
+                    results.forEach(function (partner) {
+                      const btn = document.createElement('button');
+                      btn.type = 'button';
+                      btn.className = 'list-group-item list-group-item-action text-start py-2 px-3 combobox-item';
+                      btn.setAttribute('data-id', partner.id);
+                      btn.setAttribute('data-name', partner.name || '');
+                      btn.style.border = 'none';
+
+                      const nameEl = document.createElement('div');
+                      nameEl.className = 'fw-medium text-dark';
+                      nameEl.textContent = partner.name || 'Unnamed client';
+
+                      const metaEl = document.createElement('div');
+                      metaEl.className = 'small text-muted';
+                      metaEl.style.fontSize = '0.74rem';
+                      const parts = [];
+                      if (partner.ref) parts.push('Ref: ' + partner.ref);
+                      if (partner.mobile || partner.phone) parts.push('Tel: ' + (partner.mobile || partner.phone));
+                      metaEl.textContent = parts.length ? parts.join(' • ') : 'Client in MySQL';
+
+                      btn.appendChild(nameEl);
+                      btn.appendChild(metaEl);
+                      partnerList.appendChild(btn);
+                    });
+                  }
+                }
+              } catch (_err) { }
+            }
+
+            partnerSearchInput.addEventListener('click', function () {
+              if (partnerDropdown) partnerDropdown.classList.remove('d-none');
+              loadPublicPartnerResults(partnerSearchInput.value.trim());
+            });
+
             partnerSearchInput.addEventListener('focus', function () {
               if (partnerDropdown) partnerDropdown.classList.remove('d-none');
+              loadPublicPartnerResults(partnerSearchInput.value.trim());
             });
 
             partnerSearchInput.addEventListener('input', function () {
@@ -819,52 +873,23 @@
               if (partnerNameInput) partnerNameInput.value = '';
               if (partnerDropdown) partnerDropdown.classList.remove('d-none');
 
+              // Immediately filter existing items in DOM for 0ms responsiveness
+              if (partnerList) {
+                const lower = query.toLowerCase();
+                let visibleCount = 0;
+                partnerList.querySelectorAll('.combobox-item').forEach(function (item) {
+                  const name = (item.getAttribute('data-name') || item.textContent || '').toLowerCase();
+                  const match = !lower || name.includes(lower);
+                  item.classList.toggle('d-none', !match);
+                  if (match) visibleCount++;
+                });
+                if (noResultsEl) noResultsEl.classList.toggle('d-none', visibleCount > 0 || !lower);
+              }
+
               clearTimeout(partnerSearchTimer);
-              partnerSearchTimer = setTimeout(async function () {
-                const currentSeq = ++partnerRequestSeq;
-                try {
-                  const res = await fetch('/public/board-logs/partners/search?q=' + encodeURIComponent(query), {
-                    headers: { Accept: 'application/json' },
-                  });
-                  if (!res.ok || currentSeq !== partnerRequestSeq) return;
-                  const payload = await res.json();
-                  if (currentSeq !== partnerRequestSeq) return;
-
-                  const results = Array.isArray(payload && payload.results) ? payload.results : [];
-                  if (partnerList) {
-                    partnerList.innerHTML = '';
-                    if (results.length === 0) {
-                      if (noResultsEl) noResultsEl.classList.remove('d-none');
-                    } else {
-                      if (noResultsEl) noResultsEl.classList.add('d-none');
-                      results.forEach(function (partner) {
-                        const btn = document.createElement('button');
-                        btn.type = 'button';
-                        btn.className = 'list-group-item list-group-item-action text-start py-2 px-3 combobox-item';
-                        btn.setAttribute('data-id', partner.id);
-                        btn.setAttribute('data-name', partner.name || '');
-                        btn.style.border = 'none';
-
-                        const nameEl = document.createElement('div');
-                        nameEl.className = 'fw-medium text-dark';
-                        nameEl.textContent = partner.name || 'Unnamed client';
-
-                        const metaEl = document.createElement('div');
-                        metaEl.className = 'small text-muted';
-                        metaEl.style.fontSize = '0.74rem';
-                        const parts = [];
-                        if (partner.ref) parts.push('Ref: ' + partner.ref);
-                        if (partner.mobile || partner.phone) parts.push('Tel: ' + (partner.mobile || partner.phone));
-                        metaEl.textContent = parts.length ? parts.join(' • ') : 'Odoo partner record';
-
-                        btn.appendChild(nameEl);
-                        btn.appendChild(metaEl);
-                        partnerList.appendChild(btn);
-                      });
-                    }
-                  }
-                } catch (_err) { }
-              }, 220);
+              partnerSearchTimer = setTimeout(function () {
+                loadPublicPartnerResults(query);
+              }, 40);
             });
           }
 

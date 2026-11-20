@@ -1482,8 +1482,7 @@
                   aria-hidden="true">
                   <div class="modal-dialog modal-dialog-centered">
                     <div class="modal-content shadow border-0 rounded-4">
-                      <form id="matchClientForm" method="post" action="">
-                        <form id="matchClientForm" method="post" action="" data-no-loading="true">
+                      <form id="matchClientForm" method="post" action="" data-no-loading="true">
                           <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>">
                           <div class="modal-header border-bottom-0 pb-0 pt-4 px-4">
                             <div>
@@ -1547,7 +1546,6 @@
                               id="btnSubmitMatchClient">
                               <span class="spinner-border spinner-border-sm d-none me-1" id="matchClientSpinner"
                                 role="status"></span>
-                              Confirm &amp; Match
                               <span id="matchClientBtnText">Confirm &amp; Match</span>
                             </button>
                           </div>
@@ -1709,8 +1707,10 @@
           var container = document.getElementById(containerId);
           var input = document.getElementById(inputId);
           var hidden = document.getElementById(hiddenId);
-          var dropdown = container.querySelector('.combobox-dropdown');
           var list = document.getElementById(listId);
+          if (!container || !input || !hidden || !list) return;
+          var dropdown = container.querySelector('.combobox-dropdown');
+          if (!dropdown) return;
           var items = list.querySelectorAll('.combobox-item');
           var noResults = container.querySelector('.no-results');
           var activeIndex = -1;
@@ -1903,18 +1903,21 @@
           var container = document.getElementById(containerId);
           var input = document.getElementById(inputId);
           var hidden = document.getElementById(hiddenId);
-          var dropdown = container.querySelector('.combobox-dropdown');
           var list = document.getElementById(listId);
+          if (!container || !input || !hidden || !list) return;
+          var dropdown = container.querySelector('.combobox-dropdown');
+          if (!dropdown) return;
           var noResults = container.querySelector('.no-results');
           var loadingRow = document.createElement('div');
           var items = [];
           var activeIndex = -1;
           var requestSeq = 0;
           var pendingTimer = null;
+          var hasPendingOption = containerId === 'partnerCombobox';
 
-          loadingRow.className = 'text-muted text-center py-3 d-none partner-loading';
-          loadingRow.style.fontSize = '0.85rem';
-          loadingRow.textContent = 'Searching clients from MySQL...';
+          loadingRow.className = 'text-muted text-center py-2 d-none partner-loading';
+          loadingRow.style.fontSize = '0.82rem';
+          loadingRow.textContent = 'Loading clients from MySQL...';
           list.parentElement.insertBefore(loadingRow, list.nextSibling);
 
           function refreshItems() {
@@ -1931,6 +1934,8 @@
           function openDropdown() {
             dropdown.classList.remove('d-none');
             dropdown.style.display = 'block';
+            dropdown.style.width = '100%';
+            dropdown.style.zIndex = '1060';
           }
 
           function closeDropdown() {
@@ -1950,8 +1955,10 @@
           }
 
           function selectItem(item) {
-            hidden.value = item.getAttribute('data-id') || '';
-            input.value = item.getAttribute('data-name') || item.textContent.trim();
+            var id = item.getAttribute('data-id') || '';
+            var name = item.getAttribute('data-name') || (item.querySelector('.product-name') ? item.querySelector('.product-name').textContent.trim() : item.textContent.trim());
+            hidden.value = id;
+            input.value = name;
             input.classList.remove('is-invalid');
             items.forEach(function (i) {
               i.classList.remove('selected');
@@ -1963,10 +1970,30 @@
             }
           }
 
+          // Delegated click listener so initial MySQL-rendered items and dynamically loaded items are always clickable immediately
+          list.addEventListener('click', function (e) {
+            var itemButton = e.target.closest('.combobox-item');
+            if (itemButton) {
+              e.stopPropagation();
+              selectItem(itemButton);
+            }
+          });
+
           function renderItems(results) {
             list.innerHTML = '';
+            if (hasPendingOption) {
+              var pendingBtn = document.createElement('button');
+              pendingBtn.type = 'button';
+              pendingBtn.className = 'list-group-item list-group-item-action text-start py-2.5 px-3 combobox-item fw-semibold text-warning-emphasis bg-warning-subtle';
+              pendingBtn.setAttribute('data-id', '0');
+              pendingBtn.setAttribute('data-name', 'Pending Client Matching');
+              pendingBtn.style.border = 'none';
+              pendingBtn.textContent = '❓ Pending Client Matching (Owner Unknown)';
+              list.appendChild(pendingBtn);
+            }
+
             if (!results || !results.length) {
-              showNoResults(true);
+              showNoResults(!hasPendingOption);
               refreshItems();
               return;
             }
@@ -1995,14 +2022,10 @@
               if (partner.mobile) metaParts.push('Mobile: ' + partner.mobile);
               if (partner.phone) metaParts.push('Phone: ' + partner.phone);
               if (partner.email) metaParts.push('Email: ' + partner.email);
-              meta.textContent = metaParts.length ? metaParts.join(' • ') : 'Odoo partner record';
+              meta.textContent = metaParts.length ? metaParts.join(' • ') : 'Client in MySQL';
 
               button.appendChild(title);
               button.appendChild(meta);
-              button.addEventListener('click', function (e) {
-                e.stopPropagation();
-                selectItem(button);
-              });
               list.appendChild(button);
             });
 
@@ -2015,15 +2038,16 @@
             var matchCount = 0;
 
             items.forEach(function (item) {
+              var isPendingRow = item.getAttribute('data-id') === '0';
               var text = (item.getAttribute('data-name') || item.textContent || '').toLowerCase();
-              var visible = !normalizedQuery || text.indexOf(normalizedQuery) !== -1;
+              var visible = isPendingRow || !normalizedQuery || text.indexOf(normalizedQuery) !== -1;
               item.classList.toggle('d-none', !visible);
-              if (visible) {
+              if (visible && !isPendingRow) {
                 matchCount++;
               }
             });
 
-            showNoResults(matchCount === 0);
+            showNoResults(matchCount === 0 && normalizedQuery.length > 0);
             clearKeyboardHover();
           }
 
@@ -2044,10 +2068,18 @@
                 return;
               }
               renderItems(Array.isArray(payload && payload.results) ? payload.results : []);
-            } catch (_error) {
-              if (currentSeq === requestSeq) {
-                renderItems([]);
+              var currentQuery = input.value.trim();
+              if (currentQuery) {
+                var exactMatch = items.find(function (item) {
+                  var name = (item.getAttribute('data-name') || '').trim();
+                  return name && name.toLowerCase() === currentQuery.toLowerCase();
+                });
+                if (exactMatch && !hidden.value) {
+                  hidden.value = exactMatch.getAttribute('data-id') || '';
+                }
               }
+            } catch (_error) {
+              // Keep existing pre-rendered MySQL items visible on network hiccup
             } finally {
               if (currentSeq === requestSeq) {
                 setLoading(false);
@@ -2058,28 +2090,36 @@
           input.addEventListener('click', function (e) {
             e.stopPropagation();
             openDropdown();
-            input.select();
+            filterCurrentItems(input.value.trim());
+            loadResults(input.value.trim());
           });
 
           input.addEventListener('focus', function () {
             openDropdown();
             filterCurrentItems(input.value.trim());
-            if (!items.length) {
-              loadResults(input.value.trim());
-            }
+            loadResults(input.value.trim());
           });
 
           input.addEventListener('input', function () {
             openDropdown();
             clearTimeout(pendingTimer);
-            hidden.value = '';
-            if (onSelectCallback) {
-              onSelectCallback(null);
+            var currentText = input.value.trim();
+            var exactItem = items.find(function (item) {
+              var name = (item.getAttribute('data-name') || '').trim();
+              return name && name.toLowerCase() === currentText.toLowerCase();
+            });
+            if (exactItem) {
+              hidden.value = exactItem.getAttribute('data-id') || '';
+              input.classList.remove('is-invalid');
+              if (onSelectCallback) onSelectCallback(exactItem);
+            } else {
+              hidden.value = '';
+              if (onSelectCallback) onSelectCallback(null);
             }
-            filterCurrentItems(input.value.trim());
+            filterCurrentItems(currentText);
             pendingTimer = window.setTimeout(function () {
               loadResults(input.value.trim());
-            }, 50);
+            }, 35);
           });
 
           input.addEventListener('keydown', function (e) {
@@ -2305,7 +2345,6 @@
           }
           var boardDetailsEl = document.getElementById('matchModalBoardDetails');
           if (boardDetailsEl) {
-            boardDetailsEl.textContent = qty + ' × ' + prodName + ' (Intake #' + intakeId + ')';
             boardDetailsEl.textContent = qty + ' × ' + prodName + ' (Intake #' + intakeId.substring(0, 8) + '...)';
           }
           var matchPartnerSearch = document.getElementById('matchPartnerSearch');
@@ -2344,12 +2383,10 @@
           }
         });
 
-        // Handle match client form submission
         // Handle match client form submission via non-blocking AJAX
         var matchClientForm = document.getElementById('matchClientForm');
         if (matchClientForm) {
-          matchClientForm.addEventListener('submit', function (e) {
-            matchClientForm.addEventListener('submit', async function (e) {
+          matchClientForm.addEventListener('submit', async function (e) {
               e.preventDefault();
               var matchPartnerId = document.getElementById('matchPartnerId');
               var matchPartnerSearch = document.getElementById('matchPartnerSearch');
