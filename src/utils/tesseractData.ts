@@ -12,7 +12,14 @@ const trainedDataPath = resolveFromProjectRoot('eng.traineddata');
  * Set TESSERACT_ENABLED=true to re-enable it as a local fallback.
  */
 export function isTesseractEnabled() {
-  return ['1', 'true', 'yes', 'on'].includes(String(process.env.TESSERACT_ENABLED || '').toLowerCase());
+  const raw = String(process.env.TESSERACT_ENABLED || '').trim().toLowerCase();
+  if (['0', 'false', 'no', 'off'].includes(raw)) {
+    return false;
+  }
+  if (['1', 'true', 'yes', 'on'].includes(raw)) {
+    return true;
+  }
+  return fs.existsSync(trainedDataPath);
 }
 
 export function getBundledTesseractOptions() {

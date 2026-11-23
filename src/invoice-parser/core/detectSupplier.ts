@@ -25,7 +25,13 @@ function extractHeaderSupplier(text: string) {
 
   const candidates: { name: string; priority: number }[] = [];
 
-  for (const line of lines) {
+  for (const rawLine of lines) {
+    const line = rawLine
+      .replace(/\b(?:invoice\s*(?:no|number|#)?\.?|delivery\s*note|supplier'?s?\s*ref\.?|mode\s*terms\s*of\s*payment|dated)\b.*$/i, '')
+      .trim();
+    if (line.length < 4) {
+      continue;
+    }
     // Ignore lines that are invoice title indicators e.g. "Sales Invoice", "Tax Invoice", "SalesInvoice Co"
     if (/\b(?:sales|tax|proforma|cash)\s*[li1]nvoice\b/i.test(line) || /sales[li1]nvoice/i.test(line) || /[li1]nvoice\s*co\b/i.test(line)) {
       continue;
