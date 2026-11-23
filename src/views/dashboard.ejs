@@ -368,7 +368,13 @@
                 : cooldownBlockedCount > 0 ? { label: 'Waiting for retry window', tone: 'warning', note: `${cooldownBlockedCount} document(s) are cooling down before the next automatic check.` }
                 : eligibleCount === 0 ? { label: 'No Finance documents found', tone: 'secondary', note: 'The scheduler completed normally, but there were no candidate Finance documents in its lookback window.' }
                 : { label: 'No documents scanned', tone: 'info', note: 'Candidates were found, but none were eligible for this batch.' })
-              : run.failedCount > 0 ? { label: 'Attention required', tone: 'danger', note: `${run.failedCount} document(s) failed during this run.` }
+              : run.failedCount > 0 ? {
+                  label: 'Attention required',
+                  tone: 'danger',
+                  note: run.scannedCount === 0 && run.errorMessage
+                    ? `Run failed before scanning documents: ${run.errorMessage}`
+                    : `${run.failedCount} document(s) failed during this run.`,
+                }
               : run.processedCount > 0 ? { label: 'Work completed', tone: 'success', note: `${run.processedCount} document(s) were processed successfully.` }
               : null; %>
             <article class="border rounded-3 p-3 mb-3">

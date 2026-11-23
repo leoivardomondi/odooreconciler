@@ -359,30 +359,36 @@ export class OdooClient {
   async getConfirmedSalesOrdersSince(
     confirmedFromDate: string,
     limit = 50,
+    timeoutMs = 40000,
   ): Promise<SalesOrderSummary[]> {
     const targetCompanyId = await this.getTargetCompanyId();
-    return this.request<SalesOrderSummary[]>('sale.order', 'search_read', {
-      domain: [
-        ['company_id', '=', targetCompanyId],
-        ['state', 'in', ['sale', 'done']],
-        ['date_order', '>=', confirmedFromDate],
-      ],
-      fields: [
-        'id',
-        'name',
-        'company_id',
-        'partner_id',
-        'date_order',
-        'amount_total',
-        'currency_id',
-        'state',
-        'user_id',
-        'create_uid',
-        'client_order_ref',
-      ],
-      limit,
-      order: 'date_order desc, id desc',
-    });
+    return this.request<SalesOrderSummary[]>(
+      'sale.order',
+      'search_read',
+      {
+        domain: [
+          ['company_id', '=', targetCompanyId],
+          ['state', 'in', ['sale', 'done']],
+          ['date_order', '>=', confirmedFromDate],
+        ],
+        fields: [
+          'id',
+          'name',
+          'company_id',
+          'partner_id',
+          'date_order',
+          'amount_total',
+          'currency_id',
+          'state',
+          'user_id',
+          'create_uid',
+          'client_order_ref',
+        ],
+        limit,
+        order: 'date_order desc, id desc',
+      },
+      { timeoutMs },
+    );
   }
 
   async searchCustomerInvoicesSince(
