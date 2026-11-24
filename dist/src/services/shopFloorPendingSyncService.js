@@ -392,12 +392,29 @@ async function syncPendingProcessesFromOdoo(force = false) {
         }
         // Create a pool of available quantities from active non-reverted board intake logs
         const logPool = new Map();
+        const logClaimMap = new Map();
         for (const log of activeLogs) {
             logPool.set(log.id, Number(log.quantity || 0));
+            const existingClaim = await (0, repositories_1.getShopFloorSharedCache)(`retro-log-claimed:${log.id}`).catch(() => null);
+            if (existingClaim?.data) {
+                logClaimMap.set(log.id, existingClaim.data);
+            }
         }
-        for (const [key, agg] of aggregatedMoves.entries()) {
+        // Sort aggregatedMoves chronologically (oldest MO first) so earlier Sales Orders claim their board logs first
+        // and once a log ID is bound to a Sales Order it cannot be reused by a later Sales Order.
+        const sortedAggregatedEntries = [...aggregatedMoves.entries()].sort(([, a], [, b]) => {
+            const moA = moMap.get(a.moId);
+            const moB = moMap.get(b.moId);
+            const timeA = moA?.create_date ? new Date(moA.create_date).getTime() : 0;
+            const timeB = moB?.create_date ? new Date(moB.create_date).getTime() : 0;
+            if (timeA !== timeB && timeA > 0 && timeB > 0)
+                return timeA - timeB;
+            return a.moId - b.moId;
+        });
+        for (const [key, agg] of sortedAggregatedEntries) {
             const cleanCustomer = String(agg.partnerName || '').trim().toLowerCase();
             const cleanProduct = String(agg.productName || '').trim().toLowerCase();
+            const aggSoName = ((0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(agg.origin) || agg.origin || agg.moName || '').trim().toUpperCase();
             // Allocate from available active non-reverted intake logs
             let allocatedFromLogs = 0;
             let remainingNeeded = agg.qtyNeeded;
@@ -407,6 +424,11 @@ async function syncPendingProcessesFromOdoo(force = false) {
                 const availableInLog = logPool.get(log.id) || 0;
                 if (availableInLog <= 0)
                     continue;
+                // If this log ID was already matched to a DIFFERENT Sales Order, it cannot be reused
+                const existingClaim = logClaimMap.get(log.id);
+                if (existingClaim?.soName && aggSoName && existingClaim.soName.trim().toUpperCase() !== aggSoName) {
+                    continue;
+                }
                 const logPid = Number(log.partner_id || 0);
                 const logProdId = Number(log.product_id || 0);
                 const logCust = String(log.customer_name || '').trim().toLowerCase();
@@ -420,6 +442,21 @@ async function syncPendingProcessesFromOdoo(force = false) {
                     allocatedFromLogs += toAllocate;
                     remainingNeeded -= toAllocate;
                     logPool.set(log.id, availableInLog - toAllocate);
+                    const mo = moMap.get(agg.moId);
+                    const isMoClosed = mo ? (mo.state === 'done' || mo.state === 'to_close') : false;
+                    // If an already-closed earlier MO consumed this log, bind the log ID to that Sales Order
+                    // so a newer Sales Order cannot reuse the same historical log ID.
+                    if (!existingClaim && isMoClosed && aggSoName) {
+                        const claimData = {
+                            moId: agg.moId,
+                            moName: agg.moName,
+                            soName: aggSoName,
+                            boardLogId: log.id,
+                            matchedAt: new Date().toISOString(),
+                        };
+                        logClaimMap.set(log.id, claimData);
+                        await (0, repositories_1.saveShopFloorSharedCache)(`retro-log-claimed:${log.id}`, claimData).catch(() => null);
+                    }
                 }
             }
             // RULE: "make sure that a board log request under add stock area only disappears if a history log that matches it appears"
@@ -512,7 +549,22 @@ async function matchRetroactiveBoardLogsForActiveMos(client, activeMOs, boardMov
     for (const mo of activeMOs) {
         moMap.set(mo.id, mo);
     }
-    for (const move of boardMoves) {
+    // Sort moves chronologically by MO creation date / ID (oldest first) so that if multiple Sales Orders exist,
+    // the earliest matching Sales Order claims the board log ID and prevents later Sales Orders from reusing it.
+    const sortedBoardMoves = [...boardMoves].sort((a, b) => {
+        const moIdA = Array.isArray(a.raw_material_production_id) ? a.raw_material_production_id[0] : a.raw_material_production_id;
+        const moIdB = Array.isArray(b.raw_material_production_id) ? b.raw_material_production_id[0] : b.raw_material_production_id;
+        const moA = moMap.get(moIdA);
+        const moB = moMap.get(moIdB);
+        const timeA = moA?.create_date ? new Date(moA.create_date).getTime() : 0;
+        const timeB = moB?.create_date ? new Date(moB.create_date).getTime() : 0;
+        if (timeA !== timeB && timeA > 0 && timeB > 0)
+            return timeA - timeB;
+        return moIdA - moIdB;
+    });
+    // Track which Sales Order / MO has claimed each log ID in this run: once matched, a log ID cannot be reused by another SO.
+    const claimedLogByIdInRun = new Map();
+    for (const move of sortedBoardMoves) {
         const moId = Array.isArray(move.raw_material_production_id)
             ? move.raw_material_production_id[0]
             : move.raw_material_production_id;
@@ -523,6 +575,13 @@ async function matchRetroactiveBoardLogsForActiveMos(client, activeMOs, boardMov
         const productName = Array.isArray(move.product_id) ? move.product_id[1] : '';
         const normalizedMoveProdName = (0, boardProductClassifier_1.normalizeBoardProductName)(productName);
         const soOrigin = mo.origin ? (0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(mo.origin) : null;
+        const currentSoKey = (soOrigin || mo.origin || mo.name || `MO-${mo.id}`).trim().toUpperCase();
+        // Skip moves covered by an active or received Purchase Order
+        const candidateOrigins = [mo.origin, soOrigin, mo.name].filter(Boolean);
+        const isCoveredByPo = candidateOrigins.some((orig) => (productId > 0 && (originProductPOKeys.has(`${orig}_${productId}`) || originProductPOKeys.has(`${orig.toUpperCase()}_${productId}`))) ||
+            (normalizedMoveProdName && (originProductPOKeys.has(`${orig}_${normalizedMoveProdName}`) || originProductPOKeys.has(`${orig.toUpperCase()}_${normalizedMoveProdName}`))));
+        if (isCoveredByPo)
+            continue;
         const partnerInfo = mo.origin ? (soPartnerMap.get(mo.origin) || (soOrigin ? soPartnerMap.get(soOrigin) : null)) : null;
         const partnerId = partnerInfo?.partnerId || 0;
         const partnerName = partnerInfo?.partnerName || '';
@@ -531,6 +590,11 @@ async function matchRetroactiveBoardLogsForActiveMos(client, activeMOs, boardMov
         const moveQtyNeeded = Number(move.product_uom_qty || 0);
         const moveAttr = (0, boardProductClassifier_1.extractBoardAttributes)(productName);
         for (const log of activeLogs) {
+            const inRunClaim = claimedLogByIdInRun.get(log.id);
+            if (inRunClaim) {
+                // Already claimed by this or another Sales Order in this run — cannot be reused
+                continue;
+            }
             const logPid = Number(log.partner_id || 0);
             const logProdId = Number(log.product_id || 0);
             const logQty = Number(log.quantity || 0);
@@ -561,17 +625,44 @@ async function matchRetroactiveBoardLogsForActiveMos(client, activeMOs, boardMov
             const qtyVeryClose = diff <= 2 || (logQty >= moveQtyNeeded * 0.8 && logQty <= moveQtyNeeded * 1.5);
             if (!qtyVeryClose)
                 continue;
-            // 4. Logged before or right around when MO was created
+            // 4. Logged before or right around when MO was created (no 72-hour cutoff; relies on 1-to-1 log ID -> Sales Order binding)
             const moCreateTime = mo.create_date ? new Date(mo.create_date).getTime() : Date.now();
             const logCreateTime = log.created_at ? new Date(log.created_at).getTime() : 0;
-            const loggedBeforeMo = logCreateTime <= moCreateTime + 15 * 60 * 1000;
+            const loggedBeforeMo = logCreateTime > 0 && logCreateTime <= moCreateTime + 15 * 60 * 1000;
             if (!loggedBeforeMo)
                 continue;
-            // 5. Deduplication check: only post once per MO + log
+            // 5. Persistent + in-memory 1-to-1 Log ID -> Sales Order binding:
+            // Once a board log ID is matched to a Sales Order / MO, it cannot be repeated on that SO or reused by a different SO.
             const dedupKey = `retro-mo-match:${mo.id}:${log.id}`;
-            if (shopFloor_1.shopFloorCache.get(dedupKey))
+            const logClaimKey = `retro-log-claimed:${log.id}`;
+            if (shopFloor_1.shopFloorCache.get(dedupKey)) {
+                claimedLogByIdInRun.set(log.id, { soKey: currentSoKey, moId: mo.id });
                 continue;
-            shopFloor_1.shopFloorCache.set(dedupKey, true, 30 * 24 * 3600); // Cache for 30 days
+            }
+            const [persistedPair, persistedClaim] = await Promise.all([
+                (0, repositories_1.getShopFloorSharedCache)(dedupKey).catch(() => null),
+                (0, repositories_1.getShopFloorSharedCache)(logClaimKey).catch(() => null),
+            ]);
+            if (persistedPair?.data || persistedClaim?.data) {
+                const claimedSo = (persistedClaim?.data?.soName || persistedPair?.data?.soName || currentSoKey).trim().toUpperCase();
+                const claimedMoId = persistedClaim?.data?.moId || persistedPair?.data?.moId || mo.id;
+                shopFloor_1.shopFloorCache.set(dedupKey, true, 30 * 24 * 3600);
+                claimedLogByIdInRun.set(log.id, { soKey: claimedSo, moId: claimedMoId });
+                continue;
+            }
+            shopFloor_1.shopFloorCache.set(dedupKey, true, 30 * 24 * 3600); // Cache in memory for 30 days
+            claimedLogByIdInRun.set(log.id, { soKey: currentSoKey, moId: mo.id });
+            const matchedMetadata = {
+                moId: mo.id,
+                moName: mo.name,
+                soName: currentSoKey,
+                boardLogId: log.id,
+                matchedAt: new Date().toISOString(),
+            };
+            await Promise.all([
+                (0, repositories_1.saveShopFloorSharedCache)(dedupKey, matchedMetadata).catch(() => null),
+                (0, repositories_1.saveShopFloorSharedCache)(logClaimKey, matchedMetadata).catch(() => null),
+            ]);
             const logDateStr = log.arrival_date || (log.created_at ? log.created_at.slice(0, 10) : 'Earlier');
             const logTimeStr = log.arrival_time ? ` at ${log.arrival_time}` : '';
             const loggedAtFormatted = `${logDateStr}${logTimeStr}`;
@@ -592,8 +683,14 @@ async function matchRetroactiveBoardLogsForActiveMos(client, activeMOs, boardMov
                 `<em>These boards arrived and were logged at the gate before this Manufacturing Order was created. Stock has been allocated and assigned.</em>`,
                 `</div>`,
             ].join('\n');
-            // Post on mrp.production
-            await client.postModelChatterMessage('mrp.production', mo.id, moChatterHtml).catch(() => null);
+            // Post on mrp.production with skipSoSync: true (since we post a dedicated Sales Order summary note below)
+            // and checkExisting: true so Odoo chatter is checked against duplicates even if caches are cleared.
+            await client.postModelChatterMessage('mrp.production', mo.id, moChatterHtml, undefined, {
+                skipSoSync: true,
+                dedupeSnippet: `Board Log #${log.id}`,
+                checkExisting: true,
+                dedupeWindowMs: 30 * 24 * 3600 * 1000,
+            }).catch(() => null);
             // Post on sale.order if linked
             if (soOrigin) {
                 const targetCompanyId = await client.getTargetCompanyIdValue().catch(() => 1);
@@ -611,7 +708,12 @@ async function matchRetroactiveBoardLogsForActiveMos(client, activeMOs, boardMov
                         `<em>Boards were already received at the gate before the MO was created, and have now been assigned.</em>`,
                         `</div>`,
                     ].join('\n');
-                    await client.postModelChatterMessage('sale.order', soRecords[0].id, soChatterHtml).catch(() => null);
+                    await client.postModelChatterMessage('sale.order', soRecords[0].id, soChatterHtml, undefined, {
+                        skipSoSync: true,
+                        dedupeSnippet: `Prior Gate Board Log Matched to Manufacturing Order ${mo.name}`,
+                        checkExisting: true,
+                        dedupeWindowMs: 30 * 24 * 3600 * 1000,
+                    }).catch(() => null);
                 }
             }
             // Assign stock to the MO

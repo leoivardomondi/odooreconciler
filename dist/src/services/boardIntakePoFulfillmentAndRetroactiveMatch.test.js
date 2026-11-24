@@ -222,9 +222,10 @@ const db_1 = require("../models/db");
     const soPartnerMap = new Map();
     soPartnerMap.set('S02400', { partnerId: 88, partnerName: 'John Customer' });
     const originProductPOKeys = new Set(); // No PO!
+    const uniqueLogId = `log-001-${Date.now()}`;
     const activeBoardLogs = [
         {
-            id: 'log-001',
+            id: uniqueLogId,
             actor_name: 'John Gate',
             actor_email: 'john@urbanvibe.co.ke',
             gate: 'Gate A',
@@ -244,6 +245,94 @@ const db_1 = require("../models/db");
     strict_1.default.deepEqual(assignedMoIds, [501]);
     strict_1.default.ok(postedChatters.some((c) => c.model === 'mrp.production' && c.id === 501 && c.msg.includes('Found Matching Prior Board Log History')));
     strict_1.default.ok(postedChatters.some((c) => c.model === 'sale.order' && c.msg.includes('Prior Gate Board Log Matched to Manufacturing Order')));
+    // Second run (even if in-memory cache was cleared) must NOT repost or re-match due to persistent DB cache
+    const matchedAgain = await (0, shopFloorPendingSyncService_1.matchRetroactiveBoardLogsForActiveMos)(mockClient, activeMOs, boardMoves, soPartnerMap, originProductPOKeys, activeBoardLogs);
+    strict_1.default.equal(matchedAgain, 0);
+    strict_1.default.equal(postedChatters.length, 2);
+});
+(0, node_test_1.default)('matchRetroactiveBoardLogsForActiveMos matches an unclaimed board log regardless of age (no 72h limit) and prevents reusing that log ID for a different Sales Order', async () => {
+    const postedChatters = [];
+    const mockClient = {
+        getTargetCompanyIdValue: async () => 1,
+        searchReadRecords: async (_model, opts) => {
+            const domainStr = JSON.stringify(opts?.domain || []);
+            if (domainStr.includes('S03500'))
+                return [{ id: 3500 }];
+            if (domainStr.includes('S03935'))
+                return [{ id: 4118 }];
+            return [{ id: 4118 }];
+        },
+        callRecordMethod: async () => true,
+        postModelChatterMessage: async (model, id, msg) => {
+            postedChatters.push({ model, id, msg });
+            return 1;
+        },
+    };
+    const sharedLogId = `single-claim-log-${Date.now()}`;
+    const boardLogs = [
+        {
+            id: sharedLogId,
+            actor_name: 'Joel Ochango',
+            actor_email: 'joel@urbanvibe.co.ke',
+            gate: 'Gate',
+            vehicle_registration: '—',
+            arrival_date: '2026-11-04',
+            arrival_time: null,
+            product_id: 24910,
+            product_name: 'Versasca Particle 18mm',
+            partner_id: 51,
+            customer_name: 'JANAMBA WOOD WORKS',
+            quantity: 2,
+            created_at: '2026-11-04 11:00:00', // Logged 14 days earlier, no 72-hour restriction
+        },
+    ];
+    const soPartnerMap = new Map();
+    soPartnerMap.set('S03500', { partnerId: 51, partnerName: 'JANAMBA WOOD WORKS' });
+    soPartnerMap.set('S03935', { partnerId: 51, partnerName: 'JANAMBA WOOD WORKS' });
+    // 1. First Sales Order (S03500) matches the unclaimed log ID (even if >72h after log creation)
+    const firstOrderMOs = [
+        {
+            id: 6100,
+            name: 'WH/MO/05900',
+            state: 'confirmed',
+            origin: 'S03500',
+            create_date: '2026-11-10 09:00:00', // 6 days after log (>72h)
+        },
+    ];
+    const firstOrderMoves = [
+        {
+            id: 1901,
+            raw_material_production_id: [6100, 'WH/MO/05900'],
+            product_id: [24910, 'Versasca Particle 18mm'],
+            product_uom_qty: 2,
+            quantity: 0,
+        },
+    ];
+    const matchedFirst = await (0, shopFloorPendingSyncService_1.matchRetroactiveBoardLogsForActiveMos)(mockClient, firstOrderMOs, firstOrderMoves, soPartnerMap, new Set(), boardLogs);
+    strict_1.default.equal(matchedFirst, 1, 'Unclaimed board log must match the first Sales Order regardless of 72h age');
+    strict_1.default.equal(postedChatters.length, 2);
+    // 2. Second, different Sales Order (S03935) for the same client and board must NOT reuse the already-matched log ID
+    const secondOrderMOs = [
+        {
+            id: 7043,
+            name: 'WH/MO/06374',
+            state: 'confirmed',
+            origin: 'S03935',
+            create_date: '2026-11-18 09:53:33',
+        },
+    ];
+    const secondOrderMoves = [
+        {
+            id: 2001,
+            raw_material_production_id: [7043, 'WH/MO/06374'],
+            product_id: [24910, 'Versasca Particle 18mm'],
+            product_uom_qty: 2,
+            quantity: 0,
+        },
+    ];
+    const matchedSecond = await (0, shopFloorPendingSyncService_1.matchRetroactiveBoardLogsForActiveMos)(mockClient, secondOrderMOs, secondOrderMoves, soPartnerMap, new Set(), boardLogs);
+    strict_1.default.equal(matchedSecond, 0, 'Once matched to S03500, the board log ID must NEVER be reused by a different Sales Order (S03935)');
+    strict_1.default.equal(postedChatters.length, 2);
 });
 (0, node_test_1.default)('reconcileRetroactiveBoardLogsForLinkedPos validates PO receipt for prior manual log when MO has linked PO', async () => {
     const testLogId = `retro-test-${Date.now()}`;

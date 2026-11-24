@@ -2840,7 +2840,7 @@ router.get('/board-logs', handlePublicBoardLogs);
 router.get('/public/board-logs/partners/search', async (req, res) => {
     try {
         const query = typeof req.query.q === 'string' ? req.query.q : '';
-        const results = await (0, customerMirrorService_1.searchCustomers)(query, 50);
+        const results = await (0, customerMirrorService_1.searchCustomers)(query, 100);
         res.setHeader('Cache-Control', 'no-store');
         res.json({ ok: true, query, results });
     }
@@ -3405,7 +3405,7 @@ router.get('/shop-floor/boards', async (req, res) => {
             (0, stockMirrorService_1.getStockMirrorForPage)(isRefresh),
             (0, repositories_1.getRecentBoardIntakeQueueEntries)(boardLogPageSize + 1, (boardLogPage - 1) * boardLogPageSize, selectedDate, searchQuery || undefined),
             (0, repositories_1.getPendingShopFloorProcesses)({ status: 'pending' }),
-            (0, customerMirrorService_1.getCustomersForPage)(200),
+            (0, customerMirrorService_1.getCustomersForPage)(500),
             (0, repositories_1.getBoardIntakeQueueDateCounts)(todayDate, yesterdayDate, selectedDate),
         ]);
         const { todayLogsCount, yesterdayLogsCount, selectedDateLogsCount } = dateCounts;
@@ -3615,7 +3615,7 @@ router.get('/shop-floor/partners/search', async (req, res) => {
     }
     try {
         const query = typeof req.query.q === 'string' ? req.query.q : '';
-        const results = await (0, customerMirrorService_1.searchCustomers)(query, 50);
+        const results = await (0, customerMirrorService_1.searchCustomers)(query, 100);
         res.setHeader('Cache-Control', 'no-store');
         res.json({
             ok: true,

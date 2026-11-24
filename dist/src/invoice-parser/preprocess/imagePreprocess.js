@@ -77,8 +77,8 @@ async function fastAutoOrientImage(imagePath) {
             const canvasModule = await Promise.resolve().then(() => __importStar(require('@napi-rs/canvas')));
             const imageBuffer = await promises_1.default.readFile(imagePath);
             const image = await canvasModule.loadImage(imageBuffer);
-            // Rapid orientation detection using a small 800px thumbnail (<1s per test)
-            const scale = Math.min(1, 800 / Math.max(image.width, image.height));
+            // Rapid orientation detection using a 1400px thumbnail so 10pt invoice fonts remain legible
+            const scale = Math.min(1, 1400 / Math.max(image.width, image.height));
             const thumbWidth = Math.round(image.width * scale);
             const thumbHeight = Math.round(image.height * scale);
             const tesseract = await Promise.resolve().then(() => __importStar(require('tesseract.js')));
@@ -91,8 +91,8 @@ async function fastAutoOrientImage(imagePath) {
                 const buffer0 = await canvas0.encode('png');
                 const res0 = await worker.recognize(buffer0);
                 const score0 = orientationTextScore(res0.data.text || '', res0.data.confidence || 0);
-                // If Angle 0 is already upright with recognized invoice keywords, short-circuit immediately in <1s
-                if (score0.score >= 45 && score0.invoiceTerms >= 2) {
+                // If Angle 0 already has recognized invoice keywords or solid readable text, keep it upright
+                if (score0.invoiceTerms >= 1 || score0.score >= 35) {
                     return { imagePath, angle: 0, warnings };
                 }
                 // Step 2: Test Angle 90 (the standard clockwise orientation for sideways scans)
@@ -104,7 +104,7 @@ async function fastAutoOrientImage(imagePath) {
                 const buffer90 = await canvas90.encode('png');
                 const res90 = await worker.recognize(buffer90);
                 const score90 = orientationTextScore(res90.data.text || '', res90.data.confidence || 0);
-                if (score90.invoiceTerms >= 1 && score90.score > score0.score + 5) {
+                if (score90.invoiceTerms >= 2 && score90.score > score0.score + 15) {
                     // Angle 90 is upright and readable
                     const parsed = path_1.default.parse(imagePath);
                     const rotatedPath = path_1.default.join(parsed.dir, `${parsed.name}-oriented-90.png`);
@@ -136,7 +136,7 @@ async function fastAutoOrientImage(imagePath) {
                         best = { angle, score: score.score, terms: score.invoiceTerms };
                     }
                 }
-                if (best.angle === 0) {
+                if (best.angle === 0 || best.terms < 2 || best.score <= score0.score + 15) {
                     return { imagePath, angle: 0, warnings };
                 }
                 const parsed = path_1.default.parse(imagePath);
@@ -177,17 +177,24 @@ async function preprocessImage(imagePath, options) {
         return { imagePath, warnings };
     }
     try {
+        const oriented = options?.autoOrient === false
+            ? { imagePath, warnings: [] }
+            : await autoOrientImage(imagePath);
+        warnings.push(...oriented.warnings);
         const canvasModule = await Promise.resolve().then(() => __importStar(require('@napi-rs/canvas')));
-        const imageBuffer = await promises_1.default.readFile(imagePath);
+        const imageBuffer = await promises_1.default.readFile(oriented.imagePath);
         const image = await canvasModule.loadImage(imageBuffer);
-        const canvas = canvasModule.createCanvas(image.width, image.height);
+        const maxDimension = Math.max(900, Number(process.env.OCR_MAX_DIMENSION || 1800));
+        const scale = Math.min(1, maxDimension / Math.max(image.width, image.height));
+        const targetWidth = Math.max(1, Math.round(image.width * scale));
+        const targetHeight = Math.max(1, Math.round(image.height * scale));
+        const canvas = canvasModule.createCanvas(targetWidth, targetHeight);
         const context = canvas.getContext('2d');
-        context.drawImage(image, 0, 0);
+        context.drawImage(image, 0, 0, targetWidth, targetHeight);
         const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
         const data = imageData.data;
-        const contrast = Math.max(1, Number(process.env.OCR_CONTRAST || 1.35));
+        const contrast = Math.max(1, Number(process.env.OCR_CONTRAST || 1.08));
         const threshold = Math.max(0, Math.min(255, Number(process.env.OCR_THRESHOLD || 0)));
-        const thresholdData = new Uint8ClampedArray(data);
         for (let index = 0; index < data.length; index += 4) {
             const gray = data[index] * 0.299 + data[index + 1] * 0.587 + data[index + 2] * 0.114;
             let adjusted = clamp((gray - 128) * contrast + 128);
@@ -197,27 +204,12 @@ async function preprocessImage(imagePath, options) {
             data[index] = adjusted;
             data[index + 1] = adjusted;
             data[index + 2] = adjusted;
-            const handwritingThreshold = adjusted >= (threshold || 178) ? 255 : 0;
-            thresholdData[index] = handwritingThreshold;
-            thresholdData[index + 1] = handwritingThreshold;
-            thresholdData[index + 2] = handwritingThreshold;
         }
         context.putImageData(imageData, 0, 0);
-        const parsed = path_1.default.parse(imagePath);
+        const parsed = path_1.default.parse(oriented.imagePath);
         const processedPath = path_1.default.join(parsed.dir, `${parsed.name}-ocr.png`);
         await promises_1.default.writeFile(processedPath, await canvas.encode('png'));
-        const thresholdCanvas = canvasModule.createCanvas(image.width, image.height);
-        const thresholdContext = thresholdCanvas.getContext('2d');
-        const thresholdImageData = thresholdContext.createImageData(image.width, image.height);
-        thresholdImageData.data.set(thresholdData);
-        thresholdContext.putImageData(thresholdImageData, 0, 0);
-        const handwritingPath = path_1.default.join(parsed.dir, `${parsed.name}-handwriting.png`);
-        await promises_1.default.writeFile(handwritingPath, await thresholdCanvas.encode('png'));
-        const oriented = options?.autoOrient === false
-            ? { imagePath: processedPath, warnings: [] }
-            : await autoOrientImage(processedPath);
-        warnings.push(...oriented.warnings);
-        return { imagePath: oriented.imagePath, variantPaths: [handwritingPath], warnings };
+        return { imagePath: processedPath, variantPaths: [], warnings };
     }
     catch (error) {
         warnings.push(`Image preprocessing failed for ${path_1.default.basename(imagePath)}: ${error instanceof Error ? error.message : String(error)}`);

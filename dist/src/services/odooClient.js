@@ -123,8 +123,10 @@ class OdooClient {
     webSessionCookie = null;
     webSessionContext = {};
     webRpcSequence = 0;
-    recentSoChatterDedupe = new Map();
-    recentChatterDedupe = new Map();
+    static sharedRecentSoChatterDedupe = new Map();
+    static sharedRecentChatterDedupe = new Map();
+    recentSoChatterDedupe = OdooClient.sharedRecentSoChatterDedupe;
+    recentChatterDedupe = OdooClient.sharedRecentChatterDedupe;
     static verifiedWarehouseCache = new Map();
     constructor(credentials) {
         this.credentials = credentials;
@@ -222,7 +224,7 @@ class OdooClient {
             order: 'date_order desc, id desc',
         });
     }
-    async getConfirmedSalesOrdersSince(confirmedFromDate, limit = 50) {
+    async getConfirmedSalesOrdersSince(confirmedFromDate, limit = 50, timeoutMs = 40000) {
         const targetCompanyId = await this.getTargetCompanyId();
         return this.request('sale.order', 'search_read', {
             domain: [
@@ -245,7 +247,7 @@ class OdooClient {
             ],
             limit,
             order: 'date_order desc, id desc',
-        });
+        }, { timeoutMs });
     }
     async searchCustomerInvoicesSince(fromDate, limit = 500) {
         const targetCompanyId = await this.getTargetCompanyId();
@@ -1010,7 +1012,7 @@ class OdooClient {
     cleanOldSoChatterDedupe(now) {
         this.cleanOldChatterDedupe(now, 120_000);
     }
-    async crossPostChatterToRelatedSalesOrder(model, recordId, message, partnerIds) {
+    async crossPostChatterToRelatedSalesOrder(model, recordId, message, partnerIds, options) {
         const targetCompanyId = await this.getTargetCompanyIdValue();
         let soName = null;
         let sourceDocName = `#${recordId}`;
@@ -1081,7 +1083,11 @@ class OdooClient {
             message;
         this.recordSoChatterDedupe(so.id, message);
         this.recordSoChatterDedupe(so.id, crossPostHtml);
-        await this.postModelChatterMessage('sale.order', so.id, crossPostHtml, partnerIds, { skipSoSync: true });
+        await this.postModelChatterMessage('sale.order', so.id, crossPostHtml, partnerIds, {
+            skipSoSync: true,
+            dedupeSnippet: options?.dedupeSnippet,
+            checkExisting: options?.checkExisting,
+        });
     }
     async postModelChatterMessage(model, recordId, message, partnerIds, options) {
         // 1. Check if matching chatter message already exists in Odoo to prevent repeating overtime
@@ -1120,7 +1126,10 @@ class OdooClient {
         }
         const result = await this.request(model, 'message_post', kwargs);
         if ((model === 'mrp.production' || model === 'purchase.order') && !options?.skipSoSync) {
-            await this.crossPostChatterToRelatedSalesOrder(model, recordId, message, partnerIds).catch((err) => {
+            await this.crossPostChatterToRelatedSalesOrder(model, recordId, message, partnerIds, {
+                dedupeSnippet: options?.dedupeSnippet,
+                checkExisting: options?.checkExisting,
+            }).catch((err) => {
                 console.error(`[OdooClient] Failed to cross-post chatter from ${model} #${recordId} to sale.order:`, err);
             });
         }

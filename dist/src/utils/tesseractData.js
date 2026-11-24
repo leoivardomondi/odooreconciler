@@ -4,6 +4,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.isTesseractEnabled = isTesseractEnabled;
+exports.isTesseractFallbackAvailable = isTesseractFallbackAvailable;
 exports.getBundledTesseractOptions = getBundledTesseractOptions;
 exports.getBundledTesseractDataPath = getBundledTesseractDataPath;
 const fs_1 = __importDefault(require("fs"));
@@ -18,7 +19,21 @@ const trainedDataPath = (0, paths_1.resolveFromProjectRoot)('eng.traineddata');
  * Set TESSERACT_ENABLED=true to re-enable it as a local fallback.
  */
 function isTesseractEnabled() {
-    return ['1', 'true', 'yes', 'on'].includes(String(process.env.TESSERACT_ENABLED || '').toLowerCase());
+    const raw = String(process.env.TESSERACT_ENABLED || '').trim().toLowerCase();
+    if (['0', 'false', 'no', 'off'].includes(raw)) {
+        return false;
+    }
+    if (['1', 'true', 'yes', 'on'].includes(raw)) {
+        return fs_1.default.existsSync(trainedDataPath);
+    }
+    return false;
+}
+function isTesseractFallbackAvailable() {
+    const raw = String(process.env.TESSERACT_ENABLED || '').trim().toLowerCase();
+    if (['0', 'false', 'no', 'off'].includes(raw)) {
+        return false;
+    }
+    return fs_1.default.existsSync(trainedDataPath);
 }
 function getBundledTesseractOptions() {
     if (!fs_1.default.existsSync(trainedDataPath)) {

@@ -150,6 +150,10 @@ function findMatchingSheetMaterial(input) {
                 score += 15;
                 reasons.push(`Substrate compatible (${moSub}/${matSub})`);
             }
+            else if (moSub === 'block_board' || matSub === 'block_board') {
+                score -= 100;
+                reasons.push(`Incompatible block board substrate (${moSub} vs ${matSub})`);
+            }
             else {
                 score -= 25;
                 reasons.push(`Substrate mismatch (${moSub} vs ${matSub})`);
@@ -702,11 +706,19 @@ async function reconcileWorkOrderQuantitiesForMo(client, moId, options) {
         `<p>Quantity to be processed on MO <strong>${mo.name}</strong> (${moProductName}) adjusted from <strong>${currentQty}</strong> to <strong>${targetQty}</strong> to match Job Summary requirements (${matchedMaterialDesc}: ${targetQty} sheets/panels).</p>` +
         `<p>Raw material component stock requirement updated to <strong>${targetQty}</strong> and re-reserved.</p>` +
         (actorInfo ? `<p><em>${actorInfo}</em></p>` : '');
-    await client.postModelChatterMessage('mrp.production', mo.id, moChatterHtml).catch(() => null);
+    await client.postModelChatterMessage('mrp.production', mo.id, moChatterHtml, undefined, {
+        skipSoSync: Boolean(soId),
+        checkExisting: true,
+        dedupeSnippet: `adjusted from ${currentQty} to ${targetQty}`,
+    }).catch(() => null);
     // 6. Cross-alert note on Sales Order chatter
     if (soId) {
         const soChatterHtml = `<p>✂️ <strong>Work Order Cutting Quantity Adjusted:</strong> MO <strong>${mo.name}</strong> (${moProductName}) work order quantity modified from <strong>${currentQty}</strong> to <strong>${targetQty}</strong> to match Job Summary requirements.</p>`;
-        await client.postModelChatterMessage('sale.order', soId, soChatterHtml).catch(() => null);
+        await client.postModelChatterMessage('sale.order', soId, soChatterHtml, undefined, {
+            skipSoSync: true,
+            checkExisting: true,
+            dedupeSnippet: `MO ${mo.name} (${moProductName}) work order quantity modified from ${currentQty} to ${targetQty}`,
+        }).catch(() => null);
     }
     await (0, logService_1.logEvent)('info', 'Work order cutting quantity reconciled with Job Summary', {
         moId: mo.id,

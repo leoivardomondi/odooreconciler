@@ -22,7 +22,13 @@ function extractHeaderSupplier(text) {
     const disclaimerPattern = /\b(?:carriage\s+paid|owners?\s+risk|subject\s+to|goods\s+once\s+sold|received?\s+the\s+above|in\s+good\s+order|condition)\b/i;
     const companyPattern = /\b([A-Z][A-Z0-9&.,' -]{2,80}\b(?:ENTERPRISES?|TRADERS?|SUPPLIERS?|STATIONERS?|COMPANY|CO\.?|LTD|LIMITED|HARDWARE|TIMBER|SUPERMARKET|INDUSTRIES|INDUSTRIAL)\b(?:\s+LTD|\s+LIMITED)?)\b/i;
     const candidates = [];
-    for (const line of lines) {
+    for (const rawLine of lines) {
+        const line = rawLine
+            .replace(/\b(?:invoice\s*(?:no|number|#)?\.?|delivery\s*note|supplier'?s?\s*ref\.?|mode\s*terms\s*of\s*payment|dated)\b.*$/i, '')
+            .trim();
+        if (line.length < 4) {
+            continue;
+        }
         // Ignore lines that are invoice title indicators e.g. "Sales Invoice", "Tax Invoice", "SalesInvoice Co"
         if (/\b(?:sales|tax|proforma|cash)\s*[li1]nvoice\b/i.test(line) || /sales[li1]nvoice/i.test(line) || /[li1]nvoice\s*co\b/i.test(line)) {
             continue;

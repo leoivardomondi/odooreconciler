@@ -1245,15 +1245,44 @@ async function acquireSchedulerRunLock(runId) {
 }
 async function markOrphanedStartedRunsAsFailed() {
     const staleCutoff = (0, dateTime_1.appDateTimeFromNow)(-getSchedulerLockStaleMs());
-    await (0, db_1.execute)(`
-      UPDATE scheduler_runs
-      SET
-        status = 'failed',
-        summary = 'Scheduler run timed out or was interrupted (lock expired after 10 minutes).',
-        error_message = 'Scheduler lock expired while run was in started state.',
-        finished_at = CURRENT_TIMESTAMP
+    const orphanedRuns = await (0, db_1.queryAll)(`
+      SELECT id, context_json
+      FROM scheduler_runs
       WHERE status = 'started' AND started_at <= ?
     `, [staleCutoff]);
+    for (const orphan of orphanedRuns) {
+        let context = {};
+        try {
+            context = orphan.context_json ? JSON.parse(orphan.context_json) : {};
+        }
+        catch {
+            context = {};
+        }
+        const currentAttachmentId = Number(context.currentAttachmentId || 0);
+        const currentAttachmentName = String(context.currentAttachmentName || '').trim();
+        const docDetail = currentAttachmentId > 0
+            ? ` while processing Finance document ${currentAttachmentName || `#${currentAttachmentId}`} (#${currentAttachmentId})`
+            : '';
+        const summary = `Scheduler run timed out or was interrupted${docDetail} (lock expired after 10 minutes).`;
+        if (currentAttachmentId > 0) {
+            await upsertPoBillProcessedDocument({
+                attachmentId: currentAttachmentId,
+                attachmentName: currentAttachmentName || `Attachment #${currentAttachmentId}`,
+                status: 'failed',
+                mode: 'auto',
+                summary,
+            }).catch(() => undefined);
+        }
+        await (0, db_1.execute)(`
+        UPDATE scheduler_runs
+        SET
+          status = 'failed',
+          summary = ?,
+          error_message = 'Scheduler lock expired while run was in started state.',
+          finished_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND status = 'started'
+      `, [summary, orphan.id]);
+    }
 }
 async function clearStaleSchedulerRunLock() {
     const current = await getSchedulerRuntimeState();
@@ -1264,7 +1293,7 @@ async function clearStaleSchedulerRunLock() {
         return null;
     }
     const activeRun = await (0, db_1.queryOne)(`
-      SELECT id, status, finished_at
+      SELECT id, status, finished_at, context_json
       FROM scheduler_runs
       WHERE id = ?
     `, [current.lockRunId]);
@@ -1274,15 +1303,37 @@ async function clearStaleSchedulerRunLock() {
         return null;
     }
     if (activeRun && activeRun.status === 'started') {
+        let context = {};
+        try {
+            context = activeRun.context_json ? JSON.parse(activeRun.context_json) : {};
+        }
+        catch {
+            context = {};
+        }
+        const currentAttachmentId = Number(context.currentAttachmentId || 0);
+        const currentAttachmentName = String(context.currentAttachmentName || '').trim();
+        const docDetail = currentAttachmentId > 0
+            ? ` while processing Finance document ${currentAttachmentName || `#${currentAttachmentId}`} (#${currentAttachmentId})`
+            : '';
+        const summary = `Scheduler run timed out or was interrupted${docDetail} (lock expired after 10 minutes).`;
+        if (currentAttachmentId > 0) {
+            await upsertPoBillProcessedDocument({
+                attachmentId: currentAttachmentId,
+                attachmentName: currentAttachmentName || `Attachment #${currentAttachmentId}`,
+                status: 'failed',
+                mode: 'auto',
+                summary,
+            }).catch(() => undefined);
+        }
         await (0, db_1.execute)(`
         UPDATE scheduler_runs
         SET
           status = 'failed',
-          summary = 'Scheduler run timed out or was interrupted (lock expired after 10 minutes).',
+          summary = ?,
           error_message = 'Scheduler lock expired while run was in started state.',
           finished_at = CURRENT_TIMESTAMP
         WHERE id = ? AND status = 'started'
-      `, [activeRun.id]);
+      `, [summary, activeRun.id]);
     }
     await (0, db_1.execute)(`
       UPDATE scheduler_runtime_state

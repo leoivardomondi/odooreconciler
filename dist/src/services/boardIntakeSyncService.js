@@ -487,17 +487,28 @@ async function processBoardIntakePurchaseOrderFulfillment(client, entry, cachedC
                 `</div>`,
         ].join('<br/>\n');
         await client.postModelChatterMessage('purchase.order', eligiblePo.id, fulfillmentChatterHtml, partnerIds, {
+            skipSoSync: Boolean(linkedSo?.id),
             dedupeSnippet: `Gate Board Intake: Received via Purchase Receipt• Board: ${safeProductName}`,
+            checkExisting: true,
         }).catch(() => null);
         await client.postModelChatterMessage('stock.picking', targetPicking.id, fulfillmentChatterHtml, undefined, {
             dedupeSnippet: `Gate Board Intake: Received via Purchase Receipt• Board: ${safeProductName}`,
+            checkExisting: true,
         }).catch(() => null);
         if (linkedSo?.id) {
-            await client.postModelChatterMessage('sale.order', linkedSo.id, fulfillmentChatterHtml, partnerIds).catch(() => null);
+            await client.postModelChatterMessage('sale.order', linkedSo.id, fulfillmentChatterHtml, partnerIds, {
+                skipSoSync: true,
+                dedupeSnippet: `Gate Board Intake: Received via Purchase Receipt• Board: ${safeProductName}`,
+                checkExisting: true,
+            }).catch(() => null);
         }
         const moId = (orig ? moMap.get(orig) : undefined) ?? (extractedSo ? moMap.get(extractedSo) : undefined);
         if (moId) {
-            await client.postModelChatterMessage('mrp.production', moId, fulfillmentChatterHtml, partnerIds).catch(() => null);
+            await client.postModelChatterMessage('mrp.production', moId, fulfillmentChatterHtml, partnerIds, {
+                skipSoSync: true,
+                dedupeSnippet: `Gate Board Intake: Received via Purchase Receipt• Board: ${safeProductName}`,
+                checkExisting: true,
+            }).catch(() => null);
         }
         await (0, logService_1.logEvent)('info', 'Board intake fulfilled via purchase order receipt', {
             poId: eligiblePo.id,
@@ -912,7 +923,9 @@ async function syncBoardIntakeEntry(id) {
                     hasBoardPo: mo.hasBoardPo,
                     boardPoNames: mo.boardPoNames,
                 });
-                return client.postModelChatterMessage('mrp.production', mo.moId, chatterHtml, partnerIds).catch(() => null);
+                return client.postModelChatterMessage('mrp.production', mo.moId, chatterHtml, partnerIds, {
+                    skipSoSync: Boolean(mo.soId),
+                }).catch(() => null);
             }));
             // 2. Post to related sale.order chatter if matching MO has a linked Sales Order
             const postedSoIds = new Set();
@@ -945,6 +958,24 @@ async function syncBoardIntakeEntry(id) {
                 }
             }
             await client.reserveStockOnMOs(matchingMOs.map((mo) => mo.moId));
+            const firstMo = matchingMOs[0];
+            const boundSoName = (firstMo.soName || (0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(firstMo.origin) || firstMo.moName || `MO-${firstMo.moId}`).trim().toUpperCase();
+            await (0, repositories_1.saveShopFloorSharedCache)(`retro-log-claimed:${id}`, {
+                moId: firstMo.moId,
+                moName: firstMo.moName,
+                soName: boundSoName,
+                boardLogId: id,
+                matchedAt: new Date().toISOString(),
+            }).catch(() => null);
+        }
+        else if (poFulfillment?.fulfilledViaReceipt) {
+            await (0, repositories_1.saveShopFloorSharedCache)(`retro-log-claimed:${id}`, {
+                moId: 0,
+                moName: poFulfillment.poName,
+                soName: String(poFulfillment.poName || '').trim().toUpperCase(),
+                boardLogId: id,
+                matchedAt: new Date().toISOString(),
+            }).catch(() => null);
         }
         await (0, repositories_1.updateBoardIntakeQueueEntry)(id, {
             status: 'synced',
@@ -993,6 +1024,7 @@ async function revertBoardIntakeEntry(id, revertedBy) {
             quantity: Number(entry.quantity),
         });
         await (0, repositories_1.finishBoardIntakeRevert)(id, revertedBy, result.newQty);
+        await (0, repositories_1.deleteShopFloorSharedCache)(`retro-log-claimed:${id}`).catch(() => null);
         await (0, stockMirrorService_1.recordExactStockQuantity)(Number(entry.product_id), entry.product_name, result.newQty, -Number(entry.quantity));
         void (0, stockMirrorService_1.refreshStockMirror)();
         await (0, logService_1.logEvent)('warn', 'Board intake reverted in Odoo', {
@@ -1095,7 +1127,9 @@ async function matchBoardIntakeToClient(input) {
                         hasBoardPo: mo.hasBoardPo,
                         boardPoNames: mo.boardPoNames,
                     });
-                    return client.postModelChatterMessage('mrp.production', mo.moId, chatterHtml, partnerIds).catch(() => null);
+                    return client.postModelChatterMessage('mrp.production', mo.moId, chatterHtml, partnerIds, {
+                        skipSoSync: Boolean(mo.soId),
+                    }).catch(() => null);
                 }));
                 // Post to related sale.order chatter if matching MO has a linked Sales Order
                 const postedSoIds = new Set();
@@ -1128,6 +1162,26 @@ async function matchBoardIntakeToClient(input) {
                     }
                 }
                 await client.reserveStockOnMOs(matchingMOs.map((mo) => mo.moId)).catch(() => null);
+                const firstMo = matchingMOs[0];
+                const boundSoName = (firstMo.soName || (0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(firstMo.origin) || firstMo.moName || `MO-${firstMo.moId}`).trim().toUpperCase();
+                await (0, repositories_1.saveShopFloorSharedCache)(`retro-log-claimed:${input.id}`, {
+                    moId: firstMo.moId,
+                    moName: firstMo.moName,
+                    soName: boundSoName,
+                    boardLogId: input.id,
+                    matchedAt: new Date().toISOString(),
+                }).catch(() => null);
+            }
+            else if (loadedRequirements && loadedRequirements.length > 0) {
+                const firstReq = loadedRequirements[0];
+                const boundSoName = ((0, poJobSummaryAuditService_1.extractSoNameFromOrigin)(firstReq.origin || null) || firstReq.origin || firstReq.mo_name || `MO-${firstReq.mo_id}`).trim().toUpperCase();
+                await (0, repositories_1.saveShopFloorSharedCache)(`retro-log-claimed:${input.id}`, {
+                    moId: firstReq.mo_id,
+                    moName: firstReq.mo_name,
+                    soName: boundSoName,
+                    boardLogId: input.id,
+                    matchedAt: new Date().toISOString(),
+                }).catch(() => null);
             }
         }
         catch (clientErr) {

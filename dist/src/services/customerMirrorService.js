@@ -151,7 +151,7 @@ function invalidateCustomerMirrorPageCache() {
 /**
  * Get customers for initial page rendering (e.g. top active clients).
  */
-async function getCustomersForPage(limit = 100) {
+async function getCustomersForPage(limit = 500) {
     const now = Date.now();
     if (cachedCustomersForPage && cachedCustomersForPage.freshUntil > now) {
         return cachedCustomersForPage.data.slice(0, limit);
@@ -161,7 +161,7 @@ async function getCustomersForPage(limit = 100) {
         void refreshCustomerMirror().catch(() => undefined);
         return [];
     }
-    const rows = await (0, repositories_1.getCustomerPartnerMirror)(Math.max(limit, 200));
+    const rows = await (0, repositories_1.getCustomerPartnerMirror)(Math.max(limit, 1000));
     const result = rows.map((r) => ({ id: r.partnerId, name: r.name }));
     cachedCustomersForPage = { data: result, freshUntil: now + 60 * 1000 };
     return result.slice(0, limit);

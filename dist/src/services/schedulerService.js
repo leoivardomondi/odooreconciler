@@ -25,7 +25,7 @@ const SCHEDULER_LOOKBACK_HOURS = 24;
 const SO_SCHEDULER_CONCURRENCY = 1;
 const SO_SCHEDULER_ORDER_DELAY_MS = Math.max(0, Number(env_1.env.SO_SCHEDULER_ORDER_DELAY_MS || 1000) || 1000);
 const SO_SCHEDULER_LOOKAHEAD_MIN = 50;
-const SO_SCHEDULER_LOOKAHEAD_MAX = 1000;
+const SO_SCHEDULER_LOOKAHEAD_MAX = 250;
 const SO_SCHEDULER_ROUTINE_DEPRIORITIZE_RUNS = 20;
 const SO_SCHEDULER_ADAPTIVE_LOOKBACK_STEP_HOURS = 24;
 const SO_SCHEDULER_ADAPTIVE_LOOKBACK_MAX_HOURS = 24 * 90;
@@ -716,8 +716,21 @@ async function runPoBillSchedulerCycle(trigger = 'manual') {
             }
             scannedCount += 1;
             await touchActiveSchedulerRunLock(run.id);
+            await (0, repositories_1.updateSchedulerRun)(run.id, {
+                scannedCount,
+                processedCount,
+                skippedCount,
+                failedCount,
+                summary: `Processing Finance document ${pdf.name} (#${pdf.id}) (${scannedCount} of ${queue.length})...`,
+                context: {
+                    ...run.context,
+                    currentAttachmentId: pdf.id,
+                    currentAttachmentName: pdf.name,
+                    documentOutcomes: [...documentOutcomes],
+                },
+            }).catch(() => undefined);
             try {
-                const result = await (0, poBillAutomationService_1.runPoBillAutomation)(client, {
+                const result = await withTimeout(() => (0, poBillAutomationService_1.runPoBillAutomation)(client, {
                     attachmentId: pdf.id,
                     mode: 'auto',
                     aiConfig: settings.ai,
@@ -725,7 +738,7 @@ async function runPoBillSchedulerCycle(trigger = 'manual') {
                     matchToDate: toDate,
                     onlyUnbilledPurchaseOrders: true,
                     sourceAttachment: pdf,
-                });
+                }), 180_000, `Processing Finance document ${pdf.name} (#${pdf.id})`);
                 const processed = result.actionsTaken.some((action) => /marked .* as processed/i.test(action) || /(?:marked|recorded).*delivery note/i.test(action));
                 const diagnostics = {
                     checks: result.checks,
@@ -1114,7 +1127,22 @@ async function runSchedulerCycle(trigger = 'manual') {
         const configuredBatchSize = Math.max(1, Number(settings.scheduler.batchSize) || 3);
         const batchSize = Math.min(4, configuredBatchSize);
         const candidateLimit = plannedCandidateLimit;
-        const candidateOrders = await withTimeout(() => client.getConfirmedSalesOrdersSince(effectiveConfirmedFromDate, candidateLimit), 45000, 'Fetching candidate sales orders from Odoo');
+        let candidateOrders;
+        try {
+            candidateOrders = await withTimeout(() => client.getConfirmedSalesOrdersSince(effectiveConfirmedFromDate, candidateLimit, 40000), 45000, 'Fetching candidate sales orders from Odoo');
+        }
+        catch (initialFetchError) {
+            const fallbackLimit = Math.min(50, candidateLimit);
+            await (0, logService_1.logEvent)('warn', 'Primary Sales Order fetch timed out or failed; retrying with compact limit', {
+                schedulerRunId: run.id,
+                candidateLimit,
+                fallbackLimit,
+                error: initialFetchError instanceof Error ? initialFetchError.message : String(initialFetchError),
+            }).catch(() => undefined);
+            await wait(2000);
+            await touchActiveSchedulerRunLock(run.id);
+            candidateOrders = await withTimeout(() => client.getConfirmedSalesOrdersSince(effectiveConfirmedFromDate, fallbackLimit, 55000), 60000, 'Retrying candidate sales orders fetch from Odoo');
+        }
         const recentlyRoutineOrderIds = getRecentlyRoutineSalesOrderIds(recentSalesOrderRunsForPlanning);
         const orders = chooseSalesOrderBatch(candidateOrders, batchSize, recentlyRoutineOrderIds);
         scannedCount = orders.length;
@@ -1396,7 +1424,7 @@ async function runSchedulerCycle(trigger = 'manual') {
             processedCount,
             skippedCount,
             failedCount: failedCount + 1,
-            summary: 'Scheduler run failed.',
+            summary: `Scheduler run failed: ${message}`,
             errorMessage: message,
             context: {
                 confirmedFromDate: settings.scheduler.confirmedFromDate,
