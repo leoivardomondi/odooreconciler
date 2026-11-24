@@ -211,8 +211,8 @@ function nowMinusMinutesIso(windowMinutes) {
     return (0, dateTime_1.appDateTimeFromNow)(-Math.max(1, windowMinutes) * 60 * 1000);
 }
 function getSchedulerLockStaleMs() {
-    const configuredMinutes = Number(env_1.env.SCHEDULER_LOCK_STALE_MINUTES || 10);
-    const minutes = Number.isFinite(configuredMinutes) && configuredMinutes > 0 ? configuredMinutes : 10;
+    const configuredMinutes = Number(env_1.env.SCHEDULER_LOCK_STALE_MINUTES || 8);
+    const minutes = Number.isFinite(configuredMinutes) && configuredMinutes > 0 ? Math.min(10, configuredMinutes) : 8;
     return minutes * 60 * 1000;
 }
 function readStoredGeminiOAuthCredentials(payload) {
@@ -1323,16 +1323,22 @@ async function markOrphanedStartedRunsAsFailed() {
 async function clearStaleSchedulerRunLock() {
     const current = await getSchedulerRuntimeState();
     const acquiredAt = parseAppTimestampMs(current.lockAcquiredAt);
-    const isStale = current.lockRunId && (!acquiredAt || acquiredAt < Date.now() - getSchedulerLockStaleMs());
+    let activeRunStartedAt = 0;
     if (!current.lockRunId) {
         await markOrphanedStartedRunsAsFailed();
         return null;
     }
     const activeRun = await (0, db_1.queryOne)(`
-      SELECT id, status, finished_at, context_json
+      SELECT id, status, started_at, finished_at, context_json
       FROM scheduler_runs
       WHERE id = ?
     `, [current.lockRunId]);
+    if (activeRun?.started_at) {
+        activeRunStartedAt = parseAppTimestampMs(activeRun.started_at);
+    }
+    const staleThresholdMs = Date.now() - getSchedulerLockStaleMs();
+    const isStale = Boolean(current.lockRunId) &&
+        (!acquiredAt || acquiredAt < staleThresholdMs || (activeRunStartedAt > 0 && activeRunStartedAt <= staleThresholdMs));
     const runIsNotActive = !activeRun || activeRun.status !== 'started' || Boolean(activeRun.finished_at);
     if (!isStale && !runIsNotActive) {
         await markOrphanedStartedRunsAsFailed();

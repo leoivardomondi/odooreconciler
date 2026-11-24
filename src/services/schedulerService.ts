@@ -491,8 +491,8 @@ async function getConfiguredSchedulerClient() {
 
 export async function getSchedulerStatus() {
   const settings = await getSettings();
-  const recentRuns = await getRecentSchedulerRuns(5);
   const runtimeState = await getFreshSchedulerRuntimeState();
+  const recentRuns = await getRecentSchedulerRuns(5);
   const mode =
     settings.scheduler.useInProcessInterval && env.SCHEDULER_USE_INTERVAL === 'true'
       ? 'in_process_interval'
@@ -782,8 +782,11 @@ export async function runPoBillSchedulerCycle(
   let heartbeatTimer: NodeJS.Timeout | null = null;
 
   try {
+    const heartbeatStartedAt = Date.now();
     heartbeatTimer = setInterval(() => {
-      touchActiveSchedulerRunLock(run.id).catch(() => undefined);
+      if (Date.now() - heartbeatStartedAt < 300_000) {
+        touchActiveSchedulerRunLock(run.id).catch(() => undefined);
+      }
     }, 25000);
     await touchActiveSchedulerRunLock(run.id);
     // compute adaptive lookahead based on recent PO bill runs
@@ -1346,8 +1349,11 @@ export async function runSchedulerCycle(
   let heartbeatTimer: NodeJS.Timeout | null = null;
 
   try {
+    const heartbeatStartedAt = Date.now();
     heartbeatTimer = setInterval(() => {
-      touchActiveSchedulerRunLock(run.id).catch(() => undefined);
+      if (Date.now() - heartbeatStartedAt < 300_000) {
+        touchActiveSchedulerRunLock(run.id).catch(() => undefined);
+      }
     }, 25000);
     await touchActiveSchedulerRunLock(run.id);
 

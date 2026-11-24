@@ -63,8 +63,8 @@ function nowMinusMinutesIso(windowMinutes: number): string {
 }
 
 function getSchedulerLockStaleMs() {
-  const configuredMinutes = Number(env.SCHEDULER_LOCK_STALE_MINUTES || 10);
-  const minutes = Number.isFinite(configuredMinutes) && configuredMinutes > 0 ? configuredMinutes : 10;
+  const configuredMinutes = Number(env.SCHEDULER_LOCK_STALE_MINUTES || 8);
+  const minutes = Number.isFinite(configuredMinutes) && configuredMinutes > 0 ? Math.min(10, configuredMinutes) : 8;
   return minutes * 60 * 1000;
 }
 
@@ -1494,7 +1494,7 @@ export async function markOrphanedStartedRunsAsFailed() {
 export async function clearStaleSchedulerRunLock(): Promise<SchedulerRuntimeState | null> {
   const current = await getSchedulerRuntimeState();
   const acquiredAt = parseAppTimestampMs(current.lockAcquiredAt);
-  const isStale = current.lockRunId && (!acquiredAt || acquiredAt < Date.now() - getSchedulerLockStaleMs());
+  let activeRunStartedAt = 0;
 
   if (!current.lockRunId) {
     await markOrphanedStartedRunsAsFailed();
@@ -1504,16 +1504,25 @@ export async function clearStaleSchedulerRunLock(): Promise<SchedulerRuntimeStat
   const activeRun = await queryOne<{
     id: string;
     status: SchedulerRunEntry['status'];
+    started_at: unknown;
     finished_at: string | null;
     context_json: string | null;
   }>(
     `
-      SELECT id, status, finished_at, context_json
+      SELECT id, status, started_at, finished_at, context_json
       FROM scheduler_runs
       WHERE id = ?
     `,
     [current.lockRunId],
   );
+
+  if (activeRun?.started_at) {
+    activeRunStartedAt = parseAppTimestampMs(activeRun.started_at);
+  }
+  const staleThresholdMs = Date.now() - getSchedulerLockStaleMs();
+  const isStale =
+    Boolean(current.lockRunId) &&
+    (!acquiredAt || acquiredAt < staleThresholdMs || (activeRunStartedAt > 0 && activeRunStartedAt <= staleThresholdMs));
 
   const runIsNotActive = !activeRun || activeRun.status !== 'started' || Boolean(activeRun.finished_at);
 

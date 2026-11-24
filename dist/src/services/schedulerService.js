@@ -382,8 +382,8 @@ async function getConfiguredSchedulerClient() {
 }
 async function getSchedulerStatus() {
     const settings = await (0, repositories_1.getSettings)();
-    const recentRuns = await (0, repositories_1.getRecentSchedulerRuns)(5);
     const runtimeState = await getFreshSchedulerRuntimeState();
+    const recentRuns = await (0, repositories_1.getRecentSchedulerRuns)(5);
     const mode = settings.scheduler.useInProcessInterval && env_1.env.SCHEDULER_USE_INTERVAL === 'true'
         ? 'in_process_interval'
         : 'cron_only';
@@ -630,8 +630,11 @@ async function runPoBillSchedulerCycle(trigger = 'manual') {
     const documentOutcomes = [];
     let heartbeatTimer = null;
     try {
+        const heartbeatStartedAt = Date.now();
         heartbeatTimer = setInterval(() => {
-            touchActiveSchedulerRunLock(run.id).catch(() => undefined);
+            if (Date.now() - heartbeatStartedAt < 300_000) {
+                touchActiveSchedulerRunLock(run.id).catch(() => undefined);
+            }
         }, 25000);
         await touchActiveSchedulerRunLock(run.id);
         // compute adaptive lookahead based on recent PO bill runs
@@ -1127,8 +1130,11 @@ async function runSchedulerCycle(trigger = 'manual') {
     let latestProcessedOrderDate = runtimeState.lastCheckpointAt;
     let heartbeatTimer = null;
     try {
+        const heartbeatStartedAt = Date.now();
         heartbeatTimer = setInterval(() => {
-            touchActiveSchedulerRunLock(run.id).catch(() => undefined);
+            if (Date.now() - heartbeatStartedAt < 300_000) {
+                touchActiveSchedulerRunLock(run.id).catch(() => undefined);
+            }
         }, 25000);
         await touchActiveSchedulerRunLock(run.id);
         const configuredBatchSize = Math.max(1, Number(settings.scheduler.batchSize) || 3);
