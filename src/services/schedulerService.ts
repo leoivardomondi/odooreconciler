@@ -823,6 +823,7 @@ export async function runPoBillSchedulerCycle(
     // persist the computed document lookahead into the active run for diagnostics
     try {
       await updateSchedulerRun(run.id, {
+        summary: 'Loading candidate Finance documents from Odoo...',
         context: {
           ...(run.context || {}),
           documentLookahead,
@@ -831,10 +832,26 @@ export async function runPoBillSchedulerCycle(
     } catch (err) {
       // non-fatal: continue processing even if updating diagnostics fails
     }
-    const recentPdfs = await getRecentDocumentPdfs(
-      client,
-      500,
-    );
+    let recentPdfs: AttachmentInfo[];
+    try {
+      recentPdfs = await withTimeout(
+        () => getRecentDocumentPdfs(client, 300),
+        45_000,
+        'Fetching recent Finance documents from Odoo',
+      );
+    } catch (fetchErr) {
+      await logEvent('warn', 'Primary Finance documents fetch timed out or failed; retrying with compact limit (150)', {
+        schedulerRunId: run.id,
+        error: fetchErr instanceof Error ? fetchErr.message : String(fetchErr),
+      }).catch(() => undefined);
+      await touchActiveSchedulerRunLock(run.id);
+      recentPdfs = await withTimeout(
+        () => getRecentDocumentPdfs(client, 150),
+        40_000,
+        'Fetching recent Finance documents from Odoo (fallback 150)',
+      );
+    }
+    await touchActiveSchedulerRunLock(run.id);
 
     const nowMs = Date.now();
     const queueCandidates: AttachmentInfo[] = [];

@@ -1613,10 +1613,18 @@ async function markSourceDocumentDeliveryNote(
   };
 }
 
+let cachedFinanceFoldersByCompany = new Map<number, { folders: Array<{ id: number; name: string }>; fetchedAt: number }>();
+const FINANCE_FOLDERS_CACHE_TTL_MS = 60 * 60 * 1000;
+
 async function findFinanceDocumentFolderIds(
   client: OdooClient,
   targetCompanyId: number,
 ): Promise<Array<{ id: number; name: string }>> {
+  const cached = cachedFinanceFoldersByCompany.get(targetCompanyId);
+  if (cached && Date.now() - cached.fetchedAt < FINANCE_FOLDERS_CACHE_TTL_MS) {
+    return cached.folders;
+  }
+
   for (const model of ['documents.folder', 'documents.workspace']) {
     const fields = await getAvailableModelFieldNames(client, model, ['id', 'name', 'company_id']);
     if (!fields.has('id') || !fields.has('name')) {
@@ -1638,7 +1646,9 @@ async function findFinanceDocumentFolderIds(
       const filtered = folders.filter((folder) => folder.name?.toLowerCase() === DOCUMENT_FOLDER_NAME.toLowerCase());
       const matches = filtered.length > 0 ? filtered : folders;
       if (matches.length > 0) {
-        return matches.map((folder) => ({ id: folder.id, name: folder.name }));
+        const result = matches.map((folder) => ({ id: folder.id, name: folder.name }));
+        cachedFinanceFoldersByCompany.set(targetCompanyId, { folders: result, fetchedAt: Date.now() });
+        return result;
       }
     } catch (error) {
       console.warn(

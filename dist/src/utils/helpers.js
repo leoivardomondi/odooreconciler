@@ -321,15 +321,23 @@ function formatDateTime(value) {
     if (!value) {
         return '—';
     }
-    const withoutTimezoneSuffix = String(value).replace(/\s+GMT[+-]\d{4}\s+\([^)]+\)$/i, '');
-    if (withoutTimezoneSuffix !== value) {
+    const trimmed = String(value).trim();
+    const withoutTimezoneSuffix = trimmed.replace(/\s+GMT[+-]\d{4}\s+\([^)]+\)$/i, '');
+    if (withoutTimezoneSuffix !== trimmed) {
         return withoutTimezoneSuffix;
     }
-    const hasTimezoneMarker = /(?:Z|[+-]\d{2}:\d{2})$/.test(value);
+    // Bare SQL/app timestamps ("YYYY-MM-DD HH:mm:ss" or "YYYY-MM-DDTHH:mm:ss") are already
+    // stored in APP_TIMEZONE (Africa/Nairobi) via appDateTime() / server local clock.
+    // Do NOT treat them as UTC and add +03:00 a second time.
+    const bareMatch = trimmed.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2})(?::\d{2}(?:\.\d+)?)?$/);
+    if (bareMatch) {
+        return `${bareMatch[1]} ${bareMatch[2]}`;
+    }
+    const hasTimezoneMarker = /(?:Z|[+-]\d{2}:\d{2})$/.test(trimmed);
     const date = hasTimezoneMarker
-        ? (0, dayjs_1.default)(value).tz(env_1.env.APP_TIMEZONE)
-        : dayjs_1.default.utc(value).tz(env_1.env.APP_TIMEZONE);
-    return date.isValid() ? date.format('YYYY-MM-DD HH:mm') : value;
+        ? (0, dayjs_1.default)(trimmed).tz(env_1.env.APP_TIMEZONE)
+        : dayjs_1.default.tz(trimmed, env_1.env.APP_TIMEZONE);
+    return date.isValid() ? date.format('YYYY-MM-DD HH:mm') : trimmed;
 }
 function formatFileSize(value) {
     if (value === null || value === undefined || Number.isNaN(value)) {

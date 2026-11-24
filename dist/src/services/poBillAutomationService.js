@@ -1264,7 +1264,13 @@ async function markSourceDocumentDeliveryNote(client, attachment) {
         message: `Marked source document ${document.name || document.id} as Delivery Note in Odoo Documents.`,
     };
 }
+let cachedFinanceFoldersByCompany = new Map();
+const FINANCE_FOLDERS_CACHE_TTL_MS = 60 * 60 * 1000;
 async function findFinanceDocumentFolderIds(client, targetCompanyId) {
+    const cached = cachedFinanceFoldersByCompany.get(targetCompanyId);
+    if (cached && Date.now() - cached.fetchedAt < FINANCE_FOLDERS_CACHE_TTL_MS) {
+        return cached.folders;
+    }
     for (const model of ['documents.folder', 'documents.workspace']) {
         const fields = await getAvailableModelFieldNames(client, model, ['id', 'name', 'company_id']);
         if (!fields.has('id') || !fields.has('name')) {
@@ -1284,7 +1290,9 @@ async function findFinanceDocumentFolderIds(client, targetCompanyId) {
             const filtered = folders.filter((folder) => folder.name?.toLowerCase() === DOCUMENT_FOLDER_NAME.toLowerCase());
             const matches = filtered.length > 0 ? filtered : folders;
             if (matches.length > 0) {
-                return matches.map((folder) => ({ id: folder.id, name: folder.name }));
+                const result = matches.map((folder) => ({ id: folder.id, name: folder.name }));
+                cachedFinanceFoldersByCompany.set(targetCompanyId, { folders: result, fetchedAt: Date.now() });
+                return result;
             }
         }
         catch (error) {

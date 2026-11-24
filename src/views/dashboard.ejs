@@ -365,6 +365,12 @@
             <% const eligibleCount = Number(run.context.candidateFinancePdfCount || 0); %>
             <% const runHealth = run.status === 'started'
               ? { label: 'In progress', tone: 'primary', note: run.summary || 'Processing documents in background...' }
+              : run.status === 'failed' && run.scannedCount === 0
+              ? {
+                  label: 'Run interrupted',
+                  tone: 'danger',
+                  note: run.summary || run.errorMessage || 'Run failed or timed out before scanning documents.',
+                }
               : isPoBillRun && run.scannedCount === 0
               ? (exhaustedCount > 0 ? { label: 'Manual review needed', tone: 'danger', note: `${exhaustedCount} document(s) exhausted their automatic retry limit.` }
                 : cooldownBlockedCount > 0 ? { label: 'Waiting for retry window', tone: 'warning', note: `${cooldownBlockedCount} document(s) are cooling down before the next automatic check.` }

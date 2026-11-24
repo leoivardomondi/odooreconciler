@@ -666,6 +666,7 @@ async function runPoBillSchedulerCycle(trigger = 'manual', options = {}) {
         // persist the computed document lookahead into the active run for diagnostics
         try {
             await (0, repositories_1.updateSchedulerRun)(run.id, {
+                summary: 'Loading candidate Finance documents from Odoo...',
                 context: {
                     ...(run.context || {}),
                     documentLookahead,
@@ -675,7 +676,19 @@ async function runPoBillSchedulerCycle(trigger = 'manual', options = {}) {
         catch (err) {
             // non-fatal: continue processing even if updating diagnostics fails
         }
-        const recentPdfs = await (0, poBillAutomationService_1.getRecentDocumentPdfs)(client, 500);
+        let recentPdfs;
+        try {
+            recentPdfs = await withTimeout(() => (0, poBillAutomationService_1.getRecentDocumentPdfs)(client, 300), 45_000, 'Fetching recent Finance documents from Odoo');
+        }
+        catch (fetchErr) {
+            await (0, logService_1.logEvent)('warn', 'Primary Finance documents fetch timed out or failed; retrying with compact limit (150)', {
+                schedulerRunId: run.id,
+                error: fetchErr instanceof Error ? fetchErr.message : String(fetchErr),
+            }).catch(() => undefined);
+            await touchActiveSchedulerRunLock(run.id);
+            recentPdfs = await withTimeout(() => (0, poBillAutomationService_1.getRecentDocumentPdfs)(client, 150), 40_000, 'Fetching recent Finance documents from Odoo (fallback 150)');
+        }
+        await touchActiveSchedulerRunLock(run.id);
         const nowMs = Date.now();
         const queueCandidates = [];
         const deferredQueueCandidates = [];
