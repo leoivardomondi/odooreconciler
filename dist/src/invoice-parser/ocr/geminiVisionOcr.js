@@ -18,13 +18,16 @@ function mimeTypeForImage(imagePath) {
 }
 function normalizeGeminiOcrModel(rawModel) {
     const trimmed = String(rawModel || '').trim().replace(/^models\//i, '');
-    if (!trimmed || /^nvidia\//i.test(trimmed) || trimmed === 'gemini-3.8-flash' || trimmed === 'gemini-2.0-flash') {
-        return 'gemini-2.5-flash';
-    }
-    if (trimmed === 'gemini-3.8-flash-lite' || trimmed === 'gemini-2.0-flash-lite') {
-        return 'gemini-2.5-flash-lite';
+    if (!trimmed || /^nvidia\//i.test(trimmed)) {
+        return 'gemini-3.8-flash';
     }
     return trimmed;
+}
+function buildGeminiOcrModelTryOrder(primaryModel) {
+    const fallbacks = primaryModel.endsWith('-lite')
+        ? ['gemini-3.8-flash-lite', 'gemini-2.5-flash-lite', 'gemini-2.0-flash-lite', 'gemini-2.5-flash']
+        : ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-2.0-flash'];
+    return [...new Set([primaryModel, ...fallbacks])];
 }
 async function geminiVisionOcr(imagePaths, ocrConfig, geminiApiKey, geminiOAuthConnected) {
     const warnings = [];
@@ -63,9 +66,7 @@ async function geminiVisionOcr(imagePaths, ocrConfig, geminiApiKey, geminiOAuthC
         ? configuredEndpoint
         : GEMINI_BASE_URL;
     const primaryModel = normalizeGeminiOcrModel(ocrConfig?.model);
-    const modelsToTry = primaryModel === 'gemini-2.5-flash'
-        ? [primaryModel]
-        : [primaryModel, 'gemini-2.5-flash'];
+    const modelsToTry = buildGeminiOcrModelTryOrder(primaryModel);
     const pages = [];
     for (const image of imagePaths) {
         try {
@@ -113,7 +114,7 @@ async function geminiVisionOcr(imagePaths, ocrConfig, geminiApiKey, geminiOAuthC
                 payload = await response.json().catch(() => null);
                 if (response.ok)
                     break;
-                if (response.status === 404 && modelsToTry.length > 1 && model !== 'gemini-2.5-flash') {
+                if (response.status === 404 && modelsToTry.length > 1) {
                     continue;
                 }
                 break;

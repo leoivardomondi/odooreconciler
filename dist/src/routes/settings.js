@@ -58,11 +58,8 @@ function nvidiaModelFieldName(model) {
     return `nvidiaModelKey_${model.replace(/[^a-zA-Z0-9]+/g, '_')}`;
 }
 function normalizeAiModelForProvider(provider, model) {
-    let trimmed = model.trim();
+    const trimmed = model.trim().replace(/^models\//i, '');
     if (provider === 'gemini') {
-        if (trimmed === 'gemini-2.0-flash' || trimmed === 'gemini-2.0-flash-lite' || trimmed === 'models/gemini-2.0-flash') {
-            trimmed = DEFAULT_GEMINI_MODEL;
-        }
         if (!trimmed || NVIDIA_AI_MODELS.includes(trimmed) || OPENAI_AI_MODELS.includes(trimmed)) {
             return DEFAULT_GEMINI_MODEL;
         }
@@ -1244,9 +1241,9 @@ router.post('/settings', validators, async (req, res) => {
         const aiModel = normalizeAiModelForProvider(aiProvider, submittedAiModel || currentSettings.ai.model);
         const ocrProvider = req.body.ocrProvider?.trim() || currentSettings.ai.ocr?.provider || 'disabled';
         const submittedOcrModel = req.body.ocrModel?.trim() || '';
-        const ocrModel = ocrProvider === 'gemini_vision' && (/^nvidia\//i.test(submittedOcrModel) || submittedOcrModel === 'gemini-2.0-flash' || submittedOcrModel === 'gemini-2.0-flash-lite' || submittedOcrModel === 'gemini-flash-latest')
+        const ocrModel = ocrProvider === 'gemini_vision' && /^nvidia\//i.test(submittedOcrModel)
             ? DEFAULT_GEMINI_MODEL
-            : (submittedOcrModel === 'gemini-2.0-flash' ? DEFAULT_GEMINI_MODEL : submittedOcrModel) || currentSettings.ai.ocr?.model || (ocrProvider === 'gemini_vision' ? DEFAULT_GEMINI_MODEL : 'nvidia/nemotron-ocr-v2');
+            : submittedOcrModel || currentSettings.ai.ocr?.model || (ocrProvider === 'gemini_vision' ? DEFAULT_GEMINI_MODEL : 'nvidia/nemotron-ocr-v2');
         const submittedOcrEndpoint = req.body.ocrEndpoint?.trim() || '';
         const ocrEndpoint = ocrProvider === 'gemini_vision' && /ai\.api\.nvidia\.com|\/cv\/nvidia\//i.test(submittedOcrEndpoint)
             ? 'https://generativelanguage.googleapis.com/v1beta'
@@ -1444,12 +1441,7 @@ router.post('/settings/test-ai-connection', async (req, res) => {
         let headers = { 'Content-Type': 'application/json' };
         let body;
         if (provider === 'gemini') {
-            const rawTestModel = (model === 'gemini-2.0-flash' || model === 'gemini-2.0-flash-lite' || model === 'models/gemini-2.0-flash') ? DEFAULT_GEMINI_MODEL : model;
-            const testModel = rawTestModel === 'gemini-3.8-flash'
-                ? 'gemini-2.5-flash'
-                : rawTestModel === 'gemini-3.8-flash-lite'
-                    ? 'gemini-2.5-flash-lite'
-                    : rawTestModel.replace(/^models\//i, '');
+            const testModel = (model || DEFAULT_GEMINI_MODEL).trim().replace(/^models\//i, '');
             endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${testModel}:generateContent`;
             if (geminiOAuth) {
                 headers.Authorization = `Bearer ${geminiOAuth.accessToken}`;

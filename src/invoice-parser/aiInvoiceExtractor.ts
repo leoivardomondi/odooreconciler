@@ -848,13 +848,14 @@ async function callOpenAiCompatibleInvoiceAi(input: {
 
 function normalizeGeminiApiModelId(rawModel: string): string {
   const trimmed = rawModel.trim().replace(/^models\//i, '');
-  if (!trimmed || trimmed === 'gemini-3.8-flash' || trimmed === 'gemini-2.0-flash') {
-    return 'gemini-2.5-flash';
-  }
-  if (trimmed === 'gemini-3.8-flash-lite' || trimmed === 'gemini-2.0-flash-lite') {
-    return 'gemini-2.5-flash-lite';
-  }
-  return trimmed;
+  return trimmed || 'gemini-3.8-flash';
+}
+
+function buildGeminiModelTryOrder(primaryModel: string): string[] {
+  const fallbacks = primaryModel.endsWith('-lite')
+    ? ['gemini-3.8-flash-lite', 'gemini-2.5-flash-lite', 'gemini-2.0-flash-lite', 'gemini-2.5-flash']
+    : ['gemini-3.8-flash', 'gemini-2.5-flash', 'gemini-2.0-flash'];
+  return [...new Set([primaryModel, ...fallbacks])];
 }
 
 async function callGeminiInvoiceAi(input: {
@@ -870,9 +871,7 @@ async function callGeminiInvoiceAi(input: {
     throw new Error('Google Gemini API is currently disabled (DISABLE_GEMINI=true).');
   }
   const primaryModel = normalizeGeminiApiModelId(input.model);
-  const modelsToTry = primaryModel === 'gemini-2.5-flash'
-    ? [primaryModel]
-    : [primaryModel, 'gemini-2.5-flash'];
+  const modelsToTry = buildGeminiModelTryOrder(primaryModel);
   const baseUrl = input.baseUrl.replace(/\/+$/, '') || GEMINI_BASE_URL;
 
   let response: Response | null = null;
@@ -939,8 +938,8 @@ async function callGeminiInvoiceAi(input: {
       break;
     }
 
-    // If the selected model ID is not found (404), fall back to gemini-2.5-flash
-    if (response?.status === 404 && modelsToTry.length > 1 && model !== 'gemini-2.5-flash') {
+    // If the selected model ID is not found (404), try the next fallback model
+    if (response?.status === 404 && modelsToTry.length > 1) {
       continue;
     }
     break;

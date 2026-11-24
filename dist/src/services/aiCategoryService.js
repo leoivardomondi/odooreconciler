@@ -1003,43 +1003,47 @@ async function callGeminiCategoryApi(input) {
     if (process.env.DISABLE_GEMINI === 'true') {
         throw new Error('Google Gemini API is currently disabled (DISABLE_GEMINI=true).');
     }
-    let model = input.model.trim().replace(/^models\//i, '');
-    if (!model || model === 'gemini-3.8-flash' || model === 'gemini-2.0-flash') {
-        model = 'gemini-2.5-flash';
-    }
-    else if (model === 'gemini-3.8-flash-lite' || model === 'gemini-2.0-flash-lite') {
-        model = 'gemini-2.5-flash-lite';
-    }
+    const primaryModel = input.model.trim().replace(/^models\//i, '') || 'gemini-3.8-flash';
+    const modelsToTry = [...new Set([primaryModel, 'gemini-2.5-flash', 'gemini-2.0-flash'])];
     const baseUrl = input.baseUrl.replace(/\/+$/, '') || GEMINI_BASE_URL;
-    const endpoint = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent`;
-    const response = await fetch(endpoint, {
-        method: 'POST',
-        signal: AbortSignal.timeout(45000),
-        headers: {
-            'Content-Type': 'application/json',
-            ...(input.accessToken
-                ? {
-                    Authorization: `Bearer ${input.accessToken}`,
-                    ...(input.projectId ? { 'x-goog-user-project': input.projectId } : {}),
-                }
-                : { 'X-goog-api-key': input.apiKey || '' }),
-        },
-        body: JSON.stringify({
-            contents: [
-                {
-                    role: 'user',
-                    parts: [{ text: input.prompt }],
-                },
-            ],
-            generationConfig: {
-                temperature: 0,
-                response_mime_type: 'application/json',
+    let response = null;
+    let responseJson = null;
+    for (const model of modelsToTry) {
+        const endpoint = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent`;
+        response = await fetch(endpoint, {
+            method: 'POST',
+            signal: AbortSignal.timeout(45000),
+            headers: {
+                'Content-Type': 'application/json',
+                ...(input.accessToken
+                    ? {
+                        Authorization: `Bearer ${input.accessToken}`,
+                        ...(input.projectId ? { 'x-goog-user-project': input.projectId } : {}),
+                    }
+                    : { 'X-goog-api-key': input.apiKey || '' }),
             },
-        }),
-    });
-    const responseJson = await response.json().catch(() => null);
-    if (!response.ok) {
-        throw new Error(responseJson?.error?.message || `Gemini API returned HTTP ${response.status}.`);
+            body: JSON.stringify({
+                contents: [
+                    {
+                        role: 'user',
+                        parts: [{ text: input.prompt }],
+                    },
+                ],
+                generationConfig: {
+                    temperature: 0,
+                    response_mime_type: 'application/json',
+                },
+            }),
+        });
+        responseJson = await response.json().catch(() => null);
+        if (response.ok)
+            break;
+        if (response.status === 404 && modelsToTry.length > 1)
+            continue;
+        break;
+    }
+    if (!response || !response.ok) {
+        throw new Error(responseJson?.error?.message || `Gemini API returned HTTP ${response?.status || '#'}.`);
     }
     return extractGeminiOutputText(responseJson);
 }
