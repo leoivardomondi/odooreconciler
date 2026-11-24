@@ -55,13 +55,30 @@ function shouldUseGeminiVisionFallback(text) {
         repeatedInvoiceSignals >= 8 ||
         fragmentedSignals >= 2;
 }
-async function maybeRunGeminiVisionFallback(pages, _imagePaths, _ocrConfig, _geminiApiKey, _geminiOAuthConnected, _warnings) {
-    // Gemini is disabled for now
+async function maybeRunGeminiVisionFallback(pages, imagePaths, ocrConfig, geminiApiKey, geminiOAuthConnected, warnings) {
+    if (!ocrConfig?.geminiFallbackEnabled) {
+        return pages;
+    }
+    const hasGeminiCreds = Boolean(ocrConfig?.apiKey || geminiApiKey || process.env.GEMINI_API_KEY || geminiOAuthConnected);
+    if (!hasGeminiCreds) {
+        return pages;
+    }
+    const combinedText = pages.map((p) => p.text).join('\n\n');
+    if (!shouldUseGeminiVisionFallback(combinedText)) {
+        return pages;
+    }
+    const gemini = await (0, geminiVisionOcr_1.geminiVisionOcr)(imagePaths, ocrConfig, geminiApiKey, geminiOAuthConnected);
+    warnings.push(...gemini.warnings);
+    if (gemini.pages.length > 0) {
+        return mergeOcrPages([...pages, ...gemini.pages]);
+    }
     return pages;
 }
 async function runOcr(imagePaths, preferredOcr, ocrConfig, geminiApiKey, geminiOAuthConnected) {
     const warnings = [];
-    const useGemini = false;
+    const useGemini = Boolean(ocrConfig?.enabled) &&
+        ocrConfig?.provider === 'gemini_vision' &&
+        Boolean(ocrConfig?.apiKey || geminiApiKey || process.env.GEMINI_API_KEY || geminiOAuthConnected);
     if (useGemini) {
         const gemini = await (0, geminiVisionOcr_1.geminiVisionOcr)(imagePaths, ocrConfig, geminiApiKey, geminiOAuthConnected);
         warnings.push(...gemini.warnings);

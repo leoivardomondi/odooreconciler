@@ -1707,11 +1707,18 @@ router.post(
       let body: Record<string, unknown>;
 
       if (provider === 'gemini') {
-        const testModel = (model === 'gemini-2.0-flash' || model === 'gemini-2.0-flash-lite' || model === 'models/gemini-2.0-flash') ? DEFAULT_GEMINI_MODEL : model;
+        const rawTestModel = (model === 'gemini-2.0-flash' || model === 'gemini-2.0-flash-lite' || model === 'models/gemini-2.0-flash') ? DEFAULT_GEMINI_MODEL : model;
+        const testModel = rawTestModel === 'gemini-3.8-flash'
+          ? 'gemini-2.5-flash'
+          : rawTestModel === 'gemini-3.8-flash-lite'
+            ? 'gemini-2.5-flash-lite'
+            : rawTestModel.replace(/^models\//i, '');
         endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${testModel}:generateContent`;
         if (geminiOAuth) {
           headers.Authorization = `Bearer ${geminiOAuth.accessToken}`;
-          headers['x-goog-user-project'] = geminiOAuth.projectId;
+          if (geminiOAuth.projectId) {
+            headers['x-goog-user-project'] = geminiOAuth.projectId;
+          }
         } else {
           headers['x-goog-api-key'] = apiKey;
         }

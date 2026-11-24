@@ -846,6 +846,17 @@ async function callOpenAiCompatibleInvoiceAi(input: {
   return input.provider === 'nvidia' ? stripNvidiaControlTokens(outputText) : outputText;
 }
 
+function normalizeGeminiApiModelId(rawModel: string): string {
+  const trimmed = rawModel.trim().replace(/^models\//i, '');
+  if (!trimmed || trimmed === 'gemini-3.8-flash' || trimmed === 'gemini-2.0-flash') {
+    return 'gemini-2.5-flash';
+  }
+  if (trimmed === 'gemini-3.8-flash-lite' || trimmed === 'gemini-2.0-flash-lite') {
+    return 'gemini-2.5-flash-lite';
+  }
+  return trimmed;
+}
+
 async function callGeminiInvoiceAi(input: {
   apiKey?: string;
   accessToken?: string;
@@ -858,67 +869,80 @@ async function callGeminiInvoiceAi(input: {
   if (process.env.DISABLE_GEMINI === 'true') {
     throw new Error('Google Gemini API is currently disabled (DISABLE_GEMINI=true).');
   }
-  let model = input.model.trim();
-  if (!model || model === 'gemini-2.0-flash' || model === 'models/gemini-2.0-flash' || model === 'gemini-2.0-flash-lite') {
-    model = 'gemini-3.8-flash';
-  }
+  const primaryModel = normalizeGeminiApiModelId(input.model);
+  const modelsToTry = primaryModel === 'gemini-2.5-flash'
+    ? [primaryModel]
+    : [primaryModel, 'gemini-2.5-flash'];
   const baseUrl = input.baseUrl.replace(/\/+$/, '') || GEMINI_BASE_URL;
-  const endpoint = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent`;
 
-  let attempt = 0;
   let response: Response | null = null;
   let responseJson: any = null;
 
-  while (attempt <= 2) {
-    attempt += 1;
-    response = await fetch(endpoint, {
-      method: 'POST',
-      signal: AbortSignal.timeout(60000),
-      headers: {
-        'Content-Type': 'application/json',
-        ...(input.accessToken
-          ? {
-              Authorization: `Bearer ${input.accessToken}`,
-              'x-goog-user-project': input.projectId || '',
-            }
-          : { 'X-goog-api-key': input.apiKey || '' }),
-      },
-      body: JSON.stringify({
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              { text: input.prompt },
-              ...input.images.map((image) => ({
-                inline_data: {
-                  mime_type: image.mediaType,
-                  data: image.base64,
-                },
-              })),
-            ],
-          },
-        ],
-        generationConfig: {
-          temperature: 0,
-          response_mime_type: 'application/json',
+  for (const model of modelsToTry) {
+    const endpoint = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent`;
+    let attempt = 0;
+
+    while (attempt <= 2) {
+      attempt += 1;
+      response = await fetch(endpoint, {
+        method: 'POST',
+        signal: AbortSignal.timeout(60000),
+        headers: {
+          'Content-Type': 'application/json',
+          ...(input.accessToken
+            ? {
+                Authorization: `Bearer ${input.accessToken}`,
+                ...(input.projectId ? { 'x-goog-user-project': input.projectId } : {}),
+              }
+            : { 'X-goog-api-key': input.apiKey || '' }),
         },
-      }),
-    });
+        body: JSON.stringify({
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                { text: input.prompt },
+                ...input.images.map((image) => ({
+                  inline_data: {
+                    mime_type: image.mediaType,
+                    data: image.base64,
+                  },
+                })),
+              ],
+            },
+          ],
+          generationConfig: {
+            temperature: 0,
+            response_mime_type: 'application/json',
+          },
+        }),
+      });
 
-    responseJson = await response.json().catch(() => null);
-    if (response.ok) break;
+      responseJson = await response.json().catch(() => null);
+      if (response.ok) break;
 
-    if (attempt <= 2 && [429, 500, 502, 503, 504].includes(response.status)) {
-      const detail = responseJson?.error?.message || '';
-      const match = detail.match(/retry\s+in\s+([\d.]+)\s*s/i);
-      const seconds = match?.[1] ? parseFloat(match[1]) : NaN;
-      const backoffMs = !Number.isNaN(seconds) && seconds > 0
-        ? Math.min(Math.round(seconds * 1000), 8000)
-        : attempt * 2500;
-      await new Promise((resolve) => setTimeout(resolve, backoffMs));
-      continue;
+      if (attempt <= 2 && [429, 500, 502, 503, 504].includes(response.status)) {
+        const detail = responseJson?.error?.message || '';
+        const match = detail.match(/retry\s+in\s+([\d.]+)\s*s/i);
+        const seconds = match?.[1] ? parseFloat(match[1]) : NaN;
+        const backoffMs = !Number.isNaN(seconds) && seconds > 0
+          ? Math.min(Math.round(seconds * 1000), 8000)
+          : attempt * 2500;
+        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+        continue;
+      }
+
+      break;
     }
 
+    if (response?.ok) {
+      break;
+    }
+
+    // If the selected model ID is not found (404), fall back to gemini-2.5-flash
+    if (response?.status === 404 && modelsToTry.length > 1 && model !== 'gemini-2.5-flash') {
+      continue;
+    }
     break;
   }
 
@@ -1089,14 +1113,15 @@ async function extractInvoiceWithConfiguredAi(input: {
   const fullPageImagePaths = input.imagePaths.filter((p) => /-page-\d+\.[a-z]+$/i.test(p));
   const aiImagePaths = fullPageImagePaths.length > 0 ? fullPageImagePaths : input.imagePaths;
 
-  const candidateProviders: Array<'openai' | 'openrouter' | 'nvidia' | 'anthropic'> = [];
+  const candidateProviders: Array<'openai' | 'openrouter' | 'nvidia' | 'anthropic' | 'gemini'> = [];
   // Strictly use the primary provider chosen in Settings. Do not auto-fall back to NVIDIA or other providers
   // unless the user explicitly selected them as their primary provider.
   if (
     primaryProvider === 'openai' ||
     primaryProvider === 'openrouter' ||
     primaryProvider === 'nvidia' ||
-    primaryProvider === 'anthropic'
+    primaryProvider === 'anthropic' ||
+    primaryProvider === 'gemini'
   ) {
     if (providerHasConfiguredCredential(input.config, primaryProvider)) {
       candidateProviders.push(primaryProvider);
@@ -1107,9 +1132,7 @@ async function extractInvoiceWithConfiguredAi(input: {
     return {
       extraction: null,
       warnings: [
-        primaryProvider === 'gemini'
-          ? 'AI invoice extraction skipped: Google Gemini is currently disabled. Please select NVIDIA NIM or another provider in Settings.'
-          : `AI invoice extraction skipped because no API key or OAuth connection is configured for selected provider "${primaryProvider}".`,
+        `AI invoice extraction skipped because no API key or OAuth connection is configured for selected provider "${primaryProvider}".`,
       ],
     };
   }
@@ -1207,6 +1230,17 @@ async function extractInvoiceWithConfiguredAi(input: {
         const images = await readImagesForAi(imagePaths);
         outputText = await callAnthropicInvoiceAi({
           apiKey,
+          model,
+          baseUrl: input.config.baseUrl,
+          images,
+          prompt,
+        });
+      } else if (provider === 'gemini') {
+        const images = await readImagesForAi(imagePaths);
+        outputText = await callGeminiInvoiceAi({
+          apiKey: credential.apiKey,
+          accessToken: credential.accessToken,
+          projectId: credential.projectId,
           model,
           baseUrl: input.config.baseUrl,
           images,

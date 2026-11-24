@@ -63,13 +63,28 @@ export function shouldUseGeminiVisionFallback(text: string) {
 
 async function maybeRunGeminiVisionFallback(
   pages: OcrPageResult[],
-  _imagePaths: Array<{ pageNumber: number; imagePath: string }>,
-  _ocrConfig: AiInvoiceExtractionConfig['ocr'] | undefined,
-  _geminiApiKey: string | undefined,
-  _geminiOAuthConnected: boolean | undefined,
-  _warnings: string[],
+  imagePaths: Array<{ pageNumber: number; imagePath: string }>,
+  ocrConfig: AiInvoiceExtractionConfig['ocr'] | undefined,
+  geminiApiKey: string | undefined,
+  geminiOAuthConnected: boolean | undefined,
+  warnings: string[],
 ) {
-  // Gemini is disabled for now
+  if (!ocrConfig?.geminiFallbackEnabled) {
+    return pages;
+  }
+  const hasGeminiCreds = Boolean(ocrConfig?.apiKey || geminiApiKey || process.env.GEMINI_API_KEY || geminiOAuthConnected);
+  if (!hasGeminiCreds) {
+    return pages;
+  }
+  const combinedText = pages.map((p) => p.text).join('\n\n');
+  if (!shouldUseGeminiVisionFallback(combinedText)) {
+    return pages;
+  }
+  const gemini = await geminiVisionOcr(imagePaths, ocrConfig, geminiApiKey, geminiOAuthConnected);
+  warnings.push(...gemini.warnings);
+  if (gemini.pages.length > 0) {
+    return mergeOcrPages([...pages, ...gemini.pages]);
+  }
   return pages;
 }
 
@@ -82,7 +97,10 @@ export async function runOcr(
 ): Promise<{ pages: OcrPageResult[]; warnings: string[] }> {
   const warnings: string[] = [];
 
-  const useGemini = false;
+  const useGemini =
+    Boolean(ocrConfig?.enabled) &&
+    ocrConfig?.provider === 'gemini_vision' &&
+    Boolean(ocrConfig?.apiKey || geminiApiKey || process.env.GEMINI_API_KEY || geminiOAuthConnected);
 
   if (useGemini) {
     const gemini = await geminiVisionOcr(imagePaths, ocrConfig, geminiApiKey, geminiOAuthConnected);
