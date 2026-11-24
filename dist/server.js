@@ -200,16 +200,18 @@ async function startServer() {
             (0, startupState_1.markStartupStep)('initializing scheduler');
             await withStartupTimeout('Scheduler initialization', () => (0, schedulerService_1.startSchedulerInterval)());
             (0, emailAutomationService_1.startEmailAutomationInterval)();
-            (0, stockMirrorService_1.startStockMirrorInterval)();
-            (0, customerMirrorService_1.startCustomerMirrorInterval)();
-            (0, userProfileSyncService_1.startUserProfileSyncInterval)();
-            (0, shopFloorOperatorAccessSyncService_1.startShopFloorOperatorAccessSyncInterval)();
-            (0, boardIntakeSyncService_1.startBoardIntakeSyncInterval)();
-            (0, shopFloorPendingSyncService_1.startShopFloorPendingSyncInterval)();
-            (0, weeklyShopFloorReportService_1.startWeeklyShopFloorReportWarmup)();
             (0, startupState_1.markStartupReady)();
             console.log('[startup] Application initialization completed successfully.');
             writeStartupLog('Application initialization completed successfully.');
+            // Stagger background Odoo mirror syncs after the server is already accepting traffic
+            // so a cold start or Passenger worker respawn does not spike CPU/RAM and trigger a 503.
+            setTimeout(() => (0, stockMirrorService_1.startStockMirrorInterval)(), 5_000).unref();
+            setTimeout(() => (0, customerMirrorService_1.startCustomerMirrorInterval)(), 12_000).unref();
+            setTimeout(() => (0, shopFloorOperatorAccessSyncService_1.startShopFloorOperatorAccessSyncInterval)(), 20_000).unref();
+            setTimeout(() => (0, shopFloorPendingSyncService_1.startShopFloorPendingSyncInterval)(), 28_000).unref();
+            setTimeout(() => (0, boardIntakeSyncService_1.startBoardIntakeSyncInterval)(), 35_000).unref();
+            setTimeout(() => (0, userProfileSyncService_1.startUserProfileSyncInterval)(), 45_000).unref();
+            setTimeout(() => (0, weeklyShopFloorReportService_1.startWeeklyShopFloorReportWarmup)(), 60_000).unref();
             void (0, logService_1.logEvent)('info', 'Server started', {
                 listenTarget: isPassengerRuntime ? 'passenger' : port,
                 environment: env_1.env.NODE_ENV,

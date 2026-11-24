@@ -53,8 +53,8 @@ const SO_SCHEDULER_ROUTINE_DEPRIORITIZE_RUNS = 20;
 const SO_SCHEDULER_ADAPTIVE_LOOKBACK_STEP_HOURS = 24;
 const SO_SCHEDULER_ADAPTIVE_LOOKBACK_MAX_HOURS = 24 * 90;
 const PO_BILL_SCHEDULER_BATCH_SIZE = 1;
-const PO_BILL_SCHEDULER_DOCUMENT_LOOKAHEAD = 1000;
-const PO_BILL_SCHEDULER_DOCUMENT_LOOKAHEAD_MAX = 1000;
+const PO_BILL_SCHEDULER_DOCUMENT_LOOKAHEAD = 150;
+const PO_BILL_SCHEDULER_DOCUMENT_LOOKAHEAD_MAX = 250;
 const PO_BILL_RETRY_COOLDOWN_HOURS = 12;
 const PO_BILL_TRANSIENT_RETRY_COOLDOWN_HOURS = 2;
 const PO_BILL_STABLE_SKIP_RETRY_COOLDOWN_HOURS = 24 * 14;
@@ -906,6 +906,16 @@ export async function runPoBillSchedulerCycle(
           currentAttachmentName: pdf.name,
           documentOutcomes: [...documentOutcomes],
         },
+      }).catch(() => undefined);
+
+      // Claim and increment the attempt counter in po_bill_processed_documents BEFORE
+      // downloading/rendering the PDF so if cPanel/CloudLinux kills the Node worker
+      // mid-document (e.g. OOM on a corrupt/oversized PDF), this attachment will not
+      // stay at 0 attempts and repeatedly crash the server on every cycle.
+      await markPoBillDocumentSkipped({
+        attachment: pdf,
+        status: 'failed',
+        summary: `Processing started for ${pdf.name} (#${pdf.id}); interrupted before completion.`,
       }).catch(() => undefined);
 
       try {

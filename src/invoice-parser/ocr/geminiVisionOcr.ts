@@ -80,9 +80,26 @@ export async function geminiVisionOcr(
 
   for (const image of imagePaths) {
     try {
-      const buffer = await fs.readFile(image.imagePath);
+      let buffer: Buffer = await fs.readFile(image.imagePath);
+      let mediaType = mimeTypeForImage(image.imagePath);
+      if (buffer.length > 800_000) {
+        try {
+          const canvasModule = await import('@napi-rs/canvas');
+          const img = await canvasModule.loadImage(buffer);
+          const maxDim = 1800;
+          const scale = Math.min(1, maxDim / Math.max(img.width || 1, img.height || 1));
+          const targetW = Math.max(1, Math.round(img.width * scale));
+          const targetH = Math.max(1, Math.round(img.height * scale));
+          const canvas = canvasModule.createCanvas(targetW, targetH);
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, targetW, targetH);
+          buffer = Buffer.from(await canvas.encode('jpeg', 85));
+          mediaType = 'image/jpeg';
+        } catch {
+          // Retain original buffer if canvas resize fails
+        }
+      }
       const base64 = buffer.toString('base64');
-      const mediaType = mimeTypeForImage(image.imagePath);
 
       let response: Response | null = null;
       let payload: any = null;

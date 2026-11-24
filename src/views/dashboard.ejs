@@ -812,11 +812,13 @@
   <% } %>
 </main>
 
-<% if (scheduler && scheduler.recentRuns && scheduler.recentRuns.some(r => r.status === 'started')) { %>
+<% if (scheduler && scheduler.recentRuns && scheduler.recentRuns[0] && scheduler.recentRuns[0].status === 'started') { %>
   <script>
     window.setTimeout(() => {
-      window.location.reload();
-    }, 4000);
+      if (!document.hidden) {
+        window.location.replace('/dashboard');
+      }
+    }, 10000);
   </script>
 <% } %>
 

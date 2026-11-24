@@ -3406,6 +3406,12 @@ async function runPoBillAutomationInternal(
   if (!isSupportedPoBillMimetype(attachment.mimetype)) {
     throw new Error(`Attachment "${attachment.name}" is not a supported PDF or image document.`);
   }
+  const MAX_ATTACHMENT_BYTES = 18 * 1024 * 1024;
+  if (attachment.content.length > MAX_ATTACHMENT_BYTES) {
+    throw new Error(
+      `Attachment "${attachment.name}" is ${(attachment.content.length / (1024 * 1024)).toFixed(1)} MB, which exceeds the 18 MB safe memory limit.`,
+    );
+  }
   const tempDir = resolveProjectFile(process.env.TEMP_DIR || 'tmp', 'tmp');
   await fs.mkdir(tempDir, { recursive: true });
   const safeAttachmentName = ensurePoBillFilenameExtension(attachment.name, attachment.mimetype)

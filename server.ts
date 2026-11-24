@@ -238,16 +238,20 @@ export async function startServer() {
       markStartupStep('initializing scheduler');
       await withStartupTimeout('Scheduler initialization', () => startSchedulerInterval());
       startEmailAutomationInterval();
-      startStockMirrorInterval();
-      startCustomerMirrorInterval();
-      startUserProfileSyncInterval();
-      startShopFloorOperatorAccessSyncInterval();
-      startBoardIntakeSyncInterval();
-      startShopFloorPendingSyncInterval();
-      startWeeklyShopFloorReportWarmup();
       markStartupReady();
       console.log('[startup] Application initialization completed successfully.');
       writeStartupLog('Application initialization completed successfully.');
+
+      // Stagger background Odoo mirror syncs after the server is already accepting traffic
+      // so a cold start or Passenger worker respawn does not spike CPU/RAM and trigger a 503.
+      setTimeout(() => startStockMirrorInterval(), 5_000).unref();
+      setTimeout(() => startCustomerMirrorInterval(), 12_000).unref();
+      setTimeout(() => startShopFloorOperatorAccessSyncInterval(), 20_000).unref();
+      setTimeout(() => startShopFloorPendingSyncInterval(), 28_000).unref();
+      setTimeout(() => startBoardIntakeSyncInterval(), 35_000).unref();
+      setTimeout(() => startUserProfileSyncInterval(), 45_000).unref();
+      setTimeout(() => startWeeklyShopFloorReportWarmup(), 60_000).unref();
+
       void logEvent('info', 'Server started', {
         listenTarget: isPassengerRuntime ? 'passenger' : port,
         environment: env.NODE_ENV,

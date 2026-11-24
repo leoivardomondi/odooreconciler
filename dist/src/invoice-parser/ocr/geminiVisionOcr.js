@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
@@ -70,9 +103,27 @@ async function geminiVisionOcr(imagePaths, ocrConfig, geminiApiKey, geminiOAuthC
     const pages = [];
     for (const image of imagePaths) {
         try {
-            const buffer = await promises_1.default.readFile(image.imagePath);
+            let buffer = await promises_1.default.readFile(image.imagePath);
+            let mediaType = mimeTypeForImage(image.imagePath);
+            if (buffer.length > 800_000) {
+                try {
+                    const canvasModule = await Promise.resolve().then(() => __importStar(require('@napi-rs/canvas')));
+                    const img = await canvasModule.loadImage(buffer);
+                    const maxDim = 1800;
+                    const scale = Math.min(1, maxDim / Math.max(img.width || 1, img.height || 1));
+                    const targetW = Math.max(1, Math.round(img.width * scale));
+                    const targetH = Math.max(1, Math.round(img.height * scale));
+                    const canvas = canvasModule.createCanvas(targetW, targetH);
+                    const ctx = canvas.getContext('2d');
+                    ctx.drawImage(img, 0, 0, targetW, targetH);
+                    buffer = Buffer.from(await canvas.encode('jpeg', 85));
+                    mediaType = 'image/jpeg';
+                }
+                catch {
+                    // Retain original buffer if canvas resize fails
+                }
+            }
             const base64 = buffer.toString('base64');
-            const mediaType = mimeTypeForImage(image.imagePath);
             let response = null;
             let payload = null;
             for (const model of modelsToTry) {

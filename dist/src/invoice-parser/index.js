@@ -300,22 +300,37 @@ async function parseSupplierInvoice(input) {
             const rendered = await (0, renderPdfToImages_1.renderPdfToImages)(input.filePath);
             warnings.push(...rendered.warnings);
             rendered.images.forEach((image) => tempFilesToClean.add(image.imagePath));
-            const preprocessed = await Promise.all(rendered.images.map(async (image) => {
-                const processed = await (0, imagePreprocess_1.preprocessImage)(image.imagePath);
-                warnings.push(...processed.warnings);
-                tempFilesToClean.add(processed.imagePath);
-                for (const variantPath of processed.variantPaths || [])
-                    tempFilesToClean.add(variantPath);
-                return {
+            let renderedImages = rendered.images;
+            let ocrInputImages;
+            if (input.aiConfig?.ocr?.enabled && input.aiConfig.ocr.provider === 'gemini_vision') {
+                // Gemini Vision reads natural color/grayscale JPEG/PNG scans far more accurately
+                // and without allocating a @napi-rs/canvas pixel buffer.
+                ocrInputImages = renderedImages.map((image) => ({
                     pageNumber: image.pageNumber,
-                    imagePath: processed.imagePath,
-                    imageVariants: processed.variantPaths,
-                };
-            }));
-            const ocr = await (0, ocrEngine_1.runOcr)(preprocessed, preferredOcr, input.aiConfig?.ocr, input.aiConfig?.apiKeys?.gemini, input.aiConfig?.geminiOAuth?.connected);
+                    imagePath: image.imagePath,
+                    imageVariants: [],
+                }));
+            }
+            else {
+                const preprocessed = [];
+                for (const image of renderedImages) {
+                    const processed = await (0, imagePreprocess_1.preprocessImage)(image.imagePath);
+                    warnings.push(...processed.warnings);
+                    tempFilesToClean.add(processed.imagePath);
+                    for (const variantPath of processed.variantPaths || [])
+                        tempFilesToClean.add(variantPath);
+                    preprocessed.push({
+                        pageNumber: image.pageNumber,
+                        imagePath: processed.imagePath,
+                        imageVariants: processed.variantPaths,
+                    });
+                }
+                ocrInputImages = preprocessed;
+            }
+            const ocr = await (0, ocrEngine_1.runOcr)(ocrInputImages, preferredOcr, input.aiConfig?.ocr, input.aiConfig?.apiKeys?.gemini, input.aiConfig?.geminiOAuth?.connected);
             warnings.push(...ocr.warnings);
             ocrText = (0, normalizeText_1.normalizeText)(ocr.pages.map((page) => page.text).join('\n\n'));
-            const imageVariantsByPage = new Map(preprocessed.map((page) => [page.pageNumber, page.imageVariants || []]));
+            const imageVariantsByPage = new Map(ocrInputImages.map((page) => [page.pageNumber, page.imageVariants || []]));
             rawPages = ocr.pages.map((page) => ({
                 page_number: page.pageNumber,
                 text: page.text,

@@ -195,10 +195,15 @@ export async function getCustomersForPage(limit = 500): Promise<Array<{ id: numb
  */
 export function startCustomerMirrorInterval() {
   if (intervalHandle) return;
-  // Trigger initial prime
-  void refreshCustomerMirror().catch((err) => {
-    console.warn('[customerMirror] Initial sync failed:', err);
-  });
+  // Trigger initial prime only if table is empty; otherwise wait for interval
+  void (async () => {
+    const count = await getCustomerPartnerMirrorCount().catch(() => 0);
+    if (count === 0) {
+      await refreshCustomerMirror().catch((err) => {
+        console.warn('[customerMirror] Initial sync failed:', err);
+      });
+    }
+  })();
   intervalHandle = setInterval(() => {
     if (isOperatingTime()) {
       void refreshCustomerMirror().catch(() => undefined);

@@ -42,10 +42,11 @@ const path_1 = __importDefault(require("path"));
 const zlib_1 = __importDefault(require("zlib"));
 const paths_1 = require("../utils/paths");
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.tif', '.tiff']);
-const DEFAULT_PDF_RENDER_SCALE = 1.5;
+const DEFAULT_PDF_RENDER_SCALE = 1.25;
 const DEFAULT_PDF_RENDER_MAX_PAGES = 2;
 const DEFAULT_PDF_LOAD_TIMEOUT_MS = 15_000;
 const DEFAULT_PDF_PAGE_RENDER_TIMEOUT_MS = 20_000;
+const MAX_PDF_CANVAS_DIMENSION = 1800;
 async function ensureTempDir() {
     const tempDir = (0, paths_1.resolveProjectFile)(process.env.TEMP_DIR || 'tmp', 'tmp');
     await promises_1.default.mkdir(tempDir, { recursive: true });
@@ -192,9 +193,12 @@ async function renderPdfToImages(filePath) {
         }
         for (let pageNumber = 1; pageNumber <= maxPages; pageNumber += 1) {
             const page = await pdf.getPage(pageNumber);
-            const renderScale = positiveNumberFromEnv('OCR_RENDER_SCALE', DEFAULT_PDF_RENDER_SCALE, 1, 2);
-            const viewport = page.getViewport({ scale: renderScale });
-            const canvas = canvasModule.createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
+            const baseViewport = page.getViewport({ scale: 1 });
+            const maxDim = Math.max(baseViewport.width || 1, baseViewport.height || 1);
+            const requestedScale = positiveNumberFromEnv('OCR_RENDER_SCALE', DEFAULT_PDF_RENDER_SCALE, 1, 2);
+            const renderScale = Math.min(requestedScale, MAX_PDF_CANVAS_DIMENSION / maxDim);
+            const viewport = page.getViewport({ scale: Math.max(0.25, renderScale) });
+            const canvas = canvasModule.createCanvas(Math.max(1, Math.min(MAX_PDF_CANVAS_DIMENSION, Math.ceil(viewport.width))), Math.max(1, Math.min(MAX_PDF_CANVAS_DIMENSION, Math.ceil(viewport.height))));
             const context = canvas.getContext('2d');
             const renderTask = page.render({ canvasContext: context, viewport, canvas });
             try {
@@ -212,8 +216,8 @@ async function renderPdfToImages(filePath) {
                 }
                 break;
             }
-            const imagePath = path_1.default.join(tempDir, `${baseName}-page-${pageNumber}.png`);
-            await promises_1.default.writeFile(imagePath, await canvas.encode('png'));
+            const imagePath = path_1.default.join(tempDir, `${baseName}-page-${pageNumber}.jpg`);
+            await promises_1.default.writeFile(imagePath, await canvas.encode('jpeg', 85));
             images.push({ pageNumber, imagePath });
             if (process.env.OCR_INCLUDE_CROPS === 'true') {
                 const crops = [

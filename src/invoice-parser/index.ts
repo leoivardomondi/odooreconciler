@@ -319,22 +319,35 @@ export async function parseSupplierInvoice(input: ParseSupplierInvoiceInput): Pr
       warnings.push(...rendered.warnings);
       rendered.images.forEach((image) => tempFilesToClean.add(image.imagePath));
 
-      const preprocessed = await Promise.all(
-        rendered.images.map(async (image) => {
+      let renderedImages = rendered.images;
+      let ocrInputImages: Array<{ pageNumber: number; imagePath: string; imageVariants?: string[] }>;
+
+      if (input.aiConfig?.ocr?.enabled && input.aiConfig.ocr.provider === 'gemini_vision') {
+        // Gemini Vision reads natural color/grayscale JPEG/PNG scans far more accurately
+        // and without allocating a @napi-rs/canvas pixel buffer.
+        ocrInputImages = renderedImages.map((image) => ({
+          pageNumber: image.pageNumber,
+          imagePath: image.imagePath,
+          imageVariants: [],
+        }));
+      } else {
+        const preprocessed: Array<{ pageNumber: number; imagePath: string; imageVariants?: string[] }> = [];
+        for (const image of renderedImages) {
           const processed = await preprocessImage(image.imagePath);
           warnings.push(...processed.warnings);
           tempFilesToClean.add(processed.imagePath);
           for (const variantPath of processed.variantPaths || []) tempFilesToClean.add(variantPath);
-          return {
+          preprocessed.push({
             pageNumber: image.pageNumber,
             imagePath: processed.imagePath,
             imageVariants: processed.variantPaths,
-          };
-        }),
-      );
+          });
+        }
+        ocrInputImages = preprocessed;
+      }
 
       const ocr = await runOcr(
-        preprocessed,
+        ocrInputImages,
         preferredOcr,
         input.aiConfig?.ocr,
         input.aiConfig?.apiKeys?.gemini,
@@ -343,7 +356,7 @@ export async function parseSupplierInvoice(input: ParseSupplierInvoiceInput): Pr
       warnings.push(...ocr.warnings);
       ocrText = normalizeText(ocr.pages.map((page) => page.text).join('\n\n'));
       const imageVariantsByPage = new Map(
-        preprocessed.map((page) => [page.pageNumber, page.imageVariants || []]),
+        ocrInputImages.map((page) => [page.pageNumber, page.imageVariants || []]),
       );
       rawPages = ocr.pages.map((page) => ({
         page_number: page.pageNumber,
