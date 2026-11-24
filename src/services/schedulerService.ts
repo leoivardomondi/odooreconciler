@@ -36,6 +36,8 @@ import {
   CAMPAIGN_BATCH_SIZE,
   CAMPAIGN_START_DATE,
   computeMayCampaignMetrics,
+  isAlreadyInvoicedSummary,
+  isNonInvoiceSummary,
   notifyDbAdminCampaignReport,
 } from './campaignReportService';
 
@@ -300,19 +302,15 @@ function getPoBillRetryClass(pdf: AttachmentInfo, policy: PoBillSchedulerConfig)
   if (!status) {
     return 'fresh';
   }
-  if (/\b(job summary|maxcut|max cut|not a vendor bill|not a supplier invoice|already invoiced|invoiced in odoo|excluded vendor|maifan|taji|quick\s*mart|easy\s*coach)\b/i.test(summary)) {
+  if (isNonInvoiceSummary(summary) || isAlreadyInvoicedSummary(summary)) {
     return 'stable_skip';
   }
   if (/\b(timeout|network|rate limit|api key|ai extraction|ocr|upload failed|could not download|failed to parse|unknown po bill scheduler error)\b/i.test(summary)) {
     return 'transient';
   }
 
-  // For changeable skips (e.g. "No safe PO bill match"), check if exhausted
-  const attemptCount = getPoBillAttemptCount(pdf);
-  if (attemptCount >= Math.max(1, Number(policy.maxRetryAttempts || MAX_PO_BILL_RETRY_ATTEMPTS))) {
-    return 'exhausted';
-  }
-
+  // In continuous campaign mode, always re-attempt report-eligible Unmatched Invoices
+  // across passes rather than permanently shelving them at 5 attempts.
   return 'changeable';
 }
 
@@ -821,7 +819,7 @@ export async function runPoBillSchedulerCycle(
     }
     const recentPdfs = await getRecentDocumentPdfs(
       client,
-      Math.max(documentLookahead, batchSize * 20),
+      500,
     );
 
     const nowMs = Date.now();
@@ -872,7 +870,7 @@ export async function runPoBillSchedulerCycle(
 
       if (
         poBillContinuousPassAttemptedIds.has(Number(pdf.id)) ||
-        recentlyAttemptedAttachmentIds.has(Number(pdf.id))
+        (!options.continuousChain && recentlyAttemptedAttachmentIds.has(Number(pdf.id)))
       ) {
         if (recentlyFailedAttachmentIds.has(Number(pdf.id))) {
           consecutiveRetryBlockedCount += 1;

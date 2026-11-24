@@ -1676,7 +1676,37 @@ export async function getRecentDocumentPdfs(
     now - globalDocumentPdfsCache.fetchedAt < DOCUMENT_PDFS_CACHE_TTL_MS &&
     globalDocumentPdfsCache.items.length >= limit
   ) {
-    return globalDocumentPdfsCache.items.slice(offset, offset + limit);
+    const cachedSlice = globalDocumentPdfsCache.items.slice(offset, offset + limit);
+    const attachmentIds = cachedSlice.map((item) => item.id).filter((id): id is number => Number.isInteger(id) && id > 0);
+    const processedByAttachment = await getPoBillProcessedDocumentsByAttachmentIds(attachmentIds).catch(
+      () => ({} as Record<number, PoBillProcessedDocumentEntry>),
+    );
+    return cachedSlice.map((item) => {
+      const processed = processedByAttachment[item.id];
+      if (!processed) {
+        return item;
+      }
+      const effectiveProcessedStatus =
+        item.poBillStatus === 'delivery_note'
+          ? 'delivery_note'
+          : item.poBillValidated
+            ? ['processed', 'processed_with_warnings'].includes(processed.status)
+              ? processed.status
+              : 'processed_with_warnings'
+            : processed.status;
+      return {
+        ...item,
+        poBillStatus: effectiveProcessedStatus,
+        poBillProcessedAt: processed.processedAt || item.poBillProcessedAt || null,
+        poBillPurchaseOrderId: processed.purchaseOrderId || item.poBillPurchaseOrderId || null,
+        poBillPurchaseOrderName: processed.purchaseOrderName || item.poBillPurchaseOrderName || null,
+        poBillVendorBillId: processed.vendorBillId || item.poBillVendorBillId || null,
+        poBillVendorBillName: processed.vendorBillName || item.poBillVendorBillName || null,
+        poBillVendorName: processed.invoiceVendor || item.poBillVendorName || null,
+        poBillAttemptCount: processed.attemptCount ?? item.poBillAttemptCount ?? null,
+        poBillSummary: processed.summary || item.poBillSummary || null,
+      };
+    });
   }
 
   const page = await getRecentDocumentPdfsPage(client, { page: Math.floor(offset / limit) + 1, pageSize: limit });
