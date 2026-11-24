@@ -890,8 +890,8 @@ router.get('/jobs/run-po-bill-scheduler', async (req, res) => {
       };
     }
 
-    const syncMode = req.query.sync === '1' || req.query.sync === 'true';
-    if (syncMode) {
+    const asyncMode = req.query.async === '1' || req.query.async === 'true';
+    if (!asyncMode) {
       const result = await runPoBillSchedulerCycle('cron');
       return res.json({
         ok: true,

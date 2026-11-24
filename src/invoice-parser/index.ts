@@ -230,21 +230,8 @@ export async function parseSupplierInvoice(input: ParseSupplierInvoiceInput): Pr
       const fullPageImages = rendered.images.filter((image) =>
         /-page-\d+\.(?:png|jpe?g|webp)$/i.test(image.imagePath) || rendered.images.length === 1,
       );
-      const orientedVisionImages = await Promise.all(
-        fullPageImages.map(async (image) => {
-          const oriented = await fastAutoOrientImage(image.imagePath);
-          warnings.push(...oriented.warnings);
-          if (oriented.imagePath !== image.imagePath) {
-            tempFilesToClean.add(oriented.imagePath);
-          }
-          return {
-            pageNumber: image.pageNumber,
-            imagePath: oriented.imagePath,
-          };
-        }),
-      );
-      const visionImages = orientedVisionImages.map((image) => image.imagePath);
-      rawPages = orientedVisionImages.map((image) => ({
+      const visionImages = fullPageImages.map((image) => image.imagePath);
+      rawPages = fullPageImages.map((image) => ({
         page_number: image.pageNumber,
         text: '',
         ocr_used: false,

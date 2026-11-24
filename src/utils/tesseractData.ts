@@ -17,7 +17,15 @@ export function isTesseractEnabled() {
     return false;
   }
   if (['1', 'true', 'yes', 'on'].includes(raw)) {
-    return true;
+    return fs.existsSync(trainedDataPath);
+  }
+  return false;
+}
+
+export function isTesseractFallbackAvailable() {
+  const raw = String(process.env.TESSERACT_ENABLED || '').trim().toLowerCase();
+  if (['0', 'false', 'no', 'off'].includes(raw)) {
+    return false;
   }
   return fs.existsSync(trainedDataPath);
 }

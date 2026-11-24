@@ -1402,18 +1402,57 @@ export async function acquireSchedulerRunLock(runId: string): Promise<boolean> {
 
 export async function markOrphanedStartedRunsAsFailed() {
   const staleCutoff = appDateTimeFromNow(-getSchedulerLockStaleMs());
-  await execute(
+  const orphanedRuns = await queryAll<{
+    id: string;
+    context_json: string | null;
+  }>(
     `
-      UPDATE scheduler_runs
-      SET
-        status = 'failed',
-        summary = 'Scheduler run timed out or was interrupted (lock expired after 10 minutes).',
-        error_message = 'Scheduler lock expired while run was in started state.',
-        finished_at = CURRENT_TIMESTAMP
+      SELECT id, context_json
+      FROM scheduler_runs
       WHERE status = 'started' AND started_at <= ?
     `,
     [staleCutoff],
   );
+
+  for (const orphan of orphanedRuns) {
+    let context: Record<string, unknown> = {};
+    try {
+      context = orphan.context_json ? JSON.parse(orphan.context_json) : {};
+    } catch {
+      context = {};
+    }
+
+    const currentAttachmentId = Number(context.currentAttachmentId || 0);
+    const currentAttachmentName = String(context.currentAttachmentName || '').trim();
+    const docDetail =
+      currentAttachmentId > 0
+        ? ` while processing Finance document ${currentAttachmentName || `#${currentAttachmentId}`} (#${currentAttachmentId})`
+        : '';
+    const summary = `Scheduler run timed out or was interrupted${docDetail} (lock expired after 10 minutes).`;
+
+    if (currentAttachmentId > 0) {
+      await upsertPoBillProcessedDocument({
+        attachmentId: currentAttachmentId,
+        attachmentName: currentAttachmentName || `Attachment #${currentAttachmentId}`,
+        status: 'failed',
+        mode: 'auto',
+        summary,
+      }).catch(() => undefined);
+    }
+
+    await execute(
+      `
+        UPDATE scheduler_runs
+        SET
+          status = 'failed',
+          summary = ?,
+          error_message = 'Scheduler lock expired while run was in started state.',
+          finished_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND status = 'started'
+      `,
+      [summary, orphan.id],
+    );
+  }
 }
 
 export async function clearStaleSchedulerRunLock(): Promise<SchedulerRuntimeState | null> {
@@ -1430,9 +1469,10 @@ export async function clearStaleSchedulerRunLock(): Promise<SchedulerRuntimeStat
     id: string;
     status: SchedulerRunEntry['status'];
     finished_at: string | null;
+    context_json: string | null;
   }>(
     `
-      SELECT id, status, finished_at
+      SELECT id, status, finished_at, context_json
       FROM scheduler_runs
       WHERE id = ?
     `,
@@ -1447,17 +1487,41 @@ export async function clearStaleSchedulerRunLock(): Promise<SchedulerRuntimeStat
   }
 
   if (activeRun && activeRun.status === 'started') {
+    let context: Record<string, unknown> = {};
+    try {
+      context = activeRun.context_json ? JSON.parse(activeRun.context_json) : {};
+    } catch {
+      context = {};
+    }
+    const currentAttachmentId = Number(context.currentAttachmentId || 0);
+    const currentAttachmentName = String(context.currentAttachmentName || '').trim();
+    const docDetail =
+      currentAttachmentId > 0
+        ? ` while processing Finance document ${currentAttachmentName || `#${currentAttachmentId}`} (#${currentAttachmentId})`
+        : '';
+    const summary = `Scheduler run timed out or was interrupted${docDetail} (lock expired after 10 minutes).`;
+
+    if (currentAttachmentId > 0) {
+      await upsertPoBillProcessedDocument({
+        attachmentId: currentAttachmentId,
+        attachmentName: currentAttachmentName || `Attachment #${currentAttachmentId}`,
+        status: 'failed',
+        mode: 'auto',
+        summary,
+      }).catch(() => undefined);
+    }
+
     await execute(
       `
         UPDATE scheduler_runs
         SET
           status = 'failed',
-          summary = 'Scheduler run timed out or was interrupted (lock expired after 10 minutes).',
+          summary = ?,
           error_message = 'Scheduler lock expired while run was in started state.',
           finished_at = CURRENT_TIMESTAMP
         WHERE id = ? AND status = 'started'
       `,
-      [activeRun.id],
+      [summary, activeRun.id],
     );
   }
 

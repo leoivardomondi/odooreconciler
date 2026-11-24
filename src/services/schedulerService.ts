@@ -883,17 +883,35 @@ export async function runPoBillSchedulerCycle(
 
       scannedCount += 1;
       await touchActiveSchedulerRunLock(run.id);
+      await updateSchedulerRun(run.id, {
+        scannedCount,
+        processedCount,
+        skippedCount,
+        failedCount,
+        summary: `Processing Finance document ${pdf.name} (#${pdf.id}) (${scannedCount} of ${queue.length})...`,
+        context: {
+          ...run.context,
+          currentAttachmentId: pdf.id,
+          currentAttachmentName: pdf.name,
+          documentOutcomes: [...documentOutcomes],
+        },
+      }).catch(() => undefined);
 
       try {
-        const result = await runPoBillAutomation(client, {
-          attachmentId: pdf.id,
-          mode: 'auto',
-          aiConfig: settings.ai,
-          matchFromDate: fromDate,
-          matchToDate: toDate,
-          onlyUnbilledPurchaseOrders: true,
-          sourceAttachment: pdf,
-        });
+        const result = await withTimeout(
+          () =>
+            runPoBillAutomation(client, {
+              attachmentId: pdf.id,
+              mode: 'auto',
+              aiConfig: settings.ai,
+              matchFromDate: fromDate,
+              matchToDate: toDate,
+              onlyUnbilledPurchaseOrders: true,
+              sourceAttachment: pdf,
+            }),
+          180_000,
+          `Processing Finance document ${pdf.name} (#${pdf.id})`,
+        );
 
         const processed = result.actionsTaken.some((action) =>
           /marked .* as processed/i.test(action) || /(?:marked|recorded).*delivery note/i.test(action),
