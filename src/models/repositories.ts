@@ -1299,6 +1299,28 @@ export async function getRecentSchedulerRuns(limit = 10): Promise<SchedulerRunEn
   return rows.map(mapSchedulerRun);
 }
 
+export async function getRecentDashboardSchedulerRuns(limit = 10): Promise<SchedulerRunEntry[]> {
+  const fetchLimit = Math.max(limit * 4, 40);
+  const allRecent = await getRecentSchedulerRuns(fetchLimit);
+  const activeOrSubstantive: SchedulerRunEntry[] = [];
+  const skippedFallback: SchedulerRunEntry[] = [];
+
+  for (const run of allRecent) {
+    const isThrottleOrWindowSkip =
+      run.status === 'skipped' &&
+      run.scannedCount === 0 &&
+      /skipped to avoid bulk odoo calls|skipped outside allowed time window|is disabled/i.test(String(run.summary || ''));
+
+    if (!isThrottleOrWindowSkip) {
+      activeOrSubstantive.push(run);
+    } else {
+      skippedFallback.push(run);
+    }
+  }
+
+  return [...activeOrSubstantive, ...skippedFallback].slice(0, limit);
+}
+
 function formatDbDateString(val: unknown): string | null {
   if (!val) return null;
   if (val instanceof Date) {

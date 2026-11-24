@@ -294,11 +294,21 @@ function validateAttachmentUploadedPayload(body: unknown): {
 }
 
 router.post('/jobs/run-scheduler', async (_req, res) => {
-  // Keep the browser request short. The Sales Order scheduler performs Odoo RPC calls,
-  // PDF attachment downloads, and AI/OCR parsing, which can exceed production web proxy / Passenger timeouts (30s).
-  void runSchedulerCycle('manual').catch(async (error) => {
-    await logEvent('error', 'Manual Sales Order scheduler background run failed', {
-      error: error instanceof Error ? error.message : 'Unknown failure in manual Sales Order scheduler.',
+  // Wait briefly until the scheduler_runs entry is inserted so it immediately
+  // appears at the top of "Scheduler Run Summary" when /dashboard renders.
+  await new Promise<void>((resolve) => {
+    const safetyTimer = setTimeout(resolve, 2500);
+    void runSchedulerCycle('manual', {
+      onRunCreated: () => {
+        clearTimeout(safetyTimer);
+        resolve();
+      },
+    }).catch(async (error) => {
+      clearTimeout(safetyTimer);
+      resolve();
+      await logEvent('error', 'Manual Sales Order scheduler background run failed', {
+        error: error instanceof Error ? error.message : 'Unknown failure in manual Sales Order scheduler.',
+      });
     });
   });
 
@@ -306,12 +316,21 @@ router.post('/jobs/run-scheduler', async (_req, res) => {
 });
 
 router.post('/jobs/run-po-bill-scheduler', async (_req, res) => {
-  // Keep the browser request short. The PO cycle can perform OCR and several
-  // Odoo calls, so waiting for it here leaves the frontend behind a loading
-  // overlay (and can exceed the production proxy/Passenger timeout).
-  void runPoBillSchedulerCycle('manual').catch(async (error) => {
-    await logEvent('error', 'Manual PO bill scheduler background run failed', {
-      error: error instanceof Error ? error.message : 'Unknown failure in manual PO bill scheduler.',
+  // Wait briefly until the scheduler_runs entry is inserted so it immediately
+  // appears at the top of "Scheduler Run Summary" when /dashboard renders.
+  await new Promise<void>((resolve) => {
+    const safetyTimer = setTimeout(resolve, 2500);
+    void runPoBillSchedulerCycle('manual', {
+      onRunCreated: () => {
+        clearTimeout(safetyTimer);
+        resolve();
+      },
+    }).catch(async (error) => {
+      clearTimeout(safetyTimer);
+      resolve();
+      await logEvent('error', 'Manual PO bill scheduler background run failed', {
+        error: error instanceof Error ? error.message : 'Unknown failure in manual PO bill scheduler.',
+      });
     });
   });
 

@@ -388,7 +388,7 @@ async function getConfiguredSchedulerClient() {
 async function getSchedulerStatus() {
     const settings = await (0, repositories_1.getSettings)();
     const runtimeState = await getFreshSchedulerRuntimeState();
-    const recentRuns = await (0, repositories_1.getRecentSchedulerRuns)(5);
+    const recentRuns = await (0, repositories_1.getRecentDashboardSchedulerRuns)(10);
     const mode = settings.scheduler.useInProcessInterval && env_1.env.SCHEDULER_USE_INTERVAL === 'true'
         ? 'in_process_interval'
         : 'cron_only';
@@ -482,6 +482,14 @@ async function runPoBillSchedulerCycle(trigger = 'manual', options = {}) {
         clearTimeout(poBillContinuousChainHandle);
         poBillContinuousChainHandle = null;
     }
+    const notifyCreated = (run) => {
+        try {
+            options.onRunCreated?.(run);
+        }
+        catch {
+            // ignore callback error
+        }
+    };
     const { client, settings } = await getConfiguredSchedulerClient();
     const runtimeState = await getFreshSchedulerRuntimeState();
     const recentRunsForCooldown = await (0, repositories_1.getRecentSchedulerRuns)(20);
@@ -503,9 +511,10 @@ async function runPoBillSchedulerCycle(trigger = 'manual', options = {}) {
                 batchSize,
             },
         });
+        notifyCreated(run);
         return { run, scannedCount: 0, processedCount: 0, skippedCount: 0, failedCount: 0 };
     }
-    if (!settings.poBillScheduler.enabled) {
+    if (trigger !== 'manual' && !settings.poBillScheduler.enabled) {
         const run = await (0, repositories_1.insertSchedulerRun)({
             status: 'skipped',
             trigger,
@@ -518,6 +527,7 @@ async function runPoBillSchedulerCycle(trigger = 'manual', options = {}) {
                 batchSize,
             },
         });
+        notifyCreated(run);
         return { run, scannedCount: 0, processedCount: 0, skippedCount: 0, failedCount: 0 };
     }
     if (trigger !== 'manual' && !options.continuousChain && recentRun) {
@@ -540,6 +550,7 @@ async function runPoBillSchedulerCycle(trigger = 'manual', options = {}) {
                     cooldownRemainingMinutes: Math.max(0, cooldownMinutes - ageMinutes),
                 },
             });
+            notifyCreated(run);
             return {
                 run,
                 scannedCount: 0,
@@ -569,6 +580,7 @@ async function runPoBillSchedulerCycle(trigger = 'manual', options = {}) {
                 timezone: windowStatus.timeZone,
             },
         });
+        notifyCreated(run);
         return { run, scannedCount: 0, processedCount: 0, skippedCount: 0, failedCount: 0 };
     }
     if (schedulerRunning || runtimeState.lockRunId) {
@@ -586,6 +598,7 @@ async function runPoBillSchedulerCycle(trigger = 'manual', options = {}) {
                 ...(activeLock || { activeLockRunId: runtimeState.lockRunId }),
             },
         });
+        notifyCreated(run);
         return { run, scannedCount: 0, processedCount: 0, skippedCount: 0, failedCount: 0 };
     }
     schedulerRunning = true;
@@ -594,7 +607,7 @@ async function runPoBillSchedulerCycle(trigger = 'manual', options = {}) {
         run = await (0, repositories_1.insertSchedulerRun)({
             status: 'started',
             trigger,
-            summary: 'PO bill scheduler run started.',
+            summary: 'PO bill scheduler run started. Loading candidate Finance documents...',
             context: {
                 jobType: PO_BILL_SCHEDULER_JOB_TYPE,
                 schedulerName: 'PO Bill Scheduler',
@@ -606,6 +619,7 @@ async function runPoBillSchedulerCycle(trigger = 'manual', options = {}) {
                 timezone: env_1.env.APP_TIMEZONE,
             },
         });
+        notifyCreated(run);
     }
     catch (error) {
         schedulerRunning = false;
@@ -1000,7 +1014,15 @@ async function runPoBillSchedulerCycle(trigger = 'manual', options = {}) {
         await (0, tempCleanup_1.cleanupStaleTempFiles)().catch(() => undefined);
     }
 }
-async function runSchedulerCycle(trigger = 'manual') {
+async function runSchedulerCycle(trigger = 'manual', options = {}) {
+    const notifyCreated = (run) => {
+        try {
+            options.onRunCreated?.(run);
+        }
+        catch {
+            // ignore callback error
+        }
+    };
     const { client, settings } = await getConfiguredSchedulerClient();
     const runtimeState = await getFreshSchedulerRuntimeState();
     const recentRunsForCooldown = await (0, repositories_1.getRecentSchedulerRuns)(20);
@@ -1023,6 +1045,7 @@ async function runSchedulerCycle(trigger = 'manual') {
                 schedulerName: 'Sales Order Scheduler',
             },
         });
+        notifyCreated(run);
         return {
             run,
             scannedCount: 0,
@@ -1031,7 +1054,7 @@ async function runSchedulerCycle(trigger = 'manual') {
             failedCount: 0,
         };
     }
-    if (!settings.scheduler.enabled) {
+    if (trigger !== 'manual' && !settings.scheduler.enabled) {
         const run = await (0, repositories_1.insertSchedulerRun)({
             status: 'skipped',
             trigger,
@@ -1043,6 +1066,7 @@ async function runSchedulerCycle(trigger = 'manual') {
                 schedulerName: 'Sales Order Scheduler',
             },
         });
+        notifyCreated(run);
         return {
             run,
             scannedCount: 0,
@@ -1070,6 +1094,7 @@ async function runSchedulerCycle(trigger = 'manual') {
                     cooldownRemainingMinutes: Math.max(0, cooldownMinutes - ageMinutes),
                 },
             });
+            notifyCreated(run);
             return {
                 run,
                 scannedCount: 0,
@@ -1098,6 +1123,7 @@ async function runSchedulerCycle(trigger = 'manual') {
                 timezone: windowStatus.timeZone,
             },
         });
+        notifyCreated(run);
         return {
             run,
             scannedCount: 0,
@@ -1121,6 +1147,7 @@ async function runSchedulerCycle(trigger = 'manual') {
                 ...(activeLock || { activeLockRunId: runtimeState.lockRunId }),
             },
         });
+        notifyCreated(run);
         return {
             run,
             scannedCount: 0,
@@ -1153,6 +1180,7 @@ async function runSchedulerCycle(trigger = 'manual') {
                 timezone: env_1.env.APP_TIMEZONE,
             },
         });
+        notifyCreated(run);
     }
     catch (error) {
         schedulerRunning = false;

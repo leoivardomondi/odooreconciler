@@ -1,6 +1,7 @@
 import {
   acquireSchedulerRunLock,
   clearStaleSchedulerRunLock,
+  getRecentDashboardSchedulerRuns,
   getSchedulerRuntimeState,
   getSchedulerRunById,
   getRecentSchedulerRuns,
@@ -501,7 +502,7 @@ async function getConfiguredSchedulerClient() {
 export async function getSchedulerStatus() {
   const settings = await getSettings();
   const runtimeState = await getFreshSchedulerRuntimeState();
-  const recentRuns = await getRecentSchedulerRuns(5);
+  const recentRuns = await getRecentDashboardSchedulerRuns(10);
   const mode =
     settings.scheduler.useInProcessInterval && env.SCHEDULER_USE_INTERVAL === 'true'
       ? 'in_process_interval'
@@ -618,12 +619,19 @@ function getJobSummaryReminderWindowStatus() {
 
 export async function runPoBillSchedulerCycle(
   trigger: 'interval' | 'manual' | 'cron' = 'manual',
-  options: { continuousChain?: boolean } = {},
+  options: { continuousChain?: boolean; onRunCreated?: (run: SchedulerRunEntry) => void } = {},
 ): Promise<SchedulerRunResult> {
   if (poBillContinuousChainHandle) {
     clearTimeout(poBillContinuousChainHandle);
     poBillContinuousChainHandle = null;
   }
+  const notifyCreated = (run: SchedulerRunEntry) => {
+    try {
+      options.onRunCreated?.(run);
+    } catch {
+      // ignore callback error
+    }
+  };
   const { client, settings } = await getConfiguredSchedulerClient();
   const runtimeState = await getFreshSchedulerRuntimeState();
   const recentRunsForCooldown = await getRecentSchedulerRuns(20);
@@ -646,11 +654,12 @@ export async function runPoBillSchedulerCycle(
         batchSize,
       },
     });
+    notifyCreated(run);
 
     return { run, scannedCount: 0, processedCount: 0, skippedCount: 0, failedCount: 0 };
   }
 
-  if (!settings.poBillScheduler.enabled) {
+  if (trigger !== 'manual' && !settings.poBillScheduler.enabled) {
     const run = await insertSchedulerRun({
       status: 'skipped',
       trigger,
@@ -663,6 +672,7 @@ export async function runPoBillSchedulerCycle(
         batchSize,
       },
     });
+    notifyCreated(run);
 
     return { run, scannedCount: 0, processedCount: 0, skippedCount: 0, failedCount: 0 };
   }
@@ -687,6 +697,7 @@ export async function runPoBillSchedulerCycle(
           cooldownRemainingMinutes: Math.max(0, cooldownMinutes - ageMinutes),
         },
       });
+      notifyCreated(run);
 
       return {
         run,
@@ -718,6 +729,7 @@ export async function runPoBillSchedulerCycle(
         timezone: windowStatus.timeZone,
       },
     });
+    notifyCreated(run);
 
     return { run, scannedCount: 0, processedCount: 0, skippedCount: 0, failedCount: 0 };
   }
@@ -737,6 +749,7 @@ export async function runPoBillSchedulerCycle(
         ...(activeLock || { activeLockRunId: runtimeState.lockRunId }),
       },
     });
+    notifyCreated(run);
 
     return { run, scannedCount: 0, processedCount: 0, skippedCount: 0, failedCount: 0 };
   }
@@ -748,7 +761,7 @@ export async function runPoBillSchedulerCycle(
     run = await insertSchedulerRun({
       status: 'started',
       trigger,
-      summary: 'PO bill scheduler run started.',
+      summary: 'PO bill scheduler run started. Loading candidate Finance documents...',
       context: {
         jobType: PO_BILL_SCHEDULER_JOB_TYPE,
         schedulerName: 'PO Bill Scheduler',
@@ -760,6 +773,7 @@ export async function runPoBillSchedulerCycle(
         timezone: env.APP_TIMEZONE,
       },
     });
+    notifyCreated(run);
   } catch (error) {
     schedulerRunning = false;
     throw error;
@@ -1207,7 +1221,15 @@ export async function runPoBillSchedulerCycle(
 
 export async function runSchedulerCycle(
   trigger: 'interval' | 'manual' | 'cron' = 'manual',
+  options: { onRunCreated?: (run: SchedulerRunEntry) => void } = {},
 ): Promise<SchedulerRunResult> {
+  const notifyCreated = (run: SchedulerRunEntry) => {
+    try {
+      options.onRunCreated?.(run);
+    } catch {
+      // ignore callback error
+    }
+  };
   const { client, settings } = await getConfiguredSchedulerClient();
   const runtimeState = await getFreshSchedulerRuntimeState();
   const recentRunsForCooldown = await getRecentSchedulerRuns(20);
@@ -1238,6 +1260,7 @@ export async function runSchedulerCycle(
         schedulerName: 'Sales Order Scheduler',
       },
     });
+    notifyCreated(run);
 
     return {
       run,
@@ -1248,7 +1271,7 @@ export async function runSchedulerCycle(
     };
   }
 
-  if (!settings.scheduler.enabled) {
+  if (trigger !== 'manual' && !settings.scheduler.enabled) {
     const run = await insertSchedulerRun({
       status: 'skipped',
       trigger,
@@ -1260,6 +1283,7 @@ export async function runSchedulerCycle(
         schedulerName: 'Sales Order Scheduler',
       },
     });
+    notifyCreated(run);
 
     return {
       run,
@@ -1289,6 +1313,7 @@ export async function runSchedulerCycle(
           cooldownRemainingMinutes: Math.max(0, cooldownMinutes - ageMinutes),
         },
       });
+      notifyCreated(run);
 
       return {
         run,
@@ -1319,6 +1344,7 @@ export async function runSchedulerCycle(
         timezone: windowStatus.timeZone,
       },
     });
+    notifyCreated(run);
 
     return {
       run,
@@ -1335,15 +1361,16 @@ export async function runSchedulerCycle(
     const run = await insertSchedulerRun({
       status: 'skipped',
       trigger,
-        summary: `Sales Order scheduler skipped because ${activeSchedulerName} is already in progress.`,
-        context: {
-          jobType: SALES_ORDER_SCHEDULER_JOB_TYPE,
-          schedulerName: 'Sales Order Scheduler',
-          confirmedFromDate: settings.scheduler.confirmedFromDate,
-          effectiveConfirmedFromDate,
-          ...(activeLock || { activeLockRunId: runtimeState.lockRunId }),
-        },
-      });
+      summary: `Sales Order scheduler skipped because ${activeSchedulerName} is already in progress.`,
+      context: {
+        jobType: SALES_ORDER_SCHEDULER_JOB_TYPE,
+        schedulerName: 'Sales Order Scheduler',
+        confirmedFromDate: settings.scheduler.confirmedFromDate,
+        effectiveConfirmedFromDate,
+        ...(activeLock || { activeLockRunId: runtimeState.lockRunId }),
+      },
+    });
+    notifyCreated(run);
 
     return {
       run,
@@ -1379,6 +1406,7 @@ export async function runSchedulerCycle(
         timezone: env.APP_TIMEZONE,
       },
     });
+    notifyCreated(run);
   } catch (error) {
     schedulerRunning = false;
     throw error;
@@ -1607,7 +1635,7 @@ export async function runSchedulerCycle(
         // Fallback: Audit linked confirmed Purchase Orders against the Job Summary
         try {
           await auditLinkedPurchaseOrdersForSaleOrder(client, order.id);
-        } catch (_) {}
+        } catch (_) { }
 
         if (stockResult.alreadyProcessed || stockResult.lockSkipped) {
           return {

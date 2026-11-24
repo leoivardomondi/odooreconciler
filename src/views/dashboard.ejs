@@ -122,9 +122,11 @@
             </div>
             <div class="d-flex flex-wrap gap-2 justify-content-end">
               <form method="post" action="/jobs/run-scheduler" data-disable-submit="true" data-loading-message="Running sales scheduler...">
+                <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
                 <button type="submit" class="btn btn-primary">Run Sales Scheduler</button>
               </form>
               <form method="post" action="/jobs/run-po-bill-scheduler" data-disable-submit="true" data-loading-message="Running PO bill scheduler...">
+                <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
                 <button type="submit" class="btn btn-outline-primary">Run PO Scheduler</button>
               </form>
             </div>
@@ -812,7 +814,7 @@
   <% } %>
 </main>
 
-<% if (scheduler && scheduler.recentRuns && scheduler.recentRuns[0] && scheduler.recentRuns[0].status === 'started') { %>
+<% if (scheduler && (scheduler.isRunning || (scheduler.recentRuns && scheduler.recentRuns.some((r) => r.status === 'started')))) { %>
   <script>
     window.setTimeout(() => {
       if (!document.hidden) {

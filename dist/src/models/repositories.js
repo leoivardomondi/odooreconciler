@@ -15,6 +15,7 @@ exports.insertSchedulerRun = insertSchedulerRun;
 exports.updateSchedulerRun = updateSchedulerRun;
 exports.getSchedulerRunById = getSchedulerRunById;
 exports.getRecentSchedulerRuns = getRecentSchedulerRuns;
+exports.getRecentDashboardSchedulerRuns = getRecentDashboardSchedulerRuns;
 exports.getSchedulerRuntimeState = getSchedulerRuntimeState;
 exports.acquireSchedulerRunLock = acquireSchedulerRunLock;
 exports.markOrphanedStartedRunsAsFailed = markOrphanedStartedRunsAsFailed;
@@ -1175,6 +1176,24 @@ async function getRecentSchedulerRuns(limit = 10) {
       LIMIT ?
     `, [limit]);
     return rows.map(mapSchedulerRun);
+}
+async function getRecentDashboardSchedulerRuns(limit = 10) {
+    const fetchLimit = Math.max(limit * 4, 40);
+    const allRecent = await getRecentSchedulerRuns(fetchLimit);
+    const activeOrSubstantive = [];
+    const skippedFallback = [];
+    for (const run of allRecent) {
+        const isThrottleOrWindowSkip = run.status === 'skipped' &&
+            run.scannedCount === 0 &&
+            /skipped to avoid bulk odoo calls|skipped outside allowed time window|is disabled/i.test(String(run.summary || ''));
+        if (!isThrottleOrWindowSkip) {
+            activeOrSubstantive.push(run);
+        }
+        else {
+            skippedFallback.push(run);
+        }
+    }
+    return [...activeOrSubstantive, ...skippedFallback].slice(0, limit);
 }
 function formatDbDateString(val) {
     if (!val)
