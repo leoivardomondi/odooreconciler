@@ -72,8 +72,8 @@ function getRecentRunAgeMinutes(run) {
     if (!run) {
         return Number.POSITIVE_INFINITY;
     }
-    const startedAt = Date.parse(run.startedAt);
-    if (!Number.isFinite(startedAt)) {
+    const startedAt = parseSchedulerDate(run.startedAt);
+    if (!Number.isFinite(startedAt) || startedAt <= 0) {
         return Number.POSITIVE_INFINITY;
     }
     return Math.max(0, Math.floor((Date.now() - startedAt) / 60000));
@@ -401,7 +401,14 @@ function parseSchedulerDate(value) {
     if (!value) {
         return 0;
     }
-    const parsed = Date.parse(value);
+    const trimmed = String(value).trim();
+    if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(trimmed)) {
+        const parsedEat = Date.parse(`${trimmed.replace(' ', 'T')}+03:00`);
+        if (Number.isFinite(parsedEat)) {
+            return parsedEat;
+        }
+    }
+    const parsed = Date.parse(trimmed);
     return Number.isFinite(parsed) ? parsed : 0;
 }
 function computeEffectiveConfirmedFromDate(configuredFromDate, checkpointAt, lookbackHours = SCHEDULER_LOOKBACK_HOURS) {
@@ -874,7 +881,7 @@ async function runPoBillSchedulerCycle(trigger = 'manual') {
             finished: true,
         });
         try {
-            await (0, crossCompanySyncService_1.syncAllPendingStandaloneEtrPos)(client);
+            await withTimeout(() => (0, crossCompanySyncService_1.syncAllPendingStandaloneEtrPos)(client), 45_000, 'Standalone ETR cross-company PO sync');
         }
         catch (crossSyncErr) {
             await (0, logService_1.logEvent)('error', 'Non-fatal error running standalone ETR cross-company sync cycle', {
@@ -882,9 +889,9 @@ async function runPoBillSchedulerCycle(trigger = 'manual') {
             });
         }
         try {
-            const campaignMetrics = await (0, campaignReportService_1.computeMayCampaignMetrics)(client, settings.odoo.baseUrl);
+            const campaignMetrics = await withTimeout(() => (0, campaignReportService_1.computeMayCampaignMetrics)(client, settings.odoo.baseUrl), 30_000, 'Computing May campaign completion metrics');
             if (campaignMetrics.unprocessedRemaining === 0) {
-                await (0, campaignReportService_1.notifyDbAdminCampaignReport)(client);
+                await withTimeout(() => (0, campaignReportService_1.notifyDbAdminCampaignReport)(client), 30_000, 'Sending May campaign completion report');
             }
         }
         catch (reportErr) {

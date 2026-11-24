@@ -1083,8 +1083,8 @@ function mapSchedulerRun(row) {
         id: row.id,
         status: row.status,
         trigger: row.trigger_source,
-        startedAt: row.started_at,
-        finishedAt: row.finished_at,
+        startedAt: formatDbDateString(row.started_at) || String(row.started_at || ''),
+        finishedAt: formatDbDateString(row.finished_at),
         scannedCount: Number(row.scanned_count || 0),
         processedCount: Number(row.processed_count || 0),
         skippedCount: Number(row.skipped_count || 0),
@@ -1096,16 +1096,19 @@ function mapSchedulerRun(row) {
 }
 async function insertSchedulerRun(entry) {
     const id = (0, uuid_1.v4)();
+    const now = (0, dateTime_1.appDateTime)();
     await (0, db_1.execute)(`
       INSERT INTO scheduler_runs (
-        id, status, trigger_source, finished_at, scanned_count, processed_count, skipped_count, failed_count, summary, error_message, context_json
+        id, status, trigger_source, started_at, finished_at, scanned_count, processed_count, skipped_count, failed_count, summary, error_message, context_json
       )
-      VALUES (?, ?, ?, CASE WHEN ? = 1 THEN CURRENT_TIMESTAMP ELSE NULL END, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, CASE WHEN ? = 1 THEN ? ELSE NULL END, ?, ?, ?, ?, ?, ?, ?)
     `, [
         id,
         entry.status,
         entry.trigger,
+        now,
         entry.status === 'skipped' ? 1 : 0,
+        now,
         Number(entry.scannedCount || 0),
         Number(entry.processedCount || 0),
         Number(entry.skippedCount || 0),
@@ -1118,6 +1121,7 @@ async function insertSchedulerRun(entry) {
 }
 async function updateSchedulerRun(id, patch) {
     const current = await getSchedulerRunById(id);
+    const now = (0, dateTime_1.appDateTime)();
     await (0, db_1.execute)(`
       UPDATE scheduler_runs
       SET
@@ -1129,7 +1133,7 @@ async function updateSchedulerRun(id, patch) {
         summary = ?,
         error_message = ?,
         context_json = ?,
-        finished_at = CASE WHEN ? = 1 THEN CURRENT_TIMESTAMP ELSE finished_at END
+        finished_at = CASE WHEN ? = 1 THEN ? ELSE finished_at END
       WHERE id = ?
     `, [
         patch.status ?? current.status,
@@ -1141,6 +1145,7 @@ async function updateSchedulerRun(id, patch) {
         patch.errorMessage ?? current.errorMessage,
         JSON.stringify(patch.context ?? current.context),
         patch.finished ? 1 : 0,
+        now,
         id,
     ]);
     return getSchedulerRunById(id);
@@ -1174,10 +1179,14 @@ async function getRecentSchedulerRuns(limit = 10) {
 function formatDbDateString(val) {
     if (!val)
         return null;
-    if (val instanceof Date)
-        return Number.isFinite(val.getTime()) ? val.toISOString() : null;
+    if (val instanceof Date) {
+        if (!Number.isFinite(val.getTime()))
+            return null;
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${val.getFullYear()}-${pad(val.getMonth() + 1)}-${pad(val.getDate())} ${pad(val.getHours())}:${pad(val.getMinutes())}:${pad(val.getSeconds())}`;
+    }
     if (typeof val === 'string' && val.trim())
-        return val;
+        return val.trim();
     return null;
 }
 function mapSchedulerRuntimeState(row) {
@@ -1213,13 +1222,34 @@ async function getSchedulerRuntimeState() {
     }
     return mapSchedulerRuntimeState(row);
 }
+function parseAppTimestampMs(value) {
+    if (!value)
+        return 0;
+    if (value instanceof Date) {
+        const pad = (n) => String(n).padStart(2, '0');
+        const wallClock = `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())}T${pad(value.getHours())}:${pad(value.getMinutes())}:${pad(value.getSeconds())}+03:00`;
+        const parsedWall = Date.parse(wallClock);
+        return Number.isFinite(parsedWall) ? parsedWall : value.getTime();
+    }
+    const trimmed = String(value).trim();
+    if (!trimmed)
+        return 0;
+    if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(trimmed)) {
+        const parsedEat = Date.parse(`${trimmed.replace(' ', 'T')}+03:00`);
+        if (Number.isFinite(parsedEat))
+            return parsedEat;
+    }
+    const parsed = Date.parse(trimmed);
+    return Number.isFinite(parsed) ? parsed : 0;
+}
 async function acquireSchedulerRunLock(runId) {
     const current = await getSchedulerRuntimeState();
-    const acquiredAt = current.lockAcquiredAt ? Date.parse(current.lockAcquiredAt) : 0;
+    const acquiredAt = parseAppTimestampMs(current.lockAcquiredAt);
     const isStale = !acquiredAt || acquiredAt < Date.now() - getSchedulerLockStaleMs();
     if (current.lockRunId && !isStale) {
         return false;
     }
+    const now = (0, dateTime_1.appDateTime)();
     if (current.lockRunId && isStale) {
         await (0, db_1.execute)(`
         UPDATE scheduler_runtime_state
@@ -1227,29 +1257,35 @@ async function acquireSchedulerRunLock(runId) {
           lock_run_id = NULL,
           lock_acquired_at = NULL,
           stop_requested_at = NULL,
-          updated_at = CURRENT_TIMESTAMP
+          updated_at = ?
         WHERE id = 1
-      `);
+      `, [now]);
     }
     const result = await (0, db_1.execute)(`
       UPDATE scheduler_runtime_state
       SET
         lock_run_id = ?,
-        lock_acquired_at = CURRENT_TIMESTAMP,
+        lock_acquired_at = ?,
         stop_requested_at = NULL,
-        updated_at = CURRENT_TIMESTAMP
+        updated_at = ?
       WHERE id = 1
         AND (lock_run_id IS NULL OR lock_run_id = ? OR lock_acquired_at IS NULL)
-    `, [runId, runId]);
+    `, [runId, now, now, runId]);
     return result.affectedRows > 0;
 }
 async function markOrphanedStartedRunsAsFailed() {
     const staleCutoff = (0, dateTime_1.appDateTimeFromNow)(-getSchedulerLockStaleMs());
-    const orphanedRuns = await (0, db_1.queryAll)(`
-      SELECT id, context_json
+    const startedRuns = await (0, db_1.queryAll)(`
+      SELECT id, started_at, context_json
       FROM scheduler_runs
-      WHERE status = 'started' AND started_at <= ?
-    `, [staleCutoff]);
+      WHERE status = 'started'
+    `);
+    const staleThresholdMs = Date.now() - getSchedulerLockStaleMs();
+    const orphanedRuns = startedRuns.filter((row) => {
+        const startedMs = parseAppTimestampMs(row.started_at);
+        return (startedMs > 0 && startedMs <= staleThresholdMs) || (row.started_at && row.started_at <= staleCutoff);
+    });
+    const now = (0, dateTime_1.appDateTime)();
     for (const orphan of orphanedRuns) {
         let context = {};
         try {
@@ -1279,14 +1315,14 @@ async function markOrphanedStartedRunsAsFailed() {
           status = 'failed',
           summary = ?,
           error_message = 'Scheduler lock expired while run was in started state.',
-          finished_at = CURRENT_TIMESTAMP
+          finished_at = ?
         WHERE id = ? AND status = 'started'
-      `, [summary, orphan.id]);
+      `, [summary, now, orphan.id]);
     }
 }
 async function clearStaleSchedulerRunLock() {
     const current = await getSchedulerRuntimeState();
-    const acquiredAt = current.lockAcquiredAt ? Date.parse(current.lockAcquiredAt) : 0;
+    const acquiredAt = parseAppTimestampMs(current.lockAcquiredAt);
     const isStale = current.lockRunId && (!acquiredAt || acquiredAt < Date.now() - getSchedulerLockStaleMs());
     if (!current.lockRunId) {
         await markOrphanedStartedRunsAsFailed();
@@ -1302,6 +1338,7 @@ async function clearStaleSchedulerRunLock() {
         await markOrphanedStartedRunsAsFailed();
         return null;
     }
+    const now = (0, dateTime_1.appDateTime)();
     if (activeRun && activeRun.status === 'started') {
         let context = {};
         try {
@@ -1331,9 +1368,9 @@ async function clearStaleSchedulerRunLock() {
           status = 'failed',
           summary = ?,
           error_message = 'Scheduler lock expired while run was in started state.',
-          finished_at = CURRENT_TIMESTAMP
+          finished_at = ?
         WHERE id = ? AND status = 'started'
-      `, [summary, activeRun.id]);
+      `, [summary, now, activeRun.id]);
     }
     await (0, db_1.execute)(`
       UPDATE scheduler_runtime_state
@@ -1341,67 +1378,72 @@ async function clearStaleSchedulerRunLock() {
         lock_run_id = NULL,
         lock_acquired_at = NULL,
         stop_requested_at = NULL,
-        updated_at = CURRENT_TIMESTAMP
+        updated_at = ?
       WHERE id = 1 AND lock_run_id = ?
-    `, [current.lockRunId]);
+    `, [now, current.lockRunId]);
     await markOrphanedStartedRunsAsFailed();
     return current;
 }
 async function touchSchedulerRunLock(runId) {
+    const now = (0, dateTime_1.appDateTime)();
     await (0, db_1.execute)(`
       UPDATE scheduler_runtime_state
       SET
-        lock_acquired_at = CURRENT_TIMESTAMP,
-        updated_at = CURRENT_TIMESTAMP
+        lock_acquired_at = ?,
+        updated_at = ?
       WHERE id = 1 AND lock_run_id = ?
-    `, [runId]);
+    `, [now, now, runId]);
 }
 async function releaseSchedulerRunLock(runId) {
+    const now = (0, dateTime_1.appDateTime)();
     await (0, db_1.execute)(`
       UPDATE scheduler_runtime_state
       SET
         lock_run_id = NULL,
         lock_acquired_at = NULL,
         stop_requested_at = NULL,
-        updated_at = CURRENT_TIMESTAMP
+        updated_at = ?
       WHERE id = 1 AND lock_run_id = ?
-    `, [runId]);
+    `, [now, runId]);
 }
 async function requestSchedulerStop(runId) {
     if (!runId) {
         return false;
     }
+    const now = (0, dateTime_1.appDateTime)();
     const result = await (0, db_1.execute)(`
       UPDATE scheduler_runtime_state
       SET
-        stop_requested_at = CURRENT_TIMESTAMP,
-        updated_at = CURRENT_TIMESTAMP
+        stop_requested_at = ?,
+        updated_at = ?
       WHERE id = 1 AND lock_run_id = ?
-    `, [runId]);
+    `, [now, now, runId]);
     return result.affectedRows > 0;
 }
 async function markSchedulerRunSucceeded(runId, checkpointAt) {
+    const now = (0, dateTime_1.appDateTime)();
     await (0, db_1.execute)(`
       UPDATE scheduler_runtime_state
       SET
         last_successful_run_id = ?,
-        last_successful_finished_at = CURRENT_TIMESTAMP,
+        last_successful_finished_at = ?,
         last_checkpoint_at = COALESCE(?, last_checkpoint_at),
         last_error_run_id = NULL,
         last_error_message = NULL,
-        updated_at = CURRENT_TIMESTAMP
+        updated_at = ?
       WHERE id = 1
-    `, [runId, checkpointAt]);
+    `, [runId, now, checkpointAt, now]);
 }
 async function markSchedulerRunFailed(runId, message) {
+    const now = (0, dateTime_1.appDateTime)();
     await (0, db_1.execute)(`
       UPDATE scheduler_runtime_state
       SET
         last_error_run_id = ?,
         last_error_message = ?,
-        updated_at = CURRENT_TIMESTAMP
+        updated_at = ?
       WHERE id = 1
-    `, [runId, message]);
+    `, [runId, message, now]);
 }
 async function updateConnectionStatus(status, message, version = null) {
     await (0, db_1.execute)(`

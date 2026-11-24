@@ -111,8 +111,8 @@ function getRecentRunAgeMinutes(run: SchedulerRunEntry | null) {
     return Number.POSITIVE_INFINITY;
   }
 
-  const startedAt = Date.parse(run.startedAt);
-  if (!Number.isFinite(startedAt)) {
+  const startedAt = parseSchedulerDate(run.startedAt);
+  if (!Number.isFinite(startedAt) || startedAt <= 0) {
     return Number.POSITIVE_INFINITY;
   }
 
@@ -514,7 +514,15 @@ function parseSchedulerDate(value: string | null | undefined): number {
     return 0;
   }
 
-  const parsed = Date.parse(value);
+  const trimmed = String(value).trim();
+  if (/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(trimmed)) {
+    const parsedEat = Date.parse(`${trimmed.replace(' ', 'T')}+03:00`);
+    if (Number.isFinite(parsedEat)) {
+      return parsedEat;
+    }
+  }
+
+  const parsed = Date.parse(trimmed);
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
@@ -1056,7 +1064,11 @@ export async function runPoBillSchedulerCycle(
     });
 
     try {
-      await syncAllPendingStandaloneEtrPos(client);
+      await withTimeout(
+        () => syncAllPendingStandaloneEtrPos(client),
+        45_000,
+        'Standalone ETR cross-company PO sync',
+      );
     } catch (crossSyncErr) {
       await logEvent('error', 'Non-fatal error running standalone ETR cross-company sync cycle', {
         error: crossSyncErr instanceof Error ? crossSyncErr.message : 'Unknown error',
@@ -1064,9 +1076,17 @@ export async function runPoBillSchedulerCycle(
     }
 
     try {
-      const campaignMetrics = await computeMayCampaignMetrics(client, settings.odoo.baseUrl);
+      const campaignMetrics = await withTimeout(
+        () => computeMayCampaignMetrics(client, settings.odoo.baseUrl),
+        30_000,
+        'Computing May campaign completion metrics',
+      );
       if (campaignMetrics.unprocessedRemaining === 0) {
-        await notifyDbAdminCampaignReport(client);
+        await withTimeout(
+          () => notifyDbAdminCampaignReport(client),
+          30_000,
+          'Sending May campaign completion report',
+        );
       }
     } catch (reportErr) {
       await logEvent('error', 'Non-fatal error generating May campaign completion report', {
