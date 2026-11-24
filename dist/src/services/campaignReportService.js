@@ -30,7 +30,7 @@ function buildOdooDocumentUrl(odooBaseUrl, documentId, attachmentId) {
 }
 function isNonInvoiceSummary(summary) {
     const text = (summary || '').toLowerCase();
-    return /\b(job summary|maxcut|max cut|delivery note|delivery slip|packing slip|not a vendor bill|not a supplier invoice|receipt)\b/i.test(text);
+    return /\b(job summary|maxcut|max cut|delivery note|delivery slip|packing slip|not a vendor bill|not a supplier invoice|receipt|excluded vendor|maifan|taji|quick\s*mart|easy\s*coach)\b/i.test(text);
 }
 function isAlreadyInvoicedSummary(summary) {
     const text = (summary || '').toLowerCase();
@@ -51,6 +51,16 @@ async function computeMayCampaignMetrics(client, odooBaseUrl) {
     const unmatchedInvoicesList = [];
     for (const pdf of pdfs) {
         const record = processedMap[pdf.id];
+        const excludedVendor = (0, poBillAutomationService_1.findExcludedPoBillVendor)({
+            attachmentName: pdf.name,
+            vendorName: record?.invoiceVendor || pdf.poBillVendorName,
+            summary: record?.summary || pdf.poBillSummary,
+        });
+        if (excludedVendor) {
+            totalScanned += 1;
+            totalNonInvoices += 1;
+            continue;
+        }
         if (!record) {
             unprocessedRemaining += 1;
             continue;
@@ -61,11 +71,11 @@ async function computeMayCampaignMetrics(client, odooBaseUrl) {
         if (['processed', 'processed_with_warnings'].includes(status)) {
             totalPassed += 1;
         }
+        else if (status === 'delivery_note' || isNonInvoiceSummary(summary)) {
+            totalNonInvoices += 1;
+        }
         else if (status === 'failed') {
             totalFailed += 1;
-        }
-        else if (isNonInvoiceSummary(summary)) {
-            totalNonInvoices += 1;
         }
         else if (isAlreadyInvoicedSummary(summary)) {
             totalAlreadyInvoiced += 1;

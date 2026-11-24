@@ -471,6 +471,7 @@ export interface AttachmentInfo {
   poBillPurchaseOrderName?: string | null;
   poBillVendorBillId?: number | null;
   poBillVendorBillName?: string | null;
+  poBillVendorName?: string | null;
   poBillAttemptCount?: number | null;
   poBillSummary?: string | null;
   poBillValidated?: boolean;

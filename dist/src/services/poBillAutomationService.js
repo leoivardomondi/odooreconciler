@@ -38,6 +38,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.PO_BILL_SUPPORTED_MIMETYPES = void 0;
 exports.isSupportedPoBillMimetype = isSupportedPoBillMimetype;
+exports.findExcludedPoBillVendor = findExcludedPoBillVendor;
 exports.isStandaloneDeliveryNoteDocument = isStandaloneDeliveryNoteDocument;
 exports.isPurchaseOrderApprovalMessage = isPurchaseOrderApprovalMessage;
 exports.computeItemScore = computeItemScore;
@@ -462,6 +463,33 @@ function isJobSummaryDocument(input) {
         /\bedging materials\b/.test(combined) ||
         /\bmaxcut\b/.test(combined);
     return hasJobSummary && hasMaxCutSignals;
+}
+const EXCLUDED_PO_BILL_VENDOR_PATTERNS = [
+    { label: 'MAIFAN', pattern: /\bmaifan\b/i },
+    { label: 'TAJI', pattern: /\btaji\b/i },
+    { label: 'QUICKMART', pattern: /\bquick\s*mart\b/i },
+    { label: 'EASY COACH', pattern: /\beasy\s*coach\b/i },
+];
+function findExcludedPoBillVendor(input) {
+    const fields = [
+        input.attachmentName,
+        input.vendorName,
+        input.filenameVendorHint,
+        input.summary,
+        input.rawText,
+    ];
+    for (const field of fields) {
+        const normalized = normalizeText(field);
+        if (!normalized) {
+            continue;
+        }
+        for (const entry of EXCLUDED_PO_BILL_VENDOR_PATTERNS) {
+            if (entry.pattern.test(normalized)) {
+                return entry.label;
+            }
+        }
+    }
+    return null;
 }
 function isStandaloneDeliveryNoteDocument(input) {
     const rawText = normalizeText(input.rawText);
@@ -1408,6 +1436,7 @@ async function getRecentDocumentPdfsPage(client, options = {}) {
             poBillPurchaseOrderName: processed?.purchaseOrderName || null,
             poBillVendorBillId: processed?.vendorBillId || null,
             poBillVendorBillName: processed?.vendorBillName || null,
+            poBillVendorName: processed?.invoiceVendor || null,
             poBillAttemptCount: processed?.attemptCount ?? null,
             poBillSummary: processed?.summary || (hasDeliveryNoteTag
                 ? 'Odoo Documents tag is Delivery Note; scheduler will permanently skip this document.'
@@ -2569,6 +2598,44 @@ async function runPoBillAutomationInternal(client, input) {
     const checks = [];
     const actionsTaken = [];
     const actionsPending = [];
+    const preDownloadExcludedVendor = findExcludedPoBillVendor({
+        attachmentName: input.sourceAttachment?.name,
+        vendorName: input.sourceAttachment?.poBillVendorName,
+        summary: input.sourceAttachment?.poBillSummary,
+    });
+    if (preDownloadExcludedVendor && input.sourceAttachment) {
+        const excludedSummary = `Skipped before PO matching because this document is from excluded vendor ${preDownloadExcludedVendor} (excluded from PO Bill runs).`;
+        addCheck(checks, 'Excluded Vendor', 'info', excludedSummary);
+        addCheck(checks, 'Purchase Order', 'info', 'PO matching was not attempted for this excluded vendor.');
+        return {
+            mode: input.mode,
+            attachmentId: input.attachmentId,
+            attachmentName: input.sourceAttachment.name || `Attachment #${input.attachmentId}`,
+            purchaseOrder: null,
+            purchaseOrders: [],
+            candidates: [],
+            parsedInvoice: {
+                vendorName: preDownloadExcludedVendor,
+                filenameVendorHint: extractFilenameVendorHint(input.sourceAttachment.name || ''),
+                invoiceDate: null,
+                invoiceNumber: null,
+                orderNumber: null,
+                taxPin: null,
+                pinNote: 'NO PIN',
+                untaxedTotal: null,
+                vatTotal: null,
+                grandTotal: null,
+                itemCount: 0,
+                items: [],
+                rawText: '',
+                logs: [excludedSummary],
+            },
+            checks,
+            canAutoProceed: false,
+            actionsTaken,
+            actionsPending: [excludedSummary],
+        };
+    }
     const downloadedAttachment = await client.downloadAttachment(input.attachmentId);
     const attachment = {
         ...downloadedAttachment,
@@ -2704,6 +2771,35 @@ async function runPoBillAutomationInternal(client, input) {
         attachmentName: attachment.name,
         rawText: parsedInvoice.rawText,
     });
+    const excludedVendor = findExcludedPoBillVendor({
+        attachmentName: attachment.name,
+        vendorName: parsedInvoice.vendorName,
+        filenameVendorHint: parsedInvoice.filenameVendorHint,
+        rawText: parsedInvoice.rawText,
+    });
+    if (excludedVendor) {
+        const excludedSummary = `Skipped before PO matching because this document is from excluded vendor ${excludedVendor} (excluded from PO Bill runs).`;
+        const checksForExcluded = [];
+        addCheck(checksForExcluded, 'Excluded Vendor', 'info', excludedSummary);
+        addCheck(checksForExcluded, 'Purchase Order', 'info', 'PO matching was not attempted for this excluded vendor.');
+        return {
+            mode: input.mode,
+            attachmentId: attachment.id,
+            attachmentName: attachment.name,
+            purchaseOrder: null,
+            purchaseOrders: [],
+            candidates: [],
+            parsedInvoice: {
+                ...parsedInvoice,
+                vendorName: parsedInvoice.vendorName || excludedVendor,
+                logs: [...parsedInvoice.logs, excludedSummary],
+            },
+            checks: checksForExcluded,
+            canAutoProceed: false,
+            actionsTaken,
+            actionsPending: [excludedSummary],
+        };
+    }
     if (isStandaloneDeliveryNote) {
         const deliveryNoteSummary = 'Standalone Delivery Note detected. No invoice document was found; PO matching and billing were not attempted. Future scheduler runs will skip this document.';
         const checksForDeliveryNote = [];

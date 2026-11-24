@@ -3,7 +3,7 @@ import { OdooClient } from './odooClient';
 import { getPoBillProcessedDocumentsByAttachmentIds, getSettings } from '../models/repositories';
 import { sendMailWithConfig } from './mailTransport';
 import { logEvent } from './logService';
-import { getRecentDocumentPdfsPage } from './poBillAutomationService';
+import { findExcludedPoBillVendor, getRecentDocumentPdfsPage } from './poBillAutomationService';
 import { env } from '../utils/env';
 
 export const CAMPAIGN_START_DATE = '2026-05-01 00:00:00';
@@ -26,7 +26,7 @@ export function buildOdooDocumentUrl(
 
 export function isNonInvoiceSummary(summary: string): boolean {
   const text = (summary || '').toLowerCase();
-  return /\b(job summary|maxcut|max cut|delivery note|delivery slip|packing slip|not a vendor bill|not a supplier invoice|receipt)\b/i.test(text);
+  return /\b(job summary|maxcut|max cut|delivery note|delivery slip|packing slip|not a vendor bill|not a supplier invoice|receipt|excluded vendor|maifan|taji|quick\s*mart|easy\s*coach)\b/i.test(text);
 }
 
 export function isAlreadyInvoicedSummary(summary: string): boolean {
@@ -74,6 +74,17 @@ export async function computeMayCampaignMetrics(
 
   for (const pdf of pdfs) {
     const record = processedMap[pdf.id];
+    const excludedVendor = findExcludedPoBillVendor({
+      attachmentName: pdf.name,
+      vendorName: record?.invoiceVendor || pdf.poBillVendorName,
+      summary: record?.summary || pdf.poBillSummary,
+    });
+    if (excludedVendor) {
+      totalScanned += 1;
+      totalNonInvoices += 1;
+      continue;
+    }
+
     if (!record) {
       unprocessedRemaining += 1;
       continue;
@@ -85,10 +96,10 @@ export async function computeMayCampaignMetrics(
 
     if (['processed', 'processed_with_warnings'].includes(status)) {
       totalPassed += 1;
+    } else if (status === 'delivery_note' || isNonInvoiceSummary(summary)) {
+      totalNonInvoices += 1;
     } else if (status === 'failed') {
       totalFailed += 1;
-    } else if (isNonInvoiceSummary(summary)) {
-      totalNonInvoices += 1;
     } else if (isAlreadyInvoicedSummary(summary)) {
       totalAlreadyInvoiced += 1;
     } else {

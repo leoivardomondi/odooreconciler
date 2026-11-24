@@ -21,6 +21,8 @@ const campaignReportService_1 = require("./campaignReportService");
 let schedulerRunning = false;
 let schedulerIntervalHandle = null;
 let poBillSchedulerIntervalHandle = null;
+let poBillContinuousChainHandle = null;
+const poBillContinuousPassAttemptedIds = new Set();
 const SCHEDULER_LOOKBACK_HOURS = 24;
 const SO_SCHEDULER_CONCURRENCY = 1;
 const SO_SCHEDULER_ORDER_DELAY_MS = Math.max(0, Number(env_1.env.SO_SCHEDULER_ORDER_DELAY_MS || 1000) || 1000);
@@ -203,10 +205,17 @@ function getPoBillRetryClass(pdf, policy) {
     if (['processed', 'processed_with_warnings', 'delivery_note'].includes(status)) {
         return 'processed';
     }
+    if ((0, poBillAutomationService_1.findExcludedPoBillVendor)({
+        attachmentName: pdf.name,
+        vendorName: pdf.poBillVendorName,
+        summary: pdf.poBillSummary,
+    })) {
+        return 'stable_skip';
+    }
     if (!status) {
         return 'fresh';
     }
-    if (/\b(job summary|maxcut|max cut|not a vendor bill|not a supplier invoice|already invoiced|invoiced in odoo)\b/i.test(summary)) {
+    if (/\b(job summary|maxcut|max cut|not a vendor bill|not a supplier invoice|already invoiced|invoiced in odoo|excluded vendor|maifan|taji|quick\s*mart|easy\s*coach)\b/i.test(summary)) {
         return 'stable_skip';
     }
     if (/\b(timeout|network|rate limit|api key|ai extraction|ocr|upload failed|could not download|failed to parse|unknown po bill scheduler error)\b/i.test(summary)) {
@@ -231,7 +240,6 @@ function getPoBillRetryCooldownHours(retryClass, attemptCount, policy) {
             return 0;
         }
         case 'stable_skip':
-            return Math.max(0, Number(policy.stableSkipRetryDays ?? 0)) * 24;
         case 'exhausted':
         case 'processed':
         default:
@@ -243,7 +251,7 @@ function getPoBillAttemptedAt(pdf) {
 }
 function isPoBillPdfDueForRetry(pdf, nowMs, policy) {
     const retryClass = getPoBillRetryClass(pdf, policy);
-    if (retryClass === 'processed' || retryClass === 'exhausted') {
+    if (retryClass === 'processed' || retryClass === 'exhausted' || retryClass === 'stable_skip') {
         return false;
     }
     const attemptedAt = getPoBillAttemptedAt(pdf);
@@ -472,7 +480,11 @@ function getJobSummaryReminderWindowStatus() {
         allowedWindow: '16:40-16:50',
     };
 }
-async function runPoBillSchedulerCycle(trigger = 'manual') {
+async function runPoBillSchedulerCycle(trigger = 'manual', options = {}) {
+    if (poBillContinuousChainHandle) {
+        clearTimeout(poBillContinuousChainHandle);
+        poBillContinuousChainHandle = null;
+    }
     const { client, settings } = await getConfiguredSchedulerClient();
     const runtimeState = await getFreshSchedulerRuntimeState();
     const recentRunsForCooldown = await (0, repositories_1.getRecentSchedulerRuns)(20);
@@ -511,7 +523,7 @@ async function runPoBillSchedulerCycle(trigger = 'manual') {
         });
         return { run, scannedCount: 0, processedCount: 0, skippedCount: 0, failedCount: 0 };
     }
-    if (trigger !== 'manual' && recentRun) {
+    if (trigger !== 'manual' && !options.continuousChain && recentRun) {
         const ageMinutes = getRecentRunAgeMinutes(recentRun);
         if (ageMinutes < cooldownMinutes) {
             const run = await (0, repositories_1.insertSchedulerRun)({
@@ -659,11 +671,29 @@ async function runPoBillSchedulerCycle(trigger = 'manual') {
         let exhaustedCount = 0;
         let cooldownBlockedCount = 0;
         let consecutiveRetryBlockedCount = 0;
+        let excludedVendorSkippedCount = 0;
         const recentlyFailedAttachmentIds = getRecentlyFailedPoBillAttachmentIds(recentRun);
         const recentlyAttemptedAttachmentIds = getRecentlyAttemptedPoBillAttachmentIds(recentRun);
         for (const pdf of recentPdfs) {
             const status = String(pdf.poBillStatus || '');
             if (['processed', 'processed_with_warnings', 'delivery_note'].includes(status)) {
+                continue;
+            }
+            const preQueueExcludedVendor = (0, poBillAutomationService_1.findExcludedPoBillVendor)({
+                attachmentName: pdf.name,
+                vendorName: pdf.poBillVendorName,
+                summary: pdf.poBillSummary,
+            });
+            if (preQueueExcludedVendor) {
+                excludedVendorSkippedCount += 1;
+                if (status !== 'skipped' || !/\bexcluded vendor\b/i.test(String(pdf.poBillSummary || ''))) {
+                    await (0, poBillAutomationService_1.markPoBillDocumentSkipped)({
+                        attachment: pdf,
+                        status: 'skipped',
+                        summary: `Skipped before PO matching because this document is from excluded vendor ${preQueueExcludedVendor} (excluded from PO Bill runs).`,
+                        invoiceVendor: preQueueExcludedVendor,
+                    }).catch(() => undefined);
+                }
                 continue;
             }
             const retryClass = getPoBillRetryClass(pdf, settings.poBillScheduler);
@@ -676,7 +706,8 @@ async function runPoBillSchedulerCycle(trigger = 'manual') {
                 cooldownBlockedCount += 1;
                 continue;
             }
-            if (recentlyAttemptedAttachmentIds.has(Number(pdf.id))) {
+            if (poBillContinuousPassAttemptedIds.has(Number(pdf.id)) ||
+                recentlyAttemptedAttachmentIds.has(Number(pdf.id))) {
                 if (recentlyFailedAttachmentIds.has(Number(pdf.id))) {
                     consecutiveRetryBlockedCount += 1;
                 }
@@ -685,10 +716,11 @@ async function runPoBillSchedulerCycle(trigger = 'manual') {
             }
             queueCandidates.push(pdf);
         }
-        // Rotate through the campaign. If the only eligible documents are the
-        // ones from the previous run, retry them rather than leaving the queue
-        // empty; otherwise prefer documents that have not just been attempted.
-        if (queueCandidates.length === 0) {
+        // Rotate through the campaign pass of unmatched documents only.
+        // Once every unmatched document in the current pass has been attempted,
+        // start a fresh pass only if this was not an auto-chained continuation.
+        if (queueCandidates.length === 0 && !options.continuousChain && deferredQueueCandidates.length > 0) {
+            poBillContinuousPassAttemptedIds.clear();
             queueCandidates.push(...deferredQueueCandidates);
         }
         const queue = queueCandidates
@@ -725,6 +757,7 @@ async function runPoBillSchedulerCycle(trigger = 'manual') {
                 break;
             }
             scannedCount += 1;
+            poBillContinuousPassAttemptedIds.add(Number(pdf.id));
             await touchActiveSchedulerRunLock(run.id);
             await (0, repositories_1.updateSchedulerRun)(run.id, {
                 scannedCount,
@@ -868,13 +901,19 @@ async function runPoBillSchedulerCycle(trigger = 'manual') {
         else if (!stopRequested) {
             await (0, repositories_1.markSchedulerRunFailed)(run.id, `PO bill scheduler completed with ${failedCount} failed document(s).`);
         }
+        const remainingUnmatchedInPass = Math.max(0, queueCandidates.length - scannedCount);
+        const shouldChainNextRun = !stopRequested &&
+            settings.poBillScheduler.enabled &&
+            !(0, odooClient_1.isOdooTrafficPaused)() &&
+            scannedCount > 0 &&
+            remainingUnmatchedInPass > 0;
         const finalRun = await (0, repositories_1.updateSchedulerRun)(run.id, {
             status: stopRequested ? 'completed' : failedCount > 0 ? 'completed_with_errors' : 'completed',
             scannedCount,
             processedCount,
             skippedCount,
             failedCount,
-            summary: `${stopRequested ? 'PO bill scheduler stopped by operator. ' : ''}Found ${recentPdfs.length} Finance document(s) since ${fromDate}; ${queue.length} eligible in this batch; scanned ${scannedCount}, processed ${processedCount}, skipped ${skippedCount}, failed ${failedCount}${exhaustedCount > 0 ? `, ${exhaustedCount} exhausted (permanently skipped after ${settings.poBillScheduler.maxRetryAttempts} attempts)` : ''}${cooldownBlockedCount > 0 ? `, ${cooldownBlockedCount} in cooldown` : ''}${consecutiveRetryBlockedCount > 0 ? `, ${consecutiveRetryBlockedCount} held back after the previous run` : ''}.`,
+            summary: `${stopRequested ? 'PO bill scheduler stopped by operator. ' : ''}Found ${recentPdfs.length} Finance document(s) since ${fromDate}; ${queue.length} eligible in this batch (${remainingUnmatchedInPass} unmatched remaining in current pass); scanned ${scannedCount}, processed ${processedCount}, skipped ${skippedCount}, failed ${failedCount}${excludedVendorSkippedCount > 0 ? `, ${excludedVendorSkippedCount} excluded vendor doc(s) skipped (MAIFAN/TAJI/QUICKMART/EASY COACH)` : ''}${exhaustedCount > 0 ? `, ${exhaustedCount} exhausted (permanently skipped after ${settings.poBillScheduler.maxRetryAttempts} attempts)` : ''}${cooldownBlockedCount > 0 ? `, ${cooldownBlockedCount} non-bill/cooldown skipped` : ''}${consecutiveRetryBlockedCount > 0 ? `, ${consecutiveRetryBlockedCount} held back after the previous run` : ''}${shouldChainNextRun ? '. Continuous mode: next unmatched batch scheduled in 5s.' : '.'}`,
             context: {
                 jobType: PO_BILL_SCHEDULER_JOB_TYPE,
                 schedulerName: 'PO Bill Scheduler',
@@ -882,6 +921,10 @@ async function runPoBillSchedulerCycle(trigger = 'manual') {
                 toDate,
                 batchSize,
                 candidateFinancePdfCount: recentPdfs.length,
+                remainingUnmatchedInPass,
+                excludedVendorSkippedCount,
+                continuousChained: Boolean(options.continuousChain),
+                nextContinuousRunScheduled: shouldChainNextRun,
                 exhaustedCount,
                 cooldownBlockedCount,
                 consecutiveRetryBlockedCount,
@@ -900,16 +943,29 @@ async function runPoBillSchedulerCycle(trigger = 'manual') {
                 error: crossSyncErr instanceof Error ? crossSyncErr.message : 'Unknown error',
             });
         }
-        try {
-            const campaignMetrics = await withTimeout(() => (0, campaignReportService_1.computeMayCampaignMetrics)(client, settings.odoo.baseUrl), 30_000, 'Computing May campaign completion metrics');
-            if (campaignMetrics.unprocessedRemaining === 0) {
-                await withTimeout(() => (0, campaignReportService_1.notifyDbAdminCampaignReport)(client), 30_000, 'Sending May campaign completion report');
-            }
+        if (shouldChainNextRun) {
+            poBillContinuousChainHandle = setTimeout(() => {
+                poBillContinuousChainHandle = null;
+                void runPoBillSchedulerCycle('cron', { continuousChain: true }).catch(async (chainErr) => {
+                    await (0, logService_1.logEvent)('error', 'Continuous PO bill scheduler chain run failed', {
+                        error: chainErr instanceof Error ? chainErr.message : String(chainErr),
+                    });
+                });
+            }, 5000);
         }
-        catch (reportErr) {
-            await (0, logService_1.logEvent)('error', 'Non-fatal error generating May campaign completion report', {
-                error: reportErr instanceof Error ? reportErr.message : 'Unknown error',
-            });
+        else if (!stopRequested) {
+            poBillContinuousPassAttemptedIds.clear();
+            try {
+                const campaignMetrics = await withTimeout(() => (0, campaignReportService_1.computeMayCampaignMetrics)(client, settings.odoo.baseUrl), 30_000, 'Computing May campaign completion metrics');
+                if (campaignMetrics.unprocessedRemaining === 0 && scannedCount > 0) {
+                    await withTimeout(() => (0, campaignReportService_1.notifyDbAdminCampaignReport)(client), 30_000, 'Sending May campaign completion report');
+                }
+            }
+            catch (reportErr) {
+                await (0, logService_1.logEvent)('error', 'Non-fatal error generating May campaign completion report', {
+                    error: reportErr instanceof Error ? reportErr.message : 'Unknown error',
+                });
+            }
         }
         return { run: finalRun, scannedCount, processedCount, skippedCount, failedCount };
     }
