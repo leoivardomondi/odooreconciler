@@ -102,16 +102,6 @@ export function setSchedulerRunActive(active: boolean): void {
   isSchedulerRunActiveFlag = active;
 }
 
-let isSchedulerRunActiveFlag = false;
-
-export function isSchedulerRunActive(): boolean {
-  return isSchedulerRunActiveFlag;
-}
-
-export function setSchedulerRunActive(active: boolean): void {
-  isSchedulerRunActiveFlag = active;
-}
-
 let lastOdooRequestEndTime = 0;
 let odooRequestQueue: Promise<unknown> = Promise.resolve();
 const globalModelFieldsCache = new Map<string, { name: string; field_description?: string } | null>();
