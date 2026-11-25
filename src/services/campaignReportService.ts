@@ -3,7 +3,7 @@ import { OdooClient } from './odooClient';
 import { getPoBillProcessedDocumentsByAttachmentIds, getSettings } from '../models/repositories';
 import { sendMailWithConfig } from './mailTransport';
 import { logEvent } from './logService';
-import { findExcludedPoBillVendor, getRecentDocumentPdfsPage } from './poBillAutomationService';
+import { findExcludedPoBillVendor, getRecentDocumentPdfs } from './poBillAutomationService';
 import { env } from '../utils/env';
 
 export const CAMPAIGN_START_DATE = '2026-05-01 00:00:00';
@@ -56,9 +56,9 @@ export interface CampaignMetrics {
 export async function computeMayCampaignMetrics(
   client: OdooClient,
   odooBaseUrl: string,
+  signal?: AbortSignal,
 ): Promise<CampaignMetrics> {
-  const allPage = await getRecentDocumentPdfsPage(client, { page: 1, pageSize: 500 });
-  const pdfs = allPage.items;
+  const pdfs = await getRecentDocumentPdfs(client, 500, 0, false, signal);
   const attachmentIds = pdfs.map((pdf) => pdf.id);
   const processedMap = await getPoBillProcessedDocumentsByAttachmentIds(attachmentIds);
 

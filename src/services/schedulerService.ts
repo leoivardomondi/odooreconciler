@@ -1,6 +1,7 @@
 import {
   acquireSchedulerRunLock,
   clearStaleSchedulerRunLock,
+  getExtractedResultByHistoryId,
   getRecentDashboardSchedulerRuns,
   getSchedulerRuntimeState,
   getSchedulerRunById,
@@ -22,7 +23,7 @@ import {
   ensureMissingJobSummaryReminder,
 } from './jobSummaryReminderService';
 import { logEvent } from './logService';
-import { OdooClient, isOdooTrafficPaused } from './odooClient';
+import { OdooClient, isOdooTrafficPaused, setSchedulerRunActive } from './odooClient';
 import {
   findExcludedPoBillVendor,
   getRecentDocumentPdfs,
@@ -43,6 +44,13 @@ import {
 } from './campaignReportService';
 
 let schedulerRunning = false;
+function setSchedulerRunningState(active: boolean) {
+  schedulerRunning = active;
+  setSchedulerRunActive(active);
+}
+const SCHEDULER_HEARTBEAT_MAX_MS = 20 * 60 * 1000;
+const SO_PER_ORDER_TIMEOUT_MS = 180_000;
+const PO_BILL_FETCH_TIMEOUT_MS = 75_000;
 let schedulerIntervalHandle: NodeJS.Timeout | null = null;
 let poBillSchedulerIntervalHandle: NodeJS.Timeout | null = null;
 let poBillContinuousChainHandle: NodeJS.Timeout | null = null;
@@ -444,13 +452,21 @@ async function isSchedulerStopRequested(runId: string) {
   }
 }
 
-async function withTimeout<T>(operation: () => Promise<T>, timeoutMs: number, label: string): Promise<T> {
+async function withTimeout<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  label: string,
+): Promise<T> {
+  const controller = new AbortController();
   let timer: NodeJS.Timeout | null = null;
   try {
     return await Promise.race([
-      operation(),
+      operation(controller.signal),
       new Promise<T>((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms.`)), timeoutMs);
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new Error(`${label} timed out after ${timeoutMs}ms.`));
+        }, timeoutMs);
       }),
     ]);
   } finally {
@@ -754,7 +770,7 @@ export async function runPoBillSchedulerCycle(
     return { run, scannedCount: 0, processedCount: 0, skippedCount: 0, failedCount: 0 };
   }
 
-  schedulerRunning = true;
+  setSchedulerRunningState(true);
 
   let run: Awaited<ReturnType<typeof insertSchedulerRun>>;
   try {
@@ -775,7 +791,7 @@ export async function runPoBillSchedulerCycle(
     });
     notifyCreated(run);
   } catch (error) {
-    schedulerRunning = false;
+    setSchedulerRunningState(false);
     throw error;
   }
 
@@ -797,7 +813,7 @@ export async function runPoBillSchedulerCycle(
       finished: true,
     });
 
-    schedulerRunning = false;
+    setSchedulerRunningState(false);
     return { run: skippedRun, scannedCount: 0, processedCount: 0, skippedCount: 0, failedCount: 0 };
   }
 
@@ -812,7 +828,7 @@ export async function runPoBillSchedulerCycle(
   try {
     const heartbeatStartedAt = Date.now();
     heartbeatTimer = setInterval(() => {
-      if (Date.now() - heartbeatStartedAt < 300_000) {
+      if (Date.now() - heartbeatStartedAt < SCHEDULER_HEARTBEAT_MAX_MS) {
         touchActiveSchedulerRunLock(run.id).catch(() => undefined);
       }
     }, 25000);
@@ -832,25 +848,12 @@ export async function runPoBillSchedulerCycle(
     } catch (err) {
       // non-fatal: continue processing even if updating diagnostics fails
     }
-    let recentPdfs: AttachmentInfo[];
-    try {
-      recentPdfs = await withTimeout(
-        () => getRecentDocumentPdfs(client, 300),
-        45_000,
-        'Fetching recent Finance documents from Odoo',
-      );
-    } catch (fetchErr) {
-      await logEvent('warn', 'Primary Finance documents fetch timed out or failed; retrying with compact limit (150)', {
-        schedulerRunId: run.id,
-        error: fetchErr instanceof Error ? fetchErr.message : String(fetchErr),
-      }).catch(() => undefined);
-      await touchActiveSchedulerRunLock(run.id);
-      recentPdfs = await withTimeout(
-        () => getRecentDocumentPdfs(client, 150),
-        40_000,
-        'Fetching recent Finance documents from Odoo (fallback 150)',
-      );
-    }
+    const forceDocumentRefresh = !options.continuousChain;
+    const recentPdfs = await withTimeout(
+      (signal) => getRecentDocumentPdfs(client, 300, 0, forceDocumentRefresh, signal),
+      PO_BILL_FETCH_TIMEOUT_MS,
+      'Fetching recent Finance documents from Odoo',
+    );
     await touchActiveSchedulerRunLock(run.id);
 
     const nowMs = Date.now();
@@ -1182,7 +1185,7 @@ export async function runPoBillSchedulerCycle(
       poBillContinuousPassAttemptedIds.clear();
       try {
         const campaignMetrics = await withTimeout(
-          () => computeMayCampaignMetrics(client, settings.odoo.baseUrl),
+          (signal) => computeMayCampaignMetrics(client, settings.odoo.baseUrl, signal),
           30_000,
           'Computing May campaign completion metrics',
         );
@@ -1210,7 +1213,7 @@ export async function runPoBillSchedulerCycle(
       processedCount,
       skippedCount,
       failedCount: failedCount + 1,
-      summary: 'PO bill scheduler run failed.',
+      summary: `PO bill scheduler run failed: ${message}`,
       errorMessage: message,
       context: {
         jobType: PO_BILL_SCHEDULER_JOB_TYPE,
@@ -1230,7 +1233,7 @@ export async function runPoBillSchedulerCycle(
       clearInterval(heartbeatTimer);
       heartbeatTimer = null;
     }
-    schedulerRunning = false;
+    setSchedulerRunningState(false);
     await releaseSchedulerRunLock(run.id);
     await cleanupStaleTempFiles().catch(() => undefined);
   }
@@ -1398,7 +1401,7 @@ export async function runSchedulerCycle(
     };
   }
 
-  schedulerRunning = true;
+  setSchedulerRunningState(true);
 
   let run: Awaited<ReturnType<typeof insertSchedulerRun>>;
   try {
@@ -1425,7 +1428,7 @@ export async function runSchedulerCycle(
     });
     notifyCreated(run);
   } catch (error) {
-    schedulerRunning = false;
+    setSchedulerRunningState(false);
     throw error;
   }
 
@@ -1447,7 +1450,7 @@ export async function runSchedulerCycle(
       finished: true,
     });
 
-    schedulerRunning = false;
+    setSchedulerRunningState(false);
     return {
       run: skippedRun,
       scannedCount: 0,
@@ -1468,7 +1471,7 @@ export async function runSchedulerCycle(
   try {
     const heartbeatStartedAt = Date.now();
     heartbeatTimer = setInterval(() => {
-      if (Date.now() - heartbeatStartedAt < 300_000) {
+      if (Date.now() - heartbeatStartedAt < SCHEDULER_HEARTBEAT_MAX_MS) {
         touchActiveSchedulerRunLock(run.id).catch(() => undefined);
       }
     }, 25000);
@@ -1522,8 +1525,29 @@ export async function runSchedulerCycle(
     }).catch(() => undefined);
 
     const processOrder = async (order: (typeof orders)[number]) => {
+      const markOrderStage = async (stage: string) => {
+        await updateSchedulerRun(run.id, {
+          scannedCount,
+          processedCount,
+          skippedCount,
+          failedCount,
+          summary: `Processing Sales Order ${order.name} (${stage})...`,
+          context: {
+            ...run.context,
+            candidateOrderCount: candidateOrders.length,
+            selectedOrderIds: orders.map((o) => o.id),
+            selectedOrderNames: orders.map((o) => o.name),
+            currentOrderId: order.id,
+            currentOrderName: order.name,
+            currentStage: stage,
+            orderOutcomes: [...orderOutcomes],
+          },
+        }).catch(() => undefined);
+      };
+
       try {
         await touchActiveSchedulerRunLock(run.id);
+        await markOrderStage('attachment_lookup');
         const attachments = await client.getAttachments(order.id);
         const latestJobSummary = attachments
           .filter((attachment) =>
@@ -1611,11 +1635,14 @@ export async function runSchedulerCycle(
         }
 
         await touchActiveSchedulerRunLock(run.id);
+        await markOrderStage('extract_pdf');
         const history = await extractAttachmentForOrder(order.id, latestJobSummary.id);
         await touchActiveSchedulerRunLock(run.id);
+        await markOrderStage('send_to_odoo');
         const sendResult = await sendExtractedResultToOdoo(history.id, false);
         await touchActiveSchedulerRunLock(run.id);
-        const stockResult = await processSaleOrderStock(order.id);
+        await markOrderStage('stock_reconciliation');
+        const stockResult = await processSaleOrderStock(order.id, { skipMultiSummaryRefetch: true });
         await touchActiveSchedulerRunLock(run.id);
 
         if (stockResult.summary.failedCount > 0) {
@@ -1651,7 +1678,14 @@ export async function runSchedulerCycle(
 
         // Fallback: Audit linked confirmed Purchase Orders against the Job Summary
         try {
-          await auditLinkedPurchaseOrdersForSaleOrder(client, order.id);
+          await markOrderStage('po_audit');
+          const extractedRecord = await getExtractedResultByHistoryId(history.id).catch(() => null);
+          await auditLinkedPurchaseOrdersForSaleOrder(
+            client,
+            order.id,
+            extractedRecord?.resultJson,
+            order.name,
+          );
         } catch (_) { }
 
         if (stockResult.alreadyProcessed || stockResult.lockSkipped) {
@@ -1721,7 +1755,35 @@ export async function runSchedulerCycle(
     for (let index = 0; index < orders.length; index += SO_SCHEDULER_CONCURRENCY) {
       const chunk = orders.slice(index, index + SO_SCHEDULER_CONCURRENCY);
       await touchActiveSchedulerRunLock(run.id);
-      const results = await Promise.all(chunk.map((order) => processOrder(order)));
+      const results = await Promise.all(
+        chunk.map((order) =>
+          withTimeout(
+            () => processOrder(order),
+            SO_PER_ORDER_TIMEOUT_MS,
+            `Processing Sales Order ${order.name}`,
+          ).catch(async (timeoutErr) => {
+            const timeoutMsg =
+              timeoutErr instanceof Error ? timeoutErr.message : 'Sales Order processing timed out.';
+            await logEvent('error', 'Scheduler timed out while processing a Sales Order', {
+              schedulerRunId: run.id,
+              orderId: order.id,
+              orderName: order.name,
+              error: timeoutMsg,
+            }).catch(() => undefined);
+            return {
+              result: 'failed' as const,
+              outcome: {
+                orderId: order.id,
+                orderName: order.name,
+                status: 'failed',
+                category: 'order_timeout',
+                stage: 'order_processing',
+                reason: timeoutMsg,
+              },
+            };
+          }),
+        ),
+      );
       for (const result of results) {
         if (result.result === 'processed') {
           processedCount += 1;
@@ -1826,7 +1888,7 @@ export async function runSchedulerCycle(
       clearInterval(heartbeatTimer);
       heartbeatTimer = null;
     }
-    schedulerRunning = false;
+    setSchedulerRunningState(false);
     await releaseSchedulerRunLock(run.id);
   }
 }

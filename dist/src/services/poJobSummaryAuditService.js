@@ -43,10 +43,20 @@ function extractSoNameFromOrigin(origin) {
     }
     return null;
 }
+const ODOO_USER_TERM_CACHE_TTL_MS = 30 * 60 * 1000;
+const odooUserByTermCache = new Map();
 /**
  * Searches Odoo for a user by name or login pattern.
  */
 async function findOdooUserByTerm(client, term) {
+    const normalizedTerm = term.trim().toLowerCase();
+    if (!normalizedTerm) {
+        return null;
+    }
+    const cached = odooUserByTermCache.get(normalizedTerm);
+    if (cached && Date.now() - cached.fetchedAt < ODOO_USER_TERM_CACHE_TTL_MS) {
+        return cached.user;
+    }
     try {
         const users = await client.searchReadRecords('res.users', {
             domain: [
@@ -58,14 +68,19 @@ async function findOdooUserByTerm(client, term) {
             limit: 1,
         });
         const u = users[0];
-        if (!u)
-            return null;
-        return {
-            name: u.name,
-            login: u.login,
-            userId: u.id,
-            partnerId: relationId(u.partner_id),
-        };
+        const resolved = u
+            ? {
+                name: u.name,
+                login: u.login,
+                userId: u.id,
+                partnerId: relationId(u.partner_id),
+            }
+            : null;
+        odooUserByTermCache.set(normalizedTerm, {
+            user: resolved,
+            fetchedAt: Date.now(),
+        });
+        return resolved;
     }
     catch {
         return null;
@@ -698,9 +713,14 @@ async function auditPurchaseOrderAgainstJobSummary(client, purchaseOrderId, prov
 /**
  * Given a Sales Order, finds all linked Purchase Orders and audits them against the Job Summary.
  */
-async function auditLinkedPurchaseOrdersForSaleOrder(client, saleOrderId, parsed) {
-    const saleOrders = await client.readRecords('sale.order', [saleOrderId], ['id', 'name']);
-    const so = saleOrders[0];
+async function auditLinkedPurchaseOrdersForSaleOrder(client, saleOrderId, parsed, saleOrderName) {
+    let so = saleOrderName
+        ? { id: saleOrderId, name: saleOrderName }
+        : undefined;
+    if (!so) {
+        const saleOrders = await client.readRecords('sale.order', [saleOrderId], ['id', 'name']);
+        so = saleOrders[0];
+    }
     if (!so)
         return [];
     // Search POs where origin contains the SO name

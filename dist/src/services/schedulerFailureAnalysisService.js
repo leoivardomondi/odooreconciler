@@ -123,9 +123,9 @@ async function getSchedulerFailureReport(scope) {
         else if (r.status === 'completed_with_errors' || r.failed_count > 0)
             completedWithErrorsCount++;
         const ctx = parseJsonContext(r.context_json);
-        const schedulerName = ctx.schedulerName || (ctx.jobType === 'po_bill_scheduler' ? 'PO Bill Scheduler' : 'Sales Order Scheduler');
+        const schedulerName = ctx.schedulerName || (ctx.jobType === 'po_bill_matching' || ctx.jobType === 'po_bill_scheduler' ? 'PO Bill Scheduler' : 'Sales Order Scheduler');
         const jobType = ctx.jobType || 'scheduler';
-        const reason = r.summary || r.error_message || 'Job did not complete cleanly.';
+        const reason = (r.status === 'failed' && r.error_message) ? r.error_message : (r.summary || r.error_message || 'Job did not complete cleanly.');
         const errorMessage = r.error_message || '';
         const { diagnosis, suggestion } = generateSchedulerSuggestion(r.status, reason, errorMessage, ctx);
         return {

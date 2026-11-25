@@ -951,10 +951,14 @@ async function ensureSignatureStillCurrent(
   client: OdooClient,
   orderId: number,
   signature: string,
+  preloadedMappings?: ReturnType<typeof resolveFieldMappings>,
 ) {
-  const settings = await getSettings();
-  const availableFields = await client.getSaleOrderFields();
-  const mappings = resolveFieldMappings(settings.fieldMappings, availableFields);
+  let mappings = preloadedMappings;
+  if (!mappings) {
+    const settings = await getSettings();
+    const availableFields = await client.getSaleOrderFields();
+    mappings = resolveFieldMappings(settings.fieldMappings, availableFields);
+  }
   const latest = await client.getSaleOrderStockHandoff(orderId, mappings);
 
   if (latest.signature.trim() !== signature.trim()) {
@@ -1021,7 +1025,10 @@ function createBaseItemResult(item: AggregatedStockItem): StockProcessingItemRes
   };
 }
 
-async function buildStockRun(orderId: number): Promise<{
+async function buildStockRun(
+  orderId: number,
+  options: { skipMultiSummaryRefetch?: boolean } = {},
+): Promise<{
   client: OdooClient;
   orderName: string;
   signature: string;
@@ -1029,6 +1036,9 @@ async function buildStockRun(orderId: number): Promise<{
   handoffLog: string;
   items: AggregatedStockItem[];
   mappings: ReturnType<typeof resolveFieldMappings>;
+  availableFields: Awaited<ReturnType<OdooClient['getSaleOrderFields']>>;
+  handoff: Awaited<ReturnType<OdooClient['getSaleOrderStockHandoff']>>;
+  alreadyProcessed: boolean;
 }> {
   const { client, settings } = await getConfiguredClient();
   const availableFields = await client.getSaleOrderFields();
@@ -1069,22 +1079,35 @@ async function buildStockRun(orderId: number): Promise<{
     signature = signature || latestExtracted.pdfSignature || '';
   }
 
+  const unreversedProcessedItems = signature.trim()
+    ? await getProcessedStockVariantIds(orderId, signature)
+    : [];
+  const alreadyProcessed = Boolean(
+    handoff.signature.trim() &&
+    handoff.signature.trim() === handoff.stockSignature.trim() &&
+    unreversedProcessedItems.length > 0,
+  );
+
   // If the Sales Order has 2+ distinct Job Summary PDFs attached that combine (e.g. main summary + addendum),
   // use the combined edging items so edging rolls and Hot Melt Adhesive are calculated from total actual usage.
-  try {
-    const multiSummary = await resolveCombinedJobSummaryFromOdooAttachments(
-      client,
-      orderId,
-      settings.parser,
-    );
-    if (multiSummary && multiSummary.mode === 'combined_sum' && multiSummary.combined.items.length > 0) {
-      sourceItems = multiSummary.combined.items;
-      if (!signature.trim()) {
-        signature = computePdfSignature(Buffer.from(multiSummary.combined.rawText || '', 'utf8'));
+  // Skip when already processed or when extractionService already combined multi-PDFs immediately before this call.
+  if (!alreadyProcessed && !options.skipMultiSummaryRefetch) {
+    try {
+      const multiSummary = await resolveCombinedJobSummaryFromOdooAttachments(
+        client,
+        orderId,
+        settings.parser,
+        { onlyWhenMultiple: true },
+      );
+      if (multiSummary && multiSummary.mode === 'combined_sum' && multiSummary.combined.items.length > 0) {
+        sourceItems = multiSummary.combined.items;
+        if (!signature.trim()) {
+          signature = computePdfSignature(Buffer.from(multiSummary.combined.rawText || '', 'utf8'));
+        }
       }
+    } catch {
+      // Non-blocking multi-summary resolution
     }
-  } catch {
-    // Non-blocking multi-summary resolution
   }
 
   if (!signature.trim()) {
@@ -1103,6 +1126,9 @@ async function buildStockRun(orderId: number): Promise<{
     handoffLog: handoff.processingLog,
     items: aggregateItems(sourceItems),
     mappings,
+    availableFields,
+    handoff,
+    alreadyProcessed,
   };
 }
 
@@ -1191,6 +1217,7 @@ export async function processStockItem(
   processedVariantIds: Set<number>,
   matchedLineOverride?: SaleOrderLine | null,
   cache?: StockProcessingOrderCache,
+  preloadedMappings?: ReturnType<typeof resolveFieldMappings>,
 ): Promise<StockProcessingItemResult> {
   const result = createBaseItemResult(item);
   const matchedLine = matchedLineOverride === undefined ? matchSoLine(item, lines) : matchedLineOverride;
@@ -1277,7 +1304,7 @@ export async function processStockItem(
     return result;
   }
 
-  await ensureSignatureStillCurrent(client, orderId, signature);
+  await ensureSignatureStillCurrent(client, orderId, signature, preloadedMappings);
   await client.adjustStockAtLocation(component.variantId, location.id, result.newStock);
   processedVariantIds.add(component.variantId);
   result.status = 'processed';
@@ -1287,11 +1314,13 @@ export async function processStockItem(
 
 export async function processAllItems(
   orderId: number,
-  options: { preview?: boolean } = {},
+  options: { preview?: boolean; skipMultiSummaryRefetch?: boolean } = {},
 ): Promise<StockProcessingRunResult> {
   const preview = Boolean(options.preview);
-  const run = await buildStockRun(orderId);
-  const { client } = run;
+  const run = await buildStockRun(orderId, {
+    skipMultiSummaryRefetch: options.skipMultiSummaryRefetch,
+  });
+  const { client, availableFields, mappings, handoff } = run;
   const lockSkipped = !preview && (await isStockProcessingLocked(orderId, run.signature));
   const initialResult: StockProcessingRunResult = {
     orderId,
@@ -1316,16 +1345,7 @@ export async function processAllItems(
     statusMessage: '',
   };
 
-  const availableFields = await client.getSaleOrderFields();
-  const mappings = resolveFieldMappings((await getSettings()).fieldMappings, availableFields);
-  const handoff = await client.getSaleOrderStockHandoff(orderId, mappings);
-  const unreversedProcessedItems = await getProcessedStockVariantIds(orderId, run.signature);
-
-  if (
-    handoff.signature.trim() &&
-    handoff.signature.trim() === handoff.stockSignature.trim() &&
-    unreversedProcessedItems.length > 0
-  ) {
+  if (run.alreadyProcessed) {
     return {
       ...initialResult,
       alreadyProcessed: true,
@@ -1352,9 +1372,7 @@ export async function processAllItems(
   try {
     const location = await resolveStockLocation(client);
     const lines = await client.getSaleOrderLines(orderId);
-    const missingComponentAlertRecipient = preview
-      ? null
-      : await resolveAllowedNotificationRecipient(client, 'missing_component');
+    let missingComponentAlertRecipient: StockAlertRecipient | null = null;
     const processedVariantIds = new Set<number>(await getProcessedStockVariantIds(orderId, run.signature));
     const matchedLines = matchSoLines(run.items, lines);
     const results: StockProcessingItemResult[] = [];
@@ -1391,6 +1409,7 @@ export async function processAllItems(
         processedVariantIds,
         matchedLine,
         cache,
+        mappings,
       );
 
       if (!preview && result.status === 'processed' && result.variantId) {
@@ -1502,7 +1521,7 @@ export async function processAllItems(
       glueResult.newStock = currentStock + totalUnusedGlue;
 
       if (!preview) {
-        await ensureSignatureStillCurrent(client, orderId, run.signature);
+        await ensureSignatureStillCurrent(client, orderId, run.signature, mappings);
         await client.adjustStockAtLocation(glueVariantId, location.id, glueResult.newStock);
         processedVariantIds.add(glueVariantId);
         glueResult.status = 'processed';
@@ -1589,6 +1608,10 @@ export async function processAllItems(
           const order = await client.getSaleOrder(orderId);
           const salespersonUserId = Array.isArray(order.user_id) ? Number(order.user_id[0]) : null;
           await postMissingItemsToActivities(client, orderId, missingSoProducts, salespersonUserId);
+        }
+
+        if (componentMissingMessages.size > 0) {
+          missingComponentAlertRecipient = await resolveAllowedNotificationRecipient(client, 'missing_component');
         }
 
         for (const message of componentMissingMessages) {
@@ -1679,8 +1702,14 @@ export async function previewSaleOrderStockProcessing(orderId: number) {
   return processAllItems(orderId, { preview: true });
 }
 
-export async function processSaleOrderStock(orderId: number) {
-  return processAllItems(orderId, { preview: false });
+export async function processSaleOrderStock(
+  orderId: number,
+  options: { skipMultiSummaryRefetch?: boolean } = {},
+) {
+  return processAllItems(orderId, {
+    preview: false,
+    skipMultiSummaryRefetch: options.skipMultiSummaryRefetch,
+  });
 }
 
 export async function reverseSaleOrderStockAdditions(orderId: number): Promise<{

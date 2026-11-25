@@ -301,21 +301,24 @@ function compareAndCombineJobSummaries(candidates, soLines = []) {
  * Fetches all Job Summary PDF attachments on a Sales Order, parses and compares them
  * against the Sales Order's lines, and returns the combined (or latest revision) result.
  */
-async function resolveCombinedJobSummaryFromOdooAttachments(client, saleOrderId, parserConfig = helpers_1.DEFAULT_PARSER_CONFIG) {
-    const [attachments, rawSoLines] = await Promise.all([
-        client.getAttachments(saleOrderId).catch(() => []),
-        client.searchReadRecords('sale.order.line', {
-            domain: [['order_id', '=', saleOrderId]],
-            fields: ['id', 'name', 'product_id', 'product_uom_qty', 'display_type'],
-            limit: 100,
-        }).catch(() => []),
-    ]);
+async function resolveCombinedJobSummaryFromOdooAttachments(client, saleOrderId, parserConfig = helpers_1.DEFAULT_PARSER_CONFIG, options) {
+    const attachments = await client.getAttachments(saleOrderId).catch(() => []);
     const jobSummaryAttachments = attachments
         .filter((a) => (0, helpers_1.isJobSummaryAttachment)(a, parserConfig.filenameKeyword || 'job summary'))
         .sort(helpers_1.sortAttachmentsNewestFirst);
     if (jobSummaryAttachments.length === 0) {
         return null;
     }
+    if (options?.onlyWhenMultiple && jobSummaryAttachments.length <= 1) {
+        return null;
+    }
+    const rawSoLines = await client
+        .searchReadRecords('sale.order.line', {
+        domain: [['order_id', '=', saleOrderId]],
+        fields: ['id', 'name', 'product_id', 'product_uom_qty', 'display_type'],
+        limit: 100,
+    })
+        .catch(() => []);
     const candidates = [];
     for (const att of jobSummaryAttachments) {
         try {

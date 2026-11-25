@@ -10,7 +10,7 @@ import {
   saveShopFloorSharedCache,
 } from '../models/repositories';
 import { queryAll, execute } from '../models/db';
-import { OdooClient, isOdooTrafficPaused } from './odooClient';
+import { OdooClient, isOdooTrafficPaused, isSchedulerRunActive } from './odooClient';
 import {
   isBoardProductName,
   normalizeBoardProductName,
@@ -947,6 +947,7 @@ export function startShopFloorPendingSyncInterval() {
   }, 3000);
 
   syncIntervalTimer = setInterval(() => {
+    if (isSchedulerRunActive()) return;
     void syncPendingProcessesFromOdoo(false).catch(() => undefined);
   }, SYNC_INTERVAL_MS);
   syncIntervalTimer.unref?.();

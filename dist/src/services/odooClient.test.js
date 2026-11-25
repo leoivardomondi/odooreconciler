@@ -102,3 +102,67 @@ const odooClient_1 = require("./odooClient");
     // The gap between second request and first request should be at least 900ms (accounting for timer granularity)
     strict_1.default.ok(timestamps[1] - timestamps[0] >= 900, `Expected gap >= 900ms, got ${timestamps[1] - timestamps[0]}ms`);
 });
+(0, node_test_1.default)('enqueueOdooRequest skips aborted queued requests without executing fn', async () => {
+    const { setOdooTrafficPaused, enqueueOdooRequest } = await Promise.resolve().then(() => __importStar(require('./odooClient')));
+    setOdooTrafficPaused(false);
+    const controller = new AbortController();
+    let executed = false;
+    // Enqueue a blocker, then queue an abortable read behind it and abort before it runs
+    let releaseBlocker;
+    const blockerGate = new Promise((resolve) => {
+        releaseBlocker = resolve;
+    });
+    const blockerPromise = enqueueOdooRequest(async () => {
+        await blockerGate;
+        return 'done';
+    });
+    const cancelledPromise = enqueueOdooRequest(async () => {
+        executed = true;
+        return 'should-not-run';
+    }, { signal: controller.signal });
+    controller.abort();
+    releaseBlocker();
+    strict_1.default.equal(await blockerPromise, 'done');
+    await strict_1.default.rejects(cancelledPromise, (err) => err?.statusCode === 499 && /cancelled/i.test(err?.message));
+    strict_1.default.equal(executed, false);
+});
+(0, node_test_1.default)('getSaleOrderFields caches across OdooClient instances and supports forceRefresh / clear', async () => {
+    odooClient_1.OdooClient.clearSaleOrderFieldsCache();
+    let requestCalls = 0;
+    const makeClient = () => {
+        const client = new odooClient_1.OdooClient({
+            baseUrl: 'https://cache-test.example.test',
+            database: 'cache_db',
+            username: 'user@example.test',
+            apiKey: 'key',
+        });
+        client.request = async () => {
+            requestCalls += 1;
+            return {
+                name: { string: 'Order Reference', type: 'char' },
+                x_sig: { string: 'Signature', type: 'char' },
+            };
+        };
+        return client;
+    };
+    const first = await makeClient().getSaleOrderFields();
+    const second = await makeClient().getSaleOrderFields();
+    strict_1.default.equal(requestCalls, 1);
+    strict_1.default.equal(first.length, 2);
+    strict_1.default.deepEqual(second, first);
+    await makeClient().getSaleOrderFields({ forceRefresh: true });
+    strict_1.default.equal(requestCalls, 2);
+    odooClient_1.OdooClient.clearSaleOrderFieldsCache();
+    await makeClient().getSaleOrderFields();
+    strict_1.default.equal(requestCalls, 3);
+    odooClient_1.OdooClient.clearSaleOrderFieldsCache();
+});
+(0, node_test_1.default)('isSchedulerRunActive tracks active scheduler run state', async () => {
+    const { isSchedulerRunActive, setSchedulerRunActive } = await Promise.resolve().then(() => __importStar(require('./odooClient')));
+    setSchedulerRunActive(false);
+    strict_1.default.equal(isSchedulerRunActive(), false);
+    setSchedulerRunActive(true);
+    strict_1.default.equal(isSchedulerRunActive(), true);
+    setSchedulerRunActive(false);
+    strict_1.default.equal(isSchedulerRunActive(), false);
+});

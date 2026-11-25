@@ -365,7 +365,7 @@ function startShopFloorOperatorAccessSyncInterval() {
     // Prime immediately on startup
     run();
     intervalHandle = setInterval(() => {
-        if (isOperatingTime()) {
+        if (isOperatingTime() && !(0, odooClient_1.isSchedulerRunActive)()) {
             run();
         }
     }, SYNC_INTERVAL_MS);

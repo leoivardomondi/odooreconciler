@@ -76,8 +76,9 @@ const COLOR_STOP_WORDS = new Set([
 ]);
 
 // In-memory caches to prevent repeated Odoo RPC calls for static/frequently-read data
-let cachedValidatedDocumentTagId: number | null = null;
-let cachedDeliveryNoteDocumentTagId: number | null = null;
+const DOCUMENT_TAG_CACHE_TTL_MS = 10 * 60 * 1000;
+let cachedValidatedDocumentTagEntry: { id: number | null; fetchedAt: number } | null = null;
+let cachedDeliveryNoteDocumentTagEntry: { id: number | null; fetchedAt: number } | null = null;
 const journalCache = new Map<string, { id: number; name: string; code: string } | null>();
 const vendorPartnerIdCache = new Map<string, { ids: number[]; expiresAt: number }>();
 
@@ -114,6 +115,7 @@ export interface RecentDocumentPdfsPage {
   from: number;
   to: number;
   sinceDate: string;
+  rawDocumentCount?: number;
 }
 
 export function isSupportedPoBillMimetype(mimetype: string | null | undefined) {
@@ -1412,37 +1414,51 @@ async function findOrCreateValidatedDocumentTag(client: OdooClient): Promise<Doc
   const exact = existing.find((tag) => tag.name.toLowerCase() === 'validated');
   if (exact || existing[0]) {
     const found = exact || existing[0];
-    cachedValidatedDocumentTagId = found.id;
+    cachedValidatedDocumentTagEntry = { id: found.id, fetchedAt: Date.now() };
     return found;
   }
 
   const tagId = await client.createRecord('documents.tag', { name: 'Validated' }).catch(() => null);
   if (tagId) {
-    cachedValidatedDocumentTagId = tagId;
+    cachedValidatedDocumentTagEntry = { id: tagId, fetchedAt: Date.now() };
   }
   return tagId ? { id: tagId, name: 'Validated' } : null;
 }
 
-async function findValidatedDocumentTagId(client: OdooClient): Promise<number | null> {
-  if (cachedValidatedDocumentTagId !== null) {
-    return cachedValidatedDocumentTagId;
+async function findValidatedDocumentTagId(
+  client: OdooClient,
+  signal?: AbortSignal,
+): Promise<number | null> {
+  if (
+    cachedValidatedDocumentTagEntry &&
+    Date.now() - cachedValidatedDocumentTagEntry.fetchedAt < DOCUMENT_TAG_CACHE_TTL_MS
+  ) {
+    return cachedValidatedDocumentTagEntry.id;
   }
   const fields = await getAvailableModelFieldNames(client, 'documents.tag', ['id', 'name']);
   if (!fields.has('id') || !fields.has('name')) {
+    cachedValidatedDocumentTagEntry = { id: null, fetchedAt: Date.now() };
     return null;
   }
 
-  const tags = await client.searchReadRecords<DocumentsTagSummary>('documents.tag', {
-    domain: [['name', '=', 'Validated']],
-    fields: ['id', 'name'],
-    limit: 1,
-    order: 'id asc',
-  }).catch(() => []);
+  let tags: DocumentsTagSummary[] = [];
+  try {
+    tags = await client.searchReadRecords<DocumentsTagSummary>('documents.tag', {
+      domain: [['name', '=', 'Validated']],
+      fields: ['id', 'name'],
+      limit: 1,
+      order: 'id asc',
+      signal,
+    });
+  } catch (err) {
+    if (signal?.aborted) {
+      throw err;
+    }
+    return null;
+  }
 
   const id = tags[0]?.id || null;
-  if (id !== null) {
-    cachedValidatedDocumentTagId = id;
-  }
+  cachedValidatedDocumentTagEntry = { id, fetchedAt: Date.now() };
   return id;
 }
 
@@ -1505,26 +1521,40 @@ async function markSourceDocumentValidated(
   };
 }
 
-async function findDeliveryNoteDocumentTagId(client: OdooClient): Promise<number | null> {
-  if (cachedDeliveryNoteDocumentTagId !== null) {
-    return cachedDeliveryNoteDocumentTagId;
+async function findDeliveryNoteDocumentTagId(
+  client: OdooClient,
+  signal?: AbortSignal,
+): Promise<number | null> {
+  if (
+    cachedDeliveryNoteDocumentTagEntry &&
+    Date.now() - cachedDeliveryNoteDocumentTagEntry.fetchedAt < DOCUMENT_TAG_CACHE_TTL_MS
+  ) {
+    return cachedDeliveryNoteDocumentTagEntry.id;
   }
   const fields = await getAvailableModelFieldNames(client, 'documents.tag', ['id', 'name']);
   if (!fields.has('id') || !fields.has('name')) {
+    cachedDeliveryNoteDocumentTagEntry = { id: null, fetchedAt: Date.now() };
     return null;
   }
 
-  const tags = await client.searchReadRecords<DocumentsTagSummary>('documents.tag', {
-    domain: [['name', 'ilike', DELIVERY_NOTE_DOCUMENT_TAG_NAME]],
-    fields: ['id', 'name'],
-    limit: 10,
-    order: 'id asc',
-  }).catch(() => []);
+  let tags: DocumentsTagSummary[] = [];
+  try {
+    tags = await client.searchReadRecords<DocumentsTagSummary>('documents.tag', {
+      domain: [['name', 'ilike', DELIVERY_NOTE_DOCUMENT_TAG_NAME]],
+      fields: ['id', 'name'],
+      limit: 10,
+      order: 'id asc',
+      signal,
+    });
+  } catch (err) {
+    if (signal?.aborted) {
+      throw err;
+    }
+    return null;
+  }
   const exact = tags.find((tag) => tag.name.trim().toLowerCase() === DELIVERY_NOTE_DOCUMENT_TAG_NAME.toLowerCase());
   const id = (exact || tags[0])?.id || null;
-  if (id !== null) {
-    cachedDeliveryNoteDocumentTagId = id;
-  }
+  cachedDeliveryNoteDocumentTagEntry = { id, fetchedAt: Date.now() };
   return id;
 }
 
@@ -1543,13 +1573,13 @@ async function findOrCreateDeliveryNoteDocumentTag(client: OdooClient): Promise<
   const exact = existing.find((tag) => tag.name.trim().toLowerCase() === DELIVERY_NOTE_DOCUMENT_TAG_NAME.toLowerCase());
   if (exact || existing[0]) {
     const found = exact || existing[0];
-    cachedDeliveryNoteDocumentTagId = found.id;
+    cachedDeliveryNoteDocumentTagEntry = { id: found.id, fetchedAt: Date.now() };
     return found;
   }
 
   const tagId = await client.createRecord('documents.tag', { name: DELIVERY_NOTE_DOCUMENT_TAG_NAME }).catch(() => null);
   if (tagId) {
-    cachedDeliveryNoteDocumentTagId = tagId;
+    cachedDeliveryNoteDocumentTagEntry = { id: tagId, fetchedAt: Date.now() };
   }
   return tagId ? { id: tagId, name: DELIVERY_NOTE_DOCUMENT_TAG_NAME } : null;
 }
@@ -1619,6 +1649,7 @@ const FINANCE_FOLDERS_CACHE_TTL_MS = 60 * 60 * 1000;
 async function findFinanceDocumentFolderIds(
   client: OdooClient,
   targetCompanyId: number,
+  signal?: AbortSignal,
 ): Promise<Array<{ id: number; name: string }>> {
   const cached = cachedFinanceFoldersByCompany.get(targetCompanyId);
   if (cached && Date.now() - cached.fetchedAt < FINANCE_FOLDERS_CACHE_TTL_MS) {
@@ -1642,6 +1673,7 @@ async function findFinanceDocumentFolderIds(
         fields: ['id', 'name', ...(fields.has('company_id') ? ['company_id'] : [])],
         limit: 50,
         order: 'name asc, id asc',
+        signal,
       });
       const filtered = folders.filter((folder) => folder.name?.toLowerCase() === DOCUMENT_FOLDER_NAME.toLowerCase());
       const matches = filtered.length > 0 ? filtered : folders;
@@ -1651,6 +1683,9 @@ async function findFinanceDocumentFolderIds(
         return result;
       }
     } catch (error) {
+      if (signal?.aborted) {
+        throw error;
+      }
       console.warn(
         `[po-bills] Could not search ${model} for Finance folders.`,
         error instanceof Error ? error.message : error,
@@ -1664,10 +1699,12 @@ async function findFinanceDocumentFolderIds(
 interface DocumentPdfsCacheEntry {
   items: AttachmentInfo[];
   fetchedAt: number;
+  requestedLimit: number;
+  fetchedAll: boolean;
 }
 
 let globalDocumentPdfsCache: DocumentPdfsCacheEntry | null = null;
-const DOCUMENT_PDFS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const DOCUMENT_PDFS_CACHE_TTL_MS = 8 * 60 * 1000;
 
 export function clearDocumentPdfsCache() {
   globalDocumentPdfsCache = null;
@@ -1678,13 +1715,16 @@ export async function getRecentDocumentPdfs(
   limit = 25,
   offset = 0,
   forceRefresh = false,
+  signal?: AbortSignal,
 ): Promise<AttachmentInfo[]> {
   const now = Date.now();
   if (
     !forceRefresh &&
     globalDocumentPdfsCache &&
     now - globalDocumentPdfsCache.fetchedAt < DOCUMENT_PDFS_CACHE_TTL_MS &&
-    globalDocumentPdfsCache.items.length >= limit
+    (globalDocumentPdfsCache.fetchedAll ||
+      globalDocumentPdfsCache.items.length >= offset + limit ||
+      (offset === 0 && globalDocumentPdfsCache.requestedLimit >= limit))
   ) {
     const cachedSlice = globalDocumentPdfsCache.items.slice(offset, offset + limit);
     const attachmentIds = cachedSlice.map((item) => item.id).filter((id): id is number => Number.isInteger(id) && id > 0);
@@ -1719,11 +1759,19 @@ export async function getRecentDocumentPdfs(
     });
   }
 
-  const page = await getRecentDocumentPdfsPage(client, { page: Math.floor(offset / limit) + 1, pageSize: limit });
+  const page = await getRecentDocumentPdfsPage(client, {
+    page: Math.floor(offset / limit) + 1,
+    pageSize: limit,
+    includeTotal: false,
+    signal,
+  });
   if (offset === 0) {
+    const rawCount = page.rawDocumentCount ?? page.items.length;
     globalDocumentPdfsCache = {
       items: page.items,
-      fetchedAt: now,
+      fetchedAt: Date.now(),
+      requestedLimit: limit,
+      fetchedAll: rawCount < limit,
     };
   }
   return page.items;
@@ -1731,12 +1779,14 @@ export async function getRecentDocumentPdfs(
 
 export async function getRecentDocumentPdfsPage(
   client: OdooClient,
-  options: { page?: number; pageSize?: number } = {},
+  options: { page?: number; pageSize?: number; includeTotal?: boolean; signal?: AbortSignal } = {},
 ): Promise<RecentDocumentPdfsPage> {
   const requestedPageSize = Number(options.pageSize || 25);
   const pageSize = Number.isFinite(requestedPageSize) ? Math.min(Math.max(Math.floor(requestedPageSize), 1), 500) : 25;
   const requestedPage = Number(options.page || 1);
   const safeRequestedPage = Number.isFinite(requestedPage) ? Math.max(Math.floor(requestedPage), 1) : 1;
+  const includeTotal = options.includeTotal !== false;
+  const signal = options.signal;
   const targetCompanyId = await client.getTargetCompanyIdValue();
   const documentFieldCandidates = [
     'id',
@@ -1757,7 +1807,7 @@ export async function getRecentDocumentPdfsPage(
     : documentFields.has('workspace_id')
       ? 'workspace_id'
       : null;
-  const financeFolders = await findFinanceDocumentFolderIds(client, targetCompanyId);
+  const financeFolders = await findFinanceDocumentFolderIds(client, targetCompanyId, signal);
   const financeFolderIds = financeFolders.map((folder) => folder.id);
   const domain: unknown[] = [];
 
@@ -1781,10 +1831,21 @@ export async function getRecentDocumentPdfsPage(
     }
   }
 
-  const total = await client.searchCountRecords('documents.document', domain);
-  const totalPages = Math.max(Math.ceil(total / pageSize), 1);
-  const page = Math.min(safeRequestedPage, totalPages);
-  const offset = (page - 1) * pageSize;
+  let total: number;
+  let totalPages: number;
+  let page: number;
+  let offset: number;
+  if (includeTotal) {
+    total = await client.searchCountRecords('documents.document', domain, { signal });
+    totalPages = Math.max(Math.ceil(total / pageSize), 1);
+    page = Math.min(safeRequestedPage, totalPages);
+    offset = (page - 1) * pageSize;
+  } else {
+    page = safeRequestedPage;
+    offset = (page - 1) * pageSize;
+    total = 0;
+    totalPages = 1;
+  }
   const fields = documentFieldCandidates.filter((field) => documentFields.has(field));
   const documents = await client.searchReadRecords<Record<string, unknown>>('documents.document', {
     domain,
@@ -1792,11 +1853,16 @@ export async function getRecentDocumentPdfsPage(
     limit: pageSize,
     offset,
     order: 'write_date desc, create_date desc, id desc',
+    signal,
   });
+  if (!includeTotal) {
+    total = offset + documents.length;
+    totalPages = Math.max(Math.ceil(total / pageSize), 1);
+  }
   const [validatedTagId, deliveryNoteTagId] = documents.length > 0
     ? await Promise.all([
-        findValidatedDocumentTagId(client),
-        findDeliveryNoteDocumentTagId(client),
+        findValidatedDocumentTagId(client, signal),
+        findDeliveryNoteDocumentTagId(client, signal),
       ])
     : [null, null];
 
@@ -1811,6 +1877,7 @@ export async function getRecentDocumentPdfsPage(
       fields: ['id', 'name', 'mimetype', 'create_date', 'write_date', 'file_size'],
       limit: attachmentIds.length,
       order: 'write_date desc, create_date desc, id desc',
+      signal,
     });
     attachments.forEach((attachment) => attachmentsById.set(attachment.id, attachment));
   }
@@ -1883,6 +1950,7 @@ export async function getRecentDocumentPdfsPage(
     from: total === 0 ? 0 : offset + 1,
     to: total === 0 ? 0 : Math.min(offset + documents.length, total),
     sinceDate: RECENT_DOCUMENT_PDFS_SINCE,
+    rawDocumentCount: documents.length,
   };
 }
 

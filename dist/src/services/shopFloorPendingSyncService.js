@@ -751,6 +751,8 @@ function startShopFloorPendingSyncInterval() {
         void syncPendingProcessesFromOdoo(true).catch(() => undefined);
     }, 3000);
     syncIntervalTimer = setInterval(() => {
+        if ((0, odooClient_1.isSchedulerRunActive)())
+            return;
         void syncPendingProcessesFromOdoo(false).catch(() => undefined);
     }, SYNC_INTERVAL_MS);
     syncIntervalTimer.unref?.();

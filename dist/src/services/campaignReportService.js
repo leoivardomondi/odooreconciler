@@ -36,9 +36,8 @@ function isAlreadyInvoicedSummary(summary) {
     const text = (summary || '').toLowerCase();
     return /\b(already invoiced|invoiced in odoo)\b/i.test(text);
 }
-async function computeMayCampaignMetrics(client, odooBaseUrl) {
-    const allPage = await (0, poBillAutomationService_1.getRecentDocumentPdfsPage)(client, { page: 1, pageSize: 500 });
-    const pdfs = allPage.items;
+async function computeMayCampaignMetrics(client, odooBaseUrl, signal) {
+    const pdfs = await (0, poBillAutomationService_1.getRecentDocumentPdfs)(client, 500, 0, false, signal);
     const attachmentIds = pdfs.map((pdf) => pdf.id);
     const processedMap = await (0, repositories_1.getPoBillProcessedDocumentsByAttachmentIds)(attachmentIds);
     let totalScanned = 0;

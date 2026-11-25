@@ -11,7 +11,7 @@ import { env } from '../utils/env';
 import { hasOdooConfiguration } from '../utils/helpers';
 import { appDateTime } from '../utils/dateTime';
 import { logEvent } from './logService';
-import { OdooClient } from './odooClient';
+import { OdooClient, isSchedulerRunActive } from './odooClient';
 
 const FRESH_MS = 15 * 60 * 1000; // 15 minutes fresh
 const REFRESH_INTERVAL_MS = 15 * 60 * 1000;
@@ -205,7 +205,7 @@ export function startCustomerMirrorInterval() {
     }
   })();
   intervalHandle = setInterval(() => {
-    if (isOperatingTime()) {
+    if (isOperatingTime() && !isSchedulerRunActive()) {
       void refreshCustomerMirror().catch(() => undefined);
     }
   }, REFRESH_INTERVAL_MS);

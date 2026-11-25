@@ -335,9 +335,20 @@
         </div>
       </div>
 
-      <div class="card shadow-sm border-0 app-card mb-4">
+      <% const hasActiveSchedulerRun = Boolean(scheduler && (scheduler.isRunning || (scheduler.recentRuns && scheduler.recentRuns.some((r) => r.status === 'started')))); %>
+      <div class="card shadow-sm border-0 app-card mb-4" id="scheduler-run-summary-card" data-scheduler-active="<%= hasActiveSchedulerRun ? 'true' : 'false' %>">
         <div class="card-body p-4">
-          <h2 class="h4 mb-3">Scheduler Run Summary</h2>
+          <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-3">
+            <div class="d-flex align-items-center gap-2">
+              <h2 class="h4 mb-0">Scheduler Run Summary</h2>
+              <% if (hasActiveSchedulerRun) { %>
+                <span class="badge text-bg-primary">Live updating</span>
+              <% } %>
+            </div>
+            <button type="button" class="btn btn-sm btn-outline-secondary" id="refresh-scheduler-summary-btn">
+              Refresh Summary
+            </button>
+          </div>
           <% if (!scheduler.recentRuns.length) { %>
             <p class="text-secondary mb-0">No scheduler runs recorded yet.</p>
           <% } %>
@@ -363,13 +374,14 @@
             <% const exhaustedCount = Number(run.context.exhaustedCount || 0); %>
             <% const cooldownBlockedCount = Number(run.context.cooldownBlockedCount || 0); %>
             <% const eligibleCount = Number(run.context.candidateFinancePdfCount || 0); %>
+            <% const failedNote = run.errorMessage || run.summary || 'Run failed or timed out.'; %>
             <% const runHealth = run.status === 'started'
               ? { label: 'In progress', tone: 'primary', note: run.summary || 'Processing documents in background...' }
-              : run.status === 'failed' && run.scannedCount === 0
+              : run.status === 'failed'
               ? {
-                  label: 'Run interrupted',
+                  label: run.scannedCount === 0 ? 'Run interrupted' : 'Run failed',
                   tone: 'danger',
-                  note: run.summary || run.errorMessage || 'Run failed or timed out before scanning documents.',
+                  note: failedNote,
                 }
               : isPoBillRun && run.scannedCount === 0
               ? (exhaustedCount > 0 ? { label: 'Manual review needed', tone: 'danger', note: `${exhaustedCount} document(s) exhausted their automatic retry limit.` }
@@ -820,14 +832,92 @@
   <% } %>
 </main>
 
-<% if (scheduler && (scheduler.isRunning || (scheduler.recentRuns && scheduler.recentRuns.some((r) => r.status === 'started')))) { %>
-  <script>
-    window.setTimeout(() => {
-      if (!document.hidden) {
-        window.location.replace('/dashboard');
+<script>
+  (function () {
+    const CARD_ID = 'scheduler-run-summary-card';
+    const BTN_ID = 'refresh-scheduler-summary-btn';
+    const POLL_INTERVAL_MS = 12000;
+    let pollTimer = null;
+    let inFlight = false;
+
+    function isActive() {
+      const card = document.getElementById(CARD_ID);
+      return Boolean(card && card.getAttribute('data-scheduler-active') === 'true');
+    }
+
+    function hasOpenDetails() {
+      const card = document.getElementById(CARD_ID);
+      return Boolean(card && card.querySelector('details[open]'));
+    }
+
+    async function refreshSchedulerSummaryCard(manual) {
+      if (inFlight) return;
+      if (!manual && (document.hidden || hasOpenDetails())) {
+        scheduleNextPoll();
+        return;
       }
-    }, 10000);
-  </script>
-<% } %>
+      const card = document.getElementById(CARD_ID);
+      if (!card) return;
+      const btn = document.getElementById(BTN_ID);
+      inFlight = true;
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Refreshing...';
+      }
+      try {
+        const response = await fetch('/dashboard', {
+          credentials: 'same-origin',
+          headers: { 'X-Requested-With': 'fetch' },
+        });
+        if (!response.ok) return;
+        const html = await response.text();
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+        const nextCard = doc.getElementById(CARD_ID);
+        if (nextCard) {
+          card.setAttribute(
+            'data-scheduler-active',
+            nextCard.getAttribute('data-scheduler-active') || 'false',
+          );
+          card.innerHTML = nextCard.innerHTML;
+          bindRefreshButton();
+        }
+      } catch (_err) {
+        // Non-fatal: keep existing card contents
+      } finally {
+        inFlight = false;
+        const currentBtn = document.getElementById(BTN_ID);
+        if (currentBtn) {
+          currentBtn.disabled = false;
+          currentBtn.textContent = 'Refresh Summary';
+        }
+        scheduleNextPoll();
+      }
+    }
+
+    function scheduleNextPoll() {
+      if (pollTimer) {
+        window.clearTimeout(pollTimer);
+        pollTimer = null;
+      }
+      if (isActive()) {
+        pollTimer = window.setTimeout(() => {
+          void refreshSchedulerSummaryCard(false);
+        }, POLL_INTERVAL_MS);
+      }
+    }
+
+    function bindRefreshButton() {
+      const btn = document.getElementById(BTN_ID);
+      if (btn) {
+        btn.addEventListener('click', () => {
+          void refreshSchedulerSummaryCard(true);
+        });
+      }
+    }
+
+    bindRefreshButton();
+    scheduleNextPoll();
+  })();
+</script>
 
 <%- include('partials/footer') %>

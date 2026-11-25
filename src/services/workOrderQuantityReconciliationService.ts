@@ -18,7 +18,7 @@ import {
   extractThicknessMm,
 } from './boardProductClassifier';
 import { logEvent } from './logService';
-import { OdooClient } from './odooClient';
+import { OdooClient, isSchedulerRunActive } from './odooClient';
 import { parseJobSummaryPdf } from './pdfParser';
 import { DEFAULT_PARSER_CONFIG, isJobSummaryAttachment, extractSoNameFromOrigin } from '../utils/helpers';
 import { resolveCombinedJobSummaryFromOdooAttachments } from './multiJobSummaryCombiner';
@@ -895,8 +895,10 @@ export async function reconcileWorkOrderQuantitiesForMo(
       // Non-fatal cache invalidation
     }
 
-    // Trigger full background sync to ensure clean state
-    void syncPendingProcessesFromOdoo(true).catch(() => null);
+    // Trigger full background sync to ensure clean state (defer during active scheduler batch to avoid Odoo queue contention)
+    if (!isSchedulerRunActive()) {
+      void syncPendingProcessesFromOdoo(true).catch(() => null);
+    }
   } catch (syncErr) {
     void logEvent('warn', 'Failed to update shop_floor_pending_processes after cutting quantity reconciliation', {
       moId: mo.id,

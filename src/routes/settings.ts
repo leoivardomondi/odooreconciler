@@ -763,7 +763,7 @@ async function loadSaleOrderFieldState(
       void (async () => {
         try {
           const client = new OdooClient({ baseUrl, database, username, apiKey });
-          const fields = await client.getSaleOrderFields();
+          const fields = await client.getSaleOrderFields({ forceRefresh: true });
           await saveCachedModelFields('sale.order', fields);
         } catch (_err) {
           // ignore background update error
@@ -785,7 +785,7 @@ async function loadSaleOrderFieldState(
       username,
       apiKey,
     });
-    const fields = await client.getSaleOrderFields();
+    const fields = await client.getSaleOrderFields({ forceRefresh: true });
     const saved = await saveCachedModelFields('sale.order', fields);
 
     return {
@@ -1971,6 +1971,8 @@ router.post('/settings/refresh-fields', credentialValidators, async (req: Reques
 router.post('/settings/clear-cache', async (_req: Request, res: Response) => {
   try {
     const clearedCount = await clearCachedModelFields();
+    OdooClient.clearSaleOrderFieldsCache();
+    OdooClient.clearTargetCompanyIdCache();
     res.setHeader('Clear-Site-Data', '"cache"');
     await logEvent('info', 'Application cache cleared from settings', {
       clearedModelFieldCacheRows: clearedCount,

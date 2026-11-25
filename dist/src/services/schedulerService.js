@@ -19,6 +19,13 @@ const crossCompanySyncService_1 = require("./crossCompanySyncService");
 const tempCleanup_1 = require("../utils/tempCleanup");
 const campaignReportService_1 = require("./campaignReportService");
 let schedulerRunning = false;
+function setSchedulerRunningState(active) {
+    schedulerRunning = active;
+    (0, odooClient_1.setSchedulerRunActive)(active);
+}
+const SCHEDULER_HEARTBEAT_MAX_MS = 20 * 60 * 1000;
+const SO_PER_ORDER_TIMEOUT_MS = 180_000;
+const PO_BILL_FETCH_TIMEOUT_MS = 75_000;
 let schedulerIntervalHandle = null;
 let poBillSchedulerIntervalHandle = null;
 let poBillContinuousChainHandle = null;
@@ -334,12 +341,16 @@ async function isSchedulerStopRequested(runId) {
     }
 }
 async function withTimeout(operation, timeoutMs, label) {
+    const controller = new AbortController();
     let timer = null;
     try {
         return await Promise.race([
-            operation(),
+            operation(controller.signal),
             new Promise((_, reject) => {
-                timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms.`)), timeoutMs);
+                timer = setTimeout(() => {
+                    controller.abort();
+                    reject(new Error(`${label} timed out after ${timeoutMs}ms.`));
+                }, timeoutMs);
             }),
         ]);
     }
@@ -601,7 +612,7 @@ async function runPoBillSchedulerCycle(trigger = 'manual', options = {}) {
         notifyCreated(run);
         return { run, scannedCount: 0, processedCount: 0, skippedCount: 0, failedCount: 0 };
     }
-    schedulerRunning = true;
+    setSchedulerRunningState(true);
     let run;
     try {
         run = await (0, repositories_1.insertSchedulerRun)({
@@ -622,7 +633,7 @@ async function runPoBillSchedulerCycle(trigger = 'manual', options = {}) {
         notifyCreated(run);
     }
     catch (error) {
-        schedulerRunning = false;
+        setSchedulerRunningState(false);
         throw error;
     }
     const lockAcquired = await (0, repositories_1.acquireSchedulerRunLock)(run.id);
@@ -642,7 +653,7 @@ async function runPoBillSchedulerCycle(trigger = 'manual', options = {}) {
             },
             finished: true,
         });
-        schedulerRunning = false;
+        setSchedulerRunningState(false);
         return { run: skippedRun, scannedCount: 0, processedCount: 0, skippedCount: 0, failedCount: 0 };
     }
     let scannedCount = 0;
@@ -655,7 +666,7 @@ async function runPoBillSchedulerCycle(trigger = 'manual', options = {}) {
     try {
         const heartbeatStartedAt = Date.now();
         heartbeatTimer = setInterval(() => {
-            if (Date.now() - heartbeatStartedAt < 300_000) {
+            if (Date.now() - heartbeatStartedAt < SCHEDULER_HEARTBEAT_MAX_MS) {
                 touchActiveSchedulerRunLock(run.id).catch(() => undefined);
             }
         }, 25000);
@@ -676,18 +687,8 @@ async function runPoBillSchedulerCycle(trigger = 'manual', options = {}) {
         catch (err) {
             // non-fatal: continue processing even if updating diagnostics fails
         }
-        let recentPdfs;
-        try {
-            recentPdfs = await withTimeout(() => (0, poBillAutomationService_1.getRecentDocumentPdfs)(client, 300), 45_000, 'Fetching recent Finance documents from Odoo');
-        }
-        catch (fetchErr) {
-            await (0, logService_1.logEvent)('warn', 'Primary Finance documents fetch timed out or failed; retrying with compact limit (150)', {
-                schedulerRunId: run.id,
-                error: fetchErr instanceof Error ? fetchErr.message : String(fetchErr),
-            }).catch(() => undefined);
-            await touchActiveSchedulerRunLock(run.id);
-            recentPdfs = await withTimeout(() => (0, poBillAutomationService_1.getRecentDocumentPdfs)(client, 150), 40_000, 'Fetching recent Finance documents from Odoo (fallback 150)');
-        }
+        const forceDocumentRefresh = !options.continuousChain;
+        const recentPdfs = await withTimeout((signal) => (0, poBillAutomationService_1.getRecentDocumentPdfs)(client, 300, 0, forceDocumentRefresh, signal), PO_BILL_FETCH_TIMEOUT_MS, 'Fetching recent Finance documents from Odoo');
         await touchActiveSchedulerRunLock(run.id);
         const nowMs = Date.now();
         const queueCandidates = [];
@@ -980,7 +981,7 @@ async function runPoBillSchedulerCycle(trigger = 'manual', options = {}) {
         else if (!stopRequested) {
             poBillContinuousPassAttemptedIds.clear();
             try {
-                const campaignMetrics = await withTimeout(() => (0, campaignReportService_1.computeMayCampaignMetrics)(client, settings.odoo.baseUrl), 30_000, 'Computing May campaign completion metrics');
+                const campaignMetrics = await withTimeout((signal) => (0, campaignReportService_1.computeMayCampaignMetrics)(client, settings.odoo.baseUrl, signal), 30_000, 'Computing May campaign completion metrics');
                 if (campaignMetrics.unprocessedRemaining === 0 && scannedCount > 0) {
                     await withTimeout(() => (0, campaignReportService_1.notifyDbAdminCampaignReport)(client), 30_000, 'Sending May campaign completion report');
                 }
@@ -1002,7 +1003,7 @@ async function runPoBillSchedulerCycle(trigger = 'manual', options = {}) {
             processedCount,
             skippedCount,
             failedCount: failedCount + 1,
-            summary: 'PO bill scheduler run failed.',
+            summary: `PO bill scheduler run failed: ${message}`,
             errorMessage: message,
             context: {
                 jobType: PO_BILL_SCHEDULER_JOB_TYPE,
@@ -1022,7 +1023,7 @@ async function runPoBillSchedulerCycle(trigger = 'manual', options = {}) {
             clearInterval(heartbeatTimer);
             heartbeatTimer = null;
         }
-        schedulerRunning = false;
+        setSchedulerRunningState(false);
         await (0, repositories_1.releaseSchedulerRunLock)(run.id);
         await (0, tempCleanup_1.cleanupStaleTempFiles)().catch(() => undefined);
     }
@@ -1169,7 +1170,7 @@ async function runSchedulerCycle(trigger = 'manual', options = {}) {
             failedCount: 0,
         };
     }
-    schedulerRunning = true;
+    setSchedulerRunningState(true);
     let run;
     try {
         run = await (0, repositories_1.insertSchedulerRun)({
@@ -1196,7 +1197,7 @@ async function runSchedulerCycle(trigger = 'manual', options = {}) {
         notifyCreated(run);
     }
     catch (error) {
-        schedulerRunning = false;
+        setSchedulerRunningState(false);
         throw error;
     }
     const lockAcquired = await (0, repositories_1.acquireSchedulerRunLock)(run.id);
@@ -1216,7 +1217,7 @@ async function runSchedulerCycle(trigger = 'manual', options = {}) {
             },
             finished: true,
         });
-        schedulerRunning = false;
+        setSchedulerRunningState(false);
         return {
             run: skippedRun,
             scannedCount: 0,
@@ -1235,7 +1236,7 @@ async function runSchedulerCycle(trigger = 'manual', options = {}) {
     try {
         const heartbeatStartedAt = Date.now();
         heartbeatTimer = setInterval(() => {
-            if (Date.now() - heartbeatStartedAt < 300_000) {
+            if (Date.now() - heartbeatStartedAt < SCHEDULER_HEARTBEAT_MAX_MS) {
                 touchActiveSchedulerRunLock(run.id).catch(() => undefined);
             }
         }, 25000);
@@ -1278,8 +1279,28 @@ async function runSchedulerCycle(trigger = 'manual', options = {}) {
             },
         }).catch(() => undefined);
         const processOrder = async (order) => {
+            const markOrderStage = async (stage) => {
+                await (0, repositories_1.updateSchedulerRun)(run.id, {
+                    scannedCount,
+                    processedCount,
+                    skippedCount,
+                    failedCount,
+                    summary: `Processing Sales Order ${order.name} (${stage})...`,
+                    context: {
+                        ...run.context,
+                        candidateOrderCount: candidateOrders.length,
+                        selectedOrderIds: orders.map((o) => o.id),
+                        selectedOrderNames: orders.map((o) => o.name),
+                        currentOrderId: order.id,
+                        currentOrderName: order.name,
+                        currentStage: stage,
+                        orderOutcomes: [...orderOutcomes],
+                    },
+                }).catch(() => undefined);
+            };
             try {
                 await touchActiveSchedulerRunLock(run.id);
+                await markOrderStage('attachment_lookup');
                 const attachments = await client.getAttachments(order.id);
                 const latestJobSummary = attachments
                     .filter((attachment) => (0, helpers_1.isJobSummaryAttachment)(attachment, settings.parser.filenameKeyword))
@@ -1353,11 +1374,14 @@ async function runSchedulerCycle(trigger = 'manual', options = {}) {
                     });
                 }
                 await touchActiveSchedulerRunLock(run.id);
+                await markOrderStage('extract_pdf');
                 const history = await (0, extractionService_1.extractAttachmentForOrder)(order.id, latestJobSummary.id);
                 await touchActiveSchedulerRunLock(run.id);
+                await markOrderStage('send_to_odoo');
                 const sendResult = await (0, extractionService_1.sendExtractedResultToOdoo)(history.id, false);
                 await touchActiveSchedulerRunLock(run.id);
-                const stockResult = await (0, stockProcessingService_1.processSaleOrderStock)(order.id);
+                await markOrderStage('stock_reconciliation');
+                const stockResult = await (0, stockProcessingService_1.processSaleOrderStock)(order.id, { skipMultiSummaryRefetch: true });
                 await touchActiveSchedulerRunLock(run.id);
                 if (stockResult.summary.failedCount > 0) {
                     const failedItemReasons = stockResult.items
@@ -1390,7 +1414,9 @@ async function runSchedulerCycle(trigger = 'manual', options = {}) {
                 }
                 // Fallback: Audit linked confirmed Purchase Orders against the Job Summary
                 try {
-                    await (0, poJobSummaryAuditService_1.auditLinkedPurchaseOrdersForSaleOrder)(client, order.id);
+                    await markOrderStage('po_audit');
+                    const extractedRecord = await (0, repositories_1.getExtractedResultByHistoryId)(history.id).catch(() => null);
+                    await (0, poJobSummaryAuditService_1.auditLinkedPurchaseOrdersForSaleOrder)(client, order.id, extractedRecord?.resultJson, order.name);
                 }
                 catch (_) { }
                 if (stockResult.alreadyProcessed || stockResult.lockSkipped) {
@@ -1458,7 +1484,26 @@ async function runSchedulerCycle(trigger = 'manual', options = {}) {
         for (let index = 0; index < orders.length; index += SO_SCHEDULER_CONCURRENCY) {
             const chunk = orders.slice(index, index + SO_SCHEDULER_CONCURRENCY);
             await touchActiveSchedulerRunLock(run.id);
-            const results = await Promise.all(chunk.map((order) => processOrder(order)));
+            const results = await Promise.all(chunk.map((order) => withTimeout(() => processOrder(order), SO_PER_ORDER_TIMEOUT_MS, `Processing Sales Order ${order.name}`).catch(async (timeoutErr) => {
+                const timeoutMsg = timeoutErr instanceof Error ? timeoutErr.message : 'Sales Order processing timed out.';
+                await (0, logService_1.logEvent)('error', 'Scheduler timed out while processing a Sales Order', {
+                    schedulerRunId: run.id,
+                    orderId: order.id,
+                    orderName: order.name,
+                    error: timeoutMsg,
+                }).catch(() => undefined);
+                return {
+                    result: 'failed',
+                    outcome: {
+                        orderId: order.id,
+                        orderName: order.name,
+                        status: 'failed',
+                        category: 'order_timeout',
+                        stage: 'order_processing',
+                        reason: timeoutMsg,
+                    },
+                };
+            })));
             for (const result of results) {
                 if (result.result === 'processed') {
                     processedCount += 1;
@@ -1560,7 +1605,7 @@ async function runSchedulerCycle(trigger = 'manual', options = {}) {
             clearInterval(heartbeatTimer);
             heartbeatTimer = null;
         }
-        schedulerRunning = false;
+        setSchedulerRunningState(false);
         await (0, repositories_1.releaseSchedulerRunLock)(run.id);
     }
 }

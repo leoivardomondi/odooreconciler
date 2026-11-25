@@ -182,7 +182,7 @@ function startCustomerMirrorInterval() {
         }
     })();
     intervalHandle = setInterval(() => {
-        if (isOperatingTime()) {
+        if (isOperatingTime() && !(0, odooClient_1.isSchedulerRunActive)()) {
             void refreshCustomerMirror().catch(() => undefined);
         }
     }, REFRESH_INTERVAL_MS);

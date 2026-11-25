@@ -211,10 +211,32 @@ const shopFloorReporting_1 = require("../utils/shopFloorReporting");
 function nowMinusMinutesIso(windowMinutes) {
     return (0, dateTime_1.appDateTimeFromNow)(-Math.max(1, windowMinutes) * 60 * 1000);
 }
-function getSchedulerLockStaleMs() {
+function getSchedulerLockStaleMinutes() {
     const configuredMinutes = Number(env_1.env.SCHEDULER_LOCK_STALE_MINUTES || 8);
-    const minutes = Number.isFinite(configuredMinutes) && configuredMinutes > 0 ? Math.min(10, configuredMinutes) : 8;
-    return minutes * 60 * 1000;
+    return Number.isFinite(configuredMinutes) && configuredMinutes > 0 ? Math.min(15, configuredMinutes) : 8;
+}
+function getSchedulerLockStaleMs() {
+    return getSchedulerLockStaleMinutes() * 60 * 1000;
+}
+const SCHEDULER_MAX_RUN_DURATION_MINUTES = 25;
+function getSchedulerMaxRunDurationMs() {
+    return SCHEDULER_MAX_RUN_DURATION_MINUTES * 60 * 1000;
+}
+function buildStaleRunTimeoutSummary(context, reasonLabel) {
+    const currentAttachmentId = Number(context.currentAttachmentId || 0);
+    const currentAttachmentName = String(context.currentAttachmentName || '').trim();
+    if (currentAttachmentId > 0) {
+        return `Scheduler run timed out or was interrupted while processing Finance document ${currentAttachmentName || `#${currentAttachmentId}`} (#${currentAttachmentId}) (${reasonLabel}).`;
+    }
+    const currentOrderId = Number(context.currentOrderId || 0);
+    const currentOrderName = String(context.currentOrderName || '').trim();
+    const currentStage = String(context.currentStage || '').trim();
+    if (currentOrderId > 0 || currentOrderName) {
+        const orderLabel = currentOrderName || `#${currentOrderId}`;
+        const stageSuffix = currentStage ? ` at stage ${currentStage}` : '';
+        return `Scheduler run timed out or was interrupted while processing Sales Order ${orderLabel}${stageSuffix} (${reasonLabel}).`;
+    }
+    return `Scheduler run timed out or was interrupted (${reasonLabel}).`;
 }
 function readStoredGeminiOAuthCredentials(payload) {
     const encrypted = typeof payload.geminiOAuth === 'string' ? payload.geminiOAuth : '';
@@ -1293,19 +1315,49 @@ async function acquireSchedulerRunLock(runId) {
     return result.affectedRows > 0;
 }
 async function markOrphanedStartedRunsAsFailed() {
-    const staleCutoff = (0, dateTime_1.appDateTimeFromNow)(-getSchedulerLockStaleMs());
+    const staleMinutes = getSchedulerLockStaleMinutes();
+    const staleMs = getSchedulerLockStaleMs();
+    const maxRunMs = getSchedulerMaxRunDurationMs();
+    const staleCutoff = (0, dateTime_1.appDateTimeFromNow)(-staleMs);
+    const currentRuntime = await getSchedulerRuntimeState();
     const startedRuns = await (0, db_1.queryAll)(`
       SELECT id, started_at, context_json
       FROM scheduler_runs
       WHERE status = 'started'
     `);
-    const staleThresholdMs = Date.now() - getSchedulerLockStaleMs();
-    const orphanedRuns = startedRuns.filter((row) => {
+    const nowMs = Date.now();
+    const staleThresholdMs = nowMs - staleMs;
+    const maxRunThresholdMs = nowMs - maxRunMs;
+    const lockAcquiredMs = parseAppTimestampMs(currentRuntime.lockAcquiredAt);
+    const activeLockHeartbeatFresh = Boolean(currentRuntime.lockRunId && lockAcquiredMs > 0 && lockAcquiredMs > staleThresholdMs);
+    const orphanedRuns = [];
+    for (const row of startedRuns) {
         const startedMs = parseAppTimestampMs(row.started_at);
-        return (startedMs > 0 && startedMs <= staleThresholdMs) || (row.started_at && row.started_at <= staleCutoff);
-    });
+        const exceededMaxDuration = startedMs > 0 && startedMs <= maxRunThresholdMs;
+        if (currentRuntime.lockRunId === row.id) {
+            if (exceededMaxDuration) {
+                orphanedRuns.push({
+                    row,
+                    reasonLabel: `exceeded ${SCHEDULER_MAX_RUN_DURATION_MINUTES}-minute maximum runtime`,
+                });
+            }
+            else if (!activeLockHeartbeatFresh) {
+                orphanedRuns.push({
+                    row,
+                    reasonLabel: `lock heartbeat expired after ${staleMinutes} minutes`,
+                });
+            }
+            continue;
+        }
+        if ((startedMs > 0 && startedMs <= staleThresholdMs) || (row.started_at && row.started_at <= staleCutoff)) {
+            orphanedRuns.push({
+                row,
+                reasonLabel: `orphaned without active lock after ${staleMinutes} minutes`,
+            });
+        }
+    }
     const now = (0, dateTime_1.appDateTime)();
-    for (const orphan of orphanedRuns) {
+    for (const { row: orphan, reasonLabel } of orphanedRuns) {
         let context = {};
         try {
             context = orphan.context_json ? JSON.parse(orphan.context_json) : {};
@@ -1315,10 +1367,7 @@ async function markOrphanedStartedRunsAsFailed() {
         }
         const currentAttachmentId = Number(context.currentAttachmentId || 0);
         const currentAttachmentName = String(context.currentAttachmentName || '').trim();
-        const docDetail = currentAttachmentId > 0
-            ? ` while processing Finance document ${currentAttachmentName || `#${currentAttachmentId}`} (#${currentAttachmentId})`
-            : '';
-        const summary = `Scheduler run timed out or was interrupted${docDetail} (lock expired after 10 minutes).`;
+        const summary = buildStaleRunTimeoutSummary(context, reasonLabel);
         if (currentAttachmentId > 0) {
             await upsertPoBillProcessedDocument({
                 attachmentId: currentAttachmentId,
@@ -1333,10 +1382,10 @@ async function markOrphanedStartedRunsAsFailed() {
         SET
           status = 'failed',
           summary = ?,
-          error_message = 'Scheduler lock expired while run was in started state.',
+          error_message = ?,
           finished_at = ?
         WHERE id = ? AND status = 'started'
-      `, [summary, now, orphan.id]);
+      `, [summary, summary, now, orphan.id]);
     }
 }
 async function clearStaleSchedulerRunLock() {
@@ -1355,9 +1404,13 @@ async function clearStaleSchedulerRunLock() {
     if (activeRun?.started_at) {
         activeRunStartedAt = parseAppTimestampMs(activeRun.started_at);
     }
-    const staleThresholdMs = Date.now() - getSchedulerLockStaleMs();
-    const isStale = Boolean(current.lockRunId) &&
-        (!acquiredAt || acquiredAt < staleThresholdMs || (activeRunStartedAt > 0 && activeRunStartedAt <= staleThresholdMs));
+    const staleMinutes = getSchedulerLockStaleMinutes();
+    const nowMs = Date.now();
+    const staleThresholdMs = nowMs - getSchedulerLockStaleMs();
+    const maxRunThresholdMs = nowMs - getSchedulerMaxRunDurationMs();
+    const heartbeatExpired = !acquiredAt || acquiredAt < staleThresholdMs;
+    const maxDurationExceeded = activeRunStartedAt > 0 && activeRunStartedAt <= maxRunThresholdMs;
+    const isStale = Boolean(current.lockRunId) && (heartbeatExpired || maxDurationExceeded);
     const runIsNotActive = !activeRun || activeRun.status !== 'started' || Boolean(activeRun.finished_at);
     if (!isStale && !runIsNotActive) {
         await markOrphanedStartedRunsAsFailed();
@@ -1374,10 +1427,10 @@ async function clearStaleSchedulerRunLock() {
         }
         const currentAttachmentId = Number(context.currentAttachmentId || 0);
         const currentAttachmentName = String(context.currentAttachmentName || '').trim();
-        const docDetail = currentAttachmentId > 0
-            ? ` while processing Finance document ${currentAttachmentName || `#${currentAttachmentId}`} (#${currentAttachmentId})`
-            : '';
-        const summary = `Scheduler run timed out or was interrupted${docDetail} (lock expired after 10 minutes).`;
+        const reasonLabel = maxDurationExceeded
+            ? `exceeded ${SCHEDULER_MAX_RUN_DURATION_MINUTES}-minute maximum runtime`
+            : `lock heartbeat expired after ${staleMinutes} minutes`;
+        const summary = buildStaleRunTimeoutSummary(context, reasonLabel);
         if (currentAttachmentId > 0) {
             await upsertPoBillProcessedDocument({
                 attachmentId: currentAttachmentId,
@@ -1392,10 +1445,10 @@ async function clearStaleSchedulerRunLock() {
         SET
           status = 'failed',
           summary = ?,
-          error_message = 'Scheduler lock expired while run was in started state.',
+          error_message = ?,
           finished_at = ?
         WHERE id = ? AND status = 'started'
-      `, [summary, now, activeRun.id]);
+      `, [summary, summary, now, activeRun.id]);
     }
     await (0, db_1.execute)(`
       UPDATE scheduler_runtime_state

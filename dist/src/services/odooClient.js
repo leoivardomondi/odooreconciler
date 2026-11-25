@@ -6,6 +6,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.OdooClient = exports.OdooClientError = void 0;
 exports.isOdooTrafficPaused = isOdooTrafficPaused;
 exports.setOdooTrafficPaused = setOdooTrafficPaused;
+exports.isSchedulerRunActive = isSchedulerRunActive;
+exports.setSchedulerRunActive = setSchedulerRunActive;
 exports.enqueueOdooRequest = enqueueOdooRequest;
 const axios_1 = __importDefault(require("axios"));
 const http_1 = __importDefault(require("http"));
@@ -35,18 +37,31 @@ const repositories_1 = require("../models/repositories");
 const MANUFACTURING_PERFORMANCE_START_DATE = '2026-08-05';
 const sharedOdooWebSessions = new Map();
 let isOdooTrafficPausedFlag = env_1.env.ODOO_PAUSE_TRAFFIC === 'true';
+let isSchedulerRunActiveFlag = false;
 function isOdooTrafficPaused() {
     return isOdooTrafficPausedFlag;
 }
 function setOdooTrafficPaused(paused) {
     isOdooTrafficPausedFlag = paused;
 }
+function isSchedulerRunActive() {
+    return isSchedulerRunActiveFlag;
+}
+function setSchedulerRunActive(active) {
+    isSchedulerRunActiveFlag = active;
+}
 let lastOdooRequestEndTime = 0;
 let odooRequestQueue = Promise.resolve();
 const globalModelFieldsCache = new Map();
-function enqueueOdooRequest(fn) {
+function enqueueOdooRequest(fn, options) {
+    if (options?.signal?.aborted) {
+        return Promise.reject(new OdooClientError('Odoo request cancelled before execution.', 499));
+    }
     const minIntervalMs = Math.max(0, Number(env_1.env.ODOO_RATE_LIMIT_MIN_INTERVAL_MS) || 2500);
     const nextTask = odooRequestQueue.then(async () => {
+        if (options?.signal?.aborted) {
+            throw new OdooClientError('Odoo request cancelled before execution.', 499);
+        }
         if (isOdooTrafficPaused()) {
             throw new OdooClientError('Odoo API traffic is currently paused by administrative setting (firewall block / rate limit resolution).', 429);
         }
@@ -54,6 +69,9 @@ function enqueueOdooRequest(fn) {
         const elapsed = now - lastOdooRequestEndTime;
         if (minIntervalMs > 0 && elapsed < minIntervalMs) {
             await new Promise((resolve) => setTimeout(resolve, minIntervalMs - elapsed));
+        }
+        if (options?.signal?.aborted) {
+            throw new OdooClientError('Odoo request cancelled before execution.', 499);
         }
         try {
             return await fn();
@@ -128,6 +146,16 @@ class OdooClient {
     recentSoChatterDedupe = OdooClient.sharedRecentSoChatterDedupe;
     recentChatterDedupe = OdooClient.sharedRecentChatterDedupe;
     static verifiedWarehouseCache = new Map();
+    static TARGET_COMPANY_CACHE_TTL_MS = 60 * 60 * 1000;
+    static targetCompanyIdCache = new Map();
+    static SALE_ORDER_FIELDS_CACHE_TTL_MS = 30 * 60 * 1000;
+    static saleOrderFieldsCache = new Map();
+    static clearTargetCompanyIdCache() {
+        OdooClient.targetCompanyIdCache.clear();
+    }
+    static clearSaleOrderFieldsCache() {
+        OdooClient.saleOrderFieldsCache.clear();
+    }
     constructor(credentials) {
         this.credentials = credentials;
         this.baseUrl = (0, helpers_1.sanitizeBaseUrl)(credentials.baseUrl);
@@ -548,17 +576,29 @@ class OdooClient {
             vals: data,
         });
     }
-    async getSaleOrderFields() {
+    async getSaleOrderFields(options) {
+        const cacheKey = `${this.baseUrl.toLowerCase()}|${this.credentials.database.trim().toLowerCase()}`;
+        if (!options?.forceRefresh) {
+            const cached = OdooClient.saleOrderFieldsCache.get(cacheKey);
+            if (cached && Date.now() - cached.fetchedAt < OdooClient.SALE_ORDER_FIELDS_CACHE_TTL_MS) {
+                return [...cached.fields];
+            }
+        }
         const response = await this.request('sale.order', 'fields_get', {
             attributes: ['string', 'type'],
         });
-        return Object.entries(response)
+        const fields = Object.entries(response)
             .map(([name, field]) => ({
             name,
             label: field.string || name,
             type: field.type || 'unknown',
         }))
             .sort((left, right) => left.label.localeCompare(right.label) || left.name.localeCompare(right.name));
+        OdooClient.saleOrderFieldsCache.set(cacheKey, {
+            fields,
+            fetchedAt: Date.now(),
+        });
+        return [...fields];
     }
     async readSaleOrderFields(orderId, fieldNames) {
         const uniqueFieldNames = [...new Set(fieldNames.map((fieldName) => fieldName.trim()).filter(Boolean))];
@@ -854,7 +894,7 @@ class OdooClient {
             partnerName: Array.isArray(user.partner_id) ? user.partner_id[1] : '',
         };
     }
-    async getModelFields(modelName, fieldNames) {
+    async getModelFields(modelName, fieldNames, options) {
         if (fieldNames.length === 0) {
             return [];
         }
@@ -882,7 +922,12 @@ class OdooClient {
             ],
             fields: ['name', 'field_description'],
             limit: missingFieldNames.length,
-        }).catch(() => []);
+        }, options?.signal ? { signal: options.signal } : undefined).catch((err) => {
+            if (options?.signal?.aborted) {
+                throw err;
+            }
+            return [];
+        });
         const fetchedMap = new Map(fetched.map((field) => [field.name, field]));
         for (const name of missingFieldNames) {
             const cacheKey = `${modelName}:${name}`;
@@ -927,6 +972,9 @@ class OdooClient {
         });
     }
     async searchReadRecords(model, options) {
+        const requestOptions = options.timeoutMs || options.signal
+            ? { timeoutMs: options.timeoutMs, signal: options.signal }
+            : undefined;
         return this.request(model, 'search_read', {
             domain: options.domain || [],
             fields: options.fields || [],
@@ -934,12 +982,12 @@ class OdooClient {
             offset: options.offset,
             order: options.order,
             context: options.context,
-        }, options.timeoutMs ? { timeoutMs: options.timeoutMs } : undefined);
+        }, requestOptions);
     }
-    async searchCountRecords(model, domain = []) {
+    async searchCountRecords(model, domain = [], options) {
         return this.request(model, 'search_count', {
             domain,
-        });
+        }, options?.signal ? { signal: options.signal } : undefined);
     }
     async readRecords(model, ids, fields) {
         if (ids.length === 0) {
@@ -1149,23 +1197,37 @@ class OdooClient {
             setTimeout(resolve, ms);
         });
     }
-    async getTargetCompanyIdValue() {
-        return this.getTargetCompanyId();
+    async getTargetCompanyIdValue(options) {
+        return this.getTargetCompanyId(options);
     }
-    async getTargetCompanyId() {
+    async getTargetCompanyId(options) {
         if (this.targetCompanyId) {
+            return this.targetCompanyId;
+        }
+        const cacheKey = [
+            this.baseUrl.toLowerCase(),
+            this.credentials.database.trim().toLowerCase(),
+            env_1.env.ODOO_TARGET_COMPANY_NAME.trim().toLowerCase(),
+        ].join('|');
+        const cached = OdooClient.targetCompanyIdCache.get(cacheKey);
+        if (cached && Date.now() - cached.fetchedAt < OdooClient.TARGET_COMPANY_CACHE_TTL_MS) {
+            this.targetCompanyId = cached.id;
             return this.targetCompanyId;
         }
         const companies = await this.request('res.company', 'search_read', {
             domain: [['name', '=', env_1.env.ODOO_TARGET_COMPANY_NAME]],
             fields: ['id', 'name'],
             limit: 1,
-        });
+        }, options?.signal ? { signal: options.signal } : undefined);
         const company = companies[0];
         if (!company) {
             throw new OdooClientError(`Target company "${env_1.env.ODOO_TARGET_COMPANY_NAME}" was not found in Odoo.`);
         }
         this.targetCompanyId = company.id;
+        OdooClient.targetCompanyIdCache.set(cacheKey, {
+            id: company.id,
+            fetchedAt: Date.now(),
+        });
         return this.targetCompanyId;
     }
     // ─── Shop Floor / Operator Methods ──────────────────────────────────
@@ -2768,15 +2830,21 @@ class OdooClient {
         let attempt = 0;
         try {
             while (true) {
+                if (options?.signal?.aborted) {
+                    throw new OdooClientError('Odoo request cancelled before execution.', 499);
+                }
                 const response = await enqueueOdooRequest(() => odooAxios.post(`${this.json2BaseUrl}/${model}/${method}`, payload, {
                     headers: this.buildHeaders(),
                     timeout: options?.timeoutMs ?? this.timeoutMs,
                     validateStatus: () => true,
-                }));
+                }), options?.signal ? { signal: options.signal } : undefined);
                 if (response.status >= 200 && response.status < 300) {
                     return response.data;
                 }
                 if (response.status === 429 && attempt < this.maxRateLimitRetries) {
+                    if (options?.signal?.aborted) {
+                        throw new OdooClientError('Odoo request cancelled before retry.', 499);
+                    }
                     const retryAfterSeconds = Number(response.headers?.['retry-after']);
                     const retryAfterMs = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
                         ? retryAfterSeconds * 1000

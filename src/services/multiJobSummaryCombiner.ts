@@ -373,10 +373,24 @@ export async function resolveCombinedJobSummaryFromOdooAttachments(
   client: OdooClient,
   saleOrderId: number,
   parserConfig: ParserConfig = DEFAULT_PARSER_CONFIG,
+  options?: { onlyWhenMultiple?: boolean },
 ): Promise<MultiJobSummaryComparisonResult | null> {
-  const [attachments, rawSoLines] = await Promise.all([
-    client.getAttachments(saleOrderId).catch(() => []),
-    client.searchReadRecords<{
+  const attachments = await client.getAttachments(saleOrderId).catch(() => []);
+
+  const jobSummaryAttachments = attachments
+    .filter((a) => isJobSummaryAttachment(a, parserConfig.filenameKeyword || 'job summary'))
+    .sort(sortAttachmentsNewestFirst);
+
+  if (jobSummaryAttachments.length === 0) {
+    return null;
+  }
+
+  if (options?.onlyWhenMultiple && jobSummaryAttachments.length <= 1) {
+    return null;
+  }
+
+  const rawSoLines = await client
+    .searchReadRecords<{
       id: number;
       name: string;
       product_id: [number, string] | false;
@@ -386,16 +400,8 @@ export async function resolveCombinedJobSummaryFromOdooAttachments(
       domain: [['order_id', '=', saleOrderId]],
       fields: ['id', 'name', 'product_id', 'product_uom_qty', 'display_type'],
       limit: 100,
-    }).catch(() => []),
-  ]);
-
-  const jobSummaryAttachments = attachments
-    .filter((a) => isJobSummaryAttachment(a, parserConfig.filenameKeyword || 'job summary'))
-    .sort(sortAttachmentsNewestFirst);
-
-  if (jobSummaryAttachments.length === 0) {
-    return null;
-  }
+    })
+    .catch(() => []);
 
   const candidates: JobSummaryCandidate[] = [];
   for (const att of jobSummaryAttachments) {

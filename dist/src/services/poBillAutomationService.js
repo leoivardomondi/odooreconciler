@@ -117,8 +117,9 @@ const COLOR_STOP_WORDS = new Set([
     'grade',
 ]);
 // In-memory caches to prevent repeated Odoo RPC calls for static/frequently-read data
-let cachedValidatedDocumentTagId = null;
-let cachedDeliveryNoteDocumentTagId = null;
+const DOCUMENT_TAG_CACHE_TTL_MS = 10 * 60 * 1000;
+let cachedValidatedDocumentTagEntry = null;
+let cachedDeliveryNoteDocumentTagEntry = null;
 const journalCache = new Map();
 const vendorPartnerIdCache = new Map();
 function isSupportedPoBillMimetype(mimetype) {
@@ -1095,33 +1096,43 @@ async function findOrCreateValidatedDocumentTag(client) {
     const exact = existing.find((tag) => tag.name.toLowerCase() === 'validated');
     if (exact || existing[0]) {
         const found = exact || existing[0];
-        cachedValidatedDocumentTagId = found.id;
+        cachedValidatedDocumentTagEntry = { id: found.id, fetchedAt: Date.now() };
         return found;
     }
     const tagId = await client.createRecord('documents.tag', { name: 'Validated' }).catch(() => null);
     if (tagId) {
-        cachedValidatedDocumentTagId = tagId;
+        cachedValidatedDocumentTagEntry = { id: tagId, fetchedAt: Date.now() };
     }
     return tagId ? { id: tagId, name: 'Validated' } : null;
 }
-async function findValidatedDocumentTagId(client) {
-    if (cachedValidatedDocumentTagId !== null) {
-        return cachedValidatedDocumentTagId;
+async function findValidatedDocumentTagId(client, signal) {
+    if (cachedValidatedDocumentTagEntry &&
+        Date.now() - cachedValidatedDocumentTagEntry.fetchedAt < DOCUMENT_TAG_CACHE_TTL_MS) {
+        return cachedValidatedDocumentTagEntry.id;
     }
     const fields = await getAvailableModelFieldNames(client, 'documents.tag', ['id', 'name']);
     if (!fields.has('id') || !fields.has('name')) {
+        cachedValidatedDocumentTagEntry = { id: null, fetchedAt: Date.now() };
         return null;
     }
-    const tags = await client.searchReadRecords('documents.tag', {
-        domain: [['name', '=', 'Validated']],
-        fields: ['id', 'name'],
-        limit: 1,
-        order: 'id asc',
-    }).catch(() => []);
-    const id = tags[0]?.id || null;
-    if (id !== null) {
-        cachedValidatedDocumentTagId = id;
+    let tags = [];
+    try {
+        tags = await client.searchReadRecords('documents.tag', {
+            domain: [['name', '=', 'Validated']],
+            fields: ['id', 'name'],
+            limit: 1,
+            order: 'id asc',
+            signal,
+        });
     }
+    catch (err) {
+        if (signal?.aborted) {
+            throw err;
+        }
+        return null;
+    }
+    const id = tags[0]?.id || null;
+    cachedValidatedDocumentTagEntry = { id, fetchedAt: Date.now() };
     return id;
 }
 async function hasValidatedSourceDocument(client, attachment) {
@@ -1172,25 +1183,35 @@ async function markSourceDocumentValidated(client, attachment) {
         message: `Marked source document ${document.name || document.id} as Validated in Odoo Documents.`,
     };
 }
-async function findDeliveryNoteDocumentTagId(client) {
-    if (cachedDeliveryNoteDocumentTagId !== null) {
-        return cachedDeliveryNoteDocumentTagId;
+async function findDeliveryNoteDocumentTagId(client, signal) {
+    if (cachedDeliveryNoteDocumentTagEntry &&
+        Date.now() - cachedDeliveryNoteDocumentTagEntry.fetchedAt < DOCUMENT_TAG_CACHE_TTL_MS) {
+        return cachedDeliveryNoteDocumentTagEntry.id;
     }
     const fields = await getAvailableModelFieldNames(client, 'documents.tag', ['id', 'name']);
     if (!fields.has('id') || !fields.has('name')) {
+        cachedDeliveryNoteDocumentTagEntry = { id: null, fetchedAt: Date.now() };
         return null;
     }
-    const tags = await client.searchReadRecords('documents.tag', {
-        domain: [['name', 'ilike', DELIVERY_NOTE_DOCUMENT_TAG_NAME]],
-        fields: ['id', 'name'],
-        limit: 10,
-        order: 'id asc',
-    }).catch(() => []);
+    let tags = [];
+    try {
+        tags = await client.searchReadRecords('documents.tag', {
+            domain: [['name', 'ilike', DELIVERY_NOTE_DOCUMENT_TAG_NAME]],
+            fields: ['id', 'name'],
+            limit: 10,
+            order: 'id asc',
+            signal,
+        });
+    }
+    catch (err) {
+        if (signal?.aborted) {
+            throw err;
+        }
+        return null;
+    }
     const exact = tags.find((tag) => tag.name.trim().toLowerCase() === DELIVERY_NOTE_DOCUMENT_TAG_NAME.toLowerCase());
     const id = (exact || tags[0])?.id || null;
-    if (id !== null) {
-        cachedDeliveryNoteDocumentTagId = id;
-    }
+    cachedDeliveryNoteDocumentTagEntry = { id, fetchedAt: Date.now() };
     return id;
 }
 async function findOrCreateDeliveryNoteDocumentTag(client) {
@@ -1207,12 +1228,12 @@ async function findOrCreateDeliveryNoteDocumentTag(client) {
     const exact = existing.find((tag) => tag.name.trim().toLowerCase() === DELIVERY_NOTE_DOCUMENT_TAG_NAME.toLowerCase());
     if (exact || existing[0]) {
         const found = exact || existing[0];
-        cachedDeliveryNoteDocumentTagId = found.id;
+        cachedDeliveryNoteDocumentTagEntry = { id: found.id, fetchedAt: Date.now() };
         return found;
     }
     const tagId = await client.createRecord('documents.tag', { name: DELIVERY_NOTE_DOCUMENT_TAG_NAME }).catch(() => null);
     if (tagId) {
-        cachedDeliveryNoteDocumentTagId = tagId;
+        cachedDeliveryNoteDocumentTagEntry = { id: tagId, fetchedAt: Date.now() };
     }
     return tagId ? { id: tagId, name: DELIVERY_NOTE_DOCUMENT_TAG_NAME } : null;
 }
@@ -1266,7 +1287,7 @@ async function markSourceDocumentDeliveryNote(client, attachment) {
 }
 let cachedFinanceFoldersByCompany = new Map();
 const FINANCE_FOLDERS_CACHE_TTL_MS = 60 * 60 * 1000;
-async function findFinanceDocumentFolderIds(client, targetCompanyId) {
+async function findFinanceDocumentFolderIds(client, targetCompanyId, signal) {
     const cached = cachedFinanceFoldersByCompany.get(targetCompanyId);
     if (cached && Date.now() - cached.fetchedAt < FINANCE_FOLDERS_CACHE_TTL_MS) {
         return cached.folders;
@@ -1286,6 +1307,7 @@ async function findFinanceDocumentFolderIds(client, targetCompanyId) {
                 fields: ['id', 'name', ...(fields.has('company_id') ? ['company_id'] : [])],
                 limit: 50,
                 order: 'name asc, id asc',
+                signal,
             });
             const filtered = folders.filter((folder) => folder.name?.toLowerCase() === DOCUMENT_FOLDER_NAME.toLowerCase());
             const matches = filtered.length > 0 ? filtered : folders;
@@ -1296,22 +1318,27 @@ async function findFinanceDocumentFolderIds(client, targetCompanyId) {
             }
         }
         catch (error) {
+            if (signal?.aborted) {
+                throw error;
+            }
             console.warn(`[po-bills] Could not search ${model} for Finance folders.`, error instanceof Error ? error.message : error);
         }
     }
     return [];
 }
 let globalDocumentPdfsCache = null;
-const DOCUMENT_PDFS_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const DOCUMENT_PDFS_CACHE_TTL_MS = 8 * 60 * 1000;
 function clearDocumentPdfsCache() {
     globalDocumentPdfsCache = null;
 }
-async function getRecentDocumentPdfs(client, limit = 25, offset = 0, forceRefresh = false) {
+async function getRecentDocumentPdfs(client, limit = 25, offset = 0, forceRefresh = false, signal) {
     const now = Date.now();
     if (!forceRefresh &&
         globalDocumentPdfsCache &&
         now - globalDocumentPdfsCache.fetchedAt < DOCUMENT_PDFS_CACHE_TTL_MS &&
-        globalDocumentPdfsCache.items.length >= limit) {
+        (globalDocumentPdfsCache.fetchedAll ||
+            globalDocumentPdfsCache.items.length >= offset + limit ||
+            (offset === 0 && globalDocumentPdfsCache.requestedLimit >= limit))) {
         const cachedSlice = globalDocumentPdfsCache.items.slice(offset, offset + limit);
         const attachmentIds = cachedSlice.map((item) => item.id).filter((id) => Number.isInteger(id) && id > 0);
         const processedByAttachment = await (0, repositories_1.getPoBillProcessedDocumentsByAttachmentIds)(attachmentIds).catch(() => ({}));
@@ -1341,11 +1368,19 @@ async function getRecentDocumentPdfs(client, limit = 25, offset = 0, forceRefres
             };
         });
     }
-    const page = await getRecentDocumentPdfsPage(client, { page: Math.floor(offset / limit) + 1, pageSize: limit });
+    const page = await getRecentDocumentPdfsPage(client, {
+        page: Math.floor(offset / limit) + 1,
+        pageSize: limit,
+        includeTotal: false,
+        signal,
+    });
     if (offset === 0) {
+        const rawCount = page.rawDocumentCount ?? page.items.length;
         globalDocumentPdfsCache = {
             items: page.items,
-            fetchedAt: now,
+            fetchedAt: Date.now(),
+            requestedLimit: limit,
+            fetchedAll: rawCount < limit,
         };
     }
     return page.items;
@@ -1355,6 +1390,8 @@ async function getRecentDocumentPdfsPage(client, options = {}) {
     const pageSize = Number.isFinite(requestedPageSize) ? Math.min(Math.max(Math.floor(requestedPageSize), 1), 500) : 25;
     const requestedPage = Number(options.page || 1);
     const safeRequestedPage = Number.isFinite(requestedPage) ? Math.max(Math.floor(requestedPage), 1) : 1;
+    const includeTotal = options.includeTotal !== false;
+    const signal = options.signal;
     const targetCompanyId = await client.getTargetCompanyIdValue();
     const documentFieldCandidates = [
         'id',
@@ -1375,7 +1412,7 @@ async function getRecentDocumentPdfsPage(client, options = {}) {
         : documentFields.has('workspace_id')
             ? 'workspace_id'
             : null;
-    const financeFolders = await findFinanceDocumentFolderIds(client, targetCompanyId);
+    const financeFolders = await findFinanceDocumentFolderIds(client, targetCompanyId, signal);
     const financeFolderIds = financeFolders.map((folder) => folder.id);
     const domain = [];
     if (documentFields.has('mimetype')) {
@@ -1398,10 +1435,22 @@ async function getRecentDocumentPdfsPage(client, options = {}) {
             domain.push([`${folderField}.name`, 'ilike', DOCUMENT_FOLDER_NAME]);
         }
     }
-    const total = await client.searchCountRecords('documents.document', domain);
-    const totalPages = Math.max(Math.ceil(total / pageSize), 1);
-    const page = Math.min(safeRequestedPage, totalPages);
-    const offset = (page - 1) * pageSize;
+    let total;
+    let totalPages;
+    let page;
+    let offset;
+    if (includeTotal) {
+        total = await client.searchCountRecords('documents.document', domain, { signal });
+        totalPages = Math.max(Math.ceil(total / pageSize), 1);
+        page = Math.min(safeRequestedPage, totalPages);
+        offset = (page - 1) * pageSize;
+    }
+    else {
+        page = safeRequestedPage;
+        offset = (page - 1) * pageSize;
+        total = 0;
+        totalPages = 1;
+    }
     const fields = documentFieldCandidates.filter((field) => documentFields.has(field));
     const documents = await client.searchReadRecords('documents.document', {
         domain,
@@ -1409,11 +1458,16 @@ async function getRecentDocumentPdfsPage(client, options = {}) {
         limit: pageSize,
         offset,
         order: 'write_date desc, create_date desc, id desc',
+        signal,
     });
+    if (!includeTotal) {
+        total = offset + documents.length;
+        totalPages = Math.max(Math.ceil(total / pageSize), 1);
+    }
     const [validatedTagId, deliveryNoteTagId] = documents.length > 0
         ? await Promise.all([
-            findValidatedDocumentTagId(client),
-            findDeliveryNoteDocumentTagId(client),
+            findValidatedDocumentTagId(client, signal),
+            findDeliveryNoteDocumentTagId(client, signal),
         ])
         : [null, null];
     const attachmentIds = documents.map((doc) => relationId(doc.attachment_id)).filter((id) => Boolean(id));
@@ -1427,6 +1481,7 @@ async function getRecentDocumentPdfsPage(client, options = {}) {
             fields: ['id', 'name', 'mimetype', 'create_date', 'write_date', 'file_size'],
             limit: attachmentIds.length,
             order: 'write_date desc, create_date desc, id desc',
+            signal,
         });
         attachments.forEach((attachment) => attachmentsById.set(attachment.id, attachment));
     }
@@ -1490,6 +1545,7 @@ async function getRecentDocumentPdfsPage(client, options = {}) {
         from: total === 0 ? 0 : offset + 1,
         to: total === 0 ? 0 : Math.min(offset + documents.length, total),
         sinceDate: RECENT_DOCUMENT_PDFS_SINCE,
+        rawDocumentCount: documents.length,
     };
 }
 async function markPoBillDocumentSkipped(input) {

@@ -3,7 +3,7 @@ import { env } from '../utils/env';
 import { hasOdooConfiguration } from '../utils/helpers';
 import { appDateTime } from '../utils/dateTime';
 import { logEvent } from './logService';
-import { OdooClient } from './odooClient';
+import { OdooClient, isSchedulerRunActive } from './odooClient';
 
 const FRESH_MS = 5 * 60 * 1000;
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
@@ -141,7 +141,7 @@ export function startStockMirrorInterval() {
   if (intervalHandle) return;
   void refreshStockMirror();
   intervalHandle = setInterval(() => {
-    if (isOperatingTime()) void refreshStockMirror();
+    if (isOperatingTime() && !isSchedulerRunActive()) void refreshStockMirror();
   }, REFRESH_INTERVAL_MS);
   intervalHandle.unref();
 }

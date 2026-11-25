@@ -15,6 +15,7 @@ const shopFloorPendingSyncService_1 = require("./shopFloorPendingSyncService");
 const boardProductClassifier_1 = require("./boardProductClassifier");
 Object.defineProperty(exports, "extractThicknessMm", { enumerable: true, get: function () { return boardProductClassifier_1.extractThicknessMm; } });
 const logService_1 = require("./logService");
+const odooClient_1 = require("./odooClient");
 const helpers_1 = require("../utils/helpers");
 const multiJobSummaryCombiner_1 = require("./multiJobSummaryCombiner");
 function relationLabel(value) {
@@ -686,8 +687,10 @@ async function reconcileWorkOrderQuantitiesForMo(client, moId, options) {
         catch (_cacheErr) {
             // Non-fatal cache invalidation
         }
-        // Trigger full background sync to ensure clean state
-        void (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(true).catch(() => null);
+        // Trigger full background sync to ensure clean state (defer during active scheduler batch to avoid Odoo queue contention)
+        if (!(0, odooClient_1.isSchedulerRunActive)()) {
+            void (0, shopFloorPendingSyncService_1.syncPendingProcessesFromOdoo)(true).catch(() => null);
+        }
     }
     catch (syncErr) {
         void (0, logService_1.logEvent)('warn', 'Failed to update shop_floor_pending_processes after cutting quantity reconciliation', {

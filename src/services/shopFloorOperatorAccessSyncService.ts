@@ -12,7 +12,7 @@ import {
 import { AppFeature } from '../models/types';
 import { env } from '../utils/env';
 import { logEvent } from './logService';
-import { OdooClient } from './odooClient';
+import { OdooClient, isSchedulerRunActive } from './odooClient';
 
 const SYNC_INTERVAL_MS = 5 * 60 * 1000; // Run every 5 minutes
 let inFlightSyncPromise: Promise<{ allOperators: ShopFloorOperatorEntry[]; departments: string[] }> | null = null;
@@ -389,7 +389,7 @@ export function startShopFloorOperatorAccessSyncInterval() {
   // Prime immediately on startup
   run();
   intervalHandle = setInterval(() => {
-    if (isOperatingTime()) {
+    if (isOperatingTime() && !isSchedulerRunActive()) {
       run();
     }
   }, SYNC_INTERVAL_MS);

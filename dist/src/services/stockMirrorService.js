@@ -145,7 +145,7 @@ function startStockMirrorInterval() {
         return;
     void refreshStockMirror();
     intervalHandle = setInterval(() => {
-        if (isOperatingTime())
+        if (isOperatingTime() && !(0, odooClient_1.isSchedulerRunActive)())
             void refreshStockMirror();
     }, REFRESH_INTERVAL_MS);
     intervalHandle.unref();
