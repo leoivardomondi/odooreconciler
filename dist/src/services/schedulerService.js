@@ -1278,8 +1278,10 @@ async function runSchedulerCycle(trigger = 'manual', options = {}) {
                 selectedOrderNames: orders.map((o) => o.name),
             },
         }).catch(() => undefined);
+        const orderStages = new Map();
         const processOrder = async (order) => {
             const markOrderStage = async (stage) => {
+                orderStages.set(order.id, stage);
                 await (0, repositories_1.updateSchedulerRun)(run.id, {
                     scannedCount,
                     processedCount,
@@ -1319,7 +1321,8 @@ async function runSchedulerCycle(trigger = 'manual', options = {}) {
                     }
                     else {
                         try {
-                            reminderOutcome = await (0, jobSummaryReminderService_1.ensureMissingJobSummaryReminder)(client, order, settings.parser.filenameKeyword);
+                            await markOrderStage('missing_job_summary_reminder');
+                            reminderOutcome = await (0, jobSummaryReminderService_1.ensureMissingJobSummaryReminder)(client, order, settings.parser.filenameKeyword, attachments);
                         }
                         catch (reminderError) {
                             const reminderMessage = reminderError instanceof Error ? reminderError.message : 'Unknown reminder creation error.';
@@ -1375,7 +1378,10 @@ async function runSchedulerCycle(trigger = 'manual', options = {}) {
                 }
                 await touchActiveSchedulerRunLock(run.id);
                 await markOrderStage('extract_pdf');
-                const history = await (0, extractionService_1.extractAttachmentForOrder)(order.id, latestJobSummary.id);
+                const history = await (0, extractionService_1.extractAttachmentForOrder)(order.id, latestJobSummary.id, {
+                    preloadedOrder: order,
+                    preloadedAttachments: attachments,
+                });
                 await touchActiveSchedulerRunLock(run.id);
                 await markOrderStage('send_to_odoo');
                 const sendResult = await (0, extractionService_1.sendExtractedResultToOdoo)(history.id, false);
@@ -1485,11 +1491,16 @@ async function runSchedulerCycle(trigger = 'manual', options = {}) {
             const chunk = orders.slice(index, index + SO_SCHEDULER_CONCURRENCY);
             await touchActiveSchedulerRunLock(run.id);
             const results = await Promise.all(chunk.map((order) => withTimeout(() => processOrder(order), SO_PER_ORDER_TIMEOUT_MS, `Processing Sales Order ${order.name}`).catch(async (timeoutErr) => {
-                const timeoutMsg = timeoutErr instanceof Error ? timeoutErr.message : 'Sales Order processing timed out.';
+                const lastStage = orderStages.get(order.id) || 'order_processing';
+                const qStats = (0, odooClient_1.getOdooQueueStats)();
+                const baseMsg = timeoutErr instanceof Error ? timeoutErr.message : 'Sales Order processing timed out.';
+                const timeoutMsg = `${baseMsg} (last stage: ${lastStage}; Odoo queue: high=${qStats.highPending}, background=${qStats.backgroundPending}, active=${qStats.activeLabel || 'idle'} ${qStats.activeElapsedMs}ms)`;
                 await (0, logService_1.logEvent)('error', 'Scheduler timed out while processing a Sales Order', {
                     schedulerRunId: run.id,
                     orderId: order.id,
                     orderName: order.name,
+                    lastStage,
+                    odooQueue: qStats,
                     error: timeoutMsg,
                 }).catch(() => undefined);
                 return {
@@ -1499,7 +1510,7 @@ async function runSchedulerCycle(trigger = 'manual', options = {}) {
                         orderName: order.name,
                         status: 'failed',
                         category: 'order_timeout',
-                        stage: 'order_processing',
+                        stage: lastStage,
                         reason: timeoutMsg,
                     },
                 };

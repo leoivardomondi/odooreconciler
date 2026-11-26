@@ -172,18 +172,20 @@ async function getCustomersForPage(limit = 500) {
 function startCustomerMirrorInterval() {
     if (intervalHandle)
         return;
-    // Trigger initial prime only if table is empty; otherwise wait for interval
+    // Trigger initial prime only if table is empty and no scheduler run is active; otherwise wait for interval
     void (async () => {
+        if ((0, odooClient_1.isSchedulerRunActive)())
+            return;
         const count = await (0, repositories_1.getCustomerPartnerMirrorCount)().catch(() => 0);
         if (count === 0) {
-            await refreshCustomerMirror().catch((err) => {
+            await (0, odooClient_1.runWithOdooPriority)('background', () => refreshCustomerMirror()).catch((err) => {
                 console.warn('[customerMirror] Initial sync failed:', err);
             });
         }
     })();
     intervalHandle = setInterval(() => {
         if (isOperatingTime() && !(0, odooClient_1.isSchedulerRunActive)()) {
-            void refreshCustomerMirror().catch(() => undefined);
+            void (0, odooClient_1.runWithOdooPriority)('background', () => refreshCustomerMirror()).catch(() => undefined);
         }
     }, REFRESH_INTERVAL_MS);
     intervalHandle.unref();

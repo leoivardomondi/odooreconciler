@@ -746,14 +746,16 @@ const SYNC_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes
 function startShopFloorPendingSyncInterval() {
     if (syncIntervalTimer)
         return;
-    // Trigger initial sync shortly after boot
+    // Trigger initial sync shortly after boot unless a scheduler run is active
     setTimeout(() => {
-        void syncPendingProcessesFromOdoo(true).catch(() => undefined);
-    }, 3000);
+        if ((0, odooClient_1.isSchedulerRunActive)())
+            return;
+        void (0, odooClient_1.runWithOdooPriority)('background', () => syncPendingProcessesFromOdoo(true)).catch(() => undefined);
+    }, 3000).unref?.();
     syncIntervalTimer = setInterval(() => {
         if ((0, odooClient_1.isSchedulerRunActive)())
             return;
-        void syncPendingProcessesFromOdoo(false).catch(() => undefined);
+        void (0, odooClient_1.runWithOdooPriority)('background', () => syncPendingProcessesFromOdoo(false)).catch(() => undefined);
     }, SYNC_INTERVAL_MS);
     syncIntervalTimer.unref?.();
 }

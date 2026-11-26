@@ -12,7 +12,7 @@ import {
 import { AppFeature } from '../models/types';
 import { env } from '../utils/env';
 import { logEvent } from './logService';
-import { OdooClient, isSchedulerRunActive } from './odooClient';
+import { OdooClient, isSchedulerRunActive, runWithOdooPriority } from './odooClient';
 
 const SYNC_INTERVAL_MS = 5 * 60 * 1000; // Run every 5 minutes
 let inFlightSyncPromise: Promise<{ allOperators: ShopFloorOperatorEntry[]; departments: string[] }> | null = null;
@@ -380,14 +380,16 @@ export async function syncShopFloorOperatorAccess() {
 export function startShopFloorOperatorAccessSyncInterval() {
   if (intervalHandle) return intervalHandle;
   const run = () => {
-    void syncShopFloorOperatorsData(true).catch((error) => {
+    void runWithOdooPriority('background', () => syncShopFloorOperatorsData(true)).catch((error) => {
       void logEvent('error', 'Automatic Shop Floor operator sync failed', {
         error: error instanceof Error ? error.message : String(error),
       });
     });
   };
-  // Prime immediately on startup
-  run();
+  // Prime on startup unless a scheduler run is already active
+  if (!isSchedulerRunActive()) {
+    run();
+  }
   intervalHandle = setInterval(() => {
     if (isOperatingTime() && !isSchedulerRunActive()) {
       run();

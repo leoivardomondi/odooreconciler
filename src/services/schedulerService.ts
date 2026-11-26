@@ -23,7 +23,7 @@ import {
   ensureMissingJobSummaryReminder,
 } from './jobSummaryReminderService';
 import { logEvent } from './logService';
-import { OdooClient, isOdooTrafficPaused, setSchedulerRunActive } from './odooClient';
+import { OdooClient, getOdooQueueStats, isOdooTrafficPaused, setSchedulerRunActive } from './odooClient';
 import {
   findExcludedPoBillVendor,
   getRecentDocumentPdfs,
@@ -1524,8 +1524,10 @@ export async function runSchedulerCycle(
       },
     }).catch(() => undefined);
 
+    const orderStages = new Map<number, string>();
     const processOrder = async (order: (typeof orders)[number]) => {
       const markOrderStage = async (stage: string) => {
+        orderStages.set(order.id, stage);
         await updateSchedulerRun(run.id, {
           scannedCount,
           processedCount,
@@ -1569,10 +1571,12 @@ export async function runSchedulerCycle(
             };
           } else {
             try {
+              await markOrderStage('missing_job_summary_reminder');
               reminderOutcome = await ensureMissingJobSummaryReminder(
                 client,
                 order,
                 settings.parser.filenameKeyword,
+                attachments,
               );
             } catch (reminderError) {
               const reminderMessage =
@@ -1636,7 +1640,10 @@ export async function runSchedulerCycle(
 
         await touchActiveSchedulerRunLock(run.id);
         await markOrderStage('extract_pdf');
-        const history = await extractAttachmentForOrder(order.id, latestJobSummary.id);
+        const history = await extractAttachmentForOrder(order.id, latestJobSummary.id, {
+          preloadedOrder: order,
+          preloadedAttachments: attachments,
+        });
         await touchActiveSchedulerRunLock(run.id);
         await markOrderStage('send_to_odoo');
         const sendResult = await sendExtractedResultToOdoo(history.id, false);
@@ -1762,12 +1769,17 @@ export async function runSchedulerCycle(
             SO_PER_ORDER_TIMEOUT_MS,
             `Processing Sales Order ${order.name}`,
           ).catch(async (timeoutErr) => {
-            const timeoutMsg =
+            const lastStage = orderStages.get(order.id) || 'order_processing';
+            const qStats = getOdooQueueStats();
+            const baseMsg =
               timeoutErr instanceof Error ? timeoutErr.message : 'Sales Order processing timed out.';
+            const timeoutMsg = `${baseMsg} (last stage: ${lastStage}; Odoo queue: high=${qStats.highPending}, background=${qStats.backgroundPending}, active=${qStats.activeLabel || 'idle'} ${qStats.activeElapsedMs}ms)`;
             await logEvent('error', 'Scheduler timed out while processing a Sales Order', {
               schedulerRunId: run.id,
               orderId: order.id,
               orderName: order.name,
+              lastStage,
+              odooQueue: qStats,
               error: timeoutMsg,
             }).catch(() => undefined);
             return {
@@ -1777,7 +1789,7 @@ export async function runSchedulerCycle(
                 orderName: order.name,
                 status: 'failed',
                 category: 'order_timeout',
-                stage: 'order_processing',
+                stage: lastStage,
                 reason: timeoutMsg,
               },
             };

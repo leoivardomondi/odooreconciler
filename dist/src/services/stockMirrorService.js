@@ -143,10 +143,13 @@ async function recordOptimisticStockAddition(productId, productName, quantity) {
 function startStockMirrorInterval() {
     if (intervalHandle)
         return;
-    void refreshStockMirror();
+    if (!(0, odooClient_1.isSchedulerRunActive)()) {
+        void (0, odooClient_1.runWithOdooPriority)('background', () => refreshStockMirror()).catch(() => undefined);
+    }
     intervalHandle = setInterval(() => {
-        if (isOperatingTime() && !(0, odooClient_1.isSchedulerRunActive)())
-            void refreshStockMirror();
+        if (isOperatingTime() && !(0, odooClient_1.isSchedulerRunActive)()) {
+            void (0, odooClient_1.runWithOdooPriority)('background', () => refreshStockMirror()).catch(() => undefined);
+        }
     }, REFRESH_INTERVAL_MS);
     intervalHandle.unref();
 }

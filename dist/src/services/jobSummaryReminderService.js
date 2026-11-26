@@ -52,8 +52,8 @@ async function closeOpenJobSummaryReminderActivities(client, orderId, feedback =
     const result = await (0, odooActivityService_1.closeActivities)(client, activityIds, feedback);
     return { ...result, activityIds };
 }
-async function ensureMissingJobSummaryReminder(client, order, filenameKeyword) {
-    const attachments = await client.getAttachments(order.id);
+async function ensureMissingJobSummaryReminder(client, order, filenameKeyword, preloadedAttachments) {
+    const attachments = preloadedAttachments ?? (await client.getAttachments(order.id));
     const hasJobSummary = attachments.some((attachment) => (0, helpers_1.isJobSummaryAttachment)(attachment, filenameKeyword));
     if (hasJobSummary) {
         const closeResult = await closeOpenJobSummaryReminderActivities(client, order.id, 'Job Summary PDF was detected.');

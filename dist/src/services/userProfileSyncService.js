@@ -43,7 +43,15 @@ async function syncApprovedUserProfilesFromOdoo() {
 function startUserProfileSyncInterval() {
     if (intervalHandle)
         return;
-    setTimeout(() => void syncApprovedUserProfilesFromOdoo().catch(() => undefined), 15_000).unref();
-    intervalHandle = setInterval(() => void syncApprovedUserProfilesFromOdoo().catch(() => undefined), 24 * 60 * 60 * 1000);
+    setTimeout(() => {
+        if ((0, odooClient_1.isSchedulerRunActive)())
+            return;
+        void (0, odooClient_1.runWithOdooPriority)('background', () => syncApprovedUserProfilesFromOdoo()).catch(() => undefined);
+    }, 15_000).unref();
+    intervalHandle = setInterval(() => {
+        if ((0, odooClient_1.isSchedulerRunActive)())
+            return;
+        void (0, odooClient_1.runWithOdooPriority)('background', () => syncApprovedUserProfilesFromOdoo()).catch(() => undefined);
+    }, 24 * 60 * 60 * 1000);
     intervalHandle.unref();
 }

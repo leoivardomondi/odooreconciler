@@ -11,7 +11,7 @@ import { env } from '../utils/env';
 import { hasOdooConfiguration } from '../utils/helpers';
 import { appDateTime } from '../utils/dateTime';
 import { logEvent } from './logService';
-import { OdooClient, isSchedulerRunActive } from './odooClient';
+import { OdooClient, isSchedulerRunActive, runWithOdooPriority } from './odooClient';
 
 const FRESH_MS = 15 * 60 * 1000; // 15 minutes fresh
 const REFRESH_INTERVAL_MS = 15 * 60 * 1000;
@@ -195,18 +195,19 @@ export async function getCustomersForPage(limit = 500): Promise<Array<{ id: numb
  */
 export function startCustomerMirrorInterval() {
   if (intervalHandle) return;
-  // Trigger initial prime only if table is empty; otherwise wait for interval
+  // Trigger initial prime only if table is empty and no scheduler run is active; otherwise wait for interval
   void (async () => {
+    if (isSchedulerRunActive()) return;
     const count = await getCustomerPartnerMirrorCount().catch(() => 0);
     if (count === 0) {
-      await refreshCustomerMirror().catch((err) => {
+      await runWithOdooPriority('background', () => refreshCustomerMirror()).catch((err) => {
         console.warn('[customerMirror] Initial sync failed:', err);
       });
     }
   })();
   intervalHandle = setInterval(() => {
     if (isOperatingTime() && !isSchedulerRunActive()) {
-      void refreshCustomerMirror().catch(() => undefined);
+      void runWithOdooPriority('background', () => refreshCustomerMirror()).catch(() => undefined);
     }
   }, REFRESH_INTERVAL_MS);
   intervalHandle.unref();

@@ -10,7 +10,7 @@ import {
   saveShopFloorSharedCache,
 } from '../models/repositories';
 import { queryAll, execute } from '../models/db';
-import { OdooClient, isOdooTrafficPaused, isSchedulerRunActive } from './odooClient';
+import { OdooClient, isOdooTrafficPaused, isSchedulerRunActive, runWithOdooPriority } from './odooClient';
 import {
   isBoardProductName,
   normalizeBoardProductName,
@@ -941,14 +941,15 @@ const SYNC_INTERVAL_MS = 2 * 60 * 1000; // 2 minutes
 
 export function startShopFloorPendingSyncInterval() {
   if (syncIntervalTimer) return;
-  // Trigger initial sync shortly after boot
+  // Trigger initial sync shortly after boot unless a scheduler run is active
   setTimeout(() => {
-    void syncPendingProcessesFromOdoo(true).catch(() => undefined);
-  }, 3000);
+    if (isSchedulerRunActive()) return;
+    void runWithOdooPriority('background', () => syncPendingProcessesFromOdoo(true)).catch(() => undefined);
+  }, 3000).unref?.();
 
   syncIntervalTimer = setInterval(() => {
     if (isSchedulerRunActive()) return;
-    void syncPendingProcessesFromOdoo(false).catch(() => undefined);
+    void runWithOdooPriority('background', () => syncPendingProcessesFromOdoo(false)).catch(() => undefined);
   }, SYNC_INTERVAL_MS);
   syncIntervalTimer.unref?.();
 }

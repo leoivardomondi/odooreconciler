@@ -1,7 +1,7 @@
 import { getApprovedAuthUsers, getSettings, saveAppUserProfile } from '../models/repositories';
 import { hasOdooConfiguration } from '../utils/helpers';
 import { logEvent } from './logService';
-import { OdooClient } from './odooClient';
+import { OdooClient, isSchedulerRunActive, runWithOdooPriority } from './odooClient';
 
 let syncPromise: Promise<{ matched: number; unmatched: number; failed: number }> | null = null;
 let intervalHandle: NodeJS.Timeout | null = null;
@@ -34,7 +34,13 @@ export async function syncApprovedUserProfilesFromOdoo() {
 
 export function startUserProfileSyncInterval() {
   if (intervalHandle) return;
-  setTimeout(() => void syncApprovedUserProfilesFromOdoo().catch(() => undefined), 15_000).unref();
-  intervalHandle = setInterval(() => void syncApprovedUserProfilesFromOdoo().catch(() => undefined), 24 * 60 * 60 * 1000);
+  setTimeout(() => {
+    if (isSchedulerRunActive()) return;
+    void runWithOdooPriority('background', () => syncApprovedUserProfilesFromOdoo()).catch(() => undefined);
+  }, 15_000).unref();
+  intervalHandle = setInterval(() => {
+    if (isSchedulerRunActive()) return;
+    void runWithOdooPriority('background', () => syncApprovedUserProfilesFromOdoo()).catch(() => undefined);
+  }, 24 * 60 * 60 * 1000);
   intervalHandle.unref();
 }

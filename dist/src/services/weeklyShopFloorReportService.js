@@ -663,15 +663,18 @@ let warmupTimeout = null;
 function startWeeklyShopFloorReportWarmup() {
     if (warmupTimeout)
         return;
-    // Background pre-warm the default report PDF snapshot so downloads are instant (<50ms)
+    // Background pre-warm the default report PDF snapshot ONLY if not already fresh in DB cache,
+    // and run at background priority so it never stalls interactive requests or scheduler runs.
     warmupTimeout = setTimeout(() => {
-        void (async () => {
-            await purgeWeeklyReportCaches();
-            await generateAndCacheWeeklyReportPdf();
-        })().catch((err) => {
+        if ((0, odooClient_1.isSchedulerRunActive)())
+            return;
+        void (0, odooClient_1.runWithOdooPriority)('background', async () => {
+            await getOrBuildWeeklyShopFloorReportPdf();
+        }).catch((err) => {
             console.warn('[weekly-report] Initial warmup failed:', err?.message || err);
         });
     }, 60 * 1000);
+    warmupTimeout.unref?.();
 }
 async function purgeWeeklyReportCaches() {
     try {

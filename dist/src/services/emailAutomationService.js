@@ -7,6 +7,7 @@ exports.startEmailAutomationInterval = startEmailAutomationInterval;
 const repositories_1 = require("../models/repositories");
 const db_1 = require("../models/db");
 const logService_1 = require("./logService");
+const odooClient_1 = require("./odooClient");
 const mailTransport_1 = require("./mailTransport");
 const mpesaReviewNotificationService_1 = require("./mpesaReviewNotificationService");
 const moOvertimeSuggestionService_1 = require("./moOvertimeSuggestionService");
@@ -195,7 +196,7 @@ async function runEmailAutomations(now = new Date()) {
 function startEmailAutomationInterval() {
     if (timer)
         return;
-    void runEmailAutomations();
-    timer = setInterval(() => void runEmailAutomations(), 5 * 60 * 1000);
+    void (0, odooClient_1.runWithOdooPriority)('background', () => runEmailAutomations()).catch(() => undefined);
+    timer = setInterval(() => void (0, odooClient_1.runWithOdooPriority)('background', () => runEmailAutomations()).catch(() => undefined), 5 * 60 * 1000);
     timer.unref();
 }

@@ -356,14 +356,16 @@ function startShopFloorOperatorAccessSyncInterval() {
     if (intervalHandle)
         return intervalHandle;
     const run = () => {
-        void syncShopFloorOperatorsData(true).catch((error) => {
+        void (0, odooClient_1.runWithOdooPriority)('background', () => syncShopFloorOperatorsData(true)).catch((error) => {
             void (0, logService_1.logEvent)('error', 'Automatic Shop Floor operator sync failed', {
                 error: error instanceof Error ? error.message : String(error),
             });
         });
     };
-    // Prime immediately on startup
-    run();
+    // Prime on startup unless a scheduler run is already active
+    if (!(0, odooClient_1.isSchedulerRunActive)()) {
+        run();
+    }
     intervalHandle = setInterval(() => {
         if (isOperatingTime() && !(0, odooClient_1.isSchedulerRunActive)()) {
             run();

@@ -1307,12 +1307,16 @@ function startBoardIntakeSyncInterval() {
     if (intervalHandle)
         return;
     setTimeout(() => {
-        void retryDueBoardIntakeEntries();
-        if (!cleanupExecuted) {
-            cleanupExecuted = true;
-            void cleanPreexistingMismatchChatter().catch(() => undefined);
-        }
+        void (0, odooClient_1.runWithOdooPriority)('background', async () => {
+            await retryDueBoardIntakeEntries();
+            if (!cleanupExecuted && !(0, odooClient_1.isSchedulerRunActive)()) {
+                cleanupExecuted = true;
+                await cleanPreexistingMismatchChatter().catch(() => undefined);
+            }
+        }).catch(() => undefined);
     }, 10_000).unref();
-    intervalHandle = setInterval(() => void retryDueBoardIntakeEntries(), AUTO_RETRY_INTERVAL_MS);
+    intervalHandle = setInterval(() => {
+        void (0, odooClient_1.runWithOdooPriority)('background', () => retryDueBoardIntakeEntries()).catch(() => undefined);
+    }, AUTO_RETRY_INTERVAL_MS);
     intervalHandle.unref();
 }

@@ -8,8 +8,11 @@ exports.isOdooTrafficPaused = isOdooTrafficPaused;
 exports.setOdooTrafficPaused = setOdooTrafficPaused;
 exports.isSchedulerRunActive = isSchedulerRunActive;
 exports.setSchedulerRunActive = setSchedulerRunActive;
+exports.runWithOdooPriority = runWithOdooPriority;
+exports.getOdooQueueStats = getOdooQueueStats;
 exports.enqueueOdooRequest = enqueueOdooRequest;
 const axios_1 = __importDefault(require("axios"));
+const node_async_hooks_1 = require("node:async_hooks");
 const http_1 = __importDefault(require("http"));
 const https_1 = __importDefault(require("https"));
 const odooHttpsAgent = new https_1.default.Agent({
@@ -50,38 +53,110 @@ function isSchedulerRunActive() {
 function setSchedulerRunActive(active) {
     isSchedulerRunActiveFlag = active;
 }
+const odooPriorityStorage = new node_async_hooks_1.AsyncLocalStorage();
+function runWithOdooPriority(priority, fn) {
+    return odooPriorityStorage.run(priority, fn);
+}
+const highPriorityQueue = [];
+const backgroundPriorityQueue = [];
+let odooQueueWorkerRunning = false;
+let activeOdooTaskLabel = null;
+let activeOdooTaskStartedAt = 0;
 let lastOdooRequestEndTime = 0;
-let odooRequestQueue = Promise.resolve();
+const ODOO_QUEUE_SAFETY_TIMEOUT_MS = 120_000;
 const globalModelFieldsCache = new Map();
+function getOdooQueueStats() {
+    return {
+        highPending: highPriorityQueue.length,
+        backgroundPending: backgroundPriorityQueue.length,
+        activeLabel: activeOdooTaskLabel,
+        activeElapsedMs: activeOdooTaskStartedAt ? Date.now() - activeOdooTaskStartedAt : 0,
+    };
+}
+async function drainOdooRequestQueue() {
+    if (odooQueueWorkerRunning) {
+        return;
+    }
+    odooQueueWorkerRunning = true;
+    try {
+        while (highPriorityQueue.length > 0 || backgroundPriorityQueue.length > 0) {
+            const task = highPriorityQueue.shift() || backgroundPriorityQueue.shift();
+            if (!task) {
+                break;
+            }
+            if (task.signal?.aborted) {
+                task.reject(new OdooClientError('Odoo request cancelled before execution.', 499));
+                continue;
+            }
+            if (isOdooTrafficPaused()) {
+                task.reject(new OdooClientError('Odoo API traffic is currently paused by administrative setting (firewall block / rate limit resolution).', 429));
+                continue;
+            }
+            const minIntervalMs = Math.max(0, Number(env_1.env.ODOO_RATE_LIMIT_MIN_INTERVAL_MS) || 2500);
+            const elapsed = Date.now() - lastOdooRequestEndTime;
+            if (minIntervalMs > 0 && elapsed < minIntervalMs) {
+                await new Promise((resolve) => setTimeout(resolve, minIntervalMs - elapsed));
+            }
+            if (task.signal?.aborted) {
+                task.reject(new OdooClientError('Odoo request cancelled before execution.', 499));
+                continue;
+            }
+            activeOdooTaskLabel = task.label || 'odoo_rpc';
+            activeOdooTaskStartedAt = Date.now();
+            let safetyTimer = null;
+            try {
+                const result = await Promise.race([
+                    task.fn(),
+                    new Promise((_, reject) => {
+                        safetyTimer = setTimeout(() => {
+                            reject(new OdooClientError(`Odoo queued request (${activeOdooTaskLabel}) exceeded safety timeout of ${ODOO_QUEUE_SAFETY_TIMEOUT_MS}ms.`, 504));
+                        }, ODOO_QUEUE_SAFETY_TIMEOUT_MS);
+                        safetyTimer.unref?.();
+                    }),
+                ]);
+                task.resolve(result);
+            }
+            catch (err) {
+                task.reject(err);
+            }
+            finally {
+                if (safetyTimer) {
+                    clearTimeout(safetyTimer);
+                }
+                activeOdooTaskLabel = null;
+                activeOdooTaskStartedAt = 0;
+                lastOdooRequestEndTime = Date.now();
+            }
+        }
+    }
+    finally {
+        odooQueueWorkerRunning = false;
+        if (highPriorityQueue.length > 0 || backgroundPriorityQueue.length > 0) {
+            void drainOdooRequestQueue();
+        }
+    }
+}
 function enqueueOdooRequest(fn, options) {
     if (options?.signal?.aborted) {
         return Promise.reject(new OdooClientError('Odoo request cancelled before execution.', 499));
     }
-    const minIntervalMs = Math.max(0, Number(env_1.env.ODOO_RATE_LIMIT_MIN_INTERVAL_MS) || 2500);
-    const nextTask = odooRequestQueue.then(async () => {
-        if (options?.signal?.aborted) {
-            throw new OdooClientError('Odoo request cancelled before execution.', 499);
+    const effectivePriority = options?.priority || odooPriorityStorage.getStore() || 'high';
+    return new Promise((resolve, reject) => {
+        const task = {
+            fn: () => fn(),
+            resolve: resolve,
+            reject,
+            signal: options?.signal,
+            label: options?.label,
+        };
+        if (effectivePriority === 'background') {
+            backgroundPriorityQueue.push(task);
         }
-        if (isOdooTrafficPaused()) {
-            throw new OdooClientError('Odoo API traffic is currently paused by administrative setting (firewall block / rate limit resolution).', 429);
+        else {
+            highPriorityQueue.push(task);
         }
-        const now = Date.now();
-        const elapsed = now - lastOdooRequestEndTime;
-        if (minIntervalMs > 0 && elapsed < minIntervalMs) {
-            await new Promise((resolve) => setTimeout(resolve, minIntervalMs - elapsed));
-        }
-        if (options?.signal?.aborted) {
-            throw new OdooClientError('Odoo request cancelled before execution.', 499);
-        }
-        try {
-            return await fn();
-        }
-        finally {
-            lastOdooRequestEndTime = Date.now();
-        }
+        void drainOdooRequestQueue();
     });
-    odooRequestQueue = nextTask.catch(() => undefined);
-    return nextTask;
 }
 function parseOdooDateTime(value) {
     if (!value) {
@@ -614,8 +689,11 @@ class OdooClient {
         return records[0] || {};
     }
     async getSaleOrderStockHandoff(orderId, mappings) {
-        const order = await this.getSaleOrder(orderId);
+        const targetCompanyId = await this.getTargetCompanyId();
         const fieldNames = [
+            'id',
+            'name',
+            'company_id',
             mappings.edgeJsonField,
             mappings.previousJsonField,
             mappings.signatureField,
@@ -624,17 +702,30 @@ class OdooClient {
             mappings.deltaJsonField,
             mappings.logField,
         ].filter(Boolean);
-        const values = await this.readSaleOrderFields(orderId, fieldNames);
+        const records = await this.request('sale.order', 'read', {
+            ids: [orderId],
+            fields: [...new Set(fieldNames)],
+        }, {
+            timeoutMs: this.saleOrderReadTimeoutMs,
+        });
+        const order = records[0];
+        if (!order) {
+            throw new OdooClientError(`Sales Order ${orderId} was not found in Odoo.`);
+        }
+        const companyId = Array.isArray(order.company_id) ? order.company_id[0] : null;
+        if (companyId !== targetCompanyId) {
+            throw new OdooClientError(`Sales Order ${String(order.name || orderId)} does not belong to target company "${env_1.env.ODOO_TARGET_COMPANY_NAME}".`);
+        }
         return {
-            orderId: order.id,
-            orderName: order.name,
-            edgeJson: String(values[mappings.edgeJsonField] || ''),
-            previousJson: String(values[mappings.previousJsonField] || ''),
-            signature: String(values[mappings.signatureField] || ''),
-            stockSignature: String(values[mappings.stockSignatureField] || ''),
-            stockProcessed: Boolean(values[mappings.stockProcessedField]),
-            stockAdjustmentInputJson: String(values[mappings.deltaJsonField] || ''),
-            processingLog: String(values[mappings.logField] || ''),
+            orderId: Number(order.id),
+            orderName: String(order.name || ''),
+            edgeJson: String(order[mappings.edgeJsonField] || ''),
+            previousJson: String(order[mappings.previousJsonField] || ''),
+            signature: String(order[mappings.signatureField] || ''),
+            stockSignature: String(order[mappings.stockSignatureField] || ''),
+            stockProcessed: Boolean(order[mappings.stockProcessedField]),
+            stockAdjustmentInputJson: String(order[mappings.deltaJsonField] || ''),
+            processingLog: String(order[mappings.logField] || ''),
         };
     }
     async getSaleOrderStockHandoffs(orderIds, mappings) {
@@ -2837,7 +2928,10 @@ class OdooClient {
                     headers: this.buildHeaders(),
                     timeout: options?.timeoutMs ?? this.timeoutMs,
                     validateStatus: () => true,
-                }), options?.signal ? { signal: options.signal } : undefined);
+                }), {
+                    signal: options?.signal,
+                    label: `${model}.${method}`,
+                });
                 if (response.status >= 200 && response.status < 300) {
                     return response.data;
                 }

@@ -3,7 +3,7 @@ import { env } from '../utils/env';
 import { hasOdooConfiguration } from '../utils/helpers';
 import { appDateTime } from '../utils/dateTime';
 import { logEvent } from './logService';
-import { OdooClient, isSchedulerRunActive } from './odooClient';
+import { OdooClient, isSchedulerRunActive, runWithOdooPriority } from './odooClient';
 
 const FRESH_MS = 5 * 60 * 1000;
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
@@ -139,9 +139,13 @@ export async function recordOptimisticStockAddition(productId: number, productNa
 
 export function startStockMirrorInterval() {
   if (intervalHandle) return;
-  void refreshStockMirror();
+  if (!isSchedulerRunActive()) {
+    void runWithOdooPriority('background', () => refreshStockMirror()).catch(() => undefined);
+  }
   intervalHandle = setInterval(() => {
-    if (isOperatingTime() && !isSchedulerRunActive()) void refreshStockMirror();
+    if (isOperatingTime() && !isSchedulerRunActive()) {
+      void runWithOdooPriority('background', () => refreshStockMirror()).catch(() => undefined);
+    }
   }, REFRESH_INTERVAL_MS);
   intervalHandle.unref();
 }

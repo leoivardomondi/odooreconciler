@@ -76,10 +76,10 @@ async function extractLatestJobSummaryForOrder(orderId) {
     }
     return extractAttachmentForOrder(orderId, target.id);
 }
-async function extractAttachmentForOrder(orderId, attachmentId) {
+async function extractAttachmentForOrder(orderId, attachmentId, options) {
     const { client, settings } = await getConfiguredClient();
-    const order = await client.getSaleOrder(orderId);
-    const attachments = await client.getAttachments(orderId);
+    const order = options?.preloadedOrder ?? (await client.getSaleOrder(orderId));
+    const attachments = options?.preloadedAttachments ?? (await client.getAttachments(orderId));
     const selectedAttachment = attachments.find((attachment) => attachment.id === attachmentId);
     if (!selectedAttachment) {
         throw new Error(`Attachment ${attachmentId} was not found on ${order.name}.`);

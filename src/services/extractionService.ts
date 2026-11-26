@@ -8,6 +8,7 @@ import {
   updateHistory,
 } from '../models/repositories';
 import {
+  AttachmentInfo,
   ExtractionViewModel,
   OdooModelField,
   SignatureComparisonResult,
@@ -118,10 +119,17 @@ export async function extractLatestJobSummaryForOrder(orderId: number) {
   return extractAttachmentForOrder(orderId, target.id);
 }
 
-export async function extractAttachmentForOrder(orderId: number, attachmentId: number) {
+export async function extractAttachmentForOrder(
+  orderId: number,
+  attachmentId: number,
+  options?: {
+    preloadedOrder?: { id: number; name: string };
+    preloadedAttachments?: AttachmentInfo[];
+  },
+) {
   const { client, settings } = await getConfiguredClient();
-  const order = await client.getSaleOrder(orderId);
-  const attachments = await client.getAttachments(orderId);
+  const order = options?.preloadedOrder ?? (await client.getSaleOrder(orderId));
+  const attachments = options?.preloadedAttachments ?? (await client.getAttachments(orderId));
   const selectedAttachment = attachments.find((attachment) => attachment.id === attachmentId);
 
   if (!selectedAttachment) {

@@ -2,6 +2,7 @@ import { getSettings, getShopFloorSharedCache, saveSettings, saveShopFloorShared
 import { queryOne } from '../models/db';
 import { EmailAutomation } from '../models/types';
 import { logEvent } from './logService';
+import { runWithOdooPriority } from './odooClient';
 import { sendMailWithConfig } from './mailTransport';
 import { sendDailyMpesaReviewNotification } from './mpesaReviewNotificationService';
 import { sendMoOvertimeSuggestion } from './moOvertimeSuggestionService';
@@ -200,7 +201,10 @@ export async function runEmailAutomations(now = new Date()) {
 
 export function startEmailAutomationInterval() {
   if (timer) return;
-  void runEmailAutomations();
-  timer = setInterval(() => void runEmailAutomations(), 5 * 60 * 1000);
+  void runWithOdooPriority('background', () => runEmailAutomations()).catch(() => undefined);
+  timer = setInterval(
+    () => void runWithOdooPriority('background', () => runEmailAutomations()).catch(() => undefined),
+    5 * 60 * 1000,
+  );
   timer.unref();
 }

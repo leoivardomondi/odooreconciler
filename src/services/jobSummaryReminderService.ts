@@ -1,4 +1,4 @@
-import { SalesOrderSummary, SaleOrderLine } from '../models/types';
+import { AttachmentInfo, SalesOrderSummary, SaleOrderLine } from '../models/types';
 import { isJobSummaryAttachment } from '../utils/helpers';
 import { OdooClient } from './odooClient';
 import { closeActivities, createTodoActivity, findOpenActivities } from './odooActivityService';
@@ -72,8 +72,9 @@ export async function ensureMissingJobSummaryReminder(
   client: OdooClient,
   order: SalesOrderSummary,
   filenameKeyword: string,
+  preloadedAttachments?: AttachmentInfo[],
 ) {
-  const attachments = await client.getAttachments(order.id);
+  const attachments = preloadedAttachments ?? (await client.getAttachments(order.id));
   const hasJobSummary = attachments.some((attachment) => isJobSummaryAttachment(attachment, filenameKeyword));
   if (hasJobSummary) {
     const closeResult = await closeOpenJobSummaryReminderActivities(

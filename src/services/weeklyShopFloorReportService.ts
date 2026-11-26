@@ -7,7 +7,7 @@ import {
   getShopFloorSharedCache,
   saveShopFloorSharedCache,
 } from '../models/repositories';
-import { OdooClient } from './odooClient';
+import { OdooClient, isSchedulerRunActive, runWithOdooPriority } from './odooClient';
 import { sendMailWithConfig } from './mailTransport';
 import { logEvent } from './logService';
 import { getConfirmedMoQueueSchedule, getMoOverdueState } from './moOverdueService';
@@ -647,15 +647,17 @@ let warmupTimeout: NodeJS.Timeout | null = null;
 
 export function startWeeklyShopFloorReportWarmup() {
   if (warmupTimeout) return;
-  // Background pre-warm the default report PDF snapshot so downloads are instant (<50ms)
+  // Background pre-warm the default report PDF snapshot ONLY if not already fresh in DB cache,
+  // and run at background priority so it never stalls interactive requests or scheduler runs.
   warmupTimeout = setTimeout(() => {
-    void (async () => {
-      await purgeWeeklyReportCaches();
-      await generateAndCacheWeeklyReportPdf();
-    })().catch((err) => {
+    if (isSchedulerRunActive()) return;
+    void runWithOdooPriority('background', async () => {
+      await getOrBuildWeeklyShopFloorReportPdf();
+    }).catch((err) => {
       console.warn('[weekly-report] Initial warmup failed:', err?.message || err);
     });
   }, 60 * 1000);
+  warmupTimeout.unref?.();
 }
 
 export async function purgeWeeklyReportCaches(): Promise<void> {

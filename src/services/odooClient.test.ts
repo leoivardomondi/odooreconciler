@@ -156,3 +156,45 @@ test('isSchedulerRunActive tracks active scheduler run state', async () => {
   setSchedulerRunActive(false);
   assert.equal(isSchedulerRunActive(), false);
 });
+
+test('enqueueOdooRequest prioritizes high-priority calls ahead of background sync calls', async () => {
+  const { setOdooTrafficPaused, enqueueOdooRequest, runWithOdooPriority } = await import('./odooClient');
+  setOdooTrafficPaused(false);
+
+  const order: string[] = [];
+  let releaseBlocker!: () => void;
+  const blockerGate = new Promise<void>((resolve) => {
+    releaseBlocker = resolve;
+  });
+
+  const blocker = enqueueOdooRequest(async () => {
+    order.push('blocker');
+    await blockerGate;
+    return 'blocker';
+  });
+
+  const bg1 = runWithOdooPriority('background', () =>
+    enqueueOdooRequest(async () => {
+      order.push('bg1');
+      return 'bg1';
+    }),
+  );
+
+  const bg2 = runWithOdooPriority('background', () =>
+    enqueueOdooRequest(async () => {
+      order.push('bg2');
+      return 'bg2';
+    }),
+  );
+
+  // High-priority scheduler/UI call enqueued AFTER background sync calls must jump ahead of them
+  const high1 = enqueueOdooRequest(async () => {
+    order.push('high1');
+    return 'high1';
+  });
+
+  releaseBlocker();
+  await Promise.all([blocker, bg1, bg2, high1]);
+
+  assert.deepEqual(order, ['blocker', 'high1', 'bg1', 'bg2']);
+});
