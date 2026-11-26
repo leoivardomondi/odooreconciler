@@ -171,6 +171,7 @@ exports.releaseStaleBoardIntakeQueueEntry = releaseStaleBoardIntakeQueueEntry;
 exports.getBoardIntakeLoggingReport = getBoardIntakeLoggingReport;
 exports.getRecentBoardIntakeForAudit = getRecentBoardIntakeForAudit;
 exports.getBoardIntakesForDailyReport = getBoardIntakesForDailyReport;
+exports.getActiveBoardIntakesInRange = getActiveBoardIntakesInRange;
 exports.getShopFloorIncidents = getShopFloorIncidents;
 exports.createShopFloorIncident = createShopFloorIncident;
 exports.resolveShopFloorIncident = resolveShopFloorIncident;
@@ -4510,6 +4511,19 @@ async function getBoardIntakesForDailyReport(targetDate) {
        AND reverted_at IS NULL
        AND status != 'reverted'
      ORDER BY created_at ASC`, [targetDate, dayStart, dayEnd]);
+}
+async function getActiveBoardIntakesInRange(startDate, endDate) {
+    const rangeStart = `${startDate} 00:00:00`;
+    const rangeEnd = `${endDate} 23:59:59`;
+    return (0, db_1.queryAll)(`SELECT id, product_id, product_name, partner_id, customer_name, quantity,
+            vehicle_registration, arrival_date, arrival_time, gate,
+            is_purchase, purchase_order_reference, status, created_at, synced_at,
+            actor_name, actor_email
+     FROM board_intake_queue
+     WHERE created_at >= ? AND created_at <= ?
+       AND reverted_at IS NULL
+       AND status != 'reverted'
+     ORDER BY created_at ASC`, [rangeStart, rangeEnd]);
 }
 // ─── Shop Floor: Incidents & Assigned Items ──────────────────────────
 function ensureShopFloorTables() {

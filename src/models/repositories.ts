@@ -5911,6 +5911,8 @@ export interface BoardIntakeQueueEntry {
   reverted_by: string | null;
   matched_at?: string | null;
   matched_by?: string | null;
+  created_at?: string | null;
+  synced_at?: string | null;
   retry_count: number;
   error_message: string | null;
 }
@@ -6055,6 +6057,26 @@ export async function getBoardIntakesForDailyReport(targetDate: string): Promise
        AND status != 'reverted'
      ORDER BY created_at ASC`,
     [targetDate, dayStart, dayEnd]
+  );
+}
+
+export async function getActiveBoardIntakesInRange(
+  startDate: string,
+  endDate: string,
+): Promise<BoardIntakeQueueEntry[]> {
+  const rangeStart = `${startDate} 00:00:00`;
+  const rangeEnd = `${endDate} 23:59:59`;
+  return queryAll<BoardIntakeQueueEntry>(
+    `SELECT id, product_id, product_name, partner_id, customer_name, quantity,
+            vehicle_registration, arrival_date, arrival_time, gate,
+            is_purchase, purchase_order_reference, status, created_at, synced_at,
+            actor_name, actor_email
+     FROM board_intake_queue
+     WHERE created_at >= ? AND created_at <= ?
+       AND reverted_at IS NULL
+       AND status != 'reverted'
+     ORDER BY created_at ASC`,
+    [rangeStart, rangeEnd],
   );
 }
 

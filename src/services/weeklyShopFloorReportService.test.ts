@@ -1,6 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isOperationsDept, getOperators } from './weeklyShopFloorReportService';
+import {
+  isOperationsDept,
+  isSharonOrCandyName,
+  getOperators,
+  getMondayToSaturdayPoWindows,
+  aggregateMonSatPoVsFinanceDocs,
+  summarizeNamedStaffAttendance,
+  detectWorkOrdersStartedBeforeBoardLogs,
+  mergeOperationsBoardLoggingRows,
+  buildBoardLoggingEncouragementNote,
+  renderWeeklyShopFloorReportPdf,
+} from './weeklyShopFloorReportService';
 
 test('weeklyShopFloorReportService - Wednesday Report Attendance Operations Department Filter', async (t) => {
   await t.test('isOperationsDept correctly identifies Operations across various formats', () => {
@@ -53,39 +64,298 @@ test('weeklyShopFloorReportService - Wednesday Report Attendance Operations Depa
     assert.ok(!names.includes('Charles Onyango'));
   });
 
-  await t.test('board logging filters out non-operations employees', () => {
-    const operationsNames = new Set(['Janet Awino Amollo', 'Joel Ochango'].map(s => s.toLowerCase().trim()));
-    const rawBoardLogging = [
-      { name: 'Janet Awino Amollo', records: 5, boards: 10, synced: 4, failed: 0, reverted: 1, pending: 0 },
-      { name: 'Joel Ochango', records: 3, boards: 6, synced: 3, failed: 0, reverted: 0, pending: 0 },
-      { name: 'Charles Onyango', records: 1, boards: 2, synced: 1, failed: 0, reverted: 0, pending: 0 },
-      { name: 'dbadmin', records: 2, boards: 4, synced: 2, failed: 0, reverted: 0, pending: 0 },
-    ];
-    const filtered = rawBoardLogging.filter(b => operationsNames.has(b.name.toLowerCase().trim()));
-    assert.equal(filtered.length, 2);
-    assert.deepEqual(filtered.map(f => f.name), ['Janet Awino Amollo', 'Joel Ochango']);
-  });
-
-  await t.test('board logging totals correctly accumulate reverted count', () => {
-    const operators = [
-      { name: 'Janet Awino Amollo', records: 5, boards: 10, synced: 4, failed: 0, reverted: 1, pending: 0 },
-      { name: 'Joel Ochango', records: 3, boards: 6, synced: 3, failed: 0, reverted: 0, pending: 0 },
-      { name: 'Operator 3', records: 4, boards: 8, synced: 2, failed: 0, reverted: 2, pending: 0 },
-    ];
-    const totals = operators.reduce((acc, op) => {
-      acc.records += op.records;
-      acc.boards += op.boards;
-      acc.synced += op.synced;
-      acc.failed += op.failed;
-      acc.reverted += (op.reverted || 0);
-      return acc;
-    }, { records: 0, boards: 0, synced: 0, failed: 0, reverted: 0 });
-
-    assert.equal(totals.records, 12);
-    assert.equal(totals.boards, 24);
-    assert.equal(totals.synced, 9);
-    assert.equal(totals.failed, 0);
-    assert.equal(totals.reverted, 3);
+  await t.test('isSharonOrCandyName matches Sharon and Candy reliably', () => {
+    assert.equal(isSharonOrCandyName('Sharon Araka'), true);
+    assert.equal(isSharonOrCandyName('Candy Venesa'), true);
+    assert.equal(isSharonOrCandyName('Joel Ochango'), false);
+    assert.equal(isSharonOrCandyName(''), false);
   });
 });
 
+test('weeklyShopFloorReportService - Monday to Saturday PO vs Finance Documents', async (t) => {
+  await t.test('getMondayToSaturdayPoWindows selects latest completed Mon-Sat week for a Wed-Tue weekly report', () => {
+    // Wednesday Nov 25 report covers Wed 2026-11-18 to Tue 2026-11-24
+    const result = getMondayToSaturdayPoWindows('2026-11-18', '2026-11-24', 4);
+    assert.equal(result.primaryMonday, '2026-11-16');
+    assert.equal(result.primarySaturday, '2026-11-21');
+    assert.equal(result.windows.length, 4);
+    assert.equal(result.windows[0].monday, '2026-10-26');
+    assert.equal(result.windows[0].saturday, '2026-10-31');
+    assert.equal(result.windows[3].monday, '2026-11-16');
+    assert.equal(result.windows[3].saturday, '2026-11-21');
+    assert.equal(result.windows[3].isPrimary, true);
+  });
+
+  await t.test('aggregateMonSatPoVsFinanceDocs excludes Sundays, VA/ POs, Delivery Notes, and excluded vendors', () => {
+    const { windows } = getMondayToSaturdayPoWindows('2026-11-18', '2026-11-24', 1);
+    const summary = aggregateMonSatPoVsFinanceDocs({
+      windows,
+      purchaseOrders: [
+        // Mon 2026-11-16 EAT (confirmed, unbilled)
+        { name: 'P00101', state: 'purchase', create_date: '2026-11-16 07:00:00', partner_id: [10, 'Wood Supplier'], invoice_count: 0, invoice_status: 'to invoice' },
+        // Sat 2026-11-21 23:30 EAT = 20:30 UTC (confirmed, billed)
+        { name: 'P00102', state: 'purchase', create_date: '2026-11-21 20:30:00', partner_id: [11, 'Panel Mart'], invoice_count: 1, invoice_status: 'invoiced' },
+        // Sun 2026-11-22 10:00 EAT = 07:00 UTC -> MUST be excluded from Mon-Sat
+        { name: 'P00103', state: 'purchase', create_date: '2026-11-22 07:00:00', partner_id: [11, 'Panel Mart'], invoice_count: 0, invoice_status: 'to invoice' },
+        // Urban Vibe 2 VA/ prefix -> MUST be excluded
+        { name: 'VA/P00104', state: 'purchase', create_date: '2026-11-18 09:00:00', partner_id: [12, 'Other'], invoice_count: 0, invoice_status: 'to invoice' },
+        // Draft PO -> counted under draft/cancel, not confirmed
+        { name: 'P00105', state: 'draft', create_date: '2026-11-18 10:00:00', partner_id: [12, 'Other'], invoice_count: 0, invoice_status: 'no' },
+      ],
+      financeDocuments: [
+        // Eligible invoice on Tue 2026-11-17
+        { name: 'INV-9001.pdf', create_date: '2026-11-17 08:00:00', tag_ids: [1] },
+        // Delivery Note -> excluded from eligible invoices
+        { name: 'Delivery Note 201.pdf', create_date: '2026-11-18 08:00:00', tag_ids: [2] },
+        // Excluded vendor -> excluded from eligible invoices
+        { name: 'Quickmart Receipt.pdf', create_date: '2026-11-19 08:00:00', tag_ids: [] },
+        // Sunday document -> excluded from Mon-Sat
+        { name: 'INV-SUN.pdf', create_date: '2026-11-22 08:00:00', tag_ids: [] },
+      ],
+      validatedTagIds: new Set([1]),
+      deliveryNoteTagIds: new Set([2]),
+      unfiledNoFolderDates: ['2026-11-18', '2026-11-22'],
+    });
+
+    assert.equal(summary.primaryWeek.posConfirmed, 2);
+    assert.equal(summary.primaryWeek.posDraftOrCancel, 1);
+    assert.equal(summary.primaryWeek.posBilledInOdoo, 1);
+    assert.equal(summary.primaryWeek.posUnbilledInOdoo, 1);
+    assert.equal(summary.primaryWeek.docsTotal, 3);
+    assert.equal(summary.primaryWeek.docsEligibleInvoices, 1);
+    assert.equal(summary.primaryWeek.docsValidated, 1);
+    assert.equal(summary.primaryWeek.docsDeliveryNotes, 1);
+    assert.equal(summary.primaryWeek.docsExcludedVendor, 1);
+    assert.equal(summary.primaryWeek.netGap, -1);
+    assert.equal(summary.primaryWeek.minMissingReceipts, 1);
+    assert.equal(summary.unfiledNoFolderDocsPrimaryWeek, 1); // Sunday unfiled doc excluded
+  });
+});
+
+test('weeklyShopFloorReportService - Work Orders Started/Finished Before Board Logs', async (t) => {
+  await t.test('detects compliant, started-before-log, started-and-finished-before-log, and no-log violations accurately across UTC vs EAT', () => {
+    const audit = detectWorkOrdersStartedBeforeBoardLogs({
+      reportStart: '2026-11-18',
+      reportEnd: '2026-11-24',
+      mos: [
+        // 1. COMPLIANT: Board logged at 09:00 EAT (06:00 UTC), WO started at 10:00 EAT (07:00 UTC)
+        { id: 101, name: 'WH/MO/06001', product_id: [1, 'Cutting White Particle 18mm'], origin: 'S03901', state: 'done', create_date: '2026-11-19 05:00:00', date_start: '2026-11-19 07:00:00', date_finished: '2026-11-19 09:00:00' },
+        // 2. VIOLATION (Started & Finished before board log): WO 07:00-08:00 UTC (10:00-11:00 EAT), board logged at 13:00 EAT
+        { id: 102, name: 'WH/MO/06002', product_id: [2, 'Cutting White MDF 18mm'], origin: 'S03902', state: 'done', create_date: '2026-11-20 05:00:00', date_start: '2026-11-20 07:00:00', date_finished: '2026-11-20 08:00:00' },
+        // 3. VIOLATION (Started before board log): WO started 07:00 UTC (10:00 EAT), still in progress, logged at 11:30 EAT
+        { id: 103, name: 'WH/MO/06003', product_id: [3, 'Cutting Dark Grey Particle 18mm'], origin: 'S03903', state: 'progress', create_date: '2026-11-21 05:00:00', date_start: '2026-11-21 07:00:00', date_finished: false },
+        // 4. VIOLATION (Started & finished with NO board log at all)
+        { id: 104, name: 'WH/MO/06004', product_id: [4, 'Cutting Backer White MDF 3mm'], origin: 'S03904', state: 'done', create_date: '2026-11-21 06:00:00', date_start: '2026-11-21 08:00:00', date_finished: '2026-11-21 09:00:00' },
+        // 5. COMPLIANT VIA PO RECEIPT: Board received via PO before start
+        { id: 105, name: 'WH/MO/06005', product_id: [5, 'Cutting Beech Waterproof 18mm'], origin: 'S03905', state: 'done', create_date: '2026-11-21 06:00:00', date_start: '2026-11-21 10:00:00', date_finished: '2026-11-21 11:00:00' },
+        // 6. IGNORED: Edge Banding & Cutting Off Cuts are not board-log cutting jobs
+        { id: 106, name: 'WH/MO/06006', product_id: [6, 'Edge Banding White 18mm'], origin: 'S03906', state: 'done', create_date: '2026-11-21 06:00:00', date_start: '2026-11-21 07:00:00', date_finished: '2026-11-21 08:00:00' },
+        { id: 107, name: 'WH/MO/06007', product_id: [7, 'Cutting Off Cuts'], origin: 'S03907', state: 'done', create_date: '2026-11-21 06:00:00', date_start: '2026-11-21 07:00:00', date_finished: '2026-11-21 08:00:00' },
+      ],
+      components: [
+        { raw_material_production_id: [101, 'WH/MO/06001'], product_id: [37, 'White Particle 18mm'], product_uom_qty: 5 },
+        { raw_material_production_id: [102, 'WH/MO/06002'], product_id: [169, 'White MDF 18mm'], product_uom_qty: 4 },
+        { raw_material_production_id: [103, 'WH/MO/06003'], product_id: [608, 'Dark Grey Particle 18mm'], product_uom_qty: 2 },
+        { raw_material_production_id: [104, 'WH/MO/06004'], product_id: [294, 'Backer White MDF 3mm'], product_uom_qty: 3 },
+        { raw_material_production_id: [105, 'WH/MO/06005'], product_id: [2651, 'Beech Waterproof 18mm'], product_uom_qty: 6 },
+      ],
+      workorders: [
+        { id: 201, name: 'CLIENT ONE - Cutting', production_id: [101, 'WH/MO/06001'], state: 'done', date_start: '2026-11-19 07:00:00', date_finished: '2026-11-19 09:00:00' },
+        { id: 202, name: 'CLIENT TWO - Cutting', production_id: [102, 'WH/MO/06002'], state: 'done', date_start: '2026-11-20 07:00:00', date_finished: '2026-11-20 08:00:00' },
+        { id: 203, name: 'CLIENT THREE - Cutting', production_id: [103, 'WH/MO/06003'], state: 'progress', date_start: '2026-11-21 07:00:00', date_finished: false },
+        { id: 204, name: 'CLIENT FOUR - Cutting', production_id: [104, 'WH/MO/06004'], state: 'done', date_start: '2026-11-21 08:00:00', date_finished: '2026-11-21 09:00:00' },
+        { id: 205, name: 'CLIENT FIVE - Cutting', production_id: [105, 'WH/MO/06005'], state: 'done', date_start: '2026-11-21 10:00:00', date_finished: '2026-11-21 11:00:00' },
+      ],
+      productivityRows: [
+        { workorder_id: [202, 'WO202'], employee_id: [6, 'Onyango Bitcher Akulo'], date_start: '2026-11-20 07:00:00', date_end: '2026-11-20 08:00:00' },
+        { workorder_id: [203, 'WO203'], employee_id: [5, 'Joel Ochango'], date_start: '2026-11-21 07:00:00', date_end: false },
+        { workorder_id: [204, 'WO204'], employee_id: [6, 'Onyango Bitcher Akulo'], date_start: '2026-11-21 08:00:00', date_end: '2026-11-21 09:00:00' },
+      ],
+      saleOrders: [
+        { id: 1, name: 'S03901', partner_id: [11, 'Client One'], date_order: '2026-11-18 08:00:00' },
+        { id: 2, name: 'S03902', partner_id: [12, 'Client Two'], date_order: '2026-11-19 08:00:00' },
+        { id: 3, name: 'S03903', partner_id: [13, 'Client Three'], date_order: '2026-11-20 08:00:00' },
+        { id: 4, name: 'S03904', partner_id: [14, 'Client Four'], date_order: '2026-11-20 08:00:00' },
+        { id: 5, name: 'S03905', partner_id: [15, 'Client Five'], date_order: '2026-11-20 08:00:00' },
+      ],
+      purchaseOrders: [
+        { id: 901, name: 'P00901', origin: 'S03905' },
+      ],
+      incomingPoMoves: [
+        { origin: 'P00901', product_id: [2651, 'Beech Waterproof 18mm'], date: '2026-11-21 09:00:00', state: 'done' },
+      ],
+      boardIntakeLogs: [
+        // Logged at 09:00 EAT (= 06:00 UTC), 1 hour BEFORE WO 101 started (07:00 UTC)
+        { id: 'log1', product_id: 37, product_name: 'White Particle 18mm', partner_id: 11, customer_name: 'Client One', quantity: 5, status: 'synced', reverted_at: null, created_at: '2026-11-19 09:00:00' },
+        // Logged at 13:00 EAT (= 10:00 UTC), AFTER WO 102 finished (08:00 UTC)
+        { id: 'log2', product_id: 169, product_name: 'White MDF 18mm', partner_id: 12, customer_name: 'Client Two', quantity: 4, status: 'synced', reverted_at: null, created_at: '2026-11-20 13:00:00' },
+        // Logged at 11:30 EAT (= 08:30 UTC), AFTER WO 103 started (07:00 UTC) while still in progress
+        { id: 'log3', product_id: 608, product_name: 'Dark Grey Particle 18mm', partner_id: 13, customer_name: 'Client Three', quantity: 2, status: 'synced', reverted_at: null, created_at: '2026-11-21 11:30:00' },
+      ],
+    });
+
+    assert.equal(audit.totalChecked, 5);
+    assert.equal(audit.compliantCount, 2);
+    assert.equal(audit.violations.length, 3);
+    assert.equal(audit.startedBeforeLogCount, 1);
+    assert.equal(audit.startedAndFinishedBeforeLogCount, 2);
+    assert.equal(audit.noBoardLogCount, 1);
+    assert.equal(audit.loggedAfterStartCount, 2);
+
+    const byMo = new Map(audit.violations.map((v) => [v.moName, v]));
+    assert.equal(byMo.get('WH/MO/06002')?.violationType, 'started_and_finished_before_log');
+    assert.equal(byMo.get('WH/MO/06002')?.operatorName, 'Onyango Bitcher Akulo');
+    assert.equal(byMo.get('WH/MO/06003')?.violationType, 'started_before_log');
+    assert.equal(byMo.get('WH/MO/06003')?.operatorName, 'Joel Ochango');
+    assert.equal(byMo.get('WH/MO/06004')?.violationType, 'started_and_finished_no_log');
+  });
+});
+
+test('weeklyShopFloorReportService - Sharon & Candy Attendance & Board Logging Encouragement', async (t) => {
+  await t.test('summarizeNamedStaffAttendance flags normal, late, open, and multi-day unclosed shifts', () => {
+    const summary = summarizeNamedStaffAttendance(
+      [
+        { id: 1, name: 'Sharon Araka', roleLabel: 'Sales Optimizer' },
+        { id: 22, name: 'Candy Venesa', roleLabel: 'Sales Optimizer' },
+      ],
+      [
+        // Sharon: normal shift Nov 18 (07:50 EAT -> 17:10 EAT) + open check-in Nov 23 (08:55 EAT = late + no checkout)
+        { employee_id: [1, 'Sharon Araka'], check_in: '2026-11-18 04:50:00', check_out: '2026-11-18 14:10:00', worked_hours: 9.33 },
+        { employee_id: [1, 'Sharon Araka'], check_in: '2026-11-23 05:55:00', check_out: false, worked_hours: 0 },
+        // Candy: multi-day unclosed shift spanning Nov 17 -> Nov 25
+        { employee_id: [22, 'Candy Venesa'], check_in: '2026-11-17 05:19:19', check_out: '2026-11-25 15:08:04', worked_hours: 201.8 },
+      ],
+      ['2026-11-18', '2026-11-19', '2026-11-20', '2026-11-21', '2026-11-23', '2026-11-24'],
+      '2026-11-18',
+      '2026-11-24',
+    );
+
+    const sharon = summary.find((s) => s.id === 1)!;
+    const candy = summary.find((s) => s.id === 22)!;
+    assert.equal(sharon.sessions.length, 2);
+    assert.equal(sharon.daysWithCheckIn, 2);
+    assert.equal(sharon.daysWithSameDayCheckOut, 1);
+    assert.equal(sharon.lateCount, 1);
+    assert.equal(sharon.missingCheckoutCount, 1);
+    assert.equal(sharon.sessions[1].status, 'No check-out');
+
+    assert.equal(candy.sessions.length, 1);
+    assert.equal(candy.multiDaySessionCount, 1);
+    assert.equal(candy.sessions[0].status, 'Multi-day (unclosed)');
+  });
+
+  await t.test('mergeOperationsBoardLoggingRows includes 0-log Operations operators and encouragement note calls on them to lock in and emulate leaders', () => {
+    const merged = mergeOperationsBoardLoggingRows(
+      [
+        { id: 9, name: 'Janet Awino Amollo' },
+        { id: 5, name: 'Joel Ochango' },
+        { id: 7, name: 'Thomas Ollinga' },
+        { id: 23, name: 'Michael Ochieng Okoth' },
+      ],
+      [
+        { name: 'Janet Awino Amollo', email: 'janet@example.com', records: 12, boards: 40, synced: 12, failed: 0, reverted: 0, pending: 0, lastLoggedAt: '2026-11-24 14:00:00' },
+        { name: 'Joel Ochango', email: 'joel@example.com', records: 10, boards: 25, synced: 10, failed: 0, reverted: 0, pending: 0, lastLoggedAt: '2026-11-24 12:00:00' },
+        { name: 'Thomas Ollinga', email: 'thomas@example.com', records: 1, boards: 2, synced: 1, failed: 0, reverted: 0, pending: 0, lastLoggedAt: '2026-11-20 10:00:00' },
+        { name: 'Charles Onyango', email: 'charles@example.com', records: 2, boards: 4, synced: 2, failed: 0, reverted: 0, pending: 0, lastLoggedAt: '2026-11-21 10:00:00' },
+      ],
+    );
+
+    assert.equal(merged.length, 4); // Non-operations Charles excluded; 0-log Michael included
+    assert.equal(merged.find((m) => m.name === 'Michael Ochieng Okoth')?.records, 0);
+
+    const note = buildBoardLoggingEncouragementNote(merged);
+    assert.match(note, /Janet Awino Amollo/i);
+    assert.match(note, /Thomas Ollinga/i);
+    assert.match(note, /Michael Ochieng Okoth/i);
+    assert.match(note, /lock in/i);
+    assert.match(note, /emulate/i);
+  });
+
+  await t.test('renderWeeklyShopFloorReportPdf generates a valid PDF with all new sections', async () => {
+    const { windows } = getMondayToSaturdayPoWindows('2026-11-18', '2026-11-24', 2);
+    const poVsFinanceDocs = aggregateMonSatPoVsFinanceDocs({
+      windows,
+      purchaseOrders: [
+        { name: 'P001', state: 'purchase', create_date: '2026-11-18 08:00:00', partner_id: [1, 'Supplier'], invoice_count: 0, invoice_status: 'to invoice' },
+      ],
+      financeDocuments: [],
+      validatedTagIds: new Set(),
+      deliveryNoteTagIds: new Set(),
+    });
+    const pdf = await renderWeeklyShopFloorReportPdf({
+      generatedAt: new Date('2026-11-25T04:00:00Z'),
+      start: '2026-11-18',
+      end: '2026-11-24',
+      reportingBaseline: '2026-07-25',
+      companyName: 'URBAN VIBE INTERIOR DESIGN COMPANY LTD',
+      warehouseId: 1,
+      boardSummary: {
+        monthLabel: '2026-11-18 to 2026-11-24',
+        registeredBoards: 18,
+        expectedBoards: 20,
+        missingBoards: 2,
+        registeredMoves: 18,
+        expectedMoves: 20,
+        coveragePercent: 90,
+        details: '',
+      },
+      boardLoggingByOperator: [
+        { name: 'Janet Awino Amollo', email: 'janet@example.com', records: 12, boards: 40, synced: 12, failed: 0, reverted: 0, pending: 0, lastLoggedAt: '2026-11-24 14:00:00' },
+        { name: 'Michael Ochieng Okoth', email: '', records: 0, boards: 0, synced: 0, failed: 0, reverted: 0, pending: 0, lastLoggedAt: null },
+      ],
+      boardLoggingEncouragementNote: 'ENCOURAGEMENT NOTE: Great pace set by Janet Awino Amollo (12 logs, 40 boards). Michael Ochieng Okoth (0 logs) recorded low board log activity — lock in and emulate your teammates.',
+      penalties: { undoneReceipts: 1 } as any,
+      moCompletion: { created: 20, eligible: 20, completed: 18, open: 2, cancelled: 0, draft: 0, completionPercent: 90, details: '' },
+      poVsFinanceDocs,
+      workOrdersBeforeBoardLogs: {
+        totalChecked: 5,
+        compliantCount: 4,
+        startedBeforeLogCount: 0,
+        startedAndFinishedBeforeLogCount: 1,
+        noBoardLogCount: 1,
+        loggedAfterStartCount: 0,
+        byOperator: [{ operatorName: 'Onyango Bitcher Akulo', total: 1, startedOnly: 0, startedAndFinished: 1 }],
+        violations: [
+          {
+            moId: 104,
+            moName: 'WH/MO/06004',
+            origin: 'S03904',
+            clientName: 'Client Four',
+            productName: 'Cutting White Particle 18mm',
+            missingBoardNames: ['White Particle 18mm'],
+            operatorName: 'Onyango Bitcher Akulo',
+            moState: 'done',
+            startedAt: '2026-11-21 08:00:00',
+            finishedAt: '2026-11-21 09:00:00',
+            firstBoardLogAt: null,
+            firstBoardLogAtDisplay: null,
+            violationType: 'started_and_finished_no_log',
+            violationLabel: 'Started & finished (no board log)',
+            delayMinutes: null,
+          },
+        ],
+      },
+      attendance: [
+        {
+          name: 'Janet Awino Amollo',
+          overtimeRecords: [],
+          totalOvertimeHours: 0,
+          days: [
+            { date: '2026-11-18', status: 'Present', late: false, checkIn: '2026-11-18 05:00:00', checkOut: '2026-11-18 14:00:00', workedHours: 9, missingCheckoutRecords: [], overnight: false },
+          ],
+        },
+      ],
+      salesTeamAttendance: summarizeNamedStaffAttendance(
+        [{ id: 1, name: 'Sharon Araka', roleLabel: 'Sales Optimizer' }],
+        [{ employee_id: [1, 'Sharon Araka'], check_in: '2026-11-23 05:55:00', check_out: false, worked_hours: 0 }],
+        ['2026-11-18', '2026-11-23'],
+        '2026-11-18',
+        '2026-11-24',
+      ),
+    });
+
+    assert.ok(Buffer.isBuffer(pdf));
+    assert.ok(pdf.length > 2000, 'Expected rendered PDF to have substantial content');
+    assert.equal(pdf.subarray(0, 5).toString('ascii'), '%PDF-');
+  });
+});
