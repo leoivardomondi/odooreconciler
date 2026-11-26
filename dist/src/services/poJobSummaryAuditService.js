@@ -338,9 +338,12 @@ function comparePoLinesWithSheetMaterials(poLines, sheetMaterials, edgingItems =
  *   - Mismatch: creates urgent To-Do activity on PO assigned to Buyer seeking written clarification or correction,
  *     posts breakdown on PO chatter, and cross-alerts Sales Order chatter.
  */
-async function auditPurchaseOrderAgainstJobSummary(client, purchaseOrderId, providedParsed) {
-    const orders = await client.readRecords('purchase.order', [purchaseOrderId], ['id', 'name', 'state', 'origin', 'company_id', 'user_id', 'create_uid']);
-    const po = orders[0];
+async function auditPurchaseOrderAgainstJobSummary(client, purchaseOrderId, providedParsed, options) {
+    let po = options?.preloadedPo;
+    if (!po) {
+        const orders = await client.readRecords('purchase.order', [purchaseOrderId], ['id', 'name', 'state', 'origin', 'company_id', 'user_id', 'create_uid']);
+        po = orders[0];
+    }
     if (!po) {
         throw new Error(`Purchase Order ${purchaseOrderId} was not found in Odoo.`);
     }
@@ -402,13 +405,16 @@ async function auditPurchaseOrderAgainstJobSummary(client, purchaseOrderId, prov
             summary: `PO ${po.name} has no Sales Order origin specified (origin: "${origin || 'none'}").`,
         };
     }
-    // Find Sales Order by name
-    const saleOrders = await client.searchReadRecords('sale.order', {
-        domain: [['name', '=', soNameCandidate]],
-        fields: ['id', 'name', 'user_id', 'partner_id'],
-        limit: 1,
-    });
-    const so = saleOrders[0];
+    // Find Sales Order by name (reusing preloaded SO when provided)
+    let so = options?.preloadedSo;
+    if (!so) {
+        const saleOrders = await client.searchReadRecords('sale.order', {
+            domain: [['name', '=', soNameCandidate]],
+            fields: ['id', 'name', 'user_id', 'partner_id'],
+            limit: 1,
+        });
+        so = saleOrders[0];
+    }
     if (!so) {
         return {
             poId: po.id,
@@ -479,7 +485,7 @@ async function auditPurchaseOrderAgainstJobSummary(client, purchaseOrderId, prov
         if (!poAlreadyAlerted) {
             await client.postModelChatterMessage('purchase.order', po.id, `<p>⚠️ <strong>Job Summary Missing Alert (${charlesMention}):</strong></p>` +
                 `<p>Associated Sales Order <strong>${so.name}</strong> has no Job Summary PDF attached.</p>` +
-                `<p>Please await or request Job Summary to be attached ASAP to the associated Sales Order log note area before approving Purchase Order <strong>${po.name}</strong>.</p>`, notifyPartnerIds, { dedupeSnippet: 'Job Summary Missing Alert' });
+                `<p>Please await or request Job Summary to be attached ASAP to the associated Sales Order log note area before approving Purchase Order <strong>${po.name}</strong>.</p>`, notifyPartnerIds, { skipSoSync: true, dedupeSnippet: 'Job Summary Missing Alert' });
         }
         // Cross-alert note on Sales Order chatter if not already alerted
         const soAlreadyAlerted = typeof client.hasModelChatterMessage === 'function'
@@ -523,20 +529,7 @@ async function auditPurchaseOrderAgainstJobSummary(client, purchaseOrderId, prov
     catch {
         // Non-critical activity close failure
     }
-    // Reconcile cutting work order and MO quantities with Job Summary requirements & approved PO
-    try {
-        await (0, workOrderQuantityReconciliationService_1.reconcileWorkOrderQuantitiesForSaleOrder)(client, so.id, {
-            parsedJobSummary: parsed,
-        });
-    }
-    catch (reconcileErr) {
-        await (0, logService_1.logEvent)('warn', 'Failed to reconcile work order quantities during PO audit', {
-            poId: po.id,
-            soId: so.id,
-            error: reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr),
-        });
-    }
-    // Compare PO lines
+    // Compare PO lines first so we can share fetched PO/SO lines with work order reconciliation
     const poLines = await (0, poBillAutomationService_1.getPurchaseOrderLines)(client, po.id);
     // Search for any other confirmed POs linked to this Sales Order (multi-PO procurement support)
     let otherPoLines = [];
@@ -558,13 +551,16 @@ async function auditPurchaseOrderAgainstJobSummary(client, purchaseOrderId, prov
     catch {
         // Non-blocking
     }
+    let soLines = options?.preloadedSoLines;
     let allowOffcutDifference = false;
     try {
-        const soLines = await client.searchReadRecords('sale.order.line', {
-            domain: [['order_id', '=', so.id]],
-            fields: ['id', 'product_id', 'product_uom_qty', 'display_type', 'name'],
-            limit: 100,
-        });
+        if (!soLines) {
+            soLines = await client.searchReadRecords('sale.order.line', {
+                domain: [['order_id', '=', so.id]],
+                fields: ['id', 'product_id', 'product_uom_qty', 'display_type', 'name'],
+                limit: 100,
+            });
+        }
         const soComp = (0, quotationSyncService_1.compareQuotationLinesWithJobSummary)(soLines, parsed);
         if (!soComp.hasShortfall && soComp.offcutAllowances.length > 0) {
             allowOffcutDifference = true;
@@ -573,10 +569,33 @@ async function auditPurchaseOrderAgainstJobSummary(client, purchaseOrderId, prov
     catch {
         // Non-blocking
     }
+    // Reconcile cutting work order and MO quantities with Job Summary requirements & approved PO
+    // (reusing the already-fetched SO and PO lines so we avoid redundant per-MO Odoo RPCs)
+    if (!options?.skipWorkOrderReconciliation) {
+        try {
+            await (0, workOrderQuantityReconciliationService_1.reconcileWorkOrderQuantitiesForSaleOrder)(client, so.id, {
+                parsedJobSummary: parsed,
+                soName: so.name,
+                preloadedSoLines: soLines,
+                preloadedPoLines: [...poLines, ...otherPoLines].map((line) => ({
+                    id: line.id,
+                    product_id: line.product_id || false,
+                    product_qty: Number(line.product_qty || 0),
+                })),
+            });
+        }
+        catch (reconcileErr) {
+            await (0, logService_1.logEvent)('warn', 'Failed to reconcile work order quantities during PO audit', {
+                poId: po.id,
+                soId: so.id,
+                error: reconcileErr instanceof Error ? reconcileErr.message : String(reconcileErr),
+            });
+        }
+    }
     const comparison = comparePoLinesWithSheetMaterials(poLines, parsed.sheetMaterials || [], parsed.items || [], otherPoLines, { allowOffcutDifference });
-    // Resolve the 4 key stakeholders: Charles, Leoivard Ongule, Salesperson, Raphael Onyango
-    const { partnerIds, mentionHtml } = await resolveNotificationStakeholders(client, soUserId);
     if (comparison.hasShortfall) {
+        // Resolve the 4 key stakeholders: Charles, Leoivard Ongule, Salesperson, Raphael Onyango
+        const { partnerIds, mentionHtml } = await resolveNotificationStakeholders(client, soUserId);
         // MISMATCH DETECTED
         // User Rule: "if there is a mismatch report and create activity seeking clarrification in writing explaining the mismatch or correction to be done. Creates an urgent To-Do Activity on the PO assigned to the Buyer (res.users). Posts a breakdown note in the PO Chatter detailing the shortfall... Posts a cross-alert note on the Sales Order Chatter"
         if (buyerUserId) {
@@ -639,7 +658,7 @@ async function auditPurchaseOrderAgainstJobSummary(client, purchaseOrderId, prov
                 `<p>Discrepancies found between Purchase Order <strong>${po.name}</strong> and Job Summary for <strong>${so.name}</strong>:</p>` +
                 `<ul>${comparison.shortfalls.map((s) => `<li>${s}</li>`).join('')}</ul>` +
                 substrateMismatchHtml +
-                `<p><em>An activity has been created seeking written clarification or correction before approving this Purchase Order.</em></p>`, partnerIds, { dedupeSnippet: 'Job Summary Procurement Mismatch Alert' });
+                `<p><em>An activity has been created seeking written clarification or correction before approving this Purchase Order.</em></p>`, partnerIds, { skipSoSync: true, dedupeSnippet: 'Job Summary Procurement Mismatch Alert' });
         }
         // Cross-alert note on Sales Order chatter if not already alerted
         const soMismatchAlreadyAlerted = typeof client.hasModelChatterMessage === 'function'
@@ -683,12 +702,13 @@ async function auditPurchaseOrderAgainstJobSummary(client, purchaseOrderId, prov
         limit: 1,
     }).catch(() => []);
     if (existingConfirmations.length === 0) {
+        const { partnerIds, mentionHtml } = await resolveNotificationStakeholders(client, soUserId);
         await client.postModelChatterMessage('purchase.order', po.id, `<p><strong>✅ Procurement Match Confirmed</strong></p>` +
             `<p>Procurement quantities on Purchase Order <strong>${po.name}</strong> match the Job Summary of Sales Order <strong>${so.name}</strong>.</p>` +
             `<p><strong>Stakeholders Notified:</strong> ${mentionHtml}</p>` +
-            `<ul>${comparison.verified.map((v) => `<li>${v}</li>`).join('')}</ul>`, partnerIds);
+            `<ul>${comparison.verified.map((v) => `<li>${v}</li>`).join('')}</ul>`, partnerIds, { skipSoSync: true, dedupeSnippet: 'Procurement Match Confirmed' });
         // Confirmation on Sales Order chatter
-        await client.postModelChatterMessage('sale.order', so.id, `<p><strong>✅ Procurement Match Confirmed:</strong> Purchase Order <strong>${po.name}</strong> sheet and edging quantities match the Job Summary.</p>`);
+        await client.postModelChatterMessage('sale.order', so.id, `<p><strong>✅ Procurement Match Confirmed:</strong> Purchase Order <strong>${po.name}</strong> sheet and edging quantities match the Job Summary.</p>`, undefined, { skipSoSync: true, checkExisting: true, dedupeSnippet: `Purchase Order ${po.name} sheet and edging quantities match` });
         await (0, logService_1.logEvent)('info', 'PO procurement quantities verified against Job Summary', {
             poId: po.id,
             poName: po.name,
@@ -713,23 +733,19 @@ async function auditPurchaseOrderAgainstJobSummary(client, purchaseOrderId, prov
 /**
  * Given a Sales Order, finds all linked Purchase Orders and audits them against the Job Summary.
  */
-async function auditLinkedPurchaseOrdersForSaleOrder(client, saleOrderId, parsed, saleOrderName) {
-    let so = saleOrderName
-        ? { id: saleOrderId, name: saleOrderName }
-        : undefined;
-    if (!so) {
-        const saleOrders = await client.readRecords('sale.order', [saleOrderId], ['id', 'name']);
-        so = saleOrders[0];
-    }
+async function auditLinkedPurchaseOrdersForSaleOrder(client, saleOrderId, parsed, _saleOrderName) {
+    const saleOrders = await client.readRecords('sale.order', [saleOrderId], ['id', 'name', 'user_id', 'partner_id']);
+    const so = saleOrders[0];
     if (!so)
         return [];
+    const poFields = ['id', 'name', 'state', 'origin', 'company_id', 'user_id', 'create_uid'];
     // Search POs where origin contains the SO name
     const candidatePos = await client.searchReadRecords('purchase.order', {
         domain: [
             ['origin', 'ilike', so.name],
             ['state', 'in', ['purchase', 'done']], // Only audit confirmed POs
         ],
-        fields: ['id', 'name', 'origin'],
+        fields: poFields,
         limit: 20,
     });
     // Also check MOs linked to this SO to find POs ordered via MO
@@ -748,7 +764,7 @@ async function auditLinkedPurchaseOrdersForSaleOrder(client, saleOrderId, parsed
                 ['origin', 'in', moNames],
                 ['state', 'in', ['purchase', 'done']], // Only audit confirmed POs
             ],
-            fields: ['id', 'name', 'origin'],
+            fields: poFields,
             limit: 20,
         });
         for (const p of moPos) {
@@ -757,10 +773,26 @@ async function auditLinkedPurchaseOrdersForSaleOrder(client, saleOrderId, parsed
             }
         }
     }
+    if (candidatePos.length === 0) {
+        return [];
+    }
+    const preloadedSoLines = await client
+        .searchReadRecords('sale.order.line', {
+        domain: [['order_id', '=', so.id]],
+        fields: ['id', 'product_id', 'product_uom_qty', 'display_type', 'name'],
+        limit: 100,
+    })
+        .catch(() => undefined);
     const results = [];
-    for (const p of candidatePos) {
+    for (let index = 0; index < candidatePos.length; index += 1) {
+        const p = candidatePos[index];
         try {
-            const res = await auditPurchaseOrderAgainstJobSummary(client, p.id, parsed);
+            const res = await auditPurchaseOrderAgainstJobSummary(client, p.id, parsed, {
+                preloadedPo: p,
+                preloadedSo: so,
+                preloadedSoLines,
+                skipWorkOrderReconciliation: index > 0,
+            });
             results.push(res);
         }
         catch (err) {

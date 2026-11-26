@@ -533,10 +533,18 @@ export function computeQuantityToAdd(lengthMm: number, soLineQuantity: number | 
   return orderedMeters - usedMeters;
 }
 
+const STOCK_LOCATION_CACHE_TTL_MS = 30 * 60 * 1000;
+const stockLocationCache = new Map<string, { value: StockLocationResolution; fetchedAt: number }>();
+
 async function resolveStockLocation(client: OdooClient): Promise<StockLocationResolution> {
   const settings = await getSettings();
   const configuredId = Number(settings.stock.locationId || 0);
   const configuredName = settings.stock.locationName.trim();
+  const cacheKey = `${configuredId}|${configuredName.toLowerCase()}`;
+  const cached = stockLocationCache.get(cacheKey);
+  if (cached && Date.now() - cached.fetchedAt < STOCK_LOCATION_CACHE_TTL_MS) {
+    return cached.value;
+  }
 
   if (configuredId > 0) {
     const location = await client.getStockLocationById(configuredId);
@@ -544,10 +552,12 @@ async function resolveStockLocation(client: OdooClient): Promise<StockLocationRe
       throw new Error(`Configured stock location ${configuredId} was not found in Odoo.`);
     }
 
-    return {
+    const resolved = {
       id: location.id,
       label: location.complete_name || location.name,
     };
+    stockLocationCache.set(cacheKey, { value: resolved, fetchedAt: Date.now() });
+    return resolved;
   }
 
   if (!configuredName) {
@@ -562,10 +572,12 @@ async function resolveStockLocation(client: OdooClient): Promise<StockLocationRe
     throw new Error(`Stock location "${configuredName}" is ambiguous in Odoo.`);
   }
 
-  return {
+  const resolved = {
     id: matches[0].id,
     label: matches[0].complete_name || matches[0].name,
   };
+  stockLocationCache.set(cacheKey, { value: resolved, fetchedAt: Date.now() });
+  return resolved;
 }
 
 async function resolveComponentFromBOM(

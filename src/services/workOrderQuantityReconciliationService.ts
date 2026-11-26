@@ -407,6 +407,49 @@ export function determineTargetCuttingQuantity(input: {
   return null;
 }
 
+export interface PreloadedMoRecord {
+  id: number;
+  name: string;
+  product_id: [number, string] | false;
+  product_qty: number;
+  qty_producing: number;
+  qty_produced: number;
+  state: string;
+  origin: string | null;
+  company_id: [number, string] | false;
+}
+
+export interface PreloadedMoRawMove {
+  id: number;
+  raw_material_production_id?: [number, string] | number | false;
+  product_id: [number, string] | false;
+  product_uom_qty: number;
+  state: string;
+}
+
+export interface PreloadedMoWorkorder {
+  id: number;
+  production_id?: [number, string] | number | false;
+  name: string;
+  qty_production: number;
+  qty_producing: number;
+  state: string;
+}
+
+export interface PreloadedBoardPoLine {
+  id: number;
+  product_id: [number, string] | false;
+  product_qty: number;
+}
+
+export interface PreloadedSoLine {
+  id: number;
+  name: string;
+  product_id: [number, string] | false;
+  product_uom_qty: number;
+  display_type: string | false;
+}
+
 /**
  * Reconciles cutting work order and MO quantities for a specific Manufacturing Order
  * against the Job Summary and approved PO requirements.
@@ -420,35 +463,33 @@ export async function reconcileWorkOrderQuantitiesForMo(
     soName?: string;
     actorName?: string;
     excludedMaterialNames?: string[];
+    preloadedMo?: PreloadedMoRecord;
+    preloadedRawMoves?: PreloadedMoRawMove[];
+    preloadedWorkorders?: PreloadedMoWorkorder[];
+    preloadedPoLines?: PreloadedBoardPoLine[];
+    preloadedSoLines?: PreloadedSoLine[];
   },
 ): Promise<WorkOrderReconciliationResult | null> {
-  const mos = await client.searchReadRecords<{
-    id: number;
-    name: string;
-    product_id: [number, string] | false;
-    product_qty: number;
-    qty_producing: number;
-    qty_produced: number;
-    state: string;
-    origin: string | null;
-    company_id: [number, string] | false;
-  }>('mrp.production', {
-    domain: [['id', '=', moId]],
-    fields: [
-      'id',
-      'name',
-      'product_id',
-      'product_qty',
-      'qty_producing',
-      'qty_produced',
-      'state',
-      'origin',
-      'company_id',
-    ],
-    limit: 1,
-  });
+  let mo = options?.preloadedMo;
+  if (!mo) {
+    const mos = await client.searchReadRecords<PreloadedMoRecord>('mrp.production', {
+      domain: [['id', '=', moId]],
+      fields: [
+        'id',
+        'name',
+        'product_id',
+        'product_qty',
+        'qty_producing',
+        'qty_produced',
+        'state',
+        'origin',
+        'company_id',
+      ],
+      limit: 1,
+    });
+    mo = mos[0];
+  }
 
-  const mo = mos[0];
   if (!mo) return null;
 
   const moProductName = relationLabel(mo.product_id);
@@ -490,36 +531,29 @@ export async function reconcileWorkOrderQuantitiesForMo(
     };
   }
 
-  // Load raw material components for this MO
-  const rawMoves = await client.searchReadRecords<{
-    id: number;
-    product_id: [number, string] | false;
-    product_uom_qty: number;
-    state: string;
-  }>('stock.move', {
-    domain: [['raw_material_production_id', '=', mo.id]],
-    fields: ['id', 'product_id', 'product_uom_qty', 'state'],
-    limit: 100,
-  });
+  // Load raw material components for this MO (reusing bulk-fetched moves when available)
+  const rawMoves =
+    options?.preloadedRawMoves ??
+    (await client.searchReadRecords<PreloadedMoRawMove>('stock.move', {
+      domain: [['raw_material_production_id', '=', mo.id]],
+      fields: ['id', 'product_id', 'product_uom_qty', 'state'],
+      limit: 100,
+    }));
 
   const componentNames = rawMoves.map((m) => relationLabel(m.product_id));
   const hasBoardComponent = componentNames.some((c) => isBoardProductName(c));
 
-  // Load open work orders for this MO
-  const workorders = await client.searchReadRecords<{
-    id: number;
-    name: string;
-    qty_production: number;
-    qty_producing: number;
-    state: string;
-  }>('mrp.workorder', {
-    domain: [
-      ['production_id', '=', mo.id],
-      ['state', 'not in', ['done', 'cancel']],
-    ],
-    fields: ['id', 'name', 'qty_production', 'qty_producing', 'state'],
-    limit: 50,
-  });
+  // Load open work orders for this MO (reusing bulk-fetched work orders when available)
+  const workorders =
+    options?.preloadedWorkorders ??
+    (await client.searchReadRecords<PreloadedMoWorkorder>('mrp.workorder', {
+      domain: [
+        ['production_id', '=', mo.id],
+        ['state', 'not in', ['done', 'cancel']],
+      ],
+      fields: ['id', 'name', 'qty_production', 'qty_producing', 'state'],
+      limit: 50,
+    }));
 
   const isCutting =
     isCuttingProductOrWorkOrder(moProductName) ||
@@ -602,51 +636,54 @@ export async function reconcileWorkOrderQuantitiesForMo(
   // Check if there is an approved Purchase Order linked to this SO/MO for THIS board material
   let approvedPoQty: number | null = null;
   try {
-    const originFilter = soName || originStr;
-    if (originFilter) {
-      const pos = await client.searchReadRecords<{ id: number; name: string; state: string }>(
-        'purchase.order',
-        {
-          domain: [
-            ['origin', 'ilike', originFilter],
-            ['state', 'in', ['purchase', 'done']], // Only confirmed/approved POs
-          ],
-          fields: ['id', 'name', 'state'],
-          limit: 5,
-        },
-      );
-      if (pos.length > 0) {
-        const poIds = pos.map((p) => p.id);
-        const poLines = await client.searchReadRecords<{
-          id: number;
-          product_id: [number, string] | false;
-          product_qty: number;
-        }>('purchase.order.line', {
-          domain: [['order_id', 'in', poIds]],
-          fields: ['id', 'product_id', 'product_qty'],
-          limit: 100,
-        });
-
-        // Sum only PO lines that match THIS MO's specific board material
-        const matchingPoLines = poLines.filter((l) => {
-          const prodName = relationLabel(l.product_id);
-          return (
-            isBoardProductName(prodName) &&
-            doesLineMatchMoBoardMaterial({
-              lineProductName: prodName,
-              moProductName,
-              componentNames,
-              matchedMaterial: matchResult?.material,
-            })
-          );
-        });
-
-        if (matchingPoLines.length > 0) {
-          approvedPoQty = matchingPoLines.reduce(
-            (sum, l) => sum + (Number(l.product_qty) || 0),
-            0,
-          );
+    let poLines: PreloadedBoardPoLine[] = [];
+    if (options?.preloadedPoLines) {
+      poLines = options.preloadedPoLines;
+    } else {
+      const originFilter = soName || originStr;
+      if (originFilter) {
+        const pos = await client.searchReadRecords<{ id: number; name: string; state: string }>(
+          'purchase.order',
+          {
+            domain: [
+              ['origin', 'ilike', originFilter],
+              ['state', 'in', ['purchase', 'done']], // Only confirmed/approved POs
+            ],
+            fields: ['id', 'name', 'state'],
+            limit: 5,
+          },
+        );
+        if (pos.length > 0) {
+          const poIds = pos.map((p) => p.id);
+          poLines = await client.searchReadRecords<PreloadedBoardPoLine>('purchase.order.line', {
+            domain: [['order_id', 'in', poIds]],
+            fields: ['id', 'product_id', 'product_qty'],
+            limit: 100,
+          });
         }
+      }
+    }
+
+    if (poLines.length > 0) {
+      // Sum only PO lines that match THIS MO's specific board material
+      const matchingPoLines = poLines.filter((l) => {
+        const prodName = relationLabel(l.product_id);
+        return (
+          isBoardProductName(prodName) &&
+          doesLineMatchMoBoardMaterial({
+            lineProductName: prodName,
+            moProductName,
+            componentNames,
+            matchedMaterial: matchResult?.material,
+          })
+        );
+      });
+
+      if (matchingPoLines.length > 0) {
+        approvedPoQty = matchingPoLines.reduce(
+          (sum, l) => sum + (Number(l.product_qty) || 0),
+          0,
+        );
       }
     }
   } catch {
@@ -657,17 +694,13 @@ export async function reconcileWorkOrderQuantitiesForMo(
   let soBoardQty: number | null = null;
   if (soId) {
     try {
-      const soLines = await client.searchReadRecords<{
-        id: number;
-        name: string;
-        product_id: [number, string] | false;
-        product_uom_qty: number;
-        display_type: string | false;
-      }>('sale.order.line', {
-        domain: [['order_id', '=', soId]],
-        fields: ['id', 'name', 'product_id', 'product_uom_qty', 'display_type'],
-        limit: 100,
-      });
+      const soLines =
+        options?.preloadedSoLines ??
+        (await client.searchReadRecords<PreloadedSoLine>('sale.order.line', {
+          domain: [['order_id', '=', soId]],
+          fields: ['id', 'name', 'product_id', 'product_uom_qty', 'display_type'],
+          limit: 100,
+        }));
 
       const productSoLines = soLines.filter((l) => !l.display_type);
       const specificLines = productSoLines.filter((l) => {
@@ -976,15 +1009,23 @@ export async function reconcileWorkOrderQuantitiesForSaleOrder(
   options?: {
     parsedJobSummary?: ParsedJobSummaryResult;
     actorName?: string;
+    soName?: string;
+    preloadedPoLines?: PreloadedBoardPoLine[];
+    preloadedSoLines?: PreloadedSoLine[];
   },
 ): Promise<WorkOrderReconciliationResult[]> {
-  const saleOrders = await client.readRecords<{ id: number; name: string }>(
-    'sale.order',
-    [saleOrderId],
-    ['id', 'name'],
-  );
+  let so: { id: number; name: string } | undefined = options?.soName
+    ? { id: saleOrderId, name: options.soName }
+    : undefined;
+  if (!so) {
+    const saleOrders = await client.readRecords<{ id: number; name: string }>(
+      'sale.order',
+      [saleOrderId],
+      ['id', 'name'],
+    );
+    so = saleOrders[0];
+  }
 
-  const so = saleOrders[0];
   if (!so) return [];
 
   let resolvedJobSummary: ParsedJobSummaryResult | undefined = options?.parsedJobSummary;
@@ -1003,18 +1044,126 @@ export async function reconcileWorkOrderQuantitiesForSaleOrder(
     }
   }
 
-  // Search active MOs linked to this Sales Order (origin === SO name or contains it)
-  const candidateMos = await client.searchReadRecords<{ id: number; name: string }>(
+  // Search active MOs linked to this Sales Order with all needed fields in 1 RPC
+  const candidateMos = await client.searchReadRecords<PreloadedMoRecord>(
     'mrp.production',
     {
       domain: [
         ['origin', 'ilike', so.name],
         ['state', 'not in', ['done', 'cancel']],
       ],
-      fields: ['id', 'name'],
+      fields: [
+        'id',
+        'name',
+        'product_id',
+        'product_qty',
+        'qty_producing',
+        'qty_produced',
+        'state',
+        'origin',
+        'company_id',
+      ],
       limit: 20,
     },
   );
+
+  if (candidateMos.length === 0) {
+    return [];
+  }
+
+  // Bulk-fetch raw material moves and open work orders for all candidate MOs in 2 RPCs (instead of 2*N)
+  const moIds = candidateMos.map((m) => m.id);
+  const allRawMoves = await client
+    .searchReadRecords<PreloadedMoRawMove>('stock.move', {
+      domain: [['raw_material_production_id', 'in', moIds]],
+      fields: ['id', 'raw_material_production_id', 'product_id', 'product_uom_qty', 'state'],
+      limit: Math.max(200, moIds.length * 50),
+    })
+    .catch(() => [] as PreloadedMoRawMove[]);
+  const allWorkorders = await client
+    .searchReadRecords<PreloadedMoWorkorder>('mrp.workorder', {
+      domain: [
+        ['production_id', 'in', moIds],
+        ['state', 'not in', ['done', 'cancel']],
+      ],
+      fields: ['id', 'production_id', 'name', 'qty_production', 'qty_producing', 'state'],
+      limit: Math.max(100, moIds.length * 20),
+    })
+    .catch(() => [] as PreloadedMoWorkorder[]);
+
+  const rawMovesByMoId = new Map<number, PreloadedMoRawMove[]>();
+  for (const move of allRawMoves) {
+    const rmId = Array.isArray(move.raw_material_production_id)
+      ? Number(move.raw_material_production_id[0])
+      : Number(move.raw_material_production_id || 0);
+    if (!rmId) continue;
+    const list = rawMovesByMoId.get(rmId) || [];
+    list.push(move);
+    rawMovesByMoId.set(rmId, list);
+  }
+
+  const workordersByMoId = new Map<number, PreloadedMoWorkorder[]>();
+  for (const wo of allWorkorders) {
+    const prodId = Array.isArray(wo.production_id)
+      ? Number(wo.production_id[0])
+      : Number(wo.production_id || 0);
+    if (!prodId) continue;
+    const list = workordersByMoId.get(prodId) || [];
+    list.push(wo);
+    workordersByMoId.set(prodId, list);
+  }
+
+  const hasAnyCuttingMo = candidateMos.some((mo) => {
+    const productName = relationLabel(mo.product_id);
+    const moves = rawMovesByMoId.get(mo.id) || [];
+    const wos = workordersByMoId.get(mo.id) || [];
+    return (
+      isCuttingProductOrWorkOrder(productName) ||
+      wos.some((wo) => isCuttingProductOrWorkOrder(undefined, wo.name)) ||
+      moves.some((m) => isBoardProductName(relationLabel(m.product_id)))
+    );
+  });
+
+  // Pre-fetch SO lines and linked PO lines ONCE for the whole Sales Order if any cutting MO exists
+  let sharedSoLines = options?.preloadedSoLines;
+  let sharedPoLines = options?.preloadedPoLines;
+  if (hasAnyCuttingMo) {
+    if (!sharedSoLines) {
+      sharedSoLines = await client
+        .searchReadRecords<PreloadedSoLine>('sale.order.line', {
+          domain: [['order_id', '=', so.id]],
+          fields: ['id', 'name', 'product_id', 'product_uom_qty', 'display_type'],
+          limit: 100,
+        })
+        .catch(() => []);
+    }
+    if (!sharedPoLines) {
+      try {
+        const pos = await client.searchReadRecords<{ id: number; name: string; state: string }>(
+          'purchase.order',
+          {
+            domain: [
+              ['origin', 'ilike', so.name],
+              ['state', 'in', ['purchase', 'done']],
+            ],
+            fields: ['id', 'name', 'state'],
+            limit: 5,
+          },
+        );
+        if (pos.length > 0) {
+          sharedPoLines = await client.searchReadRecords<PreloadedBoardPoLine>('purchase.order.line', {
+            domain: [['order_id', 'in', pos.map((p) => p.id)]],
+            fields: ['id', 'product_id', 'product_qty'],
+            limit: 100,
+          });
+        } else {
+          sharedPoLines = [];
+        }
+      } catch {
+        sharedPoLines = [];
+      }
+    }
+  }
 
   const results: WorkOrderReconciliationResult[] = [];
   const claimedMaterialNames: string[] = [];
@@ -1026,6 +1175,11 @@ export async function reconcileWorkOrderQuantitiesForSaleOrder(
         soName: so.name,
         actorName: options?.actorName,
         excludedMaterialNames: claimedMaterialNames,
+        preloadedMo: candidate,
+        preloadedRawMoves: rawMovesByMoId.get(candidate.id) || [],
+        preloadedWorkorders: workordersByMoId.get(candidate.id) || [],
+        preloadedPoLines: sharedPoLines,
+        preloadedSoLines: sharedSoLines,
       });
       if (res) {
         results.push(res);

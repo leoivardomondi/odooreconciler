@@ -4183,50 +4183,105 @@ export class OdooClient {
     return 'network_error';
   }
 
+  private static readonly SAFE_RETRY_METHODS = new Set([
+    'search_read',
+    'read',
+    'search_count',
+    'fields_get',
+    'check_access_rights',
+  ]);
+
+  private isTransientNetworkError(error: unknown): boolean {
+    if (!axios.isAxiosError(error)) {
+      return false;
+    }
+    const code = String(error.code || '').toUpperCase();
+    const message = String(error.message || '').toLowerCase();
+    return (
+      code === 'ECONNRESET' ||
+      code === 'EPIPE' ||
+      code === 'ETIMEDOUT' ||
+      code === 'ECONNABORTED' ||
+      code === 'ENOTFOUND' ||
+      message.includes('socket hang up') ||
+      message.includes('network socket disconnected') ||
+      message.includes('client network socket disconnected')
+    );
+  }
+
   private async request<T>(
     model: string,
     method: string,
     payload: Record<string, unknown>,
     options?: { timeoutMs?: number; signal?: AbortSignal },
   ) {
-    let attempt = 0;
+    const canRetryTransient = OdooClient.SAFE_RETRY_METHODS.has(method);
+    const maxTransientRetries = canRetryTransient ? 2 : 0;
+    let rateLimitAttempt = 0;
+    let transientAttempt = 0;
     try {
       while (true) {
         if (options?.signal?.aborted) {
           throw new OdooClientError('Odoo request cancelled before execution.', 499);
         }
 
-        const response = await enqueueOdooRequest(
-          () =>
-            odooAxios.post<T | OdooErrorResponse>(
-              `${this.json2BaseUrl}/${model}/${method}`,
-              payload,
-              {
-                headers: this.buildHeaders(),
-                timeout: options?.timeoutMs ?? this.timeoutMs,
-                validateStatus: () => true,
-              },
-            ),
-          {
-            signal: options?.signal,
-            label: `${model}.${method}`,
-          },
-        );
+        let response;
+        try {
+          response = await enqueueOdooRequest(
+            () =>
+              odooAxios.post<T | OdooErrorResponse>(
+                `${this.json2BaseUrl}/${model}/${method}`,
+                payload,
+                {
+                  headers: this.buildHeaders(),
+                  timeout: options?.timeoutMs ?? this.timeoutMs,
+                  validateStatus: () => true,
+                },
+              ),
+            {
+              signal: options?.signal,
+              label: `${model}.${method}`,
+            },
+          );
+        } catch (netError) {
+          if (
+            canRetryTransient &&
+            transientAttempt < maxTransientRetries &&
+            !options?.signal?.aborted &&
+            this.isTransientNetworkError(netError)
+          ) {
+            transientAttempt += 1;
+            await this.wait(1500 * transientAttempt);
+            continue;
+          }
+          throw netError;
+        }
 
         if (response.status >= 200 && response.status < 300) {
           return response.data as T;
         }
 
-        if (response.status === 429 && attempt < this.maxRateLimitRetries) {
+        if (response.status === 429 && rateLimitAttempt < this.maxRateLimitRetries) {
           if (options?.signal?.aborted) {
             throw new OdooClientError('Odoo request cancelled before retry.', 499);
           }
           const retryAfterSeconds = Number(response.headers?.['retry-after']);
           const retryAfterMs = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0
             ? retryAfterSeconds * 1000
-            : this.rateLimitRetryBaseMs * 2 ** attempt;
-          attempt += 1;
+            : this.rateLimitRetryBaseMs * 2 ** rateLimitAttempt;
+          rateLimitAttempt += 1;
           await this.wait(retryAfterMs);
+          continue;
+        }
+
+        if (
+          canRetryTransient &&
+          (response.status === 502 || response.status === 503 || response.status === 504) &&
+          transientAttempt < maxTransientRetries &&
+          !options?.signal?.aborted
+        ) {
+          transientAttempt += 1;
+          await this.wait(1500 * transientAttempt);
           continue;
         }
 
