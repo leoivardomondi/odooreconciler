@@ -128,7 +128,7 @@ async function processNextShopFloorValidationJob() {
 function startShopFloorValidationJobWorker() {
     if (workerTimer)
         return;
-    workerTimer = setInterval(() => void processNextShopFloorValidationJob().catch(reportWorkerError), 2500);
+    workerTimer = setInterval(() => void processNextShopFloorValidationJob().catch(reportWorkerError), 15000);
     void processNextShopFloorValidationJob().catch(reportWorkerError);
 }
 function wakeShopFloorValidationJobWorker() {

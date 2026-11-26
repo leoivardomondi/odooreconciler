@@ -188,11 +188,14 @@ async function startServer() {
             : `Server listening on port ${port}`);
     });
     void (async () => {
+        const bootStartedAt = Date.now();
         try {
             (0, startupState_1.markStartupStep)('initializing database');
             writeStartupLog('Database initialization starting.');
+            const dbInitStartedAt = Date.now();
             await withStartupTimeout('Database initialization', () => ensureDatabaseWithRetry());
-            writeStartupLog('Database initialization completed.');
+            const dbInitMs = Date.now() - dbInitStartedAt;
+            writeStartupLog(`Database initialization completed in ${dbInitMs}ms.`);
             (0, mpesaExtractionJobService_1.startMpesaExtractionJobWorker)();
             (0, invoiceExtractionJobService_1.startInvoiceExtractionJobWorker)();
             (0, poBillManualJobService_1.startPoBillManualJobWorker)();
@@ -201,8 +204,9 @@ async function startServer() {
             await withStartupTimeout('Scheduler initialization', () => (0, schedulerService_1.startSchedulerInterval)());
             (0, emailAutomationService_1.startEmailAutomationInterval)();
             (0, startupState_1.markStartupReady)();
-            console.log('[startup] Application initialization completed successfully.');
-            writeStartupLog('Application initialization completed successfully.');
+            const totalBootMs = Date.now() - bootStartedAt;
+            console.log(`[startup] Application initialization completed successfully in ${totalBootMs}ms.`);
+            writeStartupLog(`Application initialization completed successfully in ${totalBootMs}ms.`);
             // Stagger background Odoo mirror syncs after the server is already accepting traffic
             // so a cold start or Passenger worker respawn does not spike CPU/RAM and trigger a 503.
             setTimeout(() => (0, stockMirrorService_1.startStockMirrorInterval)(), 5_000).unref();

@@ -253,12 +253,18 @@ function setStartupLocals(req, res) {
         version: null,
     };
 }
-app.use((req, res, next) => {
+const STARTUP_REQUEST_WAIT_MS = Math.min(15000, Math.max(1000, Number(process.env.STARTUP_REQUEST_WAIT_MS || 12000) || 12000));
+app.use(async (req, res, next) => {
     if (req.path === '/health') {
         next();
         return;
     }
-    (0, startupState_1.markStartupFailedIfStale)(Number(env_1.env.STARTUP_STEP_TIMEOUT_MS || 30000));
+    const maxStepMs = Number(env_1.env.STARTUP_STEP_TIMEOUT_MS || 30000);
+    (0, startupState_1.markStartupFailedIfStale)(maxStepMs);
+    if ((0, startupState_1.getStartupState)().status === 'starting') {
+        await (0, startupState_1.waitForStartupSettlement)(STARTUP_REQUEST_WAIT_MS);
+        (0, startupState_1.markStartupFailedIfStale)(maxStepMs);
+    }
     const startupState = (0, startupState_1.getStartupState)();
     if (startupState.status === 'ready') {
         next();

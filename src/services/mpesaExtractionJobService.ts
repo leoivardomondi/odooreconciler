@@ -146,6 +146,11 @@ async function processNextMpesaExtractionJob() {
     } finally {
       clearInterval(heartbeat);
     }
+
+    // Drain any immediately queued job without waiting for the idle poll interval
+    setImmediate(() => {
+      void processNextMpesaExtractionJob().catch(reportWorkerError);
+    });
   } finally {
     processing = false;
   }
@@ -155,7 +160,7 @@ export function startMpesaExtractionJobWorker() {
   if (workerTimer) return;
   workerTimer = setInterval(() => {
     void processNextMpesaExtractionJob().catch(reportWorkerError);
-  }, 2000);
+  }, 15000);
   void processNextMpesaExtractionJob().catch(reportWorkerError);
 }
 

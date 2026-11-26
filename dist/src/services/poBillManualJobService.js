@@ -73,6 +73,10 @@ async function processNextPoBillManualJob() {
         finally {
             clearInterval(heartbeat);
         }
+        // Drain any immediately queued job without waiting for the idle poll interval
+        setImmediate(() => {
+            void processNextPoBillManualJob().catch(reportWorkerError);
+        });
     }
     finally {
         processing = false;
@@ -82,7 +86,7 @@ function startPoBillManualJobWorker() {
     if (workerTimer)
         return;
     void (0, repositories_1.cleanupOrphanedPoBillManualJobs)().catch(reportWorkerError);
-    workerTimer = setInterval(() => void processNextPoBillManualJob().catch(reportWorkerError), 2000);
+    workerTimer = setInterval(() => void processNextPoBillManualJob().catch(reportWorkerError), 15000);
     void processNextPoBillManualJob().catch(reportWorkerError);
 }
 function wakePoBillManualJobWorker() {

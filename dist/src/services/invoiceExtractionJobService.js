@@ -77,6 +77,10 @@ async function processNextInvoiceExtractionJob() {
                 await deleteStoredFile(job.storedFilename);
             }
         }
+        // Drain any immediately queued job without waiting for the idle poll interval
+        setImmediate(() => {
+            void processNextInvoiceExtractionJob().catch(reportWorkerError);
+        });
     }
     finally {
         processing = false;
@@ -87,7 +91,7 @@ function startInvoiceExtractionJobWorker() {
         return;
     workerTimer = setInterval(() => {
         void processNextInvoiceExtractionJob().catch(reportWorkerError);
-    }, 2000);
+    }, 15000);
     void processNextInvoiceExtractionJob().catch(reportWorkerError);
 }
 function wakeInvoiceExtractionJobWorker() {

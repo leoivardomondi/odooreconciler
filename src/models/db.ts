@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import mysql, { Pool } from 'mysql2/promise';
@@ -426,19 +427,97 @@ async function hasColumnMysql(
   return Array.isArray(rows) && rows.length > 0;
 }
 
+interface MysqlSchemaMetadata {
+  tables: Set<string>;
+  columns: Set<string>;
+  indexes: Set<string>;
+}
+
+async function loadMysqlSchemaMetadata(
+  pool: Pool,
+  schemaName: string,
+): Promise<MysqlSchemaMetadata> {
+  const [columnRows] = await mysqlQuery(
+    pool,
+    'Loading MySQL information_schema columns',
+    `
+      SELECT table_name AS tableName, column_name AS columnName
+      FROM information_schema.columns
+      WHERE table_schema = ?
+    `,
+    [schemaName],
+  );
+  const [indexRows] = await mysqlQuery(
+    pool,
+    'Loading MySQL information_schema statistics',
+    `
+      SELECT table_name AS tableName, index_name AS indexName
+      FROM information_schema.statistics
+      WHERE table_schema = ?
+    `,
+    [schemaName],
+  );
+
+  const tables = new Set<string>();
+  const columns = new Set<string>();
+  if (Array.isArray(columnRows)) {
+    for (const row of columnRows as Array<{ tableName?: string; columnName?: string; TABLE_NAME?: string; COLUMN_NAME?: string }>) {
+      const table = String(row.tableName || row.TABLE_NAME || '').toLowerCase();
+      const column = String(row.columnName || row.COLUMN_NAME || '').toLowerCase();
+      if (table) {
+        tables.add(table);
+        if (column) {
+          columns.add(`${table}.${column}`);
+        }
+      }
+    }
+  }
+
+  const indexes = new Set<string>();
+  if (Array.isArray(indexRows)) {
+    for (const row of indexRows as Array<{ tableName?: string; indexName?: string; TABLE_NAME?: string; INDEX_NAME?: string }>) {
+      const table = String(row.tableName || row.TABLE_NAME || '').toLowerCase();
+      const index = String(row.indexName || row.INDEX_NAME || '').toLowerCase();
+      if (table && index) {
+        indexes.add(`${table}.${index}`);
+      }
+    }
+  }
+
+  return { tables, columns, indexes };
+}
+
 async function ensureColumnMysql(
   pool: Pool,
   tableName: string,
   columnName: string,
   definition: string,
   schemaName: string,
+  metadata?: MysqlSchemaMetadata,
 ) {
-  if (!(await hasColumnMysql(pool, tableName, columnName, schemaName))) {
-    await mysqlExecute(
-      pool,
-      `Adding MySQL column ${tableName}.${columnName}`,
-      `ALTER TABLE \`${tableName}\` ADD COLUMN \`${columnName}\` ${definition}`,
-    );
+  const tableKey = tableName.toLowerCase();
+  const columnKey = `${tableKey}.${columnName.toLowerCase()}`;
+
+  if (metadata) {
+    if (metadata.columns.has(columnKey)) {
+      return;
+    }
+    if (!metadata.tables.has(tableKey) && (await hasColumnMysql(pool, tableName, columnName, schemaName))) {
+      metadata.columns.add(columnKey);
+      return;
+    }
+  } else if (await hasColumnMysql(pool, tableName, columnName, schemaName)) {
+    return;
+  }
+
+  await mysqlExecute(
+    pool,
+    `Adding MySQL column ${tableName}.${columnName}`,
+    `ALTER TABLE \`${tableName}\` ADD COLUMN \`${columnName}\` ${definition}`,
+  );
+  if (metadata) {
+    metadata.tables.add(tableKey);
+    metadata.columns.add(columnKey);
   }
 }
 
@@ -448,7 +527,26 @@ async function ensureIndexMysql(
   indexName: string,
   columnDefinitions: string,
   schemaName: string,
+  metadata?: MysqlSchemaMetadata,
 ) {
+  const tableKey = tableName.toLowerCase();
+  const indexKey = `${tableKey}.${indexName.toLowerCase()}`;
+
+  if (metadata) {
+    if (metadata.indexes.has(indexKey)) {
+      return;
+    }
+    if (metadata.tables.has(tableKey)) {
+      await mysqlExecute(
+        pool,
+        `Adding MySQL index ${tableName}.${indexName}`,
+        `ALTER TABLE \`${tableName}\` ADD INDEX \`${indexName}\` (${columnDefinitions})`,
+      );
+      metadata.indexes.add(indexKey);
+      return;
+    }
+  }
+
   const [rows] = await mysqlQuery(
     pool,
     `Checking MySQL index ${tableName}.${indexName}`,
@@ -466,6 +564,9 @@ async function ensureIndexMysql(
       `Adding MySQL index ${tableName}.${indexName}`,
       `ALTER TABLE \`${tableName}\` ADD INDEX \`${indexName}\` (${columnDefinitions})`,
     );
+  }
+  if (metadata) {
+    metadata.indexes.add(indexKey);
   }
 }
 
@@ -1119,8 +1220,46 @@ async function ensureMysqlDatabase(config: RuntimeDatabaseConfig) {
   const query = async (label: string, sql: string) => {
     await mysqlQuery(pool, `MySQL database initialization: ${label}`, sql);
   };
+  const currentSchemaHash = createHash('sha256')
+    .update(ensureMysqlDatabase.toString())
+    .digest('hex')
+    .slice(0, 32);
+
+  // Fast path on warm schema: 1 single indexed PK read verifies both connectivity and schema currency,
+  // avoiding ~87 sequential DDL and information_schema queries on every Passenger worker cold start.
+  if (process.env.FORCE_DB_SCHEMA_SYNC !== 'true') {
+    try {
+      const [metaRows] = await mysqlQuery(
+        pool,
+        'MySQL schema version fast-path check',
+        'SELECT schema_hash AS schemaHash FROM app_schema_meta WHERE id = 1 LIMIT 1',
+      );
+      if (
+        Array.isArray(metaRows) &&
+        metaRows.length > 0 &&
+        String((metaRows[0] as { schemaHash?: string }).schemaHash || '') === currentSchemaHash
+      ) {
+        return;
+      }
+    } catch (error) {
+      const cause = error instanceof Error && 'cause' in error ? (error as { cause?: unknown }).cause : error;
+      const errObj = (cause || error) as { code?: unknown; errno?: unknown; message?: unknown };
+      const isMissingMetaTable =
+        errObj?.code === 'ER_NO_SUCH_TABLE' ||
+        errObj?.errno === 1146 ||
+        /doesn't exist/i.test(String(errObj?.message || ''));
+      if (!isMissingMetaTable) {
+        throw error;
+      }
+    }
+  }
 
   await query('connectivity check', 'SELECT 1');
+  const metadata = await loadMysqlSchemaMetadata(pool, config.mysqlDatabase);
+  const ensureColumn = (tableName: string, columnName: string, definition: string) =>
+    ensureColumnMysql(pool, tableName, columnName, definition, config.mysqlDatabase, metadata);
+  const ensureIndex = (tableName: string, indexName: string, columnDefinitions: string) =>
+    ensureIndexMysql(pool, tableName, indexName, columnDefinitions, config.mysqlDatabase, metadata);
 
   await query('create settings table', `
     CREATE TABLE IF NOT EXISTS settings (
@@ -1145,12 +1284,12 @@ async function ensureMysqlDatabase(config: RuntimeDatabaseConfig) {
     )
   `);
 
-  await ensureColumnMysql(pool, 'settings', 'scheduler_config_json', 'LONGTEXT NOT NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'settings', 'odoo_shop_floor_password_encrypted', 'TEXT NOT NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'settings', 'ai_config_json', 'LONGTEXT NOT NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'settings', 'stock_config_json', 'LONGTEXT NOT NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'settings', 'mail_config_json', 'LONGTEXT NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'settings', 'payroll_bridge_config_json', 'LONGTEXT NULL', config.mysqlDatabase);
+  await ensureColumn('settings', 'scheduler_config_json', 'LONGTEXT NOT NULL');
+  await ensureColumn('settings', 'odoo_shop_floor_password_encrypted', 'TEXT NOT NULL');
+  await ensureColumn('settings', 'ai_config_json', 'LONGTEXT NOT NULL');
+  await ensureColumn('settings', 'stock_config_json', 'LONGTEXT NOT NULL');
+  await ensureColumn('settings', 'mail_config_json', 'LONGTEXT NULL');
+  await ensureColumn('settings', 'payroll_bridge_config_json', 'LONGTEXT NULL');
 
   await query('insert default settings row', `
     INSERT IGNORE INTO settings (
@@ -1368,12 +1507,12 @@ async function ensureMysqlDatabase(config: RuntimeDatabaseConfig) {
     )
   `);
 
-  await ensureColumnMysql(pool, 'po_bill_processed_documents', 'attempt_count', 'INT NOT NULL DEFAULT 1', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'po_bill_processed_documents', 'last_skipped_at', 'DATETIME NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'po_bill_processed_documents', 'invoice_fingerprint', 'VARCHAR(128) NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'po_bill_processed_documents', 'invoice_number', 'VARCHAR(255) NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'po_bill_processed_documents', 'invoice_vendor', 'VARCHAR(255) NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'po_bill_processed_documents', 'invoice_total', 'DECIMAL(18, 2) NULL', config.mysqlDatabase);
+  await ensureColumn('po_bill_processed_documents', 'attempt_count', 'INT NOT NULL DEFAULT 1');
+  await ensureColumn('po_bill_processed_documents', 'last_skipped_at', 'DATETIME NULL');
+  await ensureColumn('po_bill_processed_documents', 'invoice_fingerprint', 'VARCHAR(128) NULL');
+  await ensureColumn('po_bill_processed_documents', 'invoice_number', 'VARCHAR(255) NULL');
+  await ensureColumn('po_bill_processed_documents', 'invoice_vendor', 'VARCHAR(255) NULL');
+  await ensureColumn('po_bill_processed_documents', 'invoice_total', 'DECIMAL(18, 2) NULL');
 
   await query('create mpesa_statement_batches table', `
     CREATE TABLE IF NOT EXISTS mpesa_statement_batches (
@@ -1615,12 +1754,12 @@ async function ensureMysqlDatabase(config: RuntimeDatabaseConfig) {
     )
   `);
 
-  await ensureColumnMysql(pool, 'board_intake_queue', 'vehicle_registration', 'VARCHAR(100) NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'board_intake_queue', 'arrival_date', 'VARCHAR(50) NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'board_intake_queue', 'arrival_time', 'VARCHAR(50) NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'board_intake_queue', 'gate', 'VARCHAR(50) NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'board_intake_queue', 'is_purchase', 'INT NOT NULL DEFAULT 0', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'board_intake_queue', 'purchase_order_reference', 'VARCHAR(100) NULL', config.mysqlDatabase);
+  await ensureColumn('board_intake_queue', 'vehicle_registration', 'VARCHAR(100) NULL');
+  await ensureColumn('board_intake_queue', 'arrival_date', 'VARCHAR(50) NULL');
+  await ensureColumn('board_intake_queue', 'arrival_time', 'VARCHAR(50) NULL');
+  await ensureColumn('board_intake_queue', 'gate', 'VARCHAR(50) NULL');
+  await ensureColumn('board_intake_queue', 'is_purchase', 'INT NOT NULL DEFAULT 0');
+  await ensureColumn('board_intake_queue', 'purchase_order_reference', 'VARCHAR(100) NULL');
 
   await query('create shop floor dashboard snapshots table', `
     CREATE TABLE IF NOT EXISTS shop_floor_dashboard_snapshots (
@@ -1803,42 +1942,60 @@ async function ensureMysqlDatabase(config: RuntimeDatabaseConfig) {
     )
   `);
 
-  await ensureColumnMysql(pool, 'history', 'computed_signature', 'TEXT NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'history', 'stored_signature', 'TEXT NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'history', 'signature_comparison', 'VARCHAR(32) NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'history', 'send_skipped', 'TINYINT(1) NOT NULL DEFAULT 0', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'history', 'signature_written', 'TINYINT(1) NOT NULL DEFAULT 0', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'extracted_results', 'pdf_signature', 'TEXT NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'auth_sessions', 'role', "VARCHAR(32) NOT NULL DEFAULT 'user'", config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'auth_sessions', 'apps', 'TEXT NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'auth_approved_users', 'password_hash', 'VARCHAR(255) NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'auth_approved_users', 'apps', 'TEXT NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'scheduler_runtime_state', 'last_checkpoint_at', 'DATETIME NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'scheduler_runtime_state', 'stop_requested_at', 'DATETIME NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'scheduler_runtime_state', 'last_error_run_id', 'VARCHAR(64) NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'scheduler_runtime_state', 'last_error_message', 'TEXT NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'mpesa_transactions', 'ai_notes', 'LONGTEXT NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'board_intake_queue', 'retry_count', 'INT NOT NULL DEFAULT 0', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'board_intake_queue', 'last_attempt_at', 'DATETIME NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'board_intake_queue', 'next_retry_at', 'DATETIME NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'board_intake_queue', 'reverted_at', 'DATETIME NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'board_intake_queue', 'reverted_by', 'VARCHAR(255) NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'mpesa_extraction_jobs', 'retry_count', 'INT NOT NULL DEFAULT 0', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'mpesa_extraction_jobs', 'next_retry_at', 'DATETIME NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'invoice_extraction_jobs', 'retry_count', 'INT NOT NULL DEFAULT 0', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'invoice_extraction_jobs', 'next_retry_at', 'DATETIME NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'app_user_profiles', 'photo_url', 'VARCHAR(500) NULL', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'shop_floor_pending_processes', 'is_mo_closed', 'TINYINT(1) NOT NULL DEFAULT 0', config.mysqlDatabase);
-  await ensureColumnMysql(pool, 'shop_floor_operators', 'pin', 'VARCHAR(32) NULL', config.mysqlDatabase);
-  await ensureIndexMysql(pool, 'shop_floor_operators', 'idx_sf_operators_pin', '`pin`', config.mysqlDatabase).catch(() => undefined);
-  await ensureIndexMysql(pool, 'board_intake_queue', 'idx_board_intake_arrival', '`arrival_date`', config.mysqlDatabase).catch(() => undefined);
-  await ensureIndexMysql(pool, 'board_intake_queue', 'idx_board_intake_created', '`created_at`', config.mysqlDatabase).catch(() => undefined);
+  await ensureColumn('history', 'computed_signature', 'TEXT NULL');
+  await ensureColumn('history', 'stored_signature', 'TEXT NULL');
+  await ensureColumn('history', 'signature_comparison', 'VARCHAR(32) NULL');
+  await ensureColumn('history', 'send_skipped', 'TINYINT(1) NOT NULL DEFAULT 0');
+  await ensureColumn('history', 'signature_written', 'TINYINT(1) NOT NULL DEFAULT 0');
+  await ensureColumn('extracted_results', 'pdf_signature', 'TEXT NULL');
+  await ensureColumn('auth_sessions', 'role', "VARCHAR(32) NOT NULL DEFAULT 'user'");
+  await ensureColumn('auth_sessions', 'apps', 'TEXT NULL');
+  await ensureColumn('auth_approved_users', 'password_hash', 'VARCHAR(255) NULL');
+  await ensureColumn('auth_approved_users', 'apps', 'TEXT NULL');
+  await ensureColumn('scheduler_runtime_state', 'last_checkpoint_at', 'DATETIME NULL');
+  await ensureColumn('scheduler_runtime_state', 'stop_requested_at', 'DATETIME NULL');
+  await ensureColumn('scheduler_runtime_state', 'last_error_run_id', 'VARCHAR(64) NULL');
+  await ensureColumn('scheduler_runtime_state', 'last_error_message', 'TEXT NULL');
+  await ensureColumn('mpesa_transactions', 'ai_notes', 'LONGTEXT NULL');
+  await ensureColumn('board_intake_queue', 'retry_count', 'INT NOT NULL DEFAULT 0');
+  await ensureColumn('board_intake_queue', 'last_attempt_at', 'DATETIME NULL');
+  await ensureColumn('board_intake_queue', 'next_retry_at', 'DATETIME NULL');
+  await ensureColumn('board_intake_queue', 'reverted_at', 'DATETIME NULL');
+  await ensureColumn('board_intake_queue', 'reverted_by', 'VARCHAR(255) NULL');
+  await ensureColumn('mpesa_extraction_jobs', 'retry_count', 'INT NOT NULL DEFAULT 0');
+  await ensureColumn('mpesa_extraction_jobs', 'next_retry_at', 'DATETIME NULL');
+  await ensureColumn('invoice_extraction_jobs', 'retry_count', 'INT NOT NULL DEFAULT 0');
+  await ensureColumn('invoice_extraction_jobs', 'next_retry_at', 'DATETIME NULL');
+  await ensureColumn('app_user_profiles', 'photo_url', 'VARCHAR(500) NULL');
+  await ensureColumn('shop_floor_pending_processes', 'is_mo_closed', 'TINYINT(1) NOT NULL DEFAULT 0');
+  await ensureColumn('shop_floor_operators', 'pin', 'VARCHAR(32) NULL');
+  await ensureIndex('shop_floor_operators', 'idx_sf_operators_pin', '`pin`').catch(() => undefined);
+  await ensureIndex('board_intake_queue', 'idx_board_intake_arrival', '`arrival_date`').catch(() => undefined);
+  await ensureIndex('board_intake_queue', 'idx_board_intake_created', '`created_at`').catch(() => undefined);
 
   await query('migrate weekly report default hour', `
     UPDATE settings
     SET mail_config_json = REPLACE(mail_config_json, '"hour":8', '"hour":7')
     WHERE id = 1 AND mail_config_json LIKE '%"systemKey":"weekly-shop-floor-report"%' AND mail_config_json LIKE '%"hour":8%'
   `).catch(() => undefined);
+
+  await query('create app_schema_meta table', `
+    CREATE TABLE IF NOT EXISTS app_schema_meta (
+      id INT PRIMARY KEY,
+      schema_hash VARCHAR(64) NOT NULL,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    )
+  `);
+  await mysqlExecute(
+    pool,
+    'Recording MySQL schema hash',
+    `
+      INSERT INTO app_schema_meta (id, schema_hash)
+      VALUES (1, ?)
+      ON DUPLICATE KEY UPDATE schema_hash = VALUES(schema_hash), updated_at = CURRENT_TIMESTAMP
+    `,
+    [currentSchemaHash],
+  );
 }
 
 export async function ensureDatabase() {

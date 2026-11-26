@@ -29,7 +29,11 @@ import {
 } from './src/utils/helpers';
 import path from 'path';
 import { publicPath, storageDirectoryPath, viewsPath } from './src/utils/paths';
-import { getStartupState, markStartupFailedIfStale } from './src/services/startupState';
+import {
+  getStartupState,
+  markStartupFailedIfStale,
+  waitForStartupSettlement,
+} from './src/services/startupState';
 import { getInvoiceExtractionJobWorkerStatus } from './src/services/invoiceExtractionJobService';
 import { getMpesaExtractionJobWorkerStatus } from './src/services/mpesaExtractionJobService';
 import { getPoBillManualJobWorkerStatus } from './src/services/poBillManualJobService';
@@ -299,13 +303,24 @@ function setStartupLocals(req: Request, res: Response) {
   };
 }
 
-app.use((req: Request, res: Response, next: NextFunction) => {
+const STARTUP_REQUEST_WAIT_MS = Math.min(
+  15000,
+  Math.max(1000, Number(process.env.STARTUP_REQUEST_WAIT_MS || 12000) || 12000),
+);
+
+app.use(async (req: Request, res: Response, next: NextFunction) => {
   if (req.path === '/health') {
     next();
     return;
   }
 
-  markStartupFailedIfStale(Number(env.STARTUP_STEP_TIMEOUT_MS || 30000));
+  const maxStepMs = Number(env.STARTUP_STEP_TIMEOUT_MS || 30000);
+  markStartupFailedIfStale(maxStepMs);
+  if (getStartupState().status === 'starting') {
+    await waitForStartupSettlement(STARTUP_REQUEST_WAIT_MS);
+    markStartupFailedIfStale(maxStepMs);
+  }
+
   const startupState = getStartupState();
   if (startupState.status === 'ready') {
     next();
