@@ -319,7 +319,11 @@ export async function compareExtractionSignature(historyId: string) {
   return signatureContext;
 }
 
-export async function sendExtractedResultToOdoo(historyId: string, forceSend = false) {
+export async function sendExtractedResultToOdoo(
+  historyId: string,
+  forceSend = false,
+  options?: { orderState?: string | null; orderName?: string | null },
+) {
   const { client, settings } = await getConfiguredClient();
   const history = await getHistoryById(historyId);
   const extracted = await getExtractedResultByHistoryId(historyId);
@@ -484,24 +488,28 @@ export async function sendExtractedResultToOdoo(historyId: string, forceSend = f
       await client.postChatterMessage(history.orderId, chatterMessage);
     }
 
-    try {
-      await syncQuotationWithJobSummary(client, history.orderId, extracted.resultJson);
-    } catch (quotationSyncErr) {
-      await logEvent(
-        'warn',
-        'Failed to synchronize quotation lines with Job Summary',
-        {
+    const knownOrderState = String(options?.orderState || '').trim().toLowerCase();
+    if (!knownOrderState || ['draft', 'sent'].includes(knownOrderState)) {
+      try {
+        await syncQuotationWithJobSummary(client, history.orderId, extracted.resultJson);
+      } catch (quotationSyncErr) {
+        await logEvent(
+          'warn',
+          'Failed to synchronize quotation lines with Job Summary',
+          {
+            historyId,
+            orderId: history.orderId,
+            error: quotationSyncErr instanceof Error ? quotationSyncErr.message : String(quotationSyncErr),
+          },
           historyId,
-          orderId: history.orderId,
-          error: quotationSyncErr instanceof Error ? quotationSyncErr.message : String(quotationSyncErr),
-        },
-        historyId,
-      );
+        );
+      }
     }
 
     try {
       await reconcileWorkOrderQuantitiesForSaleOrder(client, history.orderId, {
         parsedJobSummary: extracted.resultJson,
+        soName: options?.orderName || history.orderName || undefined,
       });
     } catch (reconcileErr) {
       await logEvent(

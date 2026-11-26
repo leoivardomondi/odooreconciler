@@ -24,7 +24,8 @@ function setSchedulerRunningState(active) {
     (0, odooClient_1.setSchedulerRunActive)(active);
 }
 const SCHEDULER_HEARTBEAT_MAX_MS = 20 * 60 * 1000;
-const SO_PER_ORDER_TIMEOUT_MS = 180_000;
+const SO_PER_ORDER_TIMEOUT_MS = 240_000;
+const SO_PO_AUDIT_TIMEOUT_MS = 45_000;
 const PO_BILL_FETCH_TIMEOUT_MS = 75_000;
 let schedulerIntervalHandle = null;
 let poBillSchedulerIntervalHandle = null;
@@ -1384,7 +1385,10 @@ async function runSchedulerCycle(trigger = 'manual', options = {}) {
                 });
                 await touchActiveSchedulerRunLock(run.id);
                 await markOrderStage('send_to_odoo');
-                const sendResult = await (0, extractionService_1.sendExtractedResultToOdoo)(history.id, false);
+                const sendResult = await (0, extractionService_1.sendExtractedResultToOdoo)(history.id, false, {
+                    orderState: order.state,
+                    orderName: order.name,
+                });
                 await touchActiveSchedulerRunLock(run.id);
                 await markOrderStage('stock_reconciliation');
                 const stockResult = await (0, stockProcessingService_1.processSaleOrderStock)(order.id, { skipMultiSummaryRefetch: true });
@@ -1418,13 +1422,30 @@ async function runSchedulerCycle(trigger = 'manual', options = {}) {
                         },
                     };
                 }
-                // Fallback: Audit linked confirmed Purchase Orders against the Job Summary
+                // Non-blocking fallback: Audit linked confirmed Purchase Orders against the Job Summary
+                // Bound with its own timeout so an already-reconciled Sales Order never fails on a slow PO audit.
                 try {
                     await markOrderStage('po_audit');
                     const extractedRecord = await (0, repositories_1.getExtractedResultByHistoryId)(history.id).catch(() => null);
-                    await (0, poJobSummaryAuditService_1.auditLinkedPurchaseOrdersForSaleOrder)(client, order.id, extractedRecord?.resultJson, order.name);
+                    await withTimeout(() => (0, poJobSummaryAuditService_1.auditLinkedPurchaseOrdersForSaleOrder)(client, order.id, extractedRecord?.resultJson, order.name, {
+                        preloadedOrder: {
+                            id: order.id,
+                            name: order.name,
+                            user_id: Array.isArray(order.user_id) ? order.user_id : false,
+                            partner_id: Array.isArray(order.partner_id) ? order.partner_id : false,
+                        },
+                        // send_to_odoo already ran reconcileWorkOrderQuantitiesForSaleOrder when !sendResult.skipped
+                        skipWorkOrderReconciliation: !sendResult.skipped,
+                    }), SO_PO_AUDIT_TIMEOUT_MS, `PO audit for Sales Order ${order.name}`);
                 }
-                catch (_) { }
+                catch (poAuditErr) {
+                    await (0, logService_1.logEvent)('warn', 'Non-blocking PO audit timed out or failed after stock reconciliation', {
+                        schedulerRunId: run.id,
+                        orderId: order.id,
+                        orderName: order.name,
+                        error: poAuditErr instanceof Error ? poAuditErr.message : String(poAuditErr),
+                    }).catch(() => undefined);
+                }
                 if (stockResult.alreadyProcessed || stockResult.lockSkipped) {
                     return {
                         result: 'skipped',

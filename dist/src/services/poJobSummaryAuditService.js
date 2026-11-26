@@ -45,6 +45,7 @@ function extractSoNameFromOrigin(origin) {
 }
 const ODOO_USER_TERM_CACHE_TTL_MS = 30 * 60 * 1000;
 const odooUserByTermCache = new Map();
+const odooUserByIdCache = new Map();
 /**
  * Searches Odoo for a user by name or login pattern.
  */
@@ -105,21 +106,31 @@ async function resolveNotificationStakeholders(client, soUserId) {
                 partnerIdsSet.add(u.partnerId);
         }
     }
-    // Add Salesperson if available
+    // Add Salesperson if available (with 30m in-memory cache)
     if (soUserId) {
         try {
-            const users = await client.readRecords('res.users', [soUserId], ['id', 'name', 'login', 'partner_id']);
-            const soUser = users[0];
-            if (soUser && !stakeholders.some((s) => s.userId === soUser.id)) {
-                const u = {
-                    name: soUser.name,
-                    login: soUser.login,
-                    userId: soUser.id,
-                    partnerId: relationId(soUser.partner_id),
-                };
-                stakeholders.push(u);
-                if (u.partnerId)
-                    partnerIdsSet.add(u.partnerId);
+            const cachedById = odooUserByIdCache.get(soUserId);
+            let resolvedSoUser;
+            if (cachedById && Date.now() - cachedById.fetchedAt < ODOO_USER_TERM_CACHE_TTL_MS) {
+                resolvedSoUser = cachedById.user;
+            }
+            else {
+                const users = await client.readRecords('res.users', [soUserId], ['id', 'name', 'login', 'partner_id']);
+                const soUser = users[0];
+                resolvedSoUser = soUser
+                    ? {
+                        name: soUser.name,
+                        login: soUser.login,
+                        userId: soUser.id,
+                        partnerId: relationId(soUser.partner_id),
+                    }
+                    : null;
+                odooUserByIdCache.set(soUserId, { user: resolvedSoUser, fetchedAt: Date.now() });
+            }
+            if (resolvedSoUser && !stakeholders.some((s) => s.userId === resolvedSoUser.userId)) {
+                stakeholders.push(resolvedSoUser);
+                if (resolvedSoUser.partnerId)
+                    partnerIdsSet.add(resolvedSoUser.partnerId);
             }
         }
         catch {
@@ -478,23 +489,13 @@ async function auditPurchaseOrderAgainstJobSummary(client, purchaseOrderId, prov
             ? `<a href="#" data-oe-model="res.partner" data-oe-id="${charlesUser.partnerId}">@${charlesUser.name}</a>`
             : '@Charles';
         const notifyPartnerIds = charlesUser?.partnerId ? [charlesUser.partnerId] : undefined;
-        // Post chatter note on PO if not already alerted
-        const poAlreadyAlerted = typeof client.hasModelChatterMessage === 'function'
-            ? await client.hasModelChatterMessage('purchase.order', po.id, 'Job Summary Missing Alert')
-            : false;
-        if (!poAlreadyAlerted) {
-            await client.postModelChatterMessage('purchase.order', po.id, `<p>⚠️ <strong>Job Summary Missing Alert (${charlesMention}):</strong></p>` +
-                `<p>Associated Sales Order <strong>${so.name}</strong> has no Job Summary PDF attached.</p>` +
-                `<p>Please await or request Job Summary to be attached ASAP to the associated Sales Order log note area before approving Purchase Order <strong>${po.name}</strong>.</p>`, notifyPartnerIds, { skipSoSync: true, dedupeSnippet: 'Job Summary Missing Alert' });
-        }
+        // Post chatter note on PO if not already alerted (postModelChatterMessage checks dedupeSnippet once internally)
+        await client.postModelChatterMessage('purchase.order', po.id, `<p>⚠️ <strong>Job Summary Missing Alert (${charlesMention}):</strong></p>` +
+            `<p>Associated Sales Order <strong>${so.name}</strong> has no Job Summary PDF attached.</p>` +
+            `<p>Please await or request Job Summary to be attached ASAP to the associated Sales Order log note area before approving Purchase Order <strong>${po.name}</strong>.</p>`, notifyPartnerIds, { skipSoSync: true, dedupeSnippet: 'Job Summary Missing Alert' });
         // Cross-alert note on Sales Order chatter if not already alerted
-        const soAlreadyAlerted = typeof client.hasModelChatterMessage === 'function'
-            ? await client.hasModelChatterMessage('sale.order', so.id, `Job Summary Required for PO ${po.name}`)
-            : false;
-        if (!soAlreadyAlerted) {
-            await client.postModelChatterMessage('sale.order', so.id, `<p>⚠️ <strong>Job Summary Required for PO ${po.name}:</strong></p>` +
-                `<p>Purchase Order <strong>${po.name}</strong> is confirmed, but no Job Summary PDF is attached to this Sales Order. Please attach the Job Summary PDF ASAP in this log note area so procurement can be verified.</p>`, undefined, { dedupeSnippet: `Job Summary Required for PO ${po.name}` });
-        }
+        await client.postModelChatterMessage('sale.order', so.id, `<p>⚠️ <strong>Job Summary Required for PO ${po.name}:</strong></p>` +
+            `<p>Purchase Order <strong>${po.name}</strong> is confirmed, but no Job Summary PDF is attached to this Sales Order. Please attach the Job Summary PDF ASAP in this log note area so procurement can be verified.</p>`, undefined, { skipSoSync: true, dedupeSnippet: `Job Summary Required for PO ${po.name}` });
         await (0, logService_1.logEvent)('warn', 'PO audit: Job Summary not found, activity created for Charles', {
             poId: po.id,
             poName: po.name,
@@ -530,26 +531,28 @@ async function auditPurchaseOrderAgainstJobSummary(client, purchaseOrderId, prov
         // Non-critical activity close failure
     }
     // Compare PO lines first so we can share fetched PO/SO lines with work order reconciliation
-    const poLines = await (0, poBillAutomationService_1.getPurchaseOrderLines)(client, po.id);
+    const poLines = options?.preloadedPoLines ?? (await (0, poBillAutomationService_1.getPurchaseOrderLines)(client, po.id));
     // Search for any other confirmed POs linked to this Sales Order (multi-PO procurement support)
-    let otherPoLines = [];
-    try {
-        const linkedPos = await client.searchReadRecords('purchase.order', {
-            domain: [
-                ['origin', 'ilike', so.name],
-                ['state', 'in', ['purchase', 'done']],
-                ['id', '!=', po.id],
-            ],
-            fields: ['id', 'name'],
-            limit: 20,
-        });
-        if (linkedPos.length > 0) {
-            const fetched = await Promise.all(linkedPos.map((p) => (0, poBillAutomationService_1.getPurchaseOrderLines)(client, p.id).catch(() => [])));
-            otherPoLines = fetched.flat();
+    let otherPoLines = options?.preloadedOtherPoLines ?? [];
+    if (options?.preloadedOtherPoLines === undefined) {
+        try {
+            const linkedPos = await client.searchReadRecords('purchase.order', {
+                domain: [
+                    ['origin', 'ilike', so.name],
+                    ['state', 'in', ['purchase', 'done']],
+                    ['id', '!=', po.id],
+                ],
+                fields: ['id', 'name'],
+                limit: 20,
+            });
+            if (linkedPos.length > 0) {
+                const fetched = await Promise.all(linkedPos.map((p) => (0, poBillAutomationService_1.getPurchaseOrderLines)(client, p.id).catch(() => [])));
+                otherPoLines = fetched.flat();
+            }
         }
-    }
-    catch {
-        // Non-blocking
+        catch {
+            // Non-blocking
+        }
     }
     let soLines = options?.preloadedSoLines;
     let allowOffcutDifference = false;
@@ -648,28 +651,18 @@ async function auditPurchaseOrderAgainstJobSummary(client, purchaseOrderId, prov
                     `</ol>` +
                     `</div>`;
         }
-        // Post breakdown note in the PO Chatter if not already alerted
-        const poMismatchAlreadyAlerted = typeof client.hasModelChatterMessage === 'function'
-            ? await client.hasModelChatterMessage('purchase.order', po.id, 'Job Summary Procurement Mismatch Alert')
-            : false;
-        if (!poMismatchAlreadyAlerted) {
-            await client.postModelChatterMessage('purchase.order', po.id, `<p><strong>⚠️ Job Summary Procurement Mismatch Alert:</strong></p>` +
-                `<p><strong>Stakeholders Alerted:</strong> ${mentionHtml}</p>` +
-                `<p>Discrepancies found between Purchase Order <strong>${po.name}</strong> and Job Summary for <strong>${so.name}</strong>:</p>` +
-                `<ul>${comparison.shortfalls.map((s) => `<li>${s}</li>`).join('')}</ul>` +
-                substrateMismatchHtml +
-                `<p><em>An activity has been created seeking written clarification or correction before approving this Purchase Order.</em></p>`, partnerIds, { skipSoSync: true, dedupeSnippet: 'Job Summary Procurement Mismatch Alert' });
-        }
+        // Post breakdown note in the PO Chatter if not already alerted (dedupeSnippet checks Odoo once internally)
+        await client.postModelChatterMessage('purchase.order', po.id, `<p><strong>⚠️ Job Summary Procurement Mismatch Alert:</strong></p>` +
+            `<p><strong>Stakeholders Alerted:</strong> ${mentionHtml}</p>` +
+            `<p>Discrepancies found between Purchase Order <strong>${po.name}</strong> and Job Summary for <strong>${so.name}</strong>:</p>` +
+            `<ul>${comparison.shortfalls.map((s) => `<li>${s}</li>`).join('')}</ul>` +
+            substrateMismatchHtml +
+            `<p><em>An activity has been created seeking written clarification or correction before approving this Purchase Order.</em></p>`, partnerIds, { skipSoSync: true, dedupeSnippet: 'Job Summary Procurement Mismatch Alert' });
         // Cross-alert note on Sales Order chatter if not already alerted
-        const soMismatchAlreadyAlerted = typeof client.hasModelChatterMessage === 'function'
-            ? await client.hasModelChatterMessage('sale.order', so.id, `PO Procurement Discrepancy on ${po.name}`)
-            : false;
-        if (!soMismatchAlreadyAlerted) {
-            await client.postModelChatterMessage('sale.order', so.id, `<p><strong>⚠️ PO Procurement Discrepancy on ${po.name}:</strong></p>` +
-                `<p>The following mismatch was flagged on confirmed Purchase Order <strong>${po.name}</strong>:</p>` +
-                `<ul>${comparison.shortfalls.map((s) => `<li>${s}</li>`).join('')}</ul>` +
-                substrateMismatchHtml, undefined, { dedupeSnippet: `PO Procurement Discrepancy on ${po.name}` });
-        }
+        await client.postModelChatterMessage('sale.order', so.id, `<p><strong>⚠️ PO Procurement Discrepancy on ${po.name}:</strong></p>` +
+            `<p>The following mismatch was flagged on confirmed Purchase Order <strong>${po.name}</strong>:</p>` +
+            `<ul>${comparison.shortfalls.map((s) => `<li>${s}</li>`).join('')}</ul>` +
+            substrateMismatchHtml, undefined, { skipSoSync: true, dedupeSnippet: `PO Procurement Discrepancy on ${po.name}` });
         await (0, logService_1.logEvent)('warn', 'PO procurement mismatch detected against Job Summary', {
             poId: po.id,
             poName: po.name,
@@ -733,9 +726,12 @@ async function auditPurchaseOrderAgainstJobSummary(client, purchaseOrderId, prov
 /**
  * Given a Sales Order, finds all linked Purchase Orders and audits them against the Job Summary.
  */
-async function auditLinkedPurchaseOrdersForSaleOrder(client, saleOrderId, parsed, _saleOrderName) {
-    const saleOrders = await client.readRecords('sale.order', [saleOrderId], ['id', 'name', 'user_id', 'partner_id']);
-    const so = saleOrders[0];
+async function auditLinkedPurchaseOrdersForSaleOrder(client, saleOrderId, parsed, _saleOrderName, options) {
+    let so = options?.preloadedOrder;
+    if (!so) {
+        const saleOrders = await client.readRecords('sale.order', [saleOrderId], ['id', 'name', 'user_id', 'partner_id']);
+        so = saleOrders[0];
+    }
     if (!so)
         return [];
     const poFields = ['id', 'name', 'state', 'origin', 'company_id', 'user_id', 'create_uid'];
@@ -776,22 +772,49 @@ async function auditLinkedPurchaseOrdersForSaleOrder(client, saleOrderId, parsed
     if (candidatePos.length === 0) {
         return [];
     }
-    const preloadedSoLines = await client
-        .searchReadRecords('sale.order.line', {
-        domain: [['order_id', '=', so.id]],
-        fields: ['id', 'product_id', 'product_uom_qty', 'display_type', 'name'],
-        limit: 100,
-    })
-        .catch(() => undefined);
+    const candidatePoIds = candidatePos.map((p) => p.id);
+    const [preloadedSoLines, allCandidatePoLines] = await Promise.all([
+        client
+            .searchReadRecords('sale.order.line', {
+            domain: [['order_id', '=', so.id]],
+            fields: ['id', 'product_id', 'product_uom_qty', 'display_type', 'name'],
+            limit: 100,
+        })
+            .catch(() => undefined),
+        client
+            .searchReadRecords('purchase.order.line', {
+            domain: [['order_id', 'in', candidatePoIds]],
+            fields: ['id', 'order_id', 'name', 'product_id', 'product_qty', 'price_unit', 'price_subtotal', 'price_total'],
+            limit: Math.max(100, candidatePoIds.length * 40),
+        })
+            .catch(() => null),
+    ]);
+    const linesByPoId = new Map();
+    if (allCandidatePoLines) {
+        for (const line of allCandidatePoLines) {
+            const poId = Array.isArray(line.order_id) ? Number(line.order_id[0]) : Number(line.order_id || 0);
+            if (!poId)
+                continue;
+            const list = linesByPoId.get(poId) || [];
+            list.push(line);
+            linesByPoId.set(poId, list);
+        }
+    }
     const results = [];
     for (let index = 0; index < candidatePos.length; index += 1) {
         const p = candidatePos[index];
         try {
+            const preloadedPoLines = allCandidatePoLines ? (linesByPoId.get(p.id) || []) : undefined;
+            const preloadedOtherPoLines = allCandidatePoLines
+                ? candidatePos.filter((other) => other.id !== p.id).flatMap((other) => linesByPoId.get(other.id) || [])
+                : undefined;
             const res = await auditPurchaseOrderAgainstJobSummary(client, p.id, parsed, {
                 preloadedPo: p,
                 preloadedSo: so,
                 preloadedSoLines,
-                skipWorkOrderReconciliation: index > 0,
+                preloadedPoLines,
+                preloadedOtherPoLines,
+                skipWorkOrderReconciliation: Boolean(options?.skipWorkOrderReconciliation) || index > 0,
             });
             results.push(res);
         }

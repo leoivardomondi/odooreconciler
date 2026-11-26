@@ -204,7 +204,7 @@ async function compareExtractionSignature(historyId) {
     }, historyId);
     return signatureContext;
 }
-async function sendExtractedResultToOdoo(historyId, forceSend = false) {
+async function sendExtractedResultToOdoo(historyId, forceSend = false, options) {
     const { client, settings } = await getConfiguredClient();
     const history = await (0, repositories_1.getHistoryById)(historyId);
     const extracted = await (0, repositories_1.getExtractedResultByHistoryId)(historyId);
@@ -320,19 +320,23 @@ async function sendExtractedResultToOdoo(historyId, forceSend = false) {
             });
             await client.postChatterMessage(history.orderId, chatterMessage);
         }
-        try {
-            await (0, quotationSyncService_1.syncQuotationWithJobSummary)(client, history.orderId, extracted.resultJson);
-        }
-        catch (quotationSyncErr) {
-            await (0, logService_1.logEvent)('warn', 'Failed to synchronize quotation lines with Job Summary', {
-                historyId,
-                orderId: history.orderId,
-                error: quotationSyncErr instanceof Error ? quotationSyncErr.message : String(quotationSyncErr),
-            }, historyId);
+        const knownOrderState = String(options?.orderState || '').trim().toLowerCase();
+        if (!knownOrderState || ['draft', 'sent'].includes(knownOrderState)) {
+            try {
+                await (0, quotationSyncService_1.syncQuotationWithJobSummary)(client, history.orderId, extracted.resultJson);
+            }
+            catch (quotationSyncErr) {
+                await (0, logService_1.logEvent)('warn', 'Failed to synchronize quotation lines with Job Summary', {
+                    historyId,
+                    orderId: history.orderId,
+                    error: quotationSyncErr instanceof Error ? quotationSyncErr.message : String(quotationSyncErr),
+                }, historyId);
+            }
         }
         try {
             await (0, workOrderQuantityReconciliationService_1.reconcileWorkOrderQuantitiesForSaleOrder)(client, history.orderId, {
                 parsedJobSummary: extracted.resultJson,
+                soName: options?.orderName || history.orderName || undefined,
             });
         }
         catch (reconcileErr) {
