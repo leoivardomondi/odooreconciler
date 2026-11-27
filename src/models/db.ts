@@ -1014,6 +1014,7 @@ async function ensureSqliteDatabase(config: RuntimeDatabaseConfig) {
       gate TEXT,
       is_purchase INTEGER DEFAULT 0,
       purchase_order_reference TEXT,
+      no_backorder INTEGER NOT NULL DEFAULT 0,
       status TEXT NOT NULL DEFAULT 'pending',
       odoo_stock_quantity REAL,
       reverted_at TEXT,
@@ -1060,6 +1061,7 @@ async function ensureSqliteDatabase(config: RuntimeDatabaseConfig) {
       loaded_by TEXT,
       last_synced_at TEXT,
       is_mo_closed INTEGER NOT NULL DEFAULT 0,
+      no_backorder_closed INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
@@ -1199,12 +1201,14 @@ async function ensureSqliteDatabase(config: RuntimeDatabaseConfig) {
   await ensureColumnSqlite(db, 'board_intake_queue', 'next_retry_at', 'TEXT');
   await ensureColumnSqlite(db, 'board_intake_queue', 'reverted_at', 'TEXT');
   await ensureColumnSqlite(db, 'board_intake_queue', 'reverted_by', 'TEXT');
+  await ensureColumnSqlite(db, 'board_intake_queue', 'no_backorder', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumnSqlite(db, 'mpesa_extraction_jobs', 'retry_count', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumnSqlite(db, 'mpesa_extraction_jobs', 'next_retry_at', 'TEXT');
   await ensureColumnSqlite(db, 'invoice_extraction_jobs', 'retry_count', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumnSqlite(db, 'invoice_extraction_jobs', 'next_retry_at', 'TEXT');
   await ensureColumnSqlite(db, 'app_user_profiles', 'photo_url', 'TEXT');
   await ensureColumnSqlite(db, 'shop_floor_pending_processes', 'is_mo_closed', 'INTEGER NOT NULL DEFAULT 0');
+  await ensureColumnSqlite(db, 'shop_floor_pending_processes', 'no_backorder_closed', 'INTEGER NOT NULL DEFAULT 0');
   await ensureColumnSqlite(db, 'shop_floor_operators', 'pin', 'TEXT');
   await sqliteExec(db, 'CREATE INDEX IF NOT EXISTS idx_sf_operators_pin ON shop_floor_operators(pin);').catch(() => undefined);
 
@@ -1739,6 +1743,7 @@ async function ensureMysqlDatabase(config: RuntimeDatabaseConfig) {
       gate VARCHAR(50) NULL,
       is_purchase INT NOT NULL DEFAULT 0,
       purchase_order_reference VARCHAR(100) NULL,
+      no_backorder TINYINT(1) NOT NULL DEFAULT 0,
       status VARCHAR(32) NOT NULL DEFAULT 'pending',
       odoo_stock_quantity DECIMAL(16,4) NULL,
       reverted_at DATETIME NULL,
@@ -1760,6 +1765,7 @@ async function ensureMysqlDatabase(config: RuntimeDatabaseConfig) {
   await ensureColumn('board_intake_queue', 'gate', 'VARCHAR(50) NULL');
   await ensureColumn('board_intake_queue', 'is_purchase', 'INT NOT NULL DEFAULT 0');
   await ensureColumn('board_intake_queue', 'purchase_order_reference', 'VARCHAR(100) NULL');
+  await ensureColumn('board_intake_queue', 'no_backorder', 'TINYINT(1) NOT NULL DEFAULT 0');
 
   await query('create shop floor dashboard snapshots table', `
     CREATE TABLE IF NOT EXISTS shop_floor_dashboard_snapshots (
@@ -1800,6 +1806,7 @@ async function ensureMysqlDatabase(config: RuntimeDatabaseConfig) {
       loaded_by VARCHAR(255) NULL,
       last_synced_at DATETIME NULL,
       is_mo_closed TINYINT(1) NOT NULL DEFAULT 0,
+      no_backorder_closed TINYINT(1) NOT NULL DEFAULT 0,
       created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       KEY idx_sf_pending_status_partner (status, partner_id),
@@ -1968,6 +1975,7 @@ async function ensureMysqlDatabase(config: RuntimeDatabaseConfig) {
   await ensureColumn('invoice_extraction_jobs', 'next_retry_at', 'DATETIME NULL');
   await ensureColumn('app_user_profiles', 'photo_url', 'VARCHAR(500) NULL');
   await ensureColumn('shop_floor_pending_processes', 'is_mo_closed', 'TINYINT(1) NOT NULL DEFAULT 0');
+  await ensureColumn('shop_floor_pending_processes', 'no_backorder_closed', 'TINYINT(1) NOT NULL DEFAULT 0');
   await ensureColumn('shop_floor_operators', 'pin', 'VARCHAR(32) NULL');
   await ensureIndex('shop_floor_operators', 'idx_sf_operators_pin', '`pin`').catch(() => undefined);
   await ensureIndex('board_intake_queue', 'idx_board_intake_arrival', '`arrival_date`').catch(() => undefined);

@@ -205,6 +205,45 @@
       .requirement-btn>* {
         width: 100% !important;
       }
+
+      /* Floating ("Hanging") Blue + Action Button for instant jump to Board Log Form */
+      #floatingBoardLogFab {
+        position: fixed;
+        bottom: 24px;
+        right: 24px;
+        z-index: 1040;
+        width: 56px;
+        height: 56px;
+        border-radius: 9999px;
+        border: none;
+        background: linear-gradient(135deg, #2563eb, #1d4ed8);
+        color: #ffffff;
+        box-shadow: 0 8px 24px rgba(37, 99, 235, 0.38);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        transition: transform 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+      }
+
+      #floatingBoardLogFab:hover {
+        transform: translateY(-2px) scale(1.04);
+        box-shadow: 0 12px 28px rgba(29, 78, 216, 0.48);
+        background: linear-gradient(135deg, #1d4ed8, #1e40af);
+      }
+
+      #floatingBoardLogFab:active {
+        transform: scale(0.96);
+      }
+
+      @media (max-width: 575.98px) {
+        #floatingBoardLogFab {
+          bottom: 18px;
+          right: 16px;
+          width: 52px;
+          height: 52px;
+        }
+      }
     </style>
 
     <main class="container my-4">
@@ -656,6 +695,9 @@
                                   <input type="hidden" name="pending_client" id="pendingClientFlag" value="false">
                                   <input type="hidden" name="mo_id" id="intakeMoId">
                                   <input type="hidden" name="mo_name" id="intakeMoName">
+                                  <input type="hidden" name="expected_qty" id="intakeExpectedQty" value="">
+                                  <input type="hidden" name="expecting_more" id="expectingMoreInput" value="true">
+                                  <input type="hidden" name="no_backorder" id="noBackorderInput" value="false">
                                   <div class="custom-invalid-feedback" id="partnerFeedback">Please choose a client or
                                     click "Owner Unknown".</div>
 
@@ -763,6 +805,31 @@
                                     do not need logging.</div>
                                   <div class="text-muted mt-1" id="qtyCurrentStock"
                                     style="font-size: 0.75rem; display: none;"></div>
+
+                                  <!-- Instant Plain-English Short-Intake Prompt (Shown only when entered qty < required qty) -->
+                                  <div id="expectingMorePrompt" class="d-none mt-2 p-3 rounded-3 border" data-answered="false"
+                                    style="background: #eff6ff; border-color: #93c5fd !important;">
+                                    <div class="fw-bold text-dark mb-1" style="font-size: 0.92rem;">
+                                      Are you expecting more boards?
+                                    </div>
+                                    <div id="expectingMoreSummary" class="small text-secondary mb-2" style="line-height: 1.4;">
+                                      You are logging fewer boards than required. Are you expecting the rest later?
+                                    </div>
+                                    <div class="d-flex flex-wrap gap-2">
+                                      <button type="button" id="btnExpectingMoreYes"
+                                        class="btn btn-sm btn-outline-primary rounded-pill fw-semibold px-3 py-2 flex-fill">
+                                        Yes, expecting more
+                                      </button>
+                                      <button type="button" id="btnExpectingMoreNo"
+                                        class="btn btn-sm btn-outline-success rounded-pill fw-semibold px-3 py-2 flex-fill">
+                                        No, that's all (No backorder)
+                                      </button>
+                                    </div>
+                                    <div id="expectingMoreFeedback" class="small mt-2 d-none fw-medium"></div>
+                                    <div id="expectingMoreRequiredError" class="small text-danger fw-semibold mt-2 d-none">
+                                      Please tap Yes or No before logging.
+                                    </div>
+                                  </div>
                                 </div>
 
 
@@ -1290,9 +1357,9 @@
                                                   View All Logs
                                                 </a>
                                                 <% } %>
-                                                  <a href="#boardIntakeForm"
+                                                  <a href="#intakeForm"
                                                     class="btn btn-sm btn-outline-primary rounded-pill px-3 py-1.5 shadow-sm fw-semibold"
-                                                    onclick="document.getElementById('boardIntakeCustomerInput')?.focus();">
+                                                    onclick="document.getElementById('partnerSearch')?.focus();">
                                                     + Log Board Intake
                                                   </a>
                                     </div>
@@ -1343,6 +1410,12 @@
                                                 📦 CLIENT SUPPLY
                                               </span>
                                               <% } %>
+                                                <% if (item.no_backorder) { %>
+                                                  <span class="badge bg-info-subtle text-info-emphasis border border-info-subtle rounded-pill fw-semibold"
+                                                    style="font-size:0.70rem;" title="Short receipt closed without backorder">
+                                                    ✓ No Backorder
+                                                  </span>
+                                                  <% } %>
                                   </div>
                                   <div class="small mt-1" style="color:#334155;font-weight:500;">
                                     <% if (isPendingClient) { %>
@@ -1553,6 +1626,14 @@
                     </div>
                   </div>
                 </div>
+
+    <!-- Floating ("Hanging") Blue + Button to jump instantly to the Board Log Form -->
+    <button type="button" id="floatingBoardLogFab" title="Jump to Board Log Form" aria-label="Jump to Board Log Form" data-no-loading="true">
+      <svg viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round">
+        <line x1="12" y1="5" x2="12" y2="19"></line>
+        <line x1="5" y1="12" x2="19" y2="12"></line>
+      </svg>
+    </button>
     </main>
 
     <script>
@@ -1693,12 +1774,189 @@
           // On input, detect decimals without altering what operator typed
           intakeQtyInput.addEventListener('input', function () {
             evaluateQtyValidity();
+            updateExpectingMorePrompt();
           });
 
           intakeQtyInput.addEventListener('paste', function () {
             setTimeout(function () {
               evaluateQtyValidity();
+              updateExpectingMorePrompt();
             }, 10);
+          });
+        }
+
+        // Instant Plain-English Short-Intake ("Expecting More Boards?") Prompt & Floating + FAB
+        var lastFetchedRequirements = [];
+        var expectingMorePrompt = document.getElementById('expectingMorePrompt');
+        var expectingMoreSummary = document.getElementById('expectingMoreSummary');
+        var btnExpectingMoreYes = document.getElementById('btnExpectingMoreYes');
+        var btnExpectingMoreNo = document.getElementById('btnExpectingMoreNo');
+        var expectingMoreFeedback = document.getElementById('expectingMoreFeedback');
+        var expectingMoreRequiredError = document.getElementById('expectingMoreRequiredError');
+        var expectingMoreInput = document.getElementById('expectingMoreInput');
+        var noBackorderInput = document.getElementById('noBackorderInput');
+        var intakeExpectedQtyInput = document.getElementById('intakeExpectedQty');
+
+        function resetExpectingMoreSelection() {
+          if (expectingMoreInput) expectingMoreInput.value = 'true';
+          if (noBackorderInput) noBackorderInput.value = 'false';
+          if (expectingMorePrompt) expectingMorePrompt.dataset.answered = 'false';
+          if (btnExpectingMoreYes) {
+            btnExpectingMoreYes.classList.remove('btn-primary', 'text-white');
+            btnExpectingMoreYes.classList.add('btn-outline-primary');
+          }
+          if (btnExpectingMoreNo) {
+            btnExpectingMoreNo.classList.remove('btn-success', 'text-white');
+            btnExpectingMoreNo.classList.add('btn-outline-success');
+          }
+          if (expectingMoreFeedback) {
+            expectingMoreFeedback.classList.add('d-none');
+            expectingMoreFeedback.textContent = '';
+          }
+          if (expectingMoreRequiredError) {
+            expectingMoreRequiredError.classList.add('d-none');
+          }
+        }
+
+        function resolveExpectedQtyForCurrentSelection() {
+          if (intakeExpectedQtyInput && Number(intakeExpectedQtyInput.value) > 0) {
+            return Number(intakeExpectedQtyInput.value);
+          }
+          var pSelect = document.getElementById('partnerSelect');
+          var prodSelect = document.getElementById('productSelect');
+          var pId = pSelect ? String(pSelect.value || '').trim() : '';
+          var prodId = prodSelect ? String(prodSelect.value || '').trim() : '';
+          if (!pId || pId === '0' || !prodId) return null;
+
+          if (Array.isArray(lastFetchedRequirements) && lastFetchedRequirements.length > 0) {
+            var matchedReq = lastFetchedRequirements.find(function (r) {
+              return String(r.productId || '') === prodId && Number(r.qtyMissing || 0) > 0;
+            });
+            if (matchedReq) {
+              if (intakeExpectedQtyInput) intakeExpectedQtyInput.value = String(matchedReq.qtyMissing);
+              var moIdEl = document.getElementById('intakeMoId');
+              var moNameEl = document.getElementById('intakeMoName');
+              if (moIdEl && !moIdEl.value && matchedReq.moId) moIdEl.value = String(matchedReq.moId);
+              if (moNameEl && !moNameEl.value && matchedReq.moName) moNameEl.value = String(matchedReq.moName);
+              return Number(matchedReq.qtyMissing);
+            }
+          }
+
+          var cardItems = Array.from(document.querySelectorAll('.stock-alert-item.item-undone'));
+          var matchingCards = cardItems.filter(function (el) {
+            return String(el.getAttribute('data-partner-id') || '') === pId &&
+              String(el.getAttribute('data-product-id') || '') === prodId &&
+              Number(el.getAttribute('data-qty') || 0) > 0;
+          });
+          if (matchingCards.length > 0) {
+            var neededSum = matchingCards.reduce(function (sum, el) {
+              return sum + Number(el.getAttribute('data-qty') || 0);
+            }, 0);
+            if (neededSum > 0) {
+              if (intakeExpectedQtyInput) intakeExpectedQtyInput.value = String(neededSum);
+              var firstCard = matchingCards[0];
+              var moIdEl2 = document.getElementById('intakeMoId');
+              var moNameEl2 = document.getElementById('intakeMoName');
+              if (moIdEl2 && !moIdEl2.value && firstCard.getAttribute('data-mo-id')) {
+                moIdEl2.value = firstCard.getAttribute('data-mo-id') || '';
+              }
+              if (moNameEl2 && !moNameEl2.value && firstCard.getAttribute('data-mo-name')) {
+                moNameEl2.value = firstCard.getAttribute('data-mo-name') || '';
+              }
+              return neededSum;
+            }
+          }
+          return null;
+        }
+
+        function updateExpectingMoreFeedbackText() {
+          if (!expectingMoreFeedback || !expectingMorePrompt || expectingMorePrompt.dataset.answered !== 'true') return;
+          var entered = Number((intakeQtyInput ? intakeQtyInput.value : '').trim());
+          var expected = resolveExpectedQtyForCurrentSelection() || 0;
+          var remaining = Math.max(0, expected - (Number.isFinite(entered) ? entered : 0));
+          var isExpectingMore = expectingMoreInput && expectingMoreInput.value === 'true';
+          expectingMoreFeedback.classList.remove('d-none');
+          if (isExpectingMore) {
+            expectingMoreFeedback.style.color = '#1d4ed8';
+            expectingMoreFeedback.textContent = 'System will keep the remaining ' + remaining + ' board' + (remaining === 1 ? '' : 's') + ' open until they arrive.';
+          } else {
+            expectingMoreFeedback.style.color = '#15803d';
+            expectingMoreFeedback.textContent = "Got it — no backorder will be created and this job won't ask for the remaining " + remaining + ' board' + (remaining === 1 ? '' : 's') + '.';
+          }
+        }
+
+        function selectExpectingMoreChoice(expectingMore) {
+          if (expectingMorePrompt) expectingMorePrompt.dataset.answered = 'true';
+          if (expectingMoreInput) expectingMoreInput.value = expectingMore ? 'true' : 'false';
+          if (noBackorderInput) noBackorderInput.value = expectingMore ? 'false' : 'true';
+          if (expectingMoreRequiredError) expectingMoreRequiredError.classList.add('d-none');
+          if (btnExpectingMoreYes) {
+            btnExpectingMoreYes.classList.toggle('btn-primary', expectingMore);
+            btnExpectingMoreYes.classList.toggle('text-white', expectingMore);
+            btnExpectingMoreYes.classList.toggle('btn-outline-primary', !expectingMore);
+          }
+          if (btnExpectingMoreNo) {
+            btnExpectingMoreNo.classList.toggle('btn-success', !expectingMore);
+            btnExpectingMoreNo.classList.toggle('text-white', !expectingMore);
+            btnExpectingMoreNo.classList.toggle('btn-outline-success', expectingMore);
+          }
+          updateExpectingMoreFeedbackText();
+        }
+
+        function updateExpectingMorePrompt() {
+          if (!expectingMorePrompt) return;
+          var raw = intakeQtyInput ? intakeQtyInput.value.trim() : '';
+          var validWhole = /^[1-9]\d*$/.test(raw);
+          var entered = validWhole ? Number(raw) : 0;
+          var expected = resolveExpectedQtyForCurrentSelection();
+
+          if (validWhole && expected && expected > 0 && entered < expected) {
+            var remaining = expected - entered;
+            if (expectingMoreSummary) {
+              expectingMoreSummary.innerHTML = 'You are logging <strong>' + entered + '</strong> of <strong>' + expected + '</strong> required boards (<strong>' + remaining + '</strong> remaining). Are you expecting more boards later?';
+            }
+            expectingMorePrompt.classList.remove('d-none');
+            updateExpectingMoreFeedbackText();
+          } else {
+            expectingMorePrompt.classList.add('d-none');
+            resetExpectingMoreSelection();
+          }
+        }
+
+        if (btnExpectingMoreYes) {
+          btnExpectingMoreYes.addEventListener('click', function () {
+            selectExpectingMoreChoice(true);
+          });
+        }
+        if (btnExpectingMoreNo) {
+          btnExpectingMoreNo.addEventListener('click', function () {
+            selectExpectingMoreChoice(false);
+          });
+        }
+
+        var floatingBoardLogFab = document.getElementById('floatingBoardLogFab');
+        if (floatingBoardLogFab) {
+          floatingBoardLogFab.addEventListener('click', function () {
+            var formEl = document.getElementById('intakeForm');
+            var targetEl = (formEl && formEl.closest('.card')) || formEl;
+            if (targetEl) {
+              targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+              targetEl.style.transition = 'box-shadow 0.35s ease';
+              targetEl.style.boxShadow = '0 0 0 4px rgba(37, 99, 235, 0.32)';
+              setTimeout(function () {
+                targetEl.style.boxShadow = '';
+              }, 1400);
+            }
+            var partnerSel = document.getElementById('partnerSelect');
+            var productSel = document.getElementById('productSelect');
+            var focusTarget = (partnerSel && partnerSel.value && productSel && productSel.value)
+              ? document.getElementById('intakeQty')
+              : (document.getElementById('partnerSearch') || document.getElementById('intakeQty'));
+            if (focusTarget) {
+              setTimeout(function () {
+                focusTarget.focus();
+              }, 300);
+            }
           });
         }
 
@@ -2212,6 +2470,10 @@
               btnUnknownClient.textContent = '✓ Owner Unknown (Click to undo)';
               clearRequirements();
             }
+            if (intakeExpectedQtyInput) intakeExpectedQtyInput.value = '';
+            lastFetchedRequirements = [];
+            resetExpectingMoreSelection();
+            updateExpectingMorePrompt();
           });
         }
 
@@ -2220,6 +2482,14 @@
           var pendingClientFlag = document.getElementById('pendingClientFlag');
           var btnUnknownClient = document.getElementById('btnUnknownClient');
           var partnerId = selectedItem ? selectedItem.getAttribute('data-id') : '';
+          var intakeMoId = document.getElementById('intakeMoId');
+          var intakeMoName = document.getElementById('intakeMoName');
+          if (intakeExpectedQtyInput) intakeExpectedQtyInput.value = '';
+          if (intakeMoId) intakeMoId.value = '';
+          if (intakeMoName) intakeMoName.value = '';
+          lastFetchedRequirements = [];
+          resetExpectingMoreSelection();
+          updateExpectingMorePrompt();
 
           if (partnerId === '0') {
             if (pendingClientFlag) pendingClientFlag.value = 'true';
@@ -2383,162 +2653,159 @@
           }
         });
 
-        // Handle match client form submission via non-blocking AJAX
+        // Handle match client form submission immediately (Odoo sync continues in background)
         var matchClientForm = document.getElementById('matchClientForm');
         if (matchClientForm) {
-          matchClientForm.addEventListener('submit', async function (e) {
-              e.preventDefault();
-              var matchPartnerId = document.getElementById('matchPartnerId');
-              var matchPartnerSearch = document.getElementById('matchPartnerSearch');
-              var matchPartnerName = document.getElementById('matchPartnerName');
-              var matchModalAlert = document.getElementById('matchModalAlert');
-              var btnSubmit = document.getElementById('btnSubmitMatchClient');
-              var spinner = document.getElementById('matchClientSpinner');
-              var btnText = document.getElementById('matchClientBtnText');
+          matchClientForm.addEventListener('submit', function (e) {
+            e.preventDefault();
+            var matchPartnerId = document.getElementById('matchPartnerId');
+            var matchPartnerSearch = document.getElementById('matchPartnerSearch');
+            var matchPartnerName = document.getElementById('matchPartnerName');
+            var matchModalAlert = document.getElementById('matchModalAlert');
+            var btnSubmit = document.getElementById('btnSubmitMatchClient');
+            var spinner = document.getElementById('matchClientSpinner');
+            var btnText = document.getElementById('matchClientBtnText');
 
-              if (matchModalAlert) matchModalAlert.classList.add('d-none');
+            if (matchModalAlert) matchModalAlert.classList.add('d-none');
 
-              if (!matchPartnerId || !matchPartnerId.value || matchPartnerId.value === '0') {
-                e.preventDefault();
-                if (matchPartnerSearch) {
-                  matchPartnerSearch.classList.add('is-invalid');
-                  matchPartnerSearch.focus();
-                }
-                if (matchModalAlert) {
-                  matchModalAlert.textContent = 'Please choose a valid client from the list.';
-                  matchModalAlert.classList.remove('d-none');
-                }
-                return;
+            if (!matchPartnerId || !matchPartnerId.value || matchPartnerId.value === '0') {
+              if (matchPartnerSearch) {
+                matchPartnerSearch.classList.add('is-invalid');
+                matchPartnerSearch.focus();
               }
-              var btnSubmit = document.getElementById('btnSubmitMatchClient');
-              var spinner = document.getElementById('matchClientSpinner');
-              if (btnSubmit) btnSubmit.disabled = true;
-
-              var intakeId = matchClientForm.getAttribute('data-intake-id') || '';
-              var partnerId = matchPartnerId.value;
-              var partnerName = (matchPartnerName && matchPartnerName.value) || (matchPartnerSearch && matchPartnerSearch.value) || '';
-
-              if (btnSubmit) {
-                btnSubmit.disabled = true;
-                btnSubmit.setAttribute('data-submitting', 'true');
+              if (matchModalAlert) {
+                matchModalAlert.textContent = 'Please choose a valid client from the list.';
+                matchModalAlert.classList.remove('d-none');
               }
-              if (spinner) spinner.classList.remove('d-none');
-              if (btnText) btnText.textContent = 'Matching client...';
+              return;
+            }
 
-              try {
-                var formData = new FormData(matchClientForm);
-                formData.append('ajax', 'true');
-                var res = await fetch(matchClientForm.action, {
-                  method: 'POST',
-                  headers: {
-                    'Accept': 'application/json',
-                    'Content-Type': 'application/x-www-form-urlencoded'
-                  },
-                  body: new URLSearchParams(formData).toString()
-                });
+            var intakeId = matchClientForm.getAttribute('data-intake-id') || '';
+            var partnerName = (matchPartnerName && matchPartnerName.value) || (matchPartnerSearch && matchPartnerSearch.value) || '';
+            var actionUrl = matchClientForm.action;
+            var formData = new FormData(matchClientForm);
+            formData.append('ajax', 'true');
+            var encodedBody = new URLSearchParams(formData).toString();
 
-                var data = await res.json().catch(function () { return {}; });
+            // 1. Close modal right away — zero UI blocking for the operator
+            var modalEl = document.getElementById('matchClientModal');
+            if (modalEl && window.bootstrap && window.bootstrap.Modal) {
+              var modal = window.bootstrap.Modal.getInstance(modalEl);
+              if (modal) modal.hide();
+            }
+            if (btnSubmit) {
+              btnSubmit.disabled = false;
+              btnSubmit.removeAttribute('data-submitting');
+            }
+            if (spinner) spinner.classList.add('d-none');
+            if (btnText) btnText.innerHTML = 'Confirm &amp; Match';
 
-                if (!res.ok || !data.ok) {
-                  throw new Error(data.error || 'Failed to match client to board log.');
+            // 2. Optimistically update the board log row immediately
+            var row = document.querySelector('[data-board-log-row="' + intakeId + '"]');
+            var matchedBadgeEl = null;
+            if (row) {
+              row.style.setProperty('border-left', '4.5px solid #059669', 'important');
+
+              var warningBadge = row.querySelector('.badge.border-warning, .badge[title*="pending client matching"], .badge[title*="Owner is unknown"]');
+              if (warningBadge) {
+                warningBadge.className = 'badge text-white border-0 shadow-sm';
+                warningBadge.style.backgroundColor = '#059669 !important';
+                warningBadge.style.fontSize = '0.72rem';
+                warningBadge.style.fontWeight = '700';
+                warningBadge.style.letterSpacing = '0.02em';
+                warningBadge.title = 'Client Supplied Boards (Customer Provided)';
+                warningBadge.textContent = '📦 CLIENT SUPPLY';
+              }
+
+              var pendingText = row.querySelector('.fw-bold.text-warning-emphasis');
+              if (pendingText) {
+                pendingText.className = 'fw-bold';
+                pendingText.style.color = '#0f172a';
+                pendingText.textContent = partnerName;
+
+                var matBadge = document.createElement('span');
+                matBadge.className = 'badge bg-light text-success border border-success-subtle px-1.5 py-0.5 ms-1';
+                matBadge.style.fontSize = '0.68rem';
+                matBadge.style.fontWeight = '600';
+                matBadge.textContent = "Customer's Own Material";
+                pendingText.after(matBadge);
+
+                matchedBadgeEl = document.createElement('span');
+                matchedBadgeEl.className = 'badge bg-info-subtle text-info-emphasis border border-info-subtle px-2 py-0.5 ms-1';
+                matchedBadgeEl.style.fontSize = '0.72rem';
+                matchedBadgeEl.innerHTML = 'Matched to <strong>' + escapeHtml(partnerName) + '</strong>';
+                matBadge.after(matchedBadgeEl);
+              }
+
+              var matchBtn = row.querySelector('.btn-open-match-modal');
+              if (matchBtn) matchBtn.remove();
+
+              var statusPill = row.querySelector('[data-board-log-status="' + intakeId + '"]');
+              if (statusPill) {
+                statusPill.className = 'badge rounded-pill bg-warning text-dark fw-bold px-2.5 py-1';
+                statusPill.textContent = 'Syncing to Odoo';
+              }
+            }
+
+            if (window.shopFloorPageCache) {
+              window.shopFloorPageCache.clear();
+            }
+
+            var alertContainer = document.getElementById('intakeAlertContainer');
+            if (alertContainer) {
+              alertContainer.className = 'alert alert-success alert-dismissible fade show rounded-3 py-2.5 px-3 mb-3 d-flex align-items-center justify-content-between gap-3 shadow-sm';
+              alertContainer.innerHTML =
+                '<div class="small">' +
+                '<strong>✓ Client matched:</strong> ' + escapeHtml(partnerName) +
+                ' assigned. Syncing with Odoo &amp; reserving on MOs in the background...' +
+                '</div>' +
+                '<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>';
+            }
+
+            // 3. Persist match & trigger background Odoo sync with zero UI wait
+            fetch(actionUrl, {
+              method: 'POST',
+              headers: {
+                'Accept': 'application/json',
+                'Content-Type': 'application/x-www-form-urlencoded'
+              },
+              body: encodedBody
+            }).then(function (res) {
+              return res.json().catch(function () { return {}; }).then(function (data) {
+                return { ok: res.ok && data.ok, data: data };
+              });
+            }).then(function (result) {
+              if (!result.ok) {
+                throw new Error((result.data && result.data.error) || 'Failed to match client to board log.');
+              }
+              var data = result.data;
+              var resolvedCustomer = data.customerName || partnerName;
+              var matchedBy = data.matchedBy || 'Operator';
+              if (matchedBadgeEl) {
+                matchedBadgeEl.innerHTML = 'Matched to <strong>' + escapeHtml(resolvedCustomer) + '</strong> by ' + escapeHtml(matchedBy);
+              }
+              var statusPill = document.querySelector('[data-board-log-status="' + intakeId + '"]');
+              if (statusPill) {
+                if (data.status === 'synced') {
+                  statusPill.className = 'badge rounded-pill bg-success text-white fw-bold px-2.5 py-1';
+                  statusPill.textContent = 'Synced to Odoo';
+                } else {
+                  trackPendingBoardLog(intakeId);
                 }
-
-                // Close modal cleanly
-                var modalEl = document.getElementById('matchClientModal');
-                if (modalEl && window.bootstrap && window.bootstrap.Modal) {
-                  var modal = window.bootstrap.Modal.getInstance(modalEl);
-                  if (modal) modal.hide();
-                }
-
-                var resolvedCustomer = data.customerName || partnerName;
-                var matchedBy = data.matchedBy || 'Operator';
-
-                // Update the card in DOM
-                var row = document.querySelector('[data-board-log-row="' + intakeId + '"]');
-                if (row) {
-                  // Update left border color to client supply green
-                  row.style.setProperty('border-left', '4.5px solid #059669', 'important');
-
-                  // 1. Update supply badge
-                  var warningBadge = row.querySelector('.badge.border-warning, .badge[title*="pending client matching"], .badge[title*="Owner is unknown"]');
-                  if (warningBadge) {
-                    warningBadge.className = 'badge text-white border-0 shadow-sm';
-                    warningBadge.style.backgroundColor = '#059669 !important';
-                    warningBadge.style.fontSize = '0.72rem';
-                    warningBadge.style.fontWeight = '700';
-                    warningBadge.style.letterSpacing = '0.02em';
-                    warningBadge.title = 'Client Supplied Boards (Customer Provided)';
-                    warningBadge.textContent = '📦 CLIENT SUPPLY';
-                  }
-
-                  // 2. Update line 2 customer text & matched by badge
-                  var pendingText = row.querySelector('.fw-bold.text-warning-emphasis');
-                  if (pendingText) {
-                    pendingText.className = 'fw-bold';
-                    pendingText.style.color = '#0f172a';
-                    pendingText.textContent = resolvedCustomer;
-
-                    var matBadge = document.createElement('span');
-                    matBadge.className = 'badge bg-light text-success border border-success-subtle px-1.5 py-0.5 ms-1';
-                    matBadge.style.fontSize = '0.68rem';
-                    matBadge.style.fontWeight = '600';
-                    matBadge.textContent = "Customer's Own Material";
-                    pendingText.after(matBadge);
-
-                    var matchedBadge = document.createElement('span');
-                    matchedBadge.className = 'badge bg-info-subtle text-info-emphasis border border-info-subtle px-2 py-0.5 ms-1';
-                    matchedBadge.style.fontSize = '0.72rem';
-                    matchedBadge.innerHTML = 'Matched to <strong>' + escapeHtml(resolvedCustomer) + '</strong> by ' + escapeHtml(matchedBy);
-                    matBadge.after(matchedBadge);
-                  }
-
-                  // 3. Remove "Match Client" button from row
-                  var matchBtn = row.querySelector('.btn-open-match-modal');
-                  if (matchBtn) matchBtn.remove();
-
-                  // 4. Update status pill
-                  var statusPill = row.querySelector('[data-board-log-status="' + intakeId + '"]');
-                  if (statusPill) {
-                    statusPill.className = 'badge rounded-pill bg-success text-white fw-bold px-2.5 py-1';
-                    statusPill.textContent = 'Synced to Odoo';
-                  }
-                }
-
-                // Clear cache so navigation remains fresh
-                if (window.shopFloorPageCache) {
-                  window.shopFloorPageCache.clear();
-                }
-
-                // Immediate top banner feedback
-                var alertContainer = document.getElementById('intakeAlertContainer');
-                if (alertContainer) {
-                  alertContainer.className = 'alert alert-success alert-dismissible fade show rounded-3 py-2.5 px-3 mb-3 d-flex align-items-center justify-content-between gap-3 shadow-sm';
-                  alertContainer.innerHTML =
-                    '<div class="small">' +
-                    '<strong>✓ Matched successfully:</strong> ' + escapeHtml(resolvedCustomer) +
-                    ' assigned to board log. ' +
-                    (data.matchedMoCount > 0 ? 'Allocated and reserved on ' + data.matchedMoCount + ' active MO(s).' : 'Linked in Odoo.') +
-                    '</div>' +
-                    '<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>';
-                }
-
-              } catch (err) {
-                if (matchModalAlert) {
-                  matchModalAlert.textContent = err.message || 'Failed to match client to board log.';
-                  matchModalAlert.classList.remove('d-none');
-                } else if (typeof window.appNotify === 'function') {
-                  window.appNotify(err.message || 'Failed to match client to board log.', { type: 'error', title: 'Match Failed' });
-                }
-              } finally {
-                if (btnSubmit) {
-                  btnSubmit.disabled = false;
-                  btnSubmit.removeAttribute('data-submitting');
-                }
-                if (spinner) spinner.classList.add('d-none');
-                if (btnText) btnText.innerHTML = 'Confirm &amp; Match';
+              }
+              if (window.shopFloorPageCache) {
+                window.shopFloorPageCache.clear();
+              }
+            }).catch(function (err) {
+              if (typeof window.appNotify === 'function') {
+                window.appNotify(err.message || 'Failed to match client to board log.', { type: 'error', title: 'Match Failed' });
+              } else if (alertContainer) {
+                alertContainer.className = 'alert alert-danger alert-dismissible fade show rounded-3 py-2.5 px-3 mb-3';
+                alertContainer.innerHTML = '<div class="small"><strong>Match Error:</strong> ' + escapeHtml(err.message || 'Failed to match client to board log.') + '</div><button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>';
               }
             });
-          }
+          });
+        }
     
     var qtyInput = document.getElementById('intakeQty');
           var stockHelp = document.getElementById('qtyCurrentStock');
@@ -2546,6 +2813,9 @@
           setupCombobox('productCombobox', 'productSearch', 'productSelect', 'productList', function (selectedItem) {
             var productName = document.getElementById('productName');
             if (productName) productName.value = selectedItem ? (selectedItem.querySelector('.product-name')?.textContent.trim() || selectedItem.textContent.trim()) : '';
+            if (intakeExpectedQtyInput) intakeExpectedQtyInput.value = '';
+            resetExpectingMoreSelection();
+            updateExpectingMorePrompt();
             if (selectedItem && qtyInput && stockHelp) {
               var available = parseFloat(selectedItem.getAttribute('data-qty') || '0');
               stockHelp.innerHTML = '<strong>Current stock in Odoo:</strong> ' + available + ' units. Your intake will add to this.';
@@ -2577,6 +2847,8 @@
                 return res.json();
               })
               .then(function (data) {
+                lastFetchedRequirements = Array.isArray(data) ? data : [];
+                updateExpectingMorePrompt();
                 if (data && data.length > 0) {
                   requirementsContainer.classList.remove('d-none');
                   data.forEach(function (req) {
@@ -2613,6 +2885,8 @@
                       var intakeMoName = document.getElementById('intakeMoName');
                       if (intakeMoId) intakeMoId.value = req.moId || '';
                       if (intakeMoName) intakeMoName.value = req.moName || '';
+                      if (intakeExpectedQtyInput) intakeExpectedQtyInput.value = req.qtyMissing ? String(req.qtyMissing) : '';
+                      resetExpectingMoreSelection();
 
                       // Populate product select combobox
                       var productList = document.getElementById('productList');
@@ -2665,6 +2939,7 @@
                           qtyInput.focus();
                         }
                       }
+                      updateExpectingMorePrompt();
                     });
 
                     requirementsList.appendChild(btn);
@@ -2695,6 +2970,9 @@
             var intakeMoName = document.getElementById('intakeMoName');
             if (intakeMoId) intakeMoId.value = moId;
             if (intakeMoName) intakeMoName.value = moName;
+            if (intakeExpectedQtyInput) intakeExpectedQtyInput.value = qty ? String(qty) : '';
+            resetExpectingMoreSelection();
+            updateExpectingMorePrompt();
 
             // 1. Populate Client
             var partnerSearch = document.getElementById('partnerSearch');
@@ -3381,6 +3659,12 @@
                 return;
               }
 
+              if (expectingMorePrompt && !expectingMorePrompt.classList.contains('d-none') && expectingMorePrompt.dataset.answered !== 'true') {
+                if (expectingMoreRequiredError) expectingMoreRequiredError.classList.remove('d-none');
+                expectingMorePrompt.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                return;
+              }
+
               var text = submitBtn.querySelector('.submit-text');
               var spinner = submitBtn.querySelector('.submit-spinner');
               if (text && spinner) {
@@ -3441,6 +3725,9 @@
                     ? '<span class="badge bg-primary text-white border-0 shadow-sm" style="font-size:0.72rem;font-weight:700;letter-spacing:0.02em;" title="Company Purchase (PO-backed)">🛒 COMPANY PURCHASE</span>' +
                     (result.item.purchase_order_reference ? ' <span class="badge bg-primary-subtle text-primary border border-primary-subtle fw-semibold" style="font-size:0.72rem;">PO: ' + escapeHtml(result.item.purchase_order_reference) + '</span>' : '')
                     : '<span class="badge text-white border-0 shadow-sm" style="background-color: #059669 !important; font-size:0.72rem; font-weight:700; letter-spacing:0.02em;" title="Client Supplied Boards (Customer Provided)">📦 CLIENT SUPPLY</span>';
+                  var noBackorderBadge = result.item.no_backorder
+                    ? ' <span class="badge bg-info-subtle text-info-emphasis border border-info-subtle rounded-pill fw-semibold" style="font-size:0.70rem;" title="Short receipt closed without backorder">✓ No Backorder</span>'
+                    : '';
 
                   var sourceTag = isPurchase
                     ? '<span class="badge bg-light text-primary border border-primary-subtle px-1.5 py-0.5 ms-1" style="font-size: 0.68rem; font-weight: 600;">Company Procured</span>'
@@ -3450,7 +3737,7 @@
                     '<div>' +
                     '<div class="d-flex flex-wrap align-items-center gap-2">' +
                     '<strong class="text-dark" style="font-size:0.95rem;">' + escapeHtml(result.item.quantity) + ' × ' + escapeHtml(result.item.product_name) + '</strong>' +
-                    purchaseBadge +
+                    purchaseBadge + noBackorderBadge +
                     '</div>' +
                     '<div class="small mt-1" style="color:#334155;font-weight:500;">' +
                     '<span class="fw-bold" style="color:#0f172a;">' + escapeHtml(result.item.customer_name) + '</span>' +
@@ -3523,6 +3810,14 @@
                   qtyInput.value = '';
                   qtyInput.classList.remove('is-invalid');
                 }
+                var intakeMoIdReset = document.getElementById('intakeMoId');
+                var intakeMoNameReset = document.getElementById('intakeMoName');
+                if (intakeMoIdReset) intakeMoIdReset.value = '';
+                if (intakeMoNameReset) intakeMoNameReset.value = '';
+                if (intakeExpectedQtyInput) intakeExpectedQtyInput.value = '';
+                lastFetchedRequirements = [];
+                if (expectingMorePrompt) expectingMorePrompt.classList.add('d-none');
+                resetExpectingMoreSelection();
                 var stockHelp = document.getElementById('qtyCurrentStock');
                 if (stockHelp) {
                   stockHelp.style.display = 'none';
@@ -3598,11 +3893,14 @@
                       })
                       : null;
 
-                    var newBalance = matchingReq
-                      ? Number(matchingReq.qty_missing || 0)
-                      : ((result.balanceRemaining != null && Number.isFinite(Number(result.balanceRemaining)))
-                        ? Number(result.balanceRemaining)
-                        : Math.max(0, currentQtyNeeded - submittedQty));
+                    var isNoBackorder = Boolean(result.item.no_backorder);
+                    var newBalance = isNoBackorder
+                      ? 0
+                      : (matchingReq
+                        ? Number(matchingReq.qty_missing || 0)
+                        : ((result.balanceRemaining != null && Number.isFinite(Number(result.balanceRemaining)))
+                          ? Number(result.balanceRemaining)
+                          : Math.max(0, currentQtyNeeded - submittedQty)));
 
                     var newReserved = matchingReq
                       ? Number(matchingReq.qty_reserved || 0)
@@ -3659,11 +3957,14 @@
 
                       var actionContainer = itemEl.querySelector('.action-container');
                       if (actionContainer) {
-                        actionContainer.innerHTML =
-                          '<span class="badge rounded-pill d-inline-flex align-items-center gap-1.5 px-2.5 py-1 fw-semibold text-warning-emphasis border border-warning-subtle bg-white" style="font-size: 0.72rem;">' +
-                          '<span class="spinner-border spinner-border-sm text-warning" role="status" style="width: 10px; height: 10px; border-width: 1.5px;"></span>' +
-                          '🔒 Locked · In Odoo Queue' +
-                          '</span>';
+                        actionContainer.innerHTML = isNoBackorder
+                          ? '<span class="badge rounded-pill d-inline-flex align-items-center gap-1.5 px-2.5 py-1 fw-semibold text-success border border-success-subtle bg-success-subtle" style="font-size: 0.72rem;">' +
+                            '✓ Closed (No Backorder)' +
+                            '</span>'
+                          : '<span class="badge rounded-pill d-inline-flex align-items-center gap-1.5 px-2.5 py-1 fw-semibold text-warning-emphasis border border-warning-subtle bg-white" style="font-size: 0.72rem;">' +
+                            '<span class="spinner-border spinner-border-sm text-warning" role="status" style="width: 10px; height: 10px; border-width: 1.5px;"></span>' +
+                            '🔒 Locked · In Odoo Queue' +
+                            '</span>';
                       }
 
                       var clientGroup = itemEl.closest('.stock-client-group');

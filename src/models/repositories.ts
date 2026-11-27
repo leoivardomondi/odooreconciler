@@ -5615,14 +5615,15 @@ export async function finishStaffOnboardingApproval(id: string, input: { employe
 export async function createBoardIntakeQueueEntry(input: {
   id: string; productId: number; productName: string; partnerId: number; customerName: string;
   quantity: number; actorName: string; actorEmail?: string; vehicleRegistration?: string; arrivalDate?: string; arrivalTime?: string; gate?: string;
-  isPurchase?: boolean | number; purchaseOrderReference?: string;
+  isPurchase?: boolean | number; purchaseOrderReference?: string; noBackorder?: boolean | number;
 }) {
   const now = appDateTime();
   const arrivalDate = input.arrivalDate || now.slice(0, 10);
   const isPurchase = input.isPurchase ? 1 : 0;
   const purchaseOrderReference = input.purchaseOrderReference || null;
-  await execute(`INSERT INTO board_intake_queue (id, product_id, product_name, partner_id, customer_name, quantity, actor_name, actor_email, vehicle_registration, arrival_date, arrival_time, gate, is_purchase, purchase_order_reference, status, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`, [input.id, input.productId, input.productName, input.partnerId, input.customerName, input.quantity, input.actorName, input.actorEmail || null, input.vehicleRegistration || null, arrivalDate, input.arrivalTime || null, input.gate || null, isPurchase, purchaseOrderReference, now, now]);
+  const noBackorder = input.noBackorder ? 1 : 0;
+  await execute(`INSERT INTO board_intake_queue (id, product_id, product_name, partner_id, customer_name, quantity, actor_name, actor_email, vehicle_registration, arrival_date, arrival_time, gate, is_purchase, purchase_order_reference, no_backorder, status, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`, [input.id, input.productId, input.productName, input.partnerId, input.customerName, input.quantity, input.actorName, input.actorEmail || null, input.vehicleRegistration || null, arrivalDate, input.arrivalTime || null, input.gate || null, isPurchase, purchaseOrderReference, noBackorder, now, now]);
 }
 
 export async function updateBoardIntakeQueueEntry(id: string, input: {
@@ -5715,7 +5716,7 @@ export async function getRecentBoardIntakeQueueEntries(limit = 12, offset = 0, f
   }
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-  const query = `SELECT id, product_id, product_name, partner_id, customer_name, quantity, vehicle_registration, arrival_date, arrival_time, gate, is_purchase, purchase_order_reference, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at, reverted_at, reverted_by, matched_at, matched_by, actor_name, actor_email
+  const query = `SELECT id, product_id, product_name, partner_id, customer_name, quantity, vehicle_registration, arrival_date, arrival_time, gate, is_purchase, purchase_order_reference, no_backorder, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at, reverted_at, reverted_by, matched_at, matched_by, actor_name, actor_email
     FROM board_intake_queue 
     ${whereClause}
     ORDER BY 
@@ -5731,6 +5732,7 @@ export async function getRecentBoardIntakeQueueEntries(limit = 12, offset = 0, f
     await execute(`ALTER TABLE board_intake_queue ADD COLUMN gate VARCHAR(50) NULL`).catch(() => {});
     await execute(`ALTER TABLE board_intake_queue ADD COLUMN is_purchase INTEGER DEFAULT 0`).catch(() => {});
     await execute(`ALTER TABLE board_intake_queue ADD COLUMN purchase_order_reference VARCHAR(100) NULL`).catch(() => {});
+    await execute(`ALTER TABLE board_intake_queue ADD COLUMN no_backorder INTEGER NOT NULL DEFAULT 0`).catch(() => {});
     await execute(`ALTER TABLE board_intake_queue ADD COLUMN matched_at VARCHAR(50) NULL`).catch(() => {});
     await execute(`ALTER TABLE board_intake_queue ADD COLUMN matched_by VARCHAR(255) NULL`).catch(() => {});
     return queryAll<any>(query, [...filterParams, Math.max(1, Math.min(50, limit)), Math.max(0, offset)]);
@@ -5775,6 +5777,7 @@ export interface ContinuousBoardIntakeEntry {
   gate?: string | null;
   is_purchase?: number | boolean;
   purchase_order_reference?: string | null;
+  no_backorder?: number | boolean;
   status: string;
   error_message?: string | null;
   retry_count?: number;
@@ -5821,7 +5824,7 @@ export async function getContinuousBoardIntakeLogs(options?: {
   }
 
   const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-  const query = `SELECT id, product_id, product_name, partner_id, customer_name, quantity, vehicle_registration, arrival_date, arrival_time, gate, is_purchase, purchase_order_reference, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at, reverted_at, reverted_by, matched_at, matched_by, actor_name, actor_email,
+  const query = `SELECT id, product_id, product_name, partner_id, customer_name, quantity, vehicle_registration, arrival_date, arrival_time, gate, is_purchase, purchase_order_reference, no_backorder, status, error_message, retry_count, last_attempt_at, next_retry_at, created_at, synced_at, reverted_at, reverted_by, matched_at, matched_by, actor_name, actor_email,
       CASE 
         WHEN arrival_date IS NOT NULL AND arrival_date != '' THEN arrival_date 
         ELSE SUBSTR(created_at, 1, 10) 
@@ -5905,6 +5908,7 @@ export interface BoardIntakeQueueEntry {
   gate: string | null;
   is_purchase?: boolean | number | null;
   purchase_order_reference?: string | null;
+  no_backorder?: boolean | number | null;
   status: 'pending' | 'processing' | 'synced' | 'failed' | 'reverting' | 'reverted';
   odoo_stock_quantity: number | null;
   reverted_at: string | null;
@@ -6108,6 +6112,8 @@ function ensureShopFloorTables() {
   execute(`ALTER TABLE board_intake_queue ADD COLUMN arrival_date VARCHAR(50) NULL`).catch(() => {});
   execute(`ALTER TABLE board_intake_queue ADD COLUMN arrival_time VARCHAR(50) NULL`).catch(() => {});
   execute(`ALTER TABLE board_intake_queue ADD COLUMN gate VARCHAR(50) NULL`).catch(() => {});
+  execute(`ALTER TABLE board_intake_queue ADD COLUMN no_backorder INTEGER NOT NULL DEFAULT 0`).catch(() => {});
+  execute(`ALTER TABLE shop_floor_pending_processes ADD COLUMN no_backorder_closed INTEGER NOT NULL DEFAULT 0`).catch(() => {});
 
   if (dialect === 'mysql') {
     execute(`ALTER TABLE shop_floor_assigned_items ADD COLUMN quantity INTEGER NOT NULL DEFAULT 1`).catch(() => {});
@@ -6413,6 +6419,7 @@ export async function getPendingShopFloorProcesses(filters?: {
     qty_reserved: Number(r.qty_reserved || 0),
     qty_missing: Number(r.qty_missing || 0),
     is_mo_closed: Boolean(r.is_mo_closed),
+    no_backorder_closed: Boolean(r.no_backorder_closed),
   }));
 
   if (isDefaultQuery) {
@@ -6442,17 +6449,22 @@ export async function upsertPendingShopFloorProcesses(
       id: string;
       status: string;
       qty_missing: number;
+      qty_reserved?: number;
       qty_needed?: number;
-      loaded_at?: string;
+      loaded_at?: string | null;
+      loaded_by?: string | null;
       partner_id?: number;
       partner_name?: string;
+      no_backorder_closed?: number | boolean | null;
     }>(
-      'SELECT id, status, qty_missing, qty_needed, loaded_at, partner_id, partner_name FROM shop_floor_pending_processes WHERE mo_id = ? AND product_id = ?',
+      'SELECT id, status, qty_missing, qty_reserved, qty_needed, loaded_at, loaded_by, partner_id, partner_name, no_backorder_closed FROM shop_floor_pending_processes WHERE mo_id = ? AND product_id = ?',
       [rec.mo_id, rec.product_id],
     );
 
     if (existing) {
       const qtyChanged = Math.abs(Number(rec.qty_needed || 0) - Number(existing.qty_needed || 0)) > 0.001;
+      const qtyIncreased = Number(rec.qty_needed || 0) > Number(existing.qty_needed || 0) + 0.001;
+      const isClosedNoBackorder = Boolean(existing.no_backorder_closed) && !qtyIncreased;
 
       // Only protect 'loaded' status if an operator actively logged boards very recently (within 2 minutes) AND quantity hasn't changed
       const recentlyLoaded = Boolean(
@@ -6462,17 +6474,30 @@ export async function upsertPendingShopFloorProcesses(
         (Date.now() - new Date((existing as any).loaded_at).getTime() < 2 * 60 * 1000)
       );
 
-      if (recentlyLoaded) {
+      if (recentlyLoaded && !isClosedNoBackorder) {
         continue;
       }
 
-      const nextStatus = rec.qty_missing > 0
-        ? 'pending'
-        : (recentlyLoaded ? existing.status : (rec.status || 'loaded'));
+      const nextStatus = isClosedNoBackorder
+        ? 'loaded'
+        : (rec.qty_missing > 0
+          ? 'pending'
+          : (recentlyLoaded ? existing.status : (rec.status || 'loaded')));
 
       const isNewlyLoaded = nextStatus === 'loaded' && existing.status !== 'loaded';
-      const effectiveLoadedAt = isNewlyLoaded ? (rec.loaded_at || now) : ((existing as any).loaded_at || null);
-      const effectiveLoadedBy = isNewlyLoaded ? (rec.loaded_by || 'Automated Sync') : ((existing as any).loaded_by || null);
+      const effectiveLoadedAt = isClosedNoBackorder
+        ? (existing.loaded_at || rec.loaded_at || now)
+        : (isNewlyLoaded ? (rec.loaded_at || now) : (existing.loaded_at || null));
+      const effectiveLoadedBy = isClosedNoBackorder
+        ? (existing.loaded_by || rec.loaded_by || 'No Backorder')
+        : (isNewlyLoaded ? (rec.loaded_by || 'Automated Sync') : (existing.loaded_by || null));
+      const effectiveQtyMissing = isClosedNoBackorder ? 0 : rec.qty_missing;
+      const effectiveQtyReserved = isClosedNoBackorder
+        ? Math.max(Number(existing.qty_reserved || 0), Number(rec.qty_reserved || 0))
+        : rec.qty_reserved;
+      const effectiveNoBackorderClosed = isClosedNoBackorder
+        ? 1
+        : (qtyIncreased ? 0 : (existing.no_backorder_closed ? 1 : 0));
 
       // Never overwrite an existing known partner name with 'Unknown Customer' or empty
       const effectivePartnerName = (rec.partner_name && rec.partner_name !== 'Unknown Customer')
@@ -6484,7 +6509,7 @@ export async function upsertPendingShopFloorProcesses(
         `UPDATE shop_floor_pending_processes
          SET mo_name = ?, origin = ?, partner_id = ?, partner_name = ?,
              product_name = ?, qty_needed = ?, qty_reserved = ?, qty_missing = ?,
-             status = ?, loaded_at = ?, loaded_by = ?, is_mo_closed = ?,
+             status = ?, no_backorder_closed = ?, loaded_at = ?, loaded_by = ?, is_mo_closed = ?,
              last_synced_at = ?, updated_at = ?
          WHERE id = ?`,
         [
@@ -6494,9 +6519,10 @@ export async function upsertPendingShopFloorProcesses(
           effectivePartnerName,
           rec.product_name,
           rec.qty_needed,
-          rec.qty_reserved,
-          rec.qty_missing,
+          effectiveQtyReserved,
+          effectiveQtyMissing,
           nextStatus,
+          effectiveNoBackorderClosed,
           effectiveLoadedAt,
           effectiveLoadedBy,
           rec.is_mo_closed ? 1 : 0,
@@ -6511,8 +6537,8 @@ export async function upsertPendingShopFloorProcesses(
         `INSERT INTO shop_floor_pending_processes (
            id, process_type, mo_id, mo_name, origin, partner_id, partner_name,
            product_id, product_name, qty_needed, qty_reserved, qty_missing,
-           status, loaded_at, loaded_by, is_mo_closed, last_synced_at, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           status, no_backorder_closed, loaded_at, loaded_by, is_mo_closed, last_synced_at, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           id,
           rec.process_type || 'board_intake',
@@ -6527,6 +6553,7 @@ export async function upsertPendingShopFloorProcesses(
           rec.qty_reserved,
           rec.qty_missing,
           rec.status || 'pending',
+          rec.no_backorder_closed ? 1 : 0,
           rec.loaded_at || null,
           rec.loaded_by || null,
           rec.is_mo_closed ? 1 : 0,
@@ -6548,6 +6575,7 @@ export async function markPendingShopFloorProcessesLoaded(filters: {
   productName?: string;
   moId?: number;
   moName?: string;
+  noBackorder?: boolean;
 }): Promise<PendingShopFloorProcess[]> {
   invalidatePendingShopFloorProcessesCache();
   let pendingRows: PendingShopFloorProcess[] = [];
@@ -6592,6 +6620,7 @@ export async function markPendingShopFloorProcessesLoaded(filters: {
   }
 
   let remaining = filters.quantity;
+  const isNoBackorder = Boolean(filters.noBackorder);
   const updated: PendingShopFloorProcess[] = [];
   const now = appDateTime();
 
@@ -6600,20 +6629,22 @@ export async function markPendingShopFloorProcessesLoaded(filters: {
     const missing = Number(row.qty_missing || 0);
     const applied = Math.min(remaining, missing);
     remaining -= applied;
-    const newMissing = missing - applied;
+    const newMissing = isNoBackorder ? 0 : (missing - applied);
     const newReserved = Number(row.qty_reserved || 0) + applied;
     const isFullyLoaded = newMissing <= 0;
     const newStatus = isFullyLoaded ? 'loaded' : 'pending';
+    const noBackorderClosed = isNoBackorder ? 1 : (row.no_backorder_closed ? 1 : 0);
 
     await execute(
       `UPDATE shop_floor_pending_processes
-       SET qty_reserved = ?, qty_missing = ?, status = ?,
+       SET qty_reserved = ?, qty_missing = ?, status = ?, no_backorder_closed = ?,
            loaded_at = ?, loaded_by = ?, updated_at = ?
        WHERE id = ?`,
       [
         newReserved,
         newMissing,
         newStatus,
+        noBackorderClosed,
         isFullyLoaded ? now : row.loaded_at,
         isFullyLoaded ? filters.loadedBy : row.loaded_by,
         now,
@@ -6626,6 +6657,7 @@ export async function markPendingShopFloorProcessesLoaded(filters: {
       qty_reserved: newReserved,
       qty_missing: newMissing,
       status: newStatus as PendingShopFloorProcessStatus,
+      no_backorder_closed: Boolean(noBackorderClosed),
       loaded_at: isFullyLoaded ? now : row.loaded_at,
       loaded_by: isFullyLoaded ? filters.loadedBy : row.loaded_by,
       updated_at: now,
@@ -6700,7 +6732,7 @@ export async function unmarkPendingShopFloorProcessesLoaded(filters: {
 
     await execute(
       `UPDATE shop_floor_pending_processes
-       SET qty_reserved = ?, qty_missing = ?, status = 'pending',
+       SET qty_reserved = ?, qty_missing = ?, status = 'pending', no_backorder_closed = 0,
            loaded_at = NULL, loaded_by = NULL, updated_at = ?
        WHERE id = ?`,
       [newReserved, newMissing, now, row.id],
@@ -6711,6 +6743,7 @@ export async function unmarkPendingShopFloorProcessesLoaded(filters: {
       qty_reserved: newReserved,
       qty_missing: newMissing,
       status: 'pending',
+      no_backorder_closed: false,
       loaded_at: null,
       loaded_by: null,
       updated_at: now,

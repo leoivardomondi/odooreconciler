@@ -310,6 +310,12 @@
                                         📦 CLIENT SUPPLY
                                       </span>
                                       <% } %>
+                                        <% if (item.no_backorder) { %>
+                                          <span class="badge bg-info-subtle text-info-emphasis border border-info-subtle rounded-pill fw-semibold"
+                                            style="font-size: 0.70rem;" title="Short receipt closed without backorder">
+                                            ✓ No Backorder
+                                          </span>
+                                          <% } %>
                           </div>
 
                           <!-- Line 2: Customer, Source Tag & Gate Details -->
@@ -447,7 +453,6 @@
         aria-hidden="true">
         <div class="modal-dialog modal-dialog-centered">
           <div class="modal-content shadow border-0 rounded-4">
-            <form id="publicMatchClientForm" method="post" action="">
               <form id="publicMatchClientForm" method="post" action="" data-no-loading="true">
                 <div class="modal-header border-bottom-0 pb-0 pt-4 px-4">
                   <div>
@@ -992,11 +997,17 @@
                     clientWarningText.remove();
                   }
 
-                  // 3. Update status badge
+                  // 3. Update status badge (synced immediately or syncing in background)
                   const statusBadge = card.querySelector('[data-board-log-status]');
                   if (statusBadge) {
-                    statusBadge.className = 'badge bg-success-subtle text-success border border-success-subtle rounded-pill fw-semibold px-2.5 py-1';
-                    statusBadge.textContent = '✓ Synced to Odoo';
+                    if (data.status === 'synced') {
+                      statusBadge.className = 'badge bg-success-subtle text-success border border-success-subtle rounded-pill fw-semibold px-2.5 py-1';
+                      statusBadge.textContent = '✓ Synced to Odoo';
+                    } else {
+                      statusBadge.className = 'badge bg-warning-subtle text-warning-emphasis border border-warning-subtle rounded-pill fw-semibold px-2.5 py-1';
+                      statusBadge.textContent = '⏳ Syncing';
+                      initPublicStatusPolling();
+                    }
                   }
 
                   // 4. Remove Match Client button

@@ -2914,24 +2914,37 @@ router.post('/public/board-logs/match-client', async (req, res) => {
     }
     const matchedBy = operator.name;
     try {
-        const result = await (0, boardIntakeSyncService_1.matchBoardIntakeToClient)({
+        const prep = await (0, boardIntakeSyncService_1.matchBoardIntakeToClientImmediate)({
             id: entryId,
             partnerId,
             customerName,
             matchedBy,
         });
-        const msg = `Board log matched successfully to ${result.customerName} by ${matchedBy}.${result.matchedMoCount > 0 ? ` Allocated and reserved on ${result.matchedMoCount} active MO(s).` : ''}`;
+        const msg = `Board log matched to ${prep.customerName} by ${matchedBy}. Odoo sync and MO reservation are continuing in the background.`;
         if (wantsJson) {
             res.json({
                 ok: true,
+                backgroundSync: true,
+                status: prep.alreadySynced ? 'synced' : 'pending',
                 message: msg,
-                matchedMoCount: result.matchedMoCount,
-                customerName: result.customerName,
+                matchedMoCount: prep.loadedRequirements?.length || 0,
+                customerName: prep.customerName,
                 matchedBy,
             });
-            return;
         }
-        res.redirect('/public/board-logs?message=' + encodeURIComponent(msg));
+        else {
+            res.redirect('/public/board-logs?message=' + encodeURIComponent(msg));
+        }
+        void (0, boardIntakeSyncService_1.completeBoardIntakeClientMatchInBackground)({
+            id: entryId,
+            partnerId: prep.partnerId,
+            customerName: prep.customerName,
+            matchedBy,
+            entry: prep.entry,
+            loadedRequirements: prep.loadedRequirements,
+        }).catch((bgErr) => {
+            console.warn('[ShopFloor] Background public client match sync error:', bgErr);
+        });
     }
     catch (err) {
         const errorMsg = err instanceof Error ? err.message : 'Failed to match client to board log.';
@@ -4119,6 +4132,10 @@ router.post('/shop-floor/board-intake', async (req, res) => {
         const gate = String(req.body.gate || '').trim();
         const isPurchase = req.body.is_purchase === 'true' || req.body.is_purchase === '1' || req.body.is_purchase === 'on' || req.body.is_purchase === 'purchase' || req.body.source_type === 'purchase';
         const purchaseOrderReference = String(req.body.purchase_order_reference || '').trim() || null;
+        const noBackorder = String(req.body.expecting_more || '').trim().toLowerCase() === 'false' ||
+            req.body.no_backorder === 'true' ||
+            req.body.no_backorder === '1' ||
+            req.body.no_backorder === true;
         const actorName = req.authUser.displayName || req.authUser.email;
         const optimisticId = (0, crypto_1.randomUUID)();
         await (0, repositories_1.createBoardIntakeQueueEntry)({
@@ -4126,6 +4143,7 @@ router.post('/shop-floor/board-intake', async (req, res) => {
             quantity: qty, actorName, actorEmail: req.authUser.email,
             vehicleRegistration, arrivalDate, arrivalTime, gate,
             isPurchase, purchaseOrderReference: purchaseOrderReference || undefined,
+            noBackorder,
         });
         await (0, stockMirrorService_1.recordOptimisticStockAddition)(productId, productName, qty);
         const moId = req.body.mo_id ? Number(req.body.mo_id) : undefined;
@@ -4141,6 +4159,7 @@ router.post('/shop-floor/board-intake', async (req, res) => {
                 quantity: qty,
                 moId,
                 moName,
+                noBackorder,
             })
             : [];
         optimisticBoardIntakes.push({ id: optimisticId, partnerId, productId, productName, customerName, quantity: qty, expiresAt: Date.now() + 10 * 60 * 1000 });
@@ -4156,7 +4175,10 @@ router.post('/shop-floor/board-intake', async (req, res) => {
         const resolvedMoNames = moNames || (moName ? moName : '');
         const effectiveHasMoReq = hasMoReq || Boolean(moName);
         let partialSuffix = '';
-        if (effectiveHasMoReq && totalNeeded != null && totalMissing != null) {
+        if (noBackorder) {
+            partialSuffix = ` (No backorder — closed at ${qty} boards for ${resolvedMoNames || 'MO'})`;
+        }
+        else if (effectiveHasMoReq && totalNeeded != null && totalMissing != null) {
             if (totalMissing > 0) {
                 partialSuffix = ` (Partial: ${qty} logged, balance ${totalMissing} of ${totalNeeded} needed for ${resolvedMoNames || 'MO'})`;
             }
@@ -4190,13 +4212,14 @@ router.post('/shop-floor/board-intake', async (req, res) => {
                     gate,
                     is_purchase: isPurchase ? 1 : 0,
                     purchase_order_reference: purchaseOrderReference,
+                    no_backorder: noBackorder ? 1 : 0,
                     actor_name: actorName,
                     actor_email: req.authUser.email,
                     status: 'pending',
                     created_at: new Date().toISOString(),
                 },
                 updatedRequirements: updatedRequirements || [],
-                balanceRemaining: totalMissing,
+                balanceRemaining: noBackorder ? 0 : totalMissing,
                 totalNeeded,
             });
         }
@@ -4241,6 +4264,7 @@ router.post('/shop-floor/board-intake', async (req, res) => {
                         quantity: qty,
                         moId,
                         moName,
+                        noBackorder,
                     }).catch(() => 0);
                     const optimisticIndex = optimisticBoardIntakes.findIndex((entry) => entry.id === optimisticId);
                     if (optimisticIndex >= 0)
@@ -4681,7 +4705,7 @@ router.post('/shop-floor/board-intake/:id/match-client', async (req, res) => {
         return;
     }
     try {
-        const result = await (0, boardIntakeSyncService_1.matchBoardIntakeToClient)({
+        const prep = await (0, boardIntakeSyncService_1.matchBoardIntakeToClientImmediate)({
             id: entryId,
             partnerId,
             customerName,
@@ -4689,18 +4713,34 @@ router.post('/shop-floor/board-intake/:id/match-client', async (req, res) => {
             moId,
             moName,
         });
-        const msg = `Board log matched successfully to ${result.customerName}.${result.matchedMoCount > 0 ? ` Allocated and reserved on ${result.matchedMoCount} active MO(s).` : ''}`;
+        const msg = `Board log matched to ${prep.customerName}. Odoo synchronization and MO reservation are running in the background.`;
         if (wantsJson) {
             res.json({
                 ok: true,
+                backgroundSync: true,
+                status: prep.alreadySynced ? 'synced' : 'pending',
                 message: msg,
-                matchedMoCount: result.matchedMoCount,
-                customerName: result.customerName,
+                matchedMoCount: prep.loadedRequirements?.length || 0,
+                customerName: prep.customerName,
                 matchedBy,
+                updatedRequirements: prep.loadedRequirements || [],
             });
-            return;
         }
-        res.redirect('/shop-floor/boards?message=' + encodeURIComponent(msg));
+        else {
+            res.redirect('/shop-floor/boards?message=' + encodeURIComponent(msg));
+        }
+        void (0, boardIntakeSyncService_1.completeBoardIntakeClientMatchInBackground)({
+            id: entryId,
+            partnerId: prep.partnerId,
+            customerName: prep.customerName,
+            matchedBy,
+            moId,
+            moName,
+            entry: prep.entry,
+            loadedRequirements: prep.loadedRequirements,
+        }).catch((bgErr) => {
+            console.warn('[ShopFloor] Background client match sync error:', bgErr);
+        });
     }
     catch (err) {
         const errorMsg = err instanceof Error ? err.message : 'Failed to match client to board log.';

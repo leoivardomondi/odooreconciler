@@ -1,4 +1,5 @@
 import {
+  BoardIntakeQueueEntry,
   claimBoardIntakeQueueEntry,
   claimBoardIntakeRevert,
   finishBoardIntakeRevert,
@@ -15,6 +16,7 @@ import {
   saveShopFloorSharedCache,
   getSettings,
 } from '../models/repositories';
+import type { PendingShopFloorProcess } from '../models/types';
 import { shopFloorCache } from '../routes/shopFloor';
 import { queryAll, getDatabaseDialect } from '../models/db';
 import { recordExactStockQuantity, refreshStockMirror } from './stockMirrorService';
@@ -73,6 +75,7 @@ export interface BuildBoardIntakeChatterOptions {
   mentionHtml?: string | null;
   hasBoardPo?: boolean | null;
   boardPoNames?: string[] | null;
+  noBackorder?: boolean | null;
 }
 
 export function buildBoardIntakeChatterHtml(options: BuildBoardIntakeChatterOptions): string {
@@ -105,7 +108,14 @@ export function buildBoardIntakeChatterHtml(options: BuildBoardIntakeChatterOpti
 
   if (neededNum != null && neededNum > 0) {
     lines.push(`• <strong>Total Required:</strong> ${neededNum} sheet${neededNum === 1 ? '' : 's'}`);
-    if (balanceNum != null && balanceNum > 0) {
+    if (balanceNum != null && balanceNum > 0 && options.noBackorder) {
+      lines.push(
+        `• <strong>Balance Remaining:</strong> <span style="color:#15803d;font-weight:bold;">0 sheets (Closed — No backorder expected)</span>`,
+        `<p style="margin-top:8px;padding:8px 12px;background:#f0fdf4;border-left:4px solid #22c55e;color:#166534;border-radius:4px;">` +
+        `✅ <strong>COMPLETE INTAKE (NO BACKORDER):</strong> ${qtyNum} of ${neededNum} originally listed sheet${neededNum === 1 ? '' : 's'} logged. Operator confirmed no more boards are expected — requirement closed with no backorder.` +
+        `</p>`
+      );
+    } else if (balanceNum != null && balanceNum > 0) {
       lines.push(
         `• <strong>Balance Remaining:</strong> <span style="color:#b91c1c;font-weight:bold;">${balanceNum} sheet${balanceNum === 1 ? '' : 's'} needed</span>`,
         `<p style="margin-top:8px;padding:8px 12px;background:#fef2f2;border-left:4px solid #ef4444;color:#991b1b;border-radius:4px;">` +
@@ -252,6 +262,7 @@ export async function processBoardIntakePurchaseOrderFulfillment(
     arrival_time?: string | null;
     gate?: string | null;
     vehicle_registration?: string | null;
+    no_backorder?: boolean | number | null;
   },
   cachedCandySharon?: Promise<[OdooUserStakeholder | null, OdooUserStakeholder | null]> | null,
 ): Promise<BoardIntakePoFulfillmentResult | null> {
@@ -534,13 +545,25 @@ export async function processBoardIntakePurchaseOrderFulfillment(
     }).catch(() => []);
 
     const movesToProcess = allPickingMoves.length > 0 ? allPickingMoves : [targetMove];
+    const noBackorder = Boolean(entry.no_backorder);
+    const hasOtherUnreceivedProducts = movesToProcess.some((move) => {
+      const moveProdId = Array.isArray(move.product_id) ? move.product_id[0] : move.product_id;
+      return moveProdId !== productId && Number(move.product_uom_qty || 0) > 0;
+    });
+    const shouldCancelPickingBackorder = noBackorder && !hasOtherUnreceivedProducts;
 
     for (const move of movesToProcess) {
       const moveProdId = Array.isArray(move.product_id) ? move.product_id[0] : move.product_id;
       const isTarget = moveProdId === productId;
       const targetDoneQty = isTarget ? qtyToFulfill : 0;
 
-      await client.writeRecord('stock.move', [move.id], { quantity: targetDoneQty }).catch(() => null);
+      // Multi-product PO isolation with short no-backorder receipt:
+      // Cap only this target move's demand (product_uom_qty) to qtyToFulfill so Odoo
+      // still creates a backorder for the other unreceived products on the picking.
+      const moveWriteVals = isTarget && noBackorder && hasOtherUnreceivedProducts && qtyToFulfill < Number(move.product_uom_qty || 0)
+        ? { product_uom_qty: qtyToFulfill, quantity: targetDoneQty }
+        : { quantity: targetDoneQty };
+      await client.writeRecord('stock.move', [move.id], moveWriteVals).catch(() => null);
 
       const relatedLines = allPickingMoveLines.filter((l) => {
         const lineMoveId = Array.isArray(l.move_id) ? l.move_id[0] : l.move_id;
@@ -580,15 +603,18 @@ export async function processBoardIntakePurchaseOrderFulfillment(
           button_validate_picking_ids: [targetPicking.id],
           ...(valResult.context || {}),
         };
+        const wizardMethod = shouldCancelPickingBackorder && valResult.res_model === 'stock.backorder.confirmation'
+          ? 'process_cancel_backorder'
+          : 'process';
         const wizardId = valResult.res_id;
         if (wizardId) {
-          await client.callRecordMethod(valResult.res_model, 'process', [wizardId], { context: wizardContext });
+          await client.callRecordMethod(valResult.res_model, wizardMethod, [wizardId], { context: wizardContext });
         } else {
           const createdWizId = await client.createRecord(valResult.res_model, {
             pick_ids: [[6, 0, [targetPicking.id]]],
           }, { context: wizardContext }).catch(() => null);
           if (createdWizId) {
-            await client.callRecordMethod(valResult.res_model, 'process', [createdWizId], { context: wizardContext });
+            await client.callRecordMethod(valResult.res_model, wizardMethod, [createdWizId], { context: wizardContext });
           }
         }
       } catch (wizErr) {
@@ -618,11 +644,11 @@ export async function processBoardIntakePurchaseOrderFulfillment(
     );
 
     const validationBadge = isActuallyValidated
-      ? '(Validated in Odoo)'
+      ? (noBackorder ? '(Validated in Odoo — No Backorder)' : '(Validated in Odoo)')
       : '(Done quantities staged - Awaiting Backorder Confirmation in Odoo)';
 
     const validationExplanation = isActuallyValidated
-      ? `<em>Stock was received officially via the supplier receipt. Manual inventory adjustment was bypassed to prevent duplicate stock.</em>`
+      ? `<em>Stock was received officially via the supplier receipt.${noBackorder ? ' Operator confirmed no backorder is expected.' : ''} Manual inventory adjustment was bypassed to prevent duplicate stock.</em>`
       : `<em>Done quantities have been recorded on receipt ${escapeHtml(targetPicking.name || 'WH/IN/...')}. Please confirm the backorder in Odoo to finalize stock. Manual inventory adjustment was bypassed to prevent duplicate stock.</em>`;
 
     const fulfillmentChatterHtml = [
@@ -630,7 +656,7 @@ export async function processBoardIntakePurchaseOrderFulfillment(
       `<div style="margin-top:8px;padding:12px 14px;background:#f0fdf4;border-left:5px solid #22c55e;color:#166534;border-radius:4px;line-height:1.6;">` +
       `<strong>✅ Gate Board Intake: Received via Purchase Receipt</strong><br/>` +
       `• <strong>Board:</strong> ${safeProductName}<br/>` +
-      `• <strong>Quantity Received:</strong> ${qtyToFulfill} sheet${qtyToFulfill === 1 ? '' : 's'}${surplusQty > 0 ? ` (+${surplusQty} surplus sheets)` : ''}<br/>` +
+      `• <strong>Quantity Received:</strong> ${qtyToFulfill} sheet${qtyToFulfill === 1 ? '' : 's'}${surplusQty > 0 ? ` (+${surplusQty} surplus sheets)` : ''}${noBackorder ? ' <strong>(No Backorder — closed short receipt)</strong>' : ''}<br/>` +
       `• <strong>Responsible Operator:</strong> <strong>${safeActor}</strong><br/>` +
       `• <strong>Client:</strong> ${safeCustomerName}<br/>` +
       `• <strong>Purchase Order:</strong> <strong>${escapeHtml(eligiblePo.name)}</strong> (${autoApproved ? 'Approved automatically from Waiting for Approval' : 'Already Approved'})<br/>` +
@@ -735,10 +761,11 @@ export async function reconcileRetroactiveBoardLogsForLinkedPos(
       gate: string | null;
       is_purchase: number;
       purchase_order_reference: string | null;
+      no_backorder: number | null;
       odoo_stock_quantity: number | null;
     }>(
       `SELECT id, product_id, product_name, partner_id, customer_name, quantity, actor_name, actor_email,
-              vehicle_registration, arrival_date, arrival_time, gate, is_purchase, purchase_order_reference, odoo_stock_quantity
+              vehicle_registration, arrival_date, arrival_time, gate, is_purchase, purchase_order_reference, no_backorder, odoo_stock_quantity
        FROM board_intake_queue
        WHERE status = 'synced' AND reverted_at IS NULL AND (is_purchase = 0 OR is_purchase IS NULL)
          AND created_at >= ${getDatabaseDialect() === 'mysql' ? 'DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 14 DAY)' : "datetime(CURRENT_TIMESTAMP, '-14 days')"}
@@ -1194,6 +1221,7 @@ export async function syncBoardIntakeEntry(id: string) {
           mentionHtml,
           hasBoardPo: mo.hasBoardPo,
           boardPoNames: mo.boardPoNames,
+          noBackorder: Boolean(activeEntry.no_backorder),
         });
         return client.postModelChatterMessage('mrp.production', mo.moId, chatterHtml, partnerIds, {
           skipSoSync: Boolean(mo.soId),
@@ -1231,6 +1259,7 @@ export async function syncBoardIntakeEntry(id: string) {
             mentionHtml,
             hasBoardPo: mo.hasBoardPo,
             boardPoNames: mo.boardPoNames,
+            noBackorder: Boolean(activeEntry.no_backorder),
           });
           await client.postModelChatterMessage('sale.order', mo.soId, chatterHtml, partnerIds).catch(() => null);
         }
@@ -1316,14 +1345,20 @@ export async function revertBoardIntakeEntry(id: string, revertedBy: string) {
   }
 }
 
-export async function matchBoardIntakeToClient(input: {
+export async function matchBoardIntakeToClientImmediate(input: {
   id: string;
   partnerId: number;
   customerName: string;
   matchedBy: string;
   moId?: number;
   moName?: string;
-}) {
+}): Promise<{
+  entry: BoardIntakeQueueEntry;
+  partnerId: number;
+  customerName: string;
+  loadedRequirements: PendingShopFloorProcess[];
+  alreadySynced: boolean;
+}> {
   const entry = await getBoardIntakeQueueEntry(input.id);
   if (!entry) throw new Error('Board log was not found.');
   if (entry.reverted_at || entry.status === 'reverted') {
@@ -1344,7 +1379,7 @@ export async function matchBoardIntakeToClient(input: {
     matchedBy: input.matchedBy,
   });
 
-  // 2. Mark matching pending shop floor processes loaded
+  // 2. Mark matching pending shop floor processes loaded immediately
   const loadedRequirements = await markPendingShopFloorProcessesLoaded({
     partnerId,
     productId: Number(entry.product_id),
@@ -1354,9 +1389,38 @@ export async function matchBoardIntakeToClient(input: {
     quantity: Number(entry.quantity),
     moId: input.moId,
     moName: input.moName,
+    noBackorder: Boolean(entry.no_backorder),
   });
 
-  // 3. Match in Odoo & reserve components on MOs
+  // 3. Invalidate local dashboard caches right away
+  shopFloorCache.clearPrefix('shop-floor-dashboard:');
+  void Promise.allSettled([
+    deleteShopFloorDashboardSnapshot(),
+    deleteShopFloorSharedCachePrefix('shop-floor:shared-board-reg:'),
+  ]).catch(() => {});
+
+  return {
+    entry,
+    partnerId,
+    customerName,
+    loadedRequirements,
+    alreadySynced: entry.status === 'synced',
+  };
+}
+
+export async function completeBoardIntakeClientMatchInBackground(input: {
+  id: string;
+  partnerId: number;
+  customerName: string;
+  matchedBy: string;
+  moId?: number;
+  moName?: string;
+  entry: BoardIntakeQueueEntry;
+  loadedRequirements: PendingShopFloorProcess[];
+}) {
+  const { entry, partnerId, customerName, loadedRequirements } = input;
+
+  // Match in Odoo & reserve components on MOs
   let syncResult: any = null;
   let matchingMoCount = 0;
   let matchingMOs: any[] = [];
@@ -1423,10 +1487,11 @@ export async function matchBoardIntakeToClient(input: {
             mentionHtml,
             hasBoardPo: mo.hasBoardPo,
             boardPoNames: mo.boardPoNames,
+            noBackorder: Boolean(entry.no_backorder),
           });
           return client.postModelChatterMessage('mrp.production', mo.moId, chatterHtml, partnerIds, {
-          skipSoSync: Boolean(mo.soId),
-        }).catch(() => null);
+            skipSoSync: Boolean(mo.soId),
+          }).catch(() => null);
         }));
 
         // Post to related sale.order chatter if matching MO has a linked Sales Order
@@ -1460,6 +1525,7 @@ export async function matchBoardIntakeToClient(input: {
               mentionHtml,
               hasBoardPo: mo.hasBoardPo,
               boardPoNames: mo.boardPoNames,
+              noBackorder: Boolean(entry.no_backorder),
             });
             await client.postModelChatterMessage('sale.order', mo.soId, chatterHtml, partnerIds).catch(() => null);
           }
@@ -1491,7 +1557,7 @@ export async function matchBoardIntakeToClient(input: {
     }
   }
 
-  // 4. Dispatch email notification now that the client is matched
+  // Dispatch email notification now that the client is matched
   const refreshedEntry = await getBoardIntakeQueueEntry(input.id);
   const totalNeeded = loadedRequirements && loadedRequirements.length > 0
     ? loadedRequirements.reduce((sum, r) => sum + Number(r.qty_needed || 0), 0)
@@ -1524,7 +1590,7 @@ export async function matchBoardIntakeToClient(input: {
     console.warn('[BoardIntakeSyncService] Email notification after client match warning:', emailErr);
   });
 
-  // 4. Invalidate caches
+  // Invalidate caches again after background Odoo reservation
   shopFloorCache.clearPrefix('shop-floor-dashboard:');
   void Promise.allSettled([
     deleteShopFloorDashboardSnapshot(),
@@ -1540,10 +1606,28 @@ export async function matchBoardIntakeToClient(input: {
   }).catch(() => undefined);
 
   return {
-    matchedMoCount: matchingMOs.length,
+    matchedMoCount: matchingMoCount || matchingMOs.length,
     matchingMOs,
     customerName,
   };
+}
+
+export async function matchBoardIntakeToClient(input: {
+  id: string;
+  partnerId: number;
+  customerName: string;
+  matchedBy: string;
+  moId?: number;
+  moName?: string;
+}) {
+  const prep = await matchBoardIntakeToClientImmediate(input);
+  return completeBoardIntakeClientMatchInBackground({
+    ...input,
+    partnerId: prep.partnerId,
+    customerName: prep.customerName,
+    entry: prep.entry,
+    loadedRequirements: prep.loadedRequirements,
+  });
 }
 
 export async function retryDueBoardIntakeEntries() {
