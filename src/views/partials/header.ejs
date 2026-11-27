@@ -2,6 +2,8 @@
 <% const safePwaDueTaskCount = typeof pwaDueTaskCount === 'undefined' ? 0 : Number(pwaDueTaskCount || 0); %>
 <% const safeAuthUser = typeof authUser === 'undefined' ? null : authUser; %>
 <% const safeViewingAsUser = typeof viewingAsUser === 'undefined' ? null : viewingAsUser; %>
+<% const safeIsAuthenticated = typeof isAuthenticated !== 'undefined' ? Boolean(isAuthenticated) : Boolean(safeAuthUser); %>
+<% const safeConnection = typeof connection !== 'undefined' && connection ? connection : { status: 'unknown' }; %>
 <% const displayUser = safeViewingAsUser || safeAuthUser; %>
 <% const profileDisplayName = displayUser && displayUser.displayName
   ? displayUser.displayName
@@ -9,7 +11,7 @@
 <% const displayRoleLabel = safeViewingAsUser
   ? (safeViewingAsUser.role === 'admin' ? 'Admin' : 'Standard User')
   : (typeof authRoleLabel === 'undefined' ? (safeAuthUser && safeAuthUser.role === 'admin' ? 'Admin' : 'Standard User') : authRoleLabel); %>
-<% if (isAuthenticated) { %>
+<% if (safeIsAuthenticated) { %>
   <span data-pwa-badge-count="<%= safePwaDueTaskCount %>" hidden></span>
   <div class="app-window-titlebar" data-window-titlebar aria-hidden="false">
     <div class="app-window-titlebar-drag">
@@ -48,7 +50,7 @@
       <span class="navbar-toggler-icon"></span>
     </button>
     <div class="collapse navbar-collapse" id="mainNav">
-      <% if (isAuthenticated) { %>
+      <% if (safeIsAuthenticated) { %>
         <ul class="navbar-nav main-nav ms-auto">
           <% if (canAccess && canAccess('GET', '/dashboard')) { %>
             <li class="nav-item">
@@ -123,7 +125,7 @@
           </li>
         </ul>
       <% } %>
-      <% if (isAuthenticated && authUser) { %>
+      <% if (safeIsAuthenticated && safeAuthUser) { %>
         <div class="nav-utility ms-lg-3">
           <button
             type="button"
@@ -166,9 +168,9 @@
               <div class="profile-dropdown-section">
                 <span class="profile-dropdown-label">Connection</span>
                 <span
-                  class="badge rounded-pill text-bg-<%= connection.status === 'success' ? 'success' : connection.status === 'error' ? 'danger' : 'secondary' %>"
+                  class="badge rounded-pill text-bg-<%= safeConnection.status === 'success' ? 'success' : safeConnection.status === 'error' ? 'danger' : 'secondary' %>"
                 >
-                  <%= connection.status %>
+                  <%= safeConnection.status %>
                 </span>
               </div>
               <div class="profile-dropdown-section">

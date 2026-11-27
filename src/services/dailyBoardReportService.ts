@@ -175,6 +175,9 @@ function formatDisplayDate(dateStr: string): string {
  * Builds the complete daily report of boards logged vs confirmed orders per client,
  * detailing unlogged boards with special emphasis on company-purchased boards.
  */
+const DAILY_REPORT_CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes cache
+const dailyReportMemoryCache = new Map<string, { report: DailyBoardReportSummary; expiresAt: number }>();
+
 export async function buildDailyBoardReport(options: {
   date?: string;
   forceRefresh?: boolean;
@@ -182,6 +185,14 @@ export async function buildDailyBoardReport(options: {
   const targetDate = options.date && /^\d{4}-\d{2}-\d{2}$/.test(options.date)
     ? options.date
     : getNairobiDateString();
+
+  const cacheKey = `daily-report:${targetDate}`;
+  if (!options.forceRefresh) {
+    const cached = dailyReportMemoryCache.get(cacheKey);
+    if (cached && Date.now() < cached.expiresAt) {
+      return cached.report;
+    }
+  }
 
   const settings = await getSettings();
   const client = new OdooClient(settings.odoo);
@@ -636,7 +647,7 @@ export async function buildDailyBoardReport(options: {
     { expected: 0, logged: 0, notYetLogged: 0 }
   );
 
-  return {
+  const result: DailyBoardReportSummary = {
     reportDate: targetDate,
     reportDateFormatted: formatDisplayDate(targetDate),
     companyId: targetCompanyId,
@@ -653,6 +664,13 @@ export async function buildDailyBoardReport(options: {
     unknownOwnerTotalSheets,
     clients: clientsList,
   };
+
+  dailyReportMemoryCache.set(cacheKey, {
+    report: result,
+    expiresAt: Date.now() + DAILY_REPORT_CACHE_TTL_MS,
+  });
+
+  return result;
 }
 
 /**

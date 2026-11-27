@@ -5202,6 +5202,10 @@ router.get('/reports/daily-boards', async (req, res) => {
         const forceRefresh = req.query.refresh === 'true';
         const report = await (0, dailyBoardReportService_1.buildDailyBoardReport)({ date, forceRefresh });
         res.render('daily-board-report', {
+            pageTitle: 'Daily Board Report',
+            appName: env_1.env.APP_NAME,
+            authUser: req.authUser,
+            isAuthenticated: Boolean(req.authUser),
             report,
             message: req.query.message ? String(req.query.message) : null,
             error: req.query.error ? String(req.query.error) : null,
@@ -5212,6 +5216,9 @@ router.get('/reports/daily-boards', async (req, res) => {
     catch (err) {
         res.status(500).render('error', {
             pageTitle: 'Daily Board Report Error',
+            appName: env_1.env.APP_NAME,
+            authUser: req.authUser || null,
+            isAuthenticated: Boolean(req.authUser),
             errorMessage: err instanceof Error ? err.message : 'Could not generate daily board report.',
             details: [],
             csrfToken: req.csrfToken || null,
