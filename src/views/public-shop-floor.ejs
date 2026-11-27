@@ -271,7 +271,8 @@
   <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
     <!-- Brand / Title -->
     <div class="d-flex align-items-center gap-2.5">
-      <div class="odoo-waffle" title="Odoo Apps">
+      <img src="/public/icons/odoo-shop-floor-192.png" alt="Shop Floor Logo" width="28" height="28" style="border-radius: 6px; object-fit: contain; background: rgba(255,255,255,0.12); padding: 2px;" />
+      <div class="odoo-waffle d-none d-sm-inline-grid" title="Odoo Apps">
         <span></span><span></span><span></span>
         <span></span><span></span><span></span>
         <span></span><span></span><span></span>
@@ -555,6 +556,7 @@
                              const isPaused = wo.state === 'paused';
                              const isDone = wo.state === 'done';
                              const isReady = wo.state === 'ready' || wo.state === 'confirmed';
+                             const isSyncing = Boolean(wo.syncLocked || wo.isSyncing);
                         %>
                           <div
                             class="col-12 col-md-6 col-xl-4 wo-item-col"
@@ -586,7 +588,12 @@
 
                                   <!-- State Pill -->
                                   <div class="text-end" data-wo-state-container="<%= wo.id %>">
-                                    <% if (isProgress) { %>
+                                    <% if (isSyncing) { %>
+                                      <span class="badge rounded-pill bg-warning-subtle text-warning-emphasis border border-warning-subtle fw-bold px-2.5 py-1" style="font-size: 0.72rem;" title="Synchronizing with Odoo in locked mode">
+                                        <span class="spinner-border spinner-border-sm me-1" style="width: 8px; height: 8px;" role="status"></span>
+                                        🔒 Syncing (<%= (wo.syncAction || 'action').toUpperCase() %>)
+                                      </span>
+                                    <% } else if (isProgress) { %>
                                       <span class="badge rounded-pill bg-primary text-white fw-bold px-2.5 py-1" style="font-size: 0.72rem;">
                                         <span class="spinner-grow spinner-grow-sm me-1" style="width: 7px; height: 7px;" role="status"></span>
                                         In Progress
@@ -661,7 +668,19 @@
 
                               <!-- Action Buttons Area -->
                               <div class="d-flex align-items-center gap-2 pt-2 border-top" data-wo-actions-container="<%= wo.id %>">
-                                <% if (isDone) { %>
+                                <% if (isSyncing) { %>
+                                  <button
+                                    type="button"
+                                    class="btn btn-sm btn-secondary rounded-pill w-100 fw-bold action-syncing-btn"
+                                    data-wo-id="<%= wo.id %>"
+                                    data-mo-name="<%= wo.name %>"
+                                    data-sync-action="<%= wo.syncAction || 'action' %>"
+                                    title="Currently syncing with Odoo in locked mode"
+                                  >
+                                    <span class="spinner-border spinner-border-sm me-1" style="width: 10px; height: 10px;" role="status"></span>
+                                    🔒 Syncing <%= (wo.syncAction || 'Action').toUpperCase() %> (Locked)
+                                  </button>
+                                <% } else if (isDone) { %>
                                   <button type="button" class="btn btn-sm btn-outline-secondary rounded-pill w-100 fw-bold" style="font-size: 0.82rem;" disabled>
                                     ✓ Completed
                                   </button>
@@ -1088,8 +1107,136 @@
       });
     }
 
-    // 3. Instant Optimistic Action Runner
+    // 3. Work Order Execution Flow with Locked Mode & Persistent Sync
+    function getPendingSyncs() {
+      try {
+        return JSON.parse(sessionStorage.getItem('public_shop_floor_pending_syncs') || '{}');
+      } catch (_) {
+        return {};
+      }
+    }
+
+    function setPendingSync(woId, data) {
+      try {
+        const syncs = getPendingSyncs();
+        syncs[woId] = data;
+        sessionStorage.setItem('public_shop_floor_pending_syncs', JSON.stringify(syncs));
+      } catch (_) {}
+    }
+
+    function removePendingSync(woId) {
+      try {
+        const syncs = getPendingSyncs();
+        delete syncs[woId];
+        sessionStorage.setItem('public_shop_floor_pending_syncs', JSON.stringify(syncs));
+      } catch (_) {}
+    }
+
+    function notifySyncing(moName, action) {
+      const act = (action || 'action').toUpperCase();
+      const name = moName ? `Work order ${moName}` : 'This work order';
+      const msg = `⏳ ${name} is currently syncing ${act} with Odoo in locked mode. Please wait a moment for Odoo to update.`;
+      if (typeof window.appNotify === 'function') {
+        window.appNotify(msg, { type: 'warning', title: 'Syncing in Locked Mode' });
+      } else {
+        showToast(msg, true);
+      }
+    }
+
+    let syncPollTimer = null;
+    function startSyncStatusPolling() {
+      if (syncPollTimer) return;
+      syncPollTimer = window.setInterval(async function () {
+        const pending = getPendingSyncs();
+        const pendingKeys = Object.keys(pending);
+        if (!pendingKeys.length) {
+          window.clearInterval(syncPollTimer);
+          syncPollTimer = null;
+          return;
+        }
+
+        try {
+          const res = await fetch('/public/shop-floor/data', { headers: { 'Accept': 'application/json' } });
+          if (!res.ok) return;
+          const data = await res.json();
+          if (!data || !data.areaGroups) return;
+
+          const liveMap = new Map();
+          data.areaGroups.forEach(function (ag) {
+            (ag.clientGroups || []).forEach(function (cg) {
+              (cg.workOrders || []).forEach(function (wo) {
+                liveMap.set(String(wo.id), wo);
+              });
+            });
+          });
+
+          for (const woId of pendingKeys) {
+            const syncInfo = pending[woId];
+            if (Date.now() - syncInfo.timestamp > 120000) {
+              removePendingSync(woId);
+              continue;
+            }
+
+            const liveWo = liveMap.get(String(woId));
+            if (liveWo && !liveWo.isSyncing && !liveWo.syncLocked) {
+              // Sync is confirmed! Unlock card
+              removePendingSync(woId);
+              const card = document.getElementById('woCard-' + woId);
+              const stateContainer = document.querySelector('[data-wo-state-container="' + woId + '"]');
+              const actionsContainer = document.querySelector('[data-wo-actions-container="' + woId + '"]');
+              const safeName = liveWo.name || syncInfo.moName || ('MO ' + woId);
+
+              if (card) {
+                card.className = 'wo-card state-' + liveWo.state;
+              }
+              if (stateContainer) {
+                if (liveWo.state === 'progress') {
+                  stateContainer.innerHTML = '<span class="badge rounded-pill bg-primary text-white fw-bold px-2.5 py-1" style="font-size: 0.72rem;"><span class="spinner-grow spinner-grow-sm me-1" style="width:7px;height:7px;"></span>In Progress</span>';
+                } else if (liveWo.state === 'paused') {
+                  stateContainer.innerHTML = '<span class="badge rounded-pill bg-warning-subtle text-warning-emphasis border border-warning-subtle fw-bold px-2.5 py-1" style="font-size: 0.72rem;">⏸ Paused</span>';
+                } else if (liveWo.state === 'done') {
+                  stateContainer.innerHTML = '<span class="badge rounded-pill bg-success-subtle text-success border border-success-subtle fw-bold px-2.5 py-1" style="font-size: 0.72rem;">✓ Done</span>';
+                } else {
+                  stateContainer.innerHTML = '<span class="badge rounded-pill bg-light text-secondary border fw-semibold px-2.5 py-1" style="font-size: 0.72rem;">Ready</span>';
+                }
+              }
+              if (actionsContainer) {
+                if (liveWo.state === 'done') {
+                  actionsContainer.innerHTML = '<button type="button" class="btn btn-sm btn-outline-secondary rounded-pill w-100 fw-bold" style="font-size: 0.82rem;" disabled>✓ Completed</button>';
+                } else if (liveWo.state === 'progress') {
+                  actionsContainer.innerHTML =
+                    '<button type="button" class="btn btn-odoo-pause flex-grow-1 action-pause-btn" data-wo-id="' + woId + '" data-mo-name="' + safeName + '">⏸ Pause / Stop</button>' +
+                    '<button type="button" class="btn btn-odoo-finish flex-grow-1 action-finish-btn" data-wo-id="' + woId + '" data-mo-name="' + safeName + '">✓ Finish</button>';
+                } else if (liveWo.state === 'paused') {
+                  actionsContainer.innerHTML =
+                    '<button type="button" class="btn btn-odoo-start flex-grow-1 action-start-btn" data-wo-id="' + woId + '" data-mo-name="' + safeName + '" data-stock-status="' + (liveWo.stockStatus || 'ready') + '">▶ Resume</button>' +
+                    '<button type="button" class="btn btn-odoo-finish flex-grow-1 action-finish-btn" data-wo-id="' + woId + '" data-mo-name="' + safeName + '">✓ Finish</button>';
+                } else {
+                  actionsContainer.innerHTML =
+                    '<button type="button" class="btn btn-odoo-start w-100 action-start-btn" data-wo-id="' + woId + '" data-mo-name="' + safeName + '" data-stock-status="' + (liveWo.stockStatus || 'ready') + '">▶ Start Operation</button>';
+                }
+              }
+              bindCardActionButtons();
+              showToast('✓ ' + safeName + ' sync confirmed in Odoo.');
+            }
+          }
+        } catch (_) {}
+      }, 3500);
+    }
+
     async function executeWorkOrderAction(woId, action, stockStatus) {
+      if (!woId) return;
+
+      const card = document.getElementById('woCard-' + woId);
+      const moName = card ? (card.querySelector('.fw-bold.text-dark')?.textContent || '').trim() : ('MO ' + woId);
+
+      // Rule: Check if already syncing in locked mode
+      const pendingSyncs = getPendingSyncs();
+      if (pendingSyncs[woId] && Date.now() - pendingSyncs[woId].timestamp < 120000) {
+        notifySyncing(pendingSyncs[woId].moName || moName, pendingSyncs[woId].action);
+        return;
+      }
+
       // App Rule 1: Stock Check on Start
       if (action === 'start' && stockStatus === 'no_stock') {
         if (stockMsgEl) {
@@ -1105,7 +1252,6 @@
         return;
       }
 
-      const card = document.getElementById('woCard-' + woId);
       const stateContainer = document.querySelector('[data-wo-state-container="' + woId + '"]');
       const actionsContainer = document.querySelector('[data-wo-actions-container="' + woId + '"]');
       const progressText = document.querySelector('[data-wo-progress-text="' + woId + '"]');
@@ -1114,54 +1260,30 @@
       const prevState = card ? (card.getAttribute('data-wo-state') || 'ready') : 'ready';
       const prevHtml = actionsContainer ? actionsContainer.innerHTML : '';
       const prevStateHtml = stateContainer ? stateContainer.innerHTML : '';
+      const targetState = action === 'finish' ? 'done' : action === 'pause' ? 'paused' : 'progress';
 
-      // Instant 0ms Optimistic DOM Update
-      if (action === 'start') {
-        if (card) {
-          card.classList.remove('state-ready', 'state-paused');
-          card.classList.add('state-progress');
-        }
-        if (stateContainer) {
-          stateContainer.innerHTML = '<span class="badge rounded-pill bg-primary text-white fw-bold px-2.5 py-1" style="font-size: 0.72rem;"><span class="spinner-grow spinner-grow-sm me-1" style="width:7px;height:7px;"></span>In Progress</span>';
-        }
-        if (actionsContainer) {
-          actionsContainer.innerHTML =
-            '<button type="button" class="btn btn-odoo-pause flex-grow-1 action-pause-btn" data-wo-id="' + woId + '">⏸ Pause / Stop</button>' +
-            '<button type="button" class="btn btn-odoo-finish flex-grow-1 action-finish-btn" data-wo-id="' + woId + '">✓ Finish</button>';
-        }
-        showToast('Starting operation...');
-      } else if (action === 'pause') {
-        if (card) {
-          card.classList.remove('state-progress');
-          card.classList.add('state-paused');
-        }
-        if (stateContainer) {
-          stateContainer.innerHTML = '<span class="badge rounded-pill bg-warning-subtle text-warning-emphasis border border-warning-subtle fw-bold px-2.5 py-1" style="font-size: 0.72rem;">⏸ Paused</span>';
-        }
-        if (actionsContainer) {
-          actionsContainer.innerHTML =
-            '<button type="button" class="btn btn-odoo-start flex-grow-1 action-start-btn" data-wo-id="' + woId + '" data-stock-status="ready">▶ Resume</button>' +
-            '<button type="button" class="btn btn-odoo-finish flex-grow-1 action-finish-btn" data-wo-id="' + woId + '">✓ Finish</button>';
-        }
-        showToast('Operation paused.');
-      } else if (action === 'finish') {
-        if (card) {
-          card.classList.remove('state-progress', 'state-paused');
-          card.classList.add('state-done');
-        }
-        if (stateContainer) {
-          stateContainer.innerHTML = '<span class="badge rounded-pill bg-success-subtle text-success border border-success-subtle fw-bold px-2.5 py-1" style="font-size: 0.72rem;">✓ Done</span>';
-        }
+      // Record active sync in locked mode
+      setPendingSync(woId, { action: action, targetState: targetState, moName: moName, timestamp: Date.now() });
+
+      // Put into Locked Mode immediately (0ms instant response)
+      if (card) {
+        card.classList.remove('state-progress', 'state-ready', 'state-paused');
+        card.classList.add('state-' + targetState);
+      }
+      if (stateContainer) {
+        stateContainer.innerHTML = '<span class="badge rounded-pill bg-warning-subtle text-warning-emphasis border border-warning-subtle fw-bold px-2.5 py-1" style="font-size: 0.72rem;"><span class="spinner-border spinner-border-sm me-1" style="width: 8px; height: 8px;"></span>🔒 Syncing (' + action.toUpperCase() + ')...</span>';
+      }
+      if (actionsContainer) {
+        actionsContainer.innerHTML = '<button type="button" class="btn btn-sm btn-secondary rounded-pill w-100 fw-bold action-syncing-btn" data-wo-id="' + woId + '" data-mo-name="' + moName + '" data-sync-action="' + action + '"><span class="spinner-border spinner-border-sm me-1" style="width: 10px; height: 10px;"></span>🔒 Syncing ' + action.toUpperCase() + ' (Locked)...</button>';
+      }
+      if (action === 'finish') {
         if (progressBar) progressBar.style.width = '100%';
         if (progressText) progressText.textContent = '100%';
-        if (actionsContainer) {
-          actionsContainer.innerHTML = '<button type="button" class="btn btn-sm btn-outline-secondary rounded-pill w-100 fw-bold" style="font-size: 0.82rem;" disabled>✓ Completed</button>';
-        }
-        showToast('Operation completed!');
       }
 
-      // Re-bind actions on the dynamically altered buttons
+      showToast(action === 'finish' ? 'Finishing order (Locked mode)...' : action === 'pause' ? 'Pausing order (Locked mode)...' : 'Starting order (Locked mode)...');
       bindCardActionButtons();
+      startSyncStatusPolling();
 
       // Dispatch async call to server
       try {
@@ -1177,7 +1299,13 @@
 
         const result = await response.json();
         if (!response.ok || !result.ok) {
-          // Rollback on server error
+          if (result.code === 'sync_in_progress') {
+            notifySyncing(moName, result.action || action);
+            return;
+          }
+
+          // Rollback on non-sync server error
+          removePendingSync(woId);
           if (actionsContainer) actionsContainer.innerHTML = prevHtml;
           if (stateContainer) stateContainer.innerHTML = prevStateHtml;
           if (card) {
@@ -1204,18 +1332,24 @@
             showToast(result.message || 'Action failed.', true);
           }
         } else {
-          showToast(result.message || 'Action updated in Odoo.');
+          showToast(result.message || 'Action registered. Syncing in locked mode...');
         }
       } catch (networkErr) {
-        // Rollback
-        if (actionsContainer) actionsContainer.innerHTML = prevHtml;
-        if (stateContainer) stateContainer.innerHTML = prevStateHtml;
-        bindCardActionButtons();
-        showToast('Connection error. Please try again.', true);
+        // Keep in locked mode and rely on background polling to sync
+        showToast('Action queued. Syncing in locked mode in background...', true);
       }
     }
 
     function bindCardActionButtons() {
+      document.querySelectorAll('.action-syncing-btn').forEach(function (btn) {
+        btn.onclick = function (e) {
+          e.preventDefault();
+          const moName = this.getAttribute('data-mo-name') || '';
+          const syncAction = this.getAttribute('data-sync-action') || 'action';
+          notifySyncing(moName, syncAction);
+        };
+      });
+
       document.querySelectorAll('.action-start-btn').forEach(function (btn) {
         btn.onclick = function (e) {
           e.preventDefault();
@@ -1241,7 +1375,41 @@
         };
       });
     }
-    bindCardActionButtons();
+
+    // Restore pending syncs on initial page load / after refresh
+    function restorePendingSyncsOnPageLoad() {
+      const pending = getPendingSyncs();
+      const now = Date.now();
+      let hasActive = false;
+
+      for (const [woId, info] of Object.entries(pending)) {
+        if (now - info.timestamp < 120000) {
+          hasActive = true;
+          const card = document.getElementById('woCard-' + woId);
+          const stateContainer = document.querySelector('[data-wo-state-container="' + woId + '"]');
+          const actionsContainer = document.querySelector('[data-wo-actions-container="' + woId + '"]');
+          const moName = info.moName || (card ? (card.querySelector('.fw-bold.text-dark')?.textContent || '').trim() : ('MO ' + woId));
+
+          if (card) {
+            card.className = 'wo-card state-' + (info.targetState || 'paused');
+          }
+          if (stateContainer) {
+            stateContainer.innerHTML = '<span class="badge rounded-pill bg-warning-subtle text-warning-emphasis border border-warning-subtle fw-bold px-2.5 py-1" style="font-size: 0.72rem;"><span class="spinner-border spinner-border-sm me-1" style="width: 8px; height: 8px;"></span>🔒 Syncing (' + (info.action || 'action').toUpperCase() + ')...</span>';
+          }
+          if (actionsContainer) {
+            actionsContainer.innerHTML = '<button type="button" class="btn btn-sm btn-secondary rounded-pill w-100 fw-bold action-syncing-btn" data-wo-id="' + woId + '" data-mo-name="' + moName + '" data-sync-action="' + (info.action || 'sync') + '"><span class="spinner-border spinner-border-sm me-1" style="width: 10px; height: 10px;"></span>🔒 Syncing ' + (info.action || 'Action').toUpperCase() + ' (Locked)...</button>';
+          }
+        } else {
+          removePendingSync(woId);
+        }
+      }
+
+      bindCardActionButtons();
+      if (hasActive) {
+        startSyncStatusPolling();
+      }
+    }
+    restorePendingSyncsOnPageLoad();
 
     // 4. Filtering & Search (Instant Client-Side)
     const areaTabButtons = document.querySelectorAll('.area-tab-btn');

@@ -5,6 +5,7 @@ import {
   groupWorkOrdersByAreaAndClient,
   handlePublicShopFloorVerifyPin,
   handlePublicWorkOrderAction,
+  inFlightWorkOrderSyncs,
 } from './shopFloor';
 
 test('groupWorkOrdersByAreaAndClient groups work orders by operation area and then by client name', () => {
@@ -215,4 +216,25 @@ test('filterPublicShopFloorOperators keeps only Bitcher, Joel, Thomas, and Micha
     filtered.map((op) => op.name),
     ['Onyango Bitcher Akulo', 'Joel Ochango', 'Thomas Ollinga', 'Michael Ochieng Okoth'],
   );
+});
+
+test('handlePublicWorkOrderAction rejects with 409 and locked mode notification when action is already syncing in-flight', async () => {
+  const moId = 98765;
+  inFlightWorkOrderSyncs.set(moId, {
+    moId,
+    action: 'pause',
+    targetState: 'paused',
+    operatorId: 6,
+    operatorName: 'Onyango Bitcher Akulo',
+    startedAt: Date.now(),
+  });
+
+  const syncRes = createMockRes();
+  await handlePublicWorkOrderAction({ params: { id: String(moId) }, body: { action: 'pause', operatorId: 6 } } as any, syncRes.res);
+  assert.equal(syncRes.getStatus(), 409);
+  assert.equal(syncRes.getPayload()?.code, 'sync_in_progress');
+  assert.equal(syncRes.getPayload()?.syncLocked, true);
+  assert.match(syncRes.getPayload()?.message, /locked mode/i);
+
+  inFlightWorkOrderSyncs.delete(moId);
 });

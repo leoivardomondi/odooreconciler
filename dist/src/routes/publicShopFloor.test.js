@@ -194,3 +194,21 @@ function createMockRes() {
     const filtered = (0, shopFloor_1.filterPublicShopFloorOperators)(all);
     strict_1.default.deepEqual(filtered.map((op) => op.name), ['Onyango Bitcher Akulo', 'Joel Ochango', 'Thomas Ollinga', 'Michael Ochieng Okoth']);
 });
+(0, node_test_1.default)('handlePublicWorkOrderAction rejects with 409 and locked mode notification when action is already syncing in-flight', async () => {
+    const moId = 98765;
+    shopFloor_1.inFlightWorkOrderSyncs.set(moId, {
+        moId,
+        action: 'pause',
+        targetState: 'paused',
+        operatorId: 6,
+        operatorName: 'Onyango Bitcher Akulo',
+        startedAt: Date.now(),
+    });
+    const syncRes = createMockRes();
+    await (0, shopFloor_1.handlePublicWorkOrderAction)({ params: { id: String(moId) }, body: { action: 'pause', operatorId: 6 } }, syncRes.res);
+    strict_1.default.equal(syncRes.getStatus(), 409);
+    strict_1.default.equal(syncRes.getPayload()?.code, 'sync_in_progress');
+    strict_1.default.equal(syncRes.getPayload()?.syncLocked, true);
+    strict_1.default.match(syncRes.getPayload()?.message, /locked mode/i);
+    shopFloor_1.inFlightWorkOrderSyncs.delete(moId);
+});

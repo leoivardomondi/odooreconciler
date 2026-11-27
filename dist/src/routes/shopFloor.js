@@ -3,7 +3,8 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.shopFloorCache = exports.manuallyPausedMoIds = void 0;
+exports.shopFloorCache = exports.IN_FLIGHT_SYNC_TIMEOUT_MS = exports.inFlightWorkOrderSyncs = exports.manuallyPausedMoIds = void 0;
+exports.getActiveWorkOrderSync = getActiveWorkOrderSync;
 exports.isBitcherOnyangoUser = isBitcherOnyangoUser;
 exports.isTintInteriorVendor = isTintInteriorVendor;
 exports.isBitcherOnyangoRestrictedFromReceipt = isBitcherOnyangoRestrictedFromReceipt;
@@ -67,6 +68,18 @@ const SHOP_FLOOR_FEATURE_KEYS = [
 const purchaseApprovalEmailCooldown = new Map();
 const PURCHASE_APPROVAL_EMAIL_COOLDOWN_MS = 30 * 60 * 1000;
 exports.manuallyPausedMoIds = new Set();
+exports.inFlightWorkOrderSyncs = new Map();
+exports.IN_FLIGHT_SYNC_TIMEOUT_MS = 120 * 1000;
+function getActiveWorkOrderSync(moId) {
+    const sync = exports.inFlightWorkOrderSyncs.get(moId);
+    if (!sync)
+        return null;
+    if (Date.now() - sync.startedAt > exports.IN_FLIGHT_SYNC_TIMEOUT_MS) {
+        exports.inFlightWorkOrderSyncs.delete(moId);
+        return null;
+    }
+    return sync;
+}
 async function sendPurchaseApprovalRequest(input) {
     const pendingOrders = input.procurement.purchaseOrders.filter((po) => ['draft', 'sent', 'to approve'].includes(po.state));
     if (!pendingOrders.length)
@@ -1038,9 +1051,20 @@ async function fetchLiveSharedWorkOrders(client) {
         const baseTiming = (0, moOverdueService_1.getMoOverdueState)({ createDate: o.create_date, plannedStart: o.date_start, clientDeadline: o.date_deadline, quantity: o.product_qty, productName: Array.isArray(o.product_id) ? o.product_id[1] : String(o.product_id || '') });
         const queueTiming = confirmedQueueSchedule.get(o.id);
         const rawWoState = workOrderStateMap.get(o.id);
+        const activeSync = getActiveWorkOrderSync(o.id);
         const isManuallyPaused = exports.manuallyPausedMoIds.has(o.id);
         let effectiveState;
-        if (o.state === 'done' || o.state === 'cancel' || o.state === 'to_close' || rawWoState === 'done') {
+        if (activeSync) {
+            // In-flight sync: enforce optimistic locked state so rapid refreshes do not revert to stale Odoo state
+            effectiveState = activeSync.targetState;
+            if (effectiveState === 'paused') {
+                exports.manuallyPausedMoIds.add(o.id);
+            }
+            else if (effectiveState === 'done') {
+                exports.manuallyPausedMoIds.delete(o.id);
+            }
+        }
+        else if (o.state === 'done' || o.state === 'cancel' || o.state === 'to_close' || rawWoState === 'done') {
             effectiveState = o.state === 'cancel' ? 'cancel' : 'done';
             exports.manuallyPausedMoIds.delete(o.id);
         }
@@ -1072,6 +1096,9 @@ async function fetchLiveSharedWorkOrders(client) {
             qty: o.product_qty || 0,
             produced: o.qty_produced || 0,
             state: effectiveState,
+            isSyncing: Boolean(activeSync),
+            syncAction: activeSync ? activeSync.action : null,
+            syncLocked: Boolean(activeSync),
             plannedStart: o.date_start || null,
             dateStarted: o.date_start || null,
             dateFinished: o.date_finished || null,
@@ -3246,9 +3273,32 @@ async function handlePublicWorkOrderAction(req, res) {
         });
         return;
     }
+    // Check if an action on this work order is already in-flight / syncing in locked mode
+    const currentSync = getActiveWorkOrderSync(moId);
+    if (currentSync) {
+        res.status(409).json({
+            ok: false,
+            code: 'sync_in_progress',
+            syncLocked: true,
+            moId,
+            action: currentSync.action,
+            targetState: currentSync.targetState,
+            message: `Work order ${moId} is currently syncing ${currentSync.action.toUpperCase()} with Odoo in locked mode. Please wait a moment for sync to finish.`,
+        });
+        return;
+    }
     try {
         const isResuming = exports.manuallyPausedMoIds.has(moId);
         const targetState = action === 'finish' ? 'done' : action === 'pause' ? 'paused' : 'progress';
+        // Register active in-flight sync in locked mode
+        exports.inFlightWorkOrderSyncs.set(moId, {
+            moId,
+            action,
+            targetState,
+            operatorId,
+            operatorName,
+            startedAt: Date.now(),
+        });
         let stockCheck = null;
         if (action === 'start' && !isResuming) {
             const settings = await (0, repositories_1.getSettings)();
@@ -3260,6 +3310,7 @@ async function handlePublicWorkOrderAction(req, res) {
                     .map((c) => `${c.productName} (Need ${c.missingQty} ${c.uom})`)
                     .join(', ') + (stockCheck.missingComponents.length > 5 ? ` and ${stockCheck.missingComponents.length - 5} more` : '');
                 const message = `Cannot start ${stockCheck.moName}: Missing required components in stock (${missingSummary}). Raw materials must be logged at factory intake before cutting or processing can start.`;
+                exports.inFlightWorkOrderSyncs.delete(moId);
                 res.status(409).json({
                     ok: false,
                     code: 'stock_missing',
@@ -3289,6 +3340,7 @@ async function handlePublicWorkOrderAction(req, res) {
             state: targetState,
             action,
             operatorName,
+            syncLocked: true,
             message: successMessage,
         });
         void (async () => {
@@ -3322,9 +3374,15 @@ async function handlePublicWorkOrderAction(req, res) {
                     error: bgErr instanceof Error ? bgErr.message : String(bgErr),
                 }).catch(() => undefined);
             }
+            finally {
+                setTimeout(() => {
+                    exports.inFlightWorkOrderSyncs.delete(moId);
+                }, 4000);
+            }
         })();
     }
     catch (err) {
+        exports.inFlightWorkOrderSyncs.delete(moId);
         const message = err instanceof Error ? err.message : 'Failed to execute work order action.';
         res.status(500).json({ ok: false, message });
     }
@@ -3866,6 +3924,16 @@ async function handlePauseMo(req, res) {
         res.redirect('/shop-floor?error=' + encodeURIComponent('Invalid manufacturing order.') + '#manufacturing-orders');
         return;
     }
+    const currentSync = getActiveWorkOrderSync(moId);
+    if (currentSync) {
+        const msg = `Work order ${moId} is currently syncing ${currentSync.action.toUpperCase()} with Odoo in locked mode. Please wait a moment.`;
+        if (wantsJson) {
+            res.status(409).json({ ok: false, code: 'sync_in_progress', syncLocked: true, moId, message: msg });
+            return;
+        }
+        res.redirect('/shop-floor?error=' + encodeURIComponent(msg) + '#manufacturing-orders');
+        return;
+    }
     try {
         const settings = await (0, repositories_1.getSettings)();
         const client = new odooClient_1.OdooClient(settings.odoo);
@@ -3873,12 +3941,21 @@ async function handlePauseMo(req, res) {
         const employee = await resolveShopFloorEmployeeRecord(viewedEmail, client);
         const actorName = employee?.name || req.authUser?.displayName || req.authUser?.email || (0, userIdentityService_1.emailDisplayName)(viewedEmail) || 'Supervisor';
         const employeeId = employee?.id;
+        exports.inFlightWorkOrderSyncs.set(moId, {
+            moId,
+            action: 'pause',
+            targetState: 'paused',
+            operatorId: employeeId,
+            operatorName: actorName,
+            startedAt: Date.now(),
+        });
         await optimisticallyUpdateSharedWorkOrderState(moId, 'paused', actorName, viewedEmail);
         exports.shopFloorCache.clearPrefix('shop-floor-dashboard:');
         if (wantsJson) {
             res.json({
                 ok: true,
                 state: 'paused',
+                syncLocked: true,
                 message: 'Manufacturing order paused successfully.',
             });
         }
@@ -3903,10 +3980,16 @@ async function handlePauseMo(req, res) {
                     error: bgErr instanceof Error ? bgErr.message : String(bgErr),
                 });
             }
+            finally {
+                setTimeout(() => {
+                    exports.inFlightWorkOrderSyncs.delete(moId);
+                }, 4000);
+            }
         })();
         return;
     }
     catch (err) {
+        exports.inFlightWorkOrderSyncs.delete(moId);
         const message = err instanceof Error ? err.message : 'Could not pause the manufacturing order.';
         void (0, logService_1.logEvent)('error', 'Shop Floor manufacturing-order pause failed in Odoo', {
             moId,
