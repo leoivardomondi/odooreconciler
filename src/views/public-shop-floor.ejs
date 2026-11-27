@@ -2,6 +2,7 @@
 
 <style>
   :root {
+    --navbar-height: 48px;
     --odoo-primary: #714B67;
     --odoo-primary-dark: #583a50;
     --odoo-primary-light: #8e6283;
@@ -66,6 +67,17 @@
     background: var(--odoo-secondary);
     border-color: var(--odoo-secondary);
     box-shadow: 0 2px 4px rgba(0,0,0,0.15);
+  }
+
+  /* Sticky Area Toolbar */
+  .sticky-area-bar-wrapper {
+    position: sticky;
+    top: var(--navbar-height, 48px);
+    z-index: 1010;
+    background-color: var(--odoo-bg);
+    padding-top: 4px;
+    padding-bottom: 6px;
+    margin-top: -4px;
   }
 
   /* Area Tabs */
@@ -352,50 +364,11 @@
 <!-- Main Container -->
 <main class="container-fluid px-3 px-md-4 py-3" style="max-width: 1440px;">
 
-  <!-- Metrics Banner Strip (Odoo Style) -->
-  <div class="row g-2 mb-3">
-    <div class="col-6 col-md-2">
-      <div class="card border-0 rounded-3 p-2.5 bg-white shadow-sm text-center">
-        <span class="text-muted small fw-semibold" style="font-size: 0.72rem; text-transform: uppercase;">Total Orders</span>
-        <span class="h5 fw-bold mb-0 text-dark" id="statTotalOrders"><%= summary.totalOrders %></span>
-      </div>
-    </div>
-    <div class="col-6 col-md-2">
-      <div class="card border-0 rounded-3 p-2.5 bg-white shadow-sm text-center" style="border-bottom: 3px solid #0284c7 !important;">
-        <span class="small fw-semibold" style="font-size: 0.72rem; text-transform: uppercase; color: #0284c7;">In Progress</span>
-        <span class="h5 fw-bold mb-0" style="color: #0284c7;" id="statInProgress"><%= summary.inProgressTotal %></span>
-      </div>
-    </div>
-    <div class="col-6 col-md-2">
-      <div class="card border-0 rounded-3 p-2.5 bg-white shadow-sm text-center" style="border-bottom: 3px solid var(--odoo-success) !important;">
-        <span class="small fw-semibold" style="font-size: 0.72rem; text-transform: uppercase; color: var(--odoo-success);">Ready</span>
-        <span class="h5 fw-bold mb-0" style="color: var(--odoo-success);" id="statReady"><%= summary.readyTotal %></span>
-      </div>
-    </div>
-    <div class="col-6 col-md-2">
-      <div class="card border-0 rounded-3 p-2.5 bg-white shadow-sm text-center" style="border-bottom: 3px solid var(--odoo-warning-dark) !important;">
-        <span class="small fw-semibold" style="font-size: 0.72rem; text-transform: uppercase; color: var(--odoo-warning-dark);">Paused</span>
-        <span class="h5 fw-bold mb-0" style="color: var(--odoo-warning-dark);" id="statPaused"><%= summary.pausedTotal %></span>
-      </div>
-    </div>
-    <div class="col-6 col-md-2">
-      <div class="card border-0 rounded-3 p-2.5 bg-white shadow-sm text-center" style="border-bottom: 3px solid #64748b !important;">
-        <span class="small fw-semibold" style="font-size: 0.72rem; text-transform: uppercase; color: #64748b;">Done</span>
-        <span class="h5 fw-bold mb-0 text-secondary" id="statDone"><%= summary.doneTotal %></span>
-      </div>
-    </div>
-    <div class="col-6 col-md-2">
-      <div class="card border-0 rounded-3 p-2.5 bg-white shadow-sm text-center" style="border-bottom: 3px solid var(--odoo-primary) !important;">
-        <span class="small fw-semibold" style="font-size: 0.72rem; text-transform: uppercase; color: var(--odoo-primary);">Total Panels / Qty</span>
-        <span class="h5 fw-bold mb-0" style="color: var(--odoo-primary);" id="statTotalSheets"><%= summary.totalSheets %></span>
-      </div>
-    </div>
-  </div>
-
-  <!-- Operation Areas Navigation Bar (Tabs) -->
-  <div class="card border-0 rounded-4 shadow-sm mb-3 bg-white p-3">
-    <div class="d-flex flex-column flex-lg-row justify-content-between align-items-lg-center gap-3">
-      <!-- Tabs for Operation Areas -->
+  <!-- Operation Areas Navigation Bar (Tabs) - Sticky at Top -->
+  <div class="sticky-area-bar-wrapper mb-3" id="shopFloorStickyBar">
+    <div class="card border-0 rounded-4 shadow-sm bg-white p-3">
+      <div class="d-flex flex-column flex-lg-row justify-content-between align-items-lg-center gap-3">
+        <!-- Tabs for Operation Areas -->
       <div class="d-flex align-items-center gap-2 overflow-x-auto pb-1" id="operationAreaTabs">
         <button
           type="button"
@@ -453,6 +426,7 @@
         </select>
       </div>
     </div>
+  </div>
   </div>
 
   <!-- Operation Areas Container -->
@@ -869,6 +843,18 @@
 
 <script>
   document.addEventListener('DOMContentLoaded', function () {
+    // Dynamic Navbar Height for Sticky Area Bar
+    function updateStickyOffset() {
+      const navbar = document.querySelector('.odoo-navbar');
+      if (navbar) {
+        const h = navbar.offsetHeight || 48;
+        document.documentElement.style.setProperty('--navbar-height', h + 'px');
+      }
+    }
+    updateStickyOffset();
+    window.addEventListener('resize', updateStickyOffset);
+    window.addEventListener('orientationchange', updateStickyOffset);
+
     // 1. Operator PIN-Activated Session Persistence & 60-Second Auto-Lock
     // Clear legacy unverified localStorage keys so a 4-digit PIN is always required to activate a profile
     localStorage.removeItem('public_shop_floor_operator_id');
@@ -1361,7 +1347,9 @@
           ? document.getElementById('operationAreasContainer')
           : document.getElementById('areaSection-' + activeAreaKey);
         if (targetEl) {
-          const topOffset = targetEl.getBoundingClientRect().top + window.scrollY - 78;
+          const navH = document.querySelector('.odoo-navbar')?.offsetHeight || 48;
+          const barH = document.getElementById('shopFloorStickyBar')?.offsetHeight || 60;
+          const topOffset = targetEl.getBoundingClientRect().top + window.scrollY - (navH + barH + 12);
           window.scrollTo({ top: Math.max(0, topOffset), behavior: 'smooth' });
         }
       }
