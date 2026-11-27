@@ -3661,7 +3661,10 @@ export async function handlePublicShopFloor(req: Request, res: Response) {
     }
 
     const allOperators = await getShopFloorOperatorsFromDb().catch(() => []);
-    const operators = filterPublicShopFloorOperators(allOperators);
+    const operators = filterPublicShopFloorOperators(allOperators).map((op) => ({
+      ...op,
+      photoUrl: op.photoUrl || `/public/shop-floor/operator/${op.id}/avatar`,
+    }));
     const areaGroups = groupWorkOrdersByAreaAndClient(workOrders);
 
     const totalOrders = workOrders.length;
@@ -3729,7 +3732,10 @@ export async function handlePublicShopFloorData(req: Request, res: Response) {
 
     const workOrders = sharedData?.workOrders || [];
     const allOperators = await getShopFloorOperatorsFromDb().catch(() => []);
-    const operators = filterPublicShopFloorOperators(allOperators);
+    const operators = filterPublicShopFloorOperators(allOperators).map((op) => ({
+      ...op,
+      photoUrl: op.photoUrl || `/public/shop-floor/operator/${op.id}/avatar`,
+    }));
     const areaGroups = groupWorkOrdersByAreaAndClient(workOrders);
 
     const totalOrders = workOrders.length;
@@ -3807,6 +3813,7 @@ export async function handlePublicShopFloorVerifyPin(req: Request, res: Response
         id: operator.id,
         name: operator.name,
         jobTitle: operator.jobTitle || 'Operator',
+        photoUrl: operator.photoUrl || `/public/shop-floor/operator/${operator.id}/avatar`,
       },
       message: `Profile activated for ${operator.name}.`,
     });
@@ -3816,6 +3823,80 @@ export async function handlePublicShopFloorVerifyPin(req: Request, res: Response
       message: err instanceof Error ? err.message : 'Could not verify attendance PIN.',
     });
   }
+}
+
+/**
+ * GET /public/shop-floor/operator/:id/avatar
+ * Serves the operator profile photo from disk cache, fetches from Odoo hr.employee on-demand,
+ * or streams a clean SVG fallback avatar with initials.
+ */
+export async function handlePublicShopFloorOperatorAvatar(req: Request, res: Response) {
+  const operatorId = Number(req.params.id);
+  if (!Number.isSafeInteger(operatorId) || operatorId <= 0) {
+    res.status(400).send('Invalid operator ID.');
+    return;
+  }
+
+  const avatarsDir = path.join(storageDirectoryPath, 'avatars');
+  if (!fs.existsSync(avatarsDir)) {
+    fs.mkdirSync(avatarsDir, { recursive: true });
+  }
+
+  const pngPath = path.join(avatarsDir, `operator_${operatorId}.png`);
+  const jpgPath = path.join(avatarsDir, `operator_${operatorId}.jpg`);
+  const jpegPath = path.join(avatarsDir, `operator_${operatorId}.jpeg`);
+
+  if (fs.existsSync(pngPath)) {
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+    res.end(fs.readFileSync(pngPath));
+    return;
+  }
+  if (fs.existsSync(jpgPath) || fs.existsSync(jpegPath)) {
+    const target = fs.existsSync(jpgPath) ? jpgPath : jpegPath;
+    res.setHeader('Content-Type', 'image/jpeg');
+    res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+    res.end(fs.readFileSync(target));
+    return;
+  }
+
+  try {
+    const settings = await getSettings();
+    const client = new OdooClient(settings.odoo);
+    const emps = await client.searchReadRecords<{ id: number; name: string; avatar_128?: string | false; image_128?: string | false }>('hr.employee', {
+      domain: [['id', '=', operatorId]],
+      fields: ['id', 'name', 'avatar_128', 'image_128'],
+      limit: 1,
+    });
+
+    const emp = emps[0];
+    const rawB64 = emp && (emp.avatar_128 || emp.image_128) ? String(emp.avatar_128 || emp.image_128) : '';
+    if (rawB64 && rawB64.length > 20) {
+      const buffer = Buffer.from(rawB64, 'base64');
+      const isPng = buffer.length > 8 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47;
+      const ext = isPng ? 'png' : 'jpg';
+      const mime = isPng ? 'image/png' : 'image/jpeg';
+      const savePath = path.join(avatarsDir, `operator_${operatorId}.${ext}`);
+      fs.writeFileSync(savePath, buffer);
+      void updateShopFloorOperatorPhoto(operatorId, `/avatars/operator_${operatorId}.${ext}`).catch(() => {});
+
+      res.setHeader('Content-Type', mime);
+      res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+      res.end(buffer);
+      return;
+    }
+  } catch (err) {
+    console.warn(`[ShopFloor] Could not fetch avatar from Odoo for operator ${operatorId}:`, err);
+  }
+
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96">
+    <circle cx="48" cy="48" r="48" fill="#e2e8f0"/>
+    <circle cx="48" cy="38" r="16" fill="#94a3b8"/>
+    <path d="M22 80c0-14.36 11.64-26 26-26s26 11.64 26 26" fill="#94a3b8"/>
+  </svg>`;
+  res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
+  res.setHeader('Cache-Control', 'public, max-age=3600');
+  res.send(svg);
 }
 
 /**
@@ -4023,6 +4104,7 @@ export async function handlePublicWorkOrderAction(req: Request, res: Response) {
 router.get('/public/shop-floor', handlePublicShopFloor);
 router.get('/public-shop-floor', handlePublicShopFloor);
 router.get('/public/shop-floor/data', handlePublicShopFloorData);
+router.get('/public/shop-floor/operator/:id/avatar', handlePublicShopFloorOperatorAvatar);
 router.post('/public/shop-floor/verify-pin', handlePublicShopFloorVerifyPin);
 router.post('/public/shop-floor/work-order/:id/action', handlePublicWorkOrderAction);
 router.post('/public/shop-floor/work-order/:id/start', (req: Request, res: Response) => { req.body.action = 'start'; return handlePublicWorkOrderAction(req, res); });

@@ -133,6 +133,7 @@ const shopFloor_1 = require("./shopFloor");
 function createMockRes() {
     let statusCode = 200;
     let payload = null;
+    const headers = {};
     const res = {
         status(code) {
             statusCode = code;
@@ -142,8 +143,28 @@ function createMockRes() {
             payload = body;
             return res;
         },
+        send(body) {
+            payload = body;
+            return res;
+        },
+        setHeader(name, val) {
+            headers[name.toLowerCase()] = val;
+            return res;
+        },
+        end(body) {
+            payload = body;
+            return res;
+        },
+        pipe(dest) {
+            return dest;
+        },
     };
-    return { res, getStatus: () => statusCode, getPayload: () => payload };
+    return {
+        res,
+        getStatus: () => statusCode,
+        getPayload: () => payload,
+        getHeader: (name) => headers[name.toLowerCase()],
+    };
 }
 (0, node_test_1.default)('handlePublicWorkOrderAction rejects start/pause/finish without an authorized operatorId', async () => {
     for (const action of ['start', 'pause', 'finish']) {
@@ -239,4 +260,18 @@ function createMockRes() {
     strict_1.default.equal(calls[2].id, 5501);
     strict_1.default.match(calls[2].msg, /Work Order Closed \/ Completed/);
     strict_1.default.match(calls[2].msg, /Thomas Ollinga/);
+});
+(0, node_test_1.default)('handlePublicShopFloorOperatorAvatar rejects invalid operator ID', async () => {
+    const { res, getStatus, getPayload } = createMockRes();
+    await (0, shopFloor_1.handlePublicShopFloorOperatorAvatar)({ params: { id: 'invalid' } }, res);
+    strict_1.default.equal(getStatus(), 400);
+    strict_1.default.match(getPayload(), /Invalid operator ID/);
+});
+(0, node_test_1.default)('handlePublicShopFloorOperatorAvatar serves cached operator avatar with proper headers', async () => {
+    const { res, getStatus, getHeader } = createMockRes();
+    // Joel Ochango (id: 5) is cached
+    await (0, shopFloor_1.handlePublicShopFloorOperatorAvatar)({ params: { id: '5' } }, res);
+    strict_1.default.equal(getStatus(), 200);
+    strict_1.default.equal(getHeader('content-type'), 'image/png');
+    strict_1.default.match(getHeader('cache-control') || '', /public/);
 });

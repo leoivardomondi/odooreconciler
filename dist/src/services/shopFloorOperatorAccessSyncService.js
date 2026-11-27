@@ -1,17 +1,42 @@
 "use strict";
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.cleanOdooDepartment = cleanOdooDepartment;
 exports.cleanOdooJobTitle = cleanOdooJobTitle;
 exports.syncShopFloorOperatorsData = syncShopFloorOperatorsData;
 exports.syncShopFloorOperatorAccess = syncShopFloorOperatorAccess;
 exports.startShopFloorOperatorAccessSyncInterval = startShopFloorOperatorAccessSyncInterval;
+const fs_1 = __importDefault(require("fs"));
+const path_1 = __importDefault(require("path"));
 const repositories_1 = require("../models/repositories");
 const env_1 = require("../utils/env");
 const logService_1 = require("./logService");
 const odooClient_1 = require("./odooClient");
+const paths_1 = require("../utils/paths");
 const SYNC_INTERVAL_MS = 5 * 60 * 1000; // Run every 5 minutes
 let inFlightSyncPromise = null;
 let intervalHandle = null;
+function saveOdooAvatarIfPresent(empId, rawB64) {
+    if (!rawB64 || typeof rawB64 !== 'string' || rawB64.length < 20)
+        return null;
+    try {
+        const avatarsDir = path_1.default.join(paths_1.storageDirectoryPath, 'avatars');
+        if (!fs_1.default.existsSync(avatarsDir)) {
+            fs_1.default.mkdirSync(avatarsDir, { recursive: true });
+        }
+        const buf = Buffer.from(rawB64, 'base64');
+        const isPng = buf.length > 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47;
+        const ext = isPng ? 'png' : 'jpg';
+        const filePath = path_1.default.join(avatarsDir, `operator_${empId}.${ext}`);
+        fs_1.default.writeFileSync(filePath, buf);
+        return `/avatars/operator_${empId}.${ext}`;
+    }
+    catch (_e) {
+        return null;
+    }
+}
 function isAccountDeactivated(active) {
     return active === 0 || active === false;
 }
@@ -153,7 +178,7 @@ async function syncShopFloorOperatorsData(forceRefresh = false) {
                         ['company_id', '=', targetCompanyId],
                         ['active', '=', true],
                     ],
-                    fields: ['id', 'name', 'job_title', 'department_id', 'work_email', 'mobile_phone', 'user_id', 'active', 'pin'],
+                    fields: ['id', 'name', 'job_title', 'department_id', 'work_email', 'mobile_phone', 'user_id', 'active', 'pin', 'avatar_128', 'image_128'],
                 }).catch(() => []),
                 client.searchReadRecords('res.users', {
                     domain: [
@@ -206,6 +231,7 @@ async function syncShopFloorOperatorsData(forceRefresh = false) {
                 const isWc = workcenterOperatorIds.has(linkedEmp.id);
                 const priority = dept === 'Management' ? 0 : isWc ? 1 : 2;
                 const profile = profilesMap.get(userEmail);
+                const odooPhoto = saveOdooAvatarIfPresent(linkedEmp.id, linkedEmp.avatar_128 || linkedEmp.image_128);
                 operators.push({
                     id: linkedEmp.id,
                     name: profile?.displayName || odooFullName,
@@ -215,7 +241,7 @@ async function syncShopFloorOperatorsData(forceRefresh = false) {
                     mobilePhone: linkedEmp.mobile_phone || null,
                     userId: Array.isArray(linkedEmp.user_id) ? linkedEmp.user_id[0] : null,
                     userName: Array.isArray(linkedEmp.user_id) ? linkedEmp.user_id[1] : odooFullName,
-                    photoUrl: profile?.photoUrl || null,
+                    photoUrl: profile?.photoUrl || odooPhoto || `/public/shop-floor/operator/${linkedEmp.id}/avatar`,
                     checkedIn: false,
                     checkedOut: false,
                     checkInTime: null,
@@ -241,6 +267,7 @@ async function syncShopFloorOperatorsData(forceRefresh = false) {
                 const validEmail = email && email !== 'false' ? email : null;
                 const priority = dept === 'Management' ? 0 : isWc ? 1 : 2;
                 const profile = validEmail ? profilesMap.get(validEmail) : null;
+                const odooPhoto = saveOdooAvatarIfPresent(emp.id, emp.avatar_128 || emp.image_128);
                 operators.push({
                     id: emp.id,
                     name: profile?.displayName || odooFullName,
@@ -250,7 +277,7 @@ async function syncShopFloorOperatorsData(forceRefresh = false) {
                     mobilePhone: emp.mobile_phone || null,
                     userId: Array.isArray(emp.user_id) ? emp.user_id[0] : null,
                     userName: Array.isArray(emp.user_id) ? emp.user_id[1] : odooFullName,
-                    photoUrl: profile?.photoUrl || null,
+                    photoUrl: profile?.photoUrl || odooPhoto || `/public/shop-floor/operator/${emp.id}/avatar`,
                     checkedIn: false,
                     checkedOut: false,
                     checkInTime: null,

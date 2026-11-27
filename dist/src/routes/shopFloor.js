@@ -20,6 +20,7 @@ exports.filterPublicShopFloorOperators = filterPublicShopFloorOperators;
 exports.handlePublicShopFloor = handlePublicShopFloor;
 exports.handlePublicShopFloorData = handlePublicShopFloorData;
 exports.handlePublicShopFloorVerifyPin = handlePublicShopFloorVerifyPin;
+exports.handlePublicShopFloorOperatorAvatar = handlePublicShopFloorOperatorAvatar;
 exports.logOperatorMoChatterNote = logOperatorMoChatterNote;
 exports.handlePublicWorkOrderAction = handlePublicWorkOrderAction;
 const express_1 = require("express");
@@ -3114,7 +3115,10 @@ async function handlePublicShopFloor(req, res) {
             catch (_) { }
         }
         const allOperators = await (0, repositories_1.getShopFloorOperatorsFromDb)().catch(() => []);
-        const operators = filterPublicShopFloorOperators(allOperators);
+        const operators = filterPublicShopFloorOperators(allOperators).map((op) => ({
+            ...op,
+            photoUrl: op.photoUrl || `/public/shop-floor/operator/${op.id}/avatar`,
+        }));
         const areaGroups = groupWorkOrdersByAreaAndClient(workOrders);
         const totalOrders = workOrders.length;
         const inProgressTotal = workOrders.filter((w) => w.state === 'progress').length;
@@ -3171,7 +3175,10 @@ async function handlePublicShopFloorData(req, res) {
         const sharedData = await exports.shopFloorCache.getOrFetchTieredSWR('shop-floor:shared-work-orders:v1', 15 * 1000, 30 * 60 * 1000, () => fetchLiveSharedWorkOrders(client));
         const workOrders = sharedData?.workOrders || [];
         const allOperators = await (0, repositories_1.getShopFloorOperatorsFromDb)().catch(() => []);
-        const operators = filterPublicShopFloorOperators(allOperators);
+        const operators = filterPublicShopFloorOperators(allOperators).map((op) => ({
+            ...op,
+            photoUrl: op.photoUrl || `/public/shop-floor/operator/${op.id}/avatar`,
+        }));
         const areaGroups = groupWorkOrdersByAreaAndClient(workOrders);
         const totalOrders = workOrders.length;
         const inProgressTotal = workOrders.filter((w) => w.state === 'progress').length;
@@ -3242,6 +3249,7 @@ async function handlePublicShopFloorVerifyPin(req, res) {
                 id: operator.id,
                 name: operator.name,
                 jobTitle: operator.jobTitle || 'Operator',
+                photoUrl: operator.photoUrl || `/public/shop-floor/operator/${operator.id}/avatar`,
             },
             message: `Profile activated for ${operator.name}.`,
         });
@@ -3252,6 +3260,73 @@ async function handlePublicShopFloorVerifyPin(req, res) {
             message: err instanceof Error ? err.message : 'Could not verify attendance PIN.',
         });
     }
+}
+/**
+ * GET /public/shop-floor/operator/:id/avatar
+ * Serves the operator profile photo from disk cache, fetches from Odoo hr.employee on-demand,
+ * or streams a clean SVG fallback avatar with initials.
+ */
+async function handlePublicShopFloorOperatorAvatar(req, res) {
+    const operatorId = Number(req.params.id);
+    if (!Number.isSafeInteger(operatorId) || operatorId <= 0) {
+        res.status(400).send('Invalid operator ID.');
+        return;
+    }
+    const avatarsDir = path_1.default.join(paths_1.storageDirectoryPath, 'avatars');
+    if (!fs_1.default.existsSync(avatarsDir)) {
+        fs_1.default.mkdirSync(avatarsDir, { recursive: true });
+    }
+    const pngPath = path_1.default.join(avatarsDir, `operator_${operatorId}.png`);
+    const jpgPath = path_1.default.join(avatarsDir, `operator_${operatorId}.jpg`);
+    const jpegPath = path_1.default.join(avatarsDir, `operator_${operatorId}.jpeg`);
+    if (fs_1.default.existsSync(pngPath)) {
+        res.setHeader('Content-Type', 'image/png');
+        res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+        res.end(fs_1.default.readFileSync(pngPath));
+        return;
+    }
+    if (fs_1.default.existsSync(jpgPath) || fs_1.default.existsSync(jpegPath)) {
+        const target = fs_1.default.existsSync(jpgPath) ? jpgPath : jpegPath;
+        res.setHeader('Content-Type', 'image/jpeg');
+        res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+        res.end(fs_1.default.readFileSync(target));
+        return;
+    }
+    try {
+        const settings = await (0, repositories_1.getSettings)();
+        const client = new odooClient_1.OdooClient(settings.odoo);
+        const emps = await client.searchReadRecords('hr.employee', {
+            domain: [['id', '=', operatorId]],
+            fields: ['id', 'name', 'avatar_128', 'image_128'],
+            limit: 1,
+        });
+        const emp = emps[0];
+        const rawB64 = emp && (emp.avatar_128 || emp.image_128) ? String(emp.avatar_128 || emp.image_128) : '';
+        if (rawB64 && rawB64.length > 20) {
+            const buffer = Buffer.from(rawB64, 'base64');
+            const isPng = buffer.length > 8 && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4E && buffer[3] === 0x47;
+            const ext = isPng ? 'png' : 'jpg';
+            const mime = isPng ? 'image/png' : 'image/jpeg';
+            const savePath = path_1.default.join(avatarsDir, `operator_${operatorId}.${ext}`);
+            fs_1.default.writeFileSync(savePath, buffer);
+            void (0, repositories_1.updateShopFloorOperatorPhoto)(operatorId, `/avatars/operator_${operatorId}.${ext}`).catch(() => { });
+            res.setHeader('Content-Type', mime);
+            res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
+            res.end(buffer);
+            return;
+        }
+    }
+    catch (err) {
+        console.warn(`[ShopFloor] Could not fetch avatar from Odoo for operator ${operatorId}:`, err);
+    }
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96">
+    <circle cx="48" cy="48" r="48" fill="#e2e8f0"/>
+    <circle cx="48" cy="38" r="16" fill="#94a3b8"/>
+    <path d="M22 80c0-14.36 11.64-26 26-26s26 11.64 26 26" fill="#94a3b8"/>
+  </svg>`;
+    res.setHeader('Content-Type', 'image/svg+xml; charset=utf-8');
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.send(svg);
 }
 /**
  * Logs an operator tracking note directly into the Odoo Manufacturing Order (mrp.production) chatter
@@ -3437,6 +3512,7 @@ async function handlePublicWorkOrderAction(req, res) {
 router.get('/public/shop-floor', handlePublicShopFloor);
 router.get('/public-shop-floor', handlePublicShopFloor);
 router.get('/public/shop-floor/data', handlePublicShopFloorData);
+router.get('/public/shop-floor/operator/:id/avatar', handlePublicShopFloorOperatorAvatar);
 router.post('/public/shop-floor/verify-pin', handlePublicShopFloorVerifyPin);
 router.post('/public/shop-floor/work-order/:id/action', handlePublicWorkOrderAction);
 router.post('/public/shop-floor/work-order/:id/start', (req, res) => { req.body.action = 'start'; return handlePublicWorkOrderAction(req, res); });

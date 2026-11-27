@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   filterPublicShopFloorOperators,
   groupWorkOrdersByAreaAndClient,
+  handlePublicShopFloorOperatorAvatar,
   handlePublicShopFloorVerifyPin,
   handlePublicWorkOrderAction,
   inFlightWorkOrderSyncs,
@@ -146,6 +147,7 @@ test('groupWorkOrdersByAreaAndClient normalizes fallback client names', () => {
 function createMockRes() {
   let statusCode = 200;
   let payload: any = null;
+  const headers: Record<string, string> = {};
   const res: any = {
     status(code: number) {
       statusCode = code;
@@ -155,8 +157,28 @@ function createMockRes() {
       payload = body;
       return res;
     },
+    send(body: any) {
+      payload = body;
+      return res;
+    },
+    setHeader(name: string, val: string) {
+      headers[name.toLowerCase()] = val;
+      return res;
+    },
+    end(body: any) {
+      payload = body;
+      return res;
+    },
+    pipe(dest: any) {
+      return dest;
+    },
   };
-  return { res, getStatus: () => statusCode, getPayload: () => payload };
+  return {
+    res,
+    getStatus: () => statusCode,
+    getPayload: () => payload,
+    getHeader: (name: string) => headers[name.toLowerCase()],
+  };
 }
 
 test('handlePublicWorkOrderAction rejects start/pause/finish without an authorized operatorId', async () => {
@@ -270,4 +292,20 @@ test('logOperatorMoChatterNote logs operator note on Manufacturing Order for sta
   assert.equal(calls[2].id, 5501);
   assert.match(calls[2].msg, /Work Order Closed \/ Completed/);
   assert.match(calls[2].msg, /Thomas Ollinga/);
+});
+
+test('handlePublicShopFloorOperatorAvatar rejects invalid operator ID', async () => {
+  const { res, getStatus, getPayload } = createMockRes();
+  await handlePublicShopFloorOperatorAvatar({ params: { id: 'invalid' } } as any, res);
+  assert.equal(getStatus(), 400);
+  assert.match(getPayload(), /Invalid operator ID/);
+});
+
+test('handlePublicShopFloorOperatorAvatar serves cached operator avatar with proper headers', async () => {
+  const { res, getStatus, getHeader } = createMockRes();
+  // Joel Ochango (id: 5) is cached
+  await handlePublicShopFloorOperatorAvatar({ params: { id: '5' } } as any, res);
+  assert.equal(getStatus(), 200);
+  assert.equal(getHeader('content-type'), 'image/png');
+  assert.match(getHeader('cache-control') || '', /public/);
 });

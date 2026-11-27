@@ -1,3 +1,5 @@
+import fs from 'fs';
+import path from 'path';
 import {
   deactivateShopFloorOperatorsNotIn,
   getAllAppUserProfiles,
@@ -13,10 +15,29 @@ import { AppFeature } from '../models/types';
 import { env } from '../utils/env';
 import { logEvent } from './logService';
 import { OdooClient, isSchedulerRunActive, runWithOdooPriority } from './odooClient';
+import { storageDirectoryPath } from '../utils/paths';
 
 const SYNC_INTERVAL_MS = 5 * 60 * 1000; // Run every 5 minutes
 let inFlightSyncPromise: Promise<{ allOperators: ShopFloorOperatorEntry[]; departments: string[] }> | null = null;
 let intervalHandle: NodeJS.Timeout | null = null;
+
+function saveOdooAvatarIfPresent(empId: number, rawB64?: string | false): string | null {
+  if (!rawB64 || typeof rawB64 !== 'string' || rawB64.length < 20) return null;
+  try {
+    const avatarsDir = path.join(storageDirectoryPath, 'avatars');
+    if (!fs.existsSync(avatarsDir)) {
+      fs.mkdirSync(avatarsDir, { recursive: true });
+    }
+    const buf = Buffer.from(rawB64, 'base64');
+    const isPng = buf.length > 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47;
+    const ext = isPng ? 'png' : 'jpg';
+    const filePath = path.join(avatarsDir, `operator_${empId}.${ext}`);
+    fs.writeFileSync(filePath, buf);
+    return `/avatars/operator_${empId}.${ext}`;
+  } catch (_e) {
+    return null;
+  }
+}
 
 function isAccountDeactivated(active: number | boolean | undefined): boolean {
   return active === 0 || active === false;
@@ -158,7 +179,7 @@ export async function syncShopFloorOperatorsData(forceRefresh = false): Promise<
             ['company_id', '=', targetCompanyId],
             ['active', '=', true],
           ],
-          fields: ['id', 'name', 'job_title', 'department_id', 'work_email', 'mobile_phone', 'user_id', 'active', 'pin'],
+          fields: ['id', 'name', 'job_title', 'department_id', 'work_email', 'mobile_phone', 'user_id', 'active', 'pin', 'avatar_128', 'image_128'],
         }).catch(() => []),
         client.searchReadRecords<any>('res.users', {
           domain: [
@@ -214,6 +235,7 @@ export async function syncShopFloorOperatorsData(forceRefresh = false): Promise<
         const isWc = workcenterOperatorIds.has(linkedEmp.id);
         const priority = dept === 'Management' ? 0 : isWc ? 1 : 2;
         const profile = profilesMap.get(userEmail);
+        const odooPhoto = saveOdooAvatarIfPresent(linkedEmp.id, linkedEmp.avatar_128 || linkedEmp.image_128);
 
         operators.push({
           id: linkedEmp.id,
@@ -224,7 +246,7 @@ export async function syncShopFloorOperatorsData(forceRefresh = false): Promise<
           mobilePhone: linkedEmp.mobile_phone || null,
           userId: Array.isArray(linkedEmp.user_id) ? linkedEmp.user_id[0] : null,
           userName: Array.isArray(linkedEmp.user_id) ? linkedEmp.user_id[1] : odooFullName,
-          photoUrl: profile?.photoUrl || null,
+          photoUrl: profile?.photoUrl || odooPhoto || `/public/shop-floor/operator/${linkedEmp.id}/avatar`,
           checkedIn: false,
           checkedOut: false,
           checkInTime: null,
@@ -249,6 +271,7 @@ export async function syncShopFloorOperatorsData(forceRefresh = false): Promise<
         const validEmail = email && email !== 'false' ? email : null;
         const priority = dept === 'Management' ? 0 : isWc ? 1 : 2;
         const profile = validEmail ? profilesMap.get(validEmail) : null;
+        const odooPhoto = saveOdooAvatarIfPresent(emp.id, emp.avatar_128 || emp.image_128);
 
         operators.push({
           id: emp.id,
@@ -259,7 +282,7 @@ export async function syncShopFloorOperatorsData(forceRefresh = false): Promise<
           mobilePhone: emp.mobile_phone || null,
           userId: Array.isArray(emp.user_id) ? emp.user_id[0] : null,
           userName: Array.isArray(emp.user_id) ? emp.user_id[1] : odooFullName,
-          photoUrl: profile?.photoUrl || null,
+          photoUrl: profile?.photoUrl || odooPhoto || `/public/shop-floor/operator/${emp.id}/avatar`,
           checkedIn: false,
           checkedOut: false,
           checkInTime: null,

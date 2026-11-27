@@ -22,6 +22,68 @@
     --odoo-text-muted: #64748b;
   }
 
+  /* Operator Dropdown Card Matching Odoo Shop Floor */
+  .operator-dropdown-panel {
+    border-radius: 12px !important;
+    border: 1px solid #e2e8f0 !important;
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.12), 0 8px 10px -6px rgba(0, 0, 0, 0.08) !important;
+    background: #ffffff !important;
+  }
+  .operator-select-item {
+    padding: 12px 16px !important;
+    border-bottom: 1px solid #f1f5f9 !important;
+    gap: 14px !important;
+    border-left: 4px solid transparent !important;
+    background: #ffffff !important;
+    transition: background-color 0.15s ease, border-left-color 0.15s ease !important;
+    cursor: pointer;
+    text-decoration: none;
+    color: inherit;
+  }
+  .operator-select-item:last-child {
+    border-bottom: none !important;
+  }
+  .operator-select-item:hover {
+    background-color: #f8fafc !important;
+  }
+  .operator-select-item.is-active {
+    background-color: #f0fdfa !important;
+    border-left-color: #008784 !important;
+  }
+  .operator-select-item.is-active .operator-item-status {
+    color: #008784 !important;
+    font-weight: 600 !important;
+  }
+  .operator-avatar-img {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    border-radius: 50%;
+    object-fit: cover;
+    background-color: #e2e8f0;
+    border: 1px solid rgba(0,0,0,0.08);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  }
+  .operator-modal-pick-btn {
+    border: 1px solid #e2e8f0 !important;
+    border-left: 4px solid transparent !important;
+    border-radius: 10px !important;
+    background: #ffffff !important;
+    transition: all 0.15s ease !important;
+  }
+  .operator-modal-pick-btn:hover {
+    background-color: #f8fafc !important;
+  }
+  .operator-modal-pick-btn.is-selected {
+    background-color: #f0fdfa !important;
+    border-color: #008784 #e2e8f0 #e2e8f0 #008784 !important;
+    border-left: 4px solid #008784 !important;
+  }
+  .operator-modal-pick-btn.is-selected .operator-modal-status {
+    color: #008784 !important;
+    font-weight: 600 !important;
+  }
+
   body {
     background-color: var(--odoo-bg);
     color: var(--odoo-text-dark);
@@ -302,43 +364,54 @@
       <div class="dropdown">
         <button
           type="button"
-          class="btn btn-sm rounded-pill text-white d-inline-flex align-items-center gap-1.5 fw-semibold shadow-none"
+          class="btn btn-sm rounded-pill text-white d-inline-flex align-items-center gap-2 fw-semibold shadow-none"
           id="operatorSelectorBtn"
           data-bs-toggle="dropdown"
           aria-expanded="false"
-          style="background: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.28); font-size: 0.80rem;"
+          style="background: rgba(255,255,255,0.18); border: 1px solid rgba(255,255,255,0.28); font-size: 0.80rem; padding: 4px 12px;"
         >
-          <span style="font-size: 0.95rem;">👤</span>
+          <img id="activeOperatorAvatar" src="" alt="" class="rounded-circle d-none" width="22" height="22" style="object-fit: cover; border: 1px solid rgba(255,255,255,0.6);" />
+          <span id="activeOperatorDefaultIcon" style="font-size: 0.95rem;">👤</span>
           <span id="activeOperatorNameLabel">Select Operator</span>
           <span style="font-size: 0.70rem; opacity: 0.7;">▼</span>
         </button>
-        <ul class="dropdown-menu dropdown-menu-end shadow-lg border rounded-3 p-2" style="max-height: 380px; overflow-y: auto; min-width: 260px; font-size: 0.84rem;">
-          <li><h6 class="dropdown-header text-uppercase text-muted px-2 py-1" style="font-size: 0.70rem; letter-spacing: 0.05em;">Factory Operators</h6></li>
-          <% if (operators && operators.length > 0) { %>
-            <% operators.forEach((op) => { %>
-              <li>
+        <div class="dropdown-menu dropdown-menu-end p-0 operator-dropdown-panel" style="min-width: 290px; width: 310px; overflow: hidden;">
+          <div class="operator-list-container">
+            <% if (operators && operators.length > 0) { %>
+              <% operators.forEach((op) => { %>
                 <button
                   type="button"
-                  class="dropdown-item rounded-2 py-1.5 d-flex justify-content-between align-items-center operator-select-item"
+                  class="dropdown-item operator-select-item d-flex align-items-center text-start w-100"
                   data-operator-id="<%= op.id %>"
                   data-operator-name="<%= op.name %>"
+                  data-operator-photo="<%= op.photoUrl || ('/public/shop-floor/operator/' + op.id + '/avatar') %>"
                 >
-                  <span class="fw-semibold text-dark"><%= op.name %></span>
-                  <span class="badge rounded-pill bg-light text-secondary border ms-2" style="font-size: 0.68rem;"><%= op.jobTitle || 'Operator' %></span>
+                  <img
+                    src="<%= op.photoUrl || ('/public/shop-floor/operator/' + op.id + '/avatar') %>"
+                    alt="<%= op.name %>"
+                    class="operator-avatar-img rounded-circle flex-shrink-0"
+                    width="44"
+                    height="44"
+                    onerror="this.src='/public/shop-floor/operator/<%= op.id %>/avatar'"
+                  />
+                  <div class="d-flex flex-column" style="min-width: 0; flex: 1;">
+                    <span class="operator-item-name text-truncate" style="font-weight: 600; font-size: 0.95rem; color: #1e293b; line-height: 1.25;"><%= op.name %></span>
+                    <span class="operator-item-status" data-status-for="<%= op.id %>" style="font-size: 0.80rem; color: #64748b; line-height: 1.25; margin-top: 3px;">Inactive</span>
+                  </div>
                 </button>
-              </li>
-            <% }); %>
-          <% } else { %>
-            <li><span class="dropdown-item text-muted small">No operators registered</span></li>
-          <% } %>
-          <li id="lockOperatorDivider" class="d-none"><hr class="dropdown-divider my-1.5"></li>
-          <li id="lockOperatorMenuItem" class="d-none">
-            <button type="button" class="dropdown-item rounded-2 py-1.5 text-danger fw-semibold d-flex align-items-center gap-2" id="lockOperatorBtn">
+              <% }); %>
+            <% } else { %>
+              <div class="p-4 text-center text-muted small">No operators registered</div>
+            <% } %>
+          </div>
+          <!-- Lock Profile Action (Shown only when an operator is active) -->
+          <div id="lockOperatorContainer" class="d-none border-top bg-light p-2 text-center" style="border-color: #f1f5f9 !important;">
+            <button type="button" class="btn btn-sm btn-link text-danger text-decoration-none fw-semibold d-inline-flex align-items-center gap-1.5 py-1" id="lockOperatorBtn" style="font-size: 0.82rem;">
               <span>🔒</span>
-              <span>Lock Profile</span>
+              <span>Lock Active Profile</span>
             </button>
-          </li>
-        </ul>
+          </div>
+        </div>
       </div>
 
       <!-- Install Desktop PWA Button (shown when installable) -->
@@ -805,16 +878,28 @@
 
           <div class="mb-3">
             <label class="form-label fw-semibold small text-secondary mb-2">Factory Operator</label>
-            <div class="d-flex flex-column gap-1.5" id="operatorModalPickList">
+            <div class="d-flex flex-column gap-2" id="operatorModalPickList">
               <% (operators || []).forEach((op) => { %>
                 <button
                   type="button"
-                  class="btn btn-outline-secondary text-start rounded-3 py-2 px-3 d-flex justify-content-between align-items-center operator-modal-pick-btn"
+                  class="btn text-start p-2.5 d-flex align-items-center gap-3 operator-modal-pick-btn"
                   data-operator-id="<%= op.id %>"
                   data-operator-name="<%= op.name %>"
+                  data-operator-photo="<%= op.photoUrl || ('/public/shop-floor/operator/' + op.id + '/avatar') %>"
                 >
-                  <span class="fw-bold"><%= op.name %></span>
-                  <span class="badge bg-light text-secondary border"><%= op.jobTitle || 'Operator' %></span>
+                  <img
+                    src="<%= op.photoUrl || ('/public/shop-floor/operator/' + op.id + '/avatar') %>"
+                    alt="<%= op.name %>"
+                    class="rounded-circle flex-shrink-0"
+                    width="42"
+                    height="42"
+                    style="width: 42px; height: 42px; object-fit: cover; background: #e2e8f0; border: 1px solid rgba(0,0,0,0.08);"
+                    onerror="this.src='/public/shop-floor/operator/<%= op.id %>/avatar'"
+                  />
+                  <div class="d-flex flex-column" style="min-width: 0; flex: 1;">
+                    <span class="fw-semibold text-dark text-truncate" style="font-size: 0.92rem;"><%= op.name %></span>
+                    <span class="operator-modal-status small text-muted" style="font-size: 0.78rem;">Inactive</span>
+                  </div>
                 </button>
               <% }); %>
             </div>
@@ -894,8 +979,9 @@
     }
 
     const operatorNameLabel = document.getElementById('activeOperatorNameLabel');
-    const lockOperatorDivider = document.getElementById('lockOperatorDivider');
-    const lockOperatorMenuItem = document.getElementById('lockOperatorMenuItem');
+    const activeOperatorAvatar = document.getElementById('activeOperatorAvatar');
+    const activeOperatorDefaultIcon = document.getElementById('activeOperatorDefaultIcon');
+    const lockOperatorContainer = document.getElementById('lockOperatorContainer');
     const lockOperatorBtn = document.getElementById('lockOperatorBtn');
 
     function updateOperatorLabel() {
@@ -903,8 +989,47 @@
       if (operatorNameLabel) {
         operatorNameLabel.textContent = isActive ? currentOperatorName : 'Select Operator';
       }
-      if (lockOperatorDivider) lockOperatorDivider.classList.toggle('d-none', !isActive);
-      if (lockOperatorMenuItem) lockOperatorMenuItem.classList.toggle('d-none', !isActive);
+
+      // Update navbar pill avatar if active
+      if (activeOperatorAvatar && activeOperatorDefaultIcon) {
+        if (isActive) {
+          const activeItem = document.querySelector(`.operator-select-item[data-operator-id="${currentOperatorId}"]`);
+          const photoUrl = activeItem ? activeItem.getAttribute('data-operator-photo') : (`/public/shop-floor/operator/${currentOperatorId}/avatar`);
+          activeOperatorAvatar.src = photoUrl || `/public/shop-floor/operator/${currentOperatorId}/avatar`;
+          activeOperatorAvatar.classList.remove('d-none');
+          activeOperatorDefaultIcon.classList.add('d-none');
+        } else {
+          activeOperatorAvatar.src = '';
+          activeOperatorAvatar.classList.add('d-none');
+          activeOperatorDefaultIcon.classList.remove('d-none');
+        }
+      }
+
+      if (lockOperatorContainer) {
+        lockOperatorContainer.classList.toggle('d-none', !isActive);
+      }
+
+      // Update operator rows in the dropdown
+      document.querySelectorAll('.operator-select-item').forEach(function (btn) {
+        const opId = btn.getAttribute('data-operator-id') || '';
+        const isThisActive = isActive && opId === currentOperatorId;
+        const statusEl = btn.querySelector('.operator-item-status');
+
+        btn.classList.toggle('is-active', isThisActive);
+        if (isThisActive) {
+          if (statusEl) {
+            statusEl.textContent = 'Active';
+            statusEl.style.color = '#008784';
+            statusEl.style.fontWeight = '600';
+          }
+        } else {
+          if (statusEl) {
+            statusEl.textContent = 'Inactive';
+            statusEl.style.color = '#64748b';
+            statusEl.style.fontWeight = '400';
+          }
+        }
+      });
     }
 
     function lockOperatorProfile(isAutoLock) {
@@ -997,9 +1122,19 @@
       pendingOperatorId = operatorId ? String(operatorId) : '';
       document.querySelectorAll('.operator-modal-pick-btn').forEach(function (btn) {
         const isSelected = btn.getAttribute('data-operator-id') === pendingOperatorId;
-        btn.classList.toggle('btn-primary', isSelected);
-        btn.classList.toggle('text-white', isSelected);
-        btn.classList.toggle('btn-outline-secondary', !isSelected);
+        btn.classList.toggle('is-selected', isSelected);
+        const status = btn.querySelector('.operator-modal-status');
+        if (status) {
+          if (isSelected) {
+            status.textContent = 'Selected';
+            status.style.color = '#008784';
+            status.style.fontWeight = '600';
+          } else {
+            status.textContent = 'Inactive';
+            status.style.color = '#64748b';
+            status.style.fontWeight = '400';
+          }
+        }
       });
     }
 
