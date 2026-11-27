@@ -19,6 +19,10 @@ import { startInvoiceExtractionJobWorker, stopInvoiceExtractionJobWorker } from 
 import { startPoBillManualJobWorker, stopPoBillManualJobWorker } from './src/services/poBillManualJobService';
 import { startShopFloorValidationJobWorker, stopShopFloorValidationJobWorker } from './src/services/shopFloorValidationJobService';
 import { startWeeklyShopFloorReportWarmup } from './src/services/weeklyShopFloorReportService';
+import {
+  startSaleOrderInvoicePaymentReminderInterval,
+  stopSaleOrderInvoicePaymentReminderInterval,
+} from './src/services/saleOrderInvoicePaymentReminderService';
 import { markStartupFailed, markStartupReady, markStartupStep } from './src/services/startupState';
 import { storageDirectoryPath } from './src/utils/paths';
 
@@ -180,6 +184,7 @@ export async function startServer() {
     stopPoBillManualJobWorker();
     stopShopFloorValidationJobWorker();
     stopShopFloorPendingSyncInterval();
+    stopSaleOrderInvoicePaymentReminderInterval();
 
     await new Promise<void>((resolve) => {
       server.close(() => resolve());
@@ -255,6 +260,7 @@ export async function startServer() {
       setTimeout(() => startBoardIntakeSyncInterval(), 35_000).unref();
       setTimeout(() => startUserProfileSyncInterval(), 45_000).unref();
       setTimeout(() => startWeeklyShopFloorReportWarmup(), 60_000).unref();
+      setTimeout(() => startSaleOrderInvoicePaymentReminderInterval(), 75_000).unref();
 
       void logEvent('info', 'Server started', {
         listenTarget: isPassengerRuntime ? 'passenger' : port,

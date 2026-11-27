@@ -25,6 +25,7 @@ const invoiceExtractionJobService_1 = require("./src/services/invoiceExtractionJ
 const poBillManualJobService_1 = require("./src/services/poBillManualJobService");
 const shopFloorValidationJobService_1 = require("./src/services/shopFloorValidationJobService");
 const weeklyShopFloorReportService_1 = require("./src/services/weeklyShopFloorReportService");
+const saleOrderInvoicePaymentReminderService_1 = require("./src/services/saleOrderInvoicePaymentReminderService");
 const startupState_1 = require("./src/services/startupState");
 const paths_1 = require("./src/utils/paths");
 const configuredStartupStepTimeoutMs = Number(env_1.env.STARTUP_STEP_TIMEOUT_MS || 30000);
@@ -151,6 +152,7 @@ async function startServer() {
         (0, poBillManualJobService_1.stopPoBillManualJobWorker)();
         (0, shopFloorValidationJobService_1.stopShopFloorValidationJobWorker)();
         (0, shopFloorPendingSyncService_1.stopShopFloorPendingSyncInterval)();
+        (0, saleOrderInvoicePaymentReminderService_1.stopSaleOrderInvoicePaymentReminderInterval)();
         await new Promise((resolve) => {
             server.close(() => resolve());
         }).catch(() => undefined);
@@ -216,6 +218,7 @@ async function startServer() {
             setTimeout(() => (0, boardIntakeSyncService_1.startBoardIntakeSyncInterval)(), 35_000).unref();
             setTimeout(() => (0, userProfileSyncService_1.startUserProfileSyncInterval)(), 45_000).unref();
             setTimeout(() => (0, weeklyShopFloorReportService_1.startWeeklyShopFloorReportWarmup)(), 60_000).unref();
+            setTimeout(() => (0, saleOrderInvoicePaymentReminderService_1.startSaleOrderInvoicePaymentReminderInterval)(), 75_000).unref();
             void (0, logService_1.logEvent)('info', 'Server started', {
                 listenTarget: isPassengerRuntime ? 'passenger' : port,
                 environment: env_1.env.NODE_ENV,

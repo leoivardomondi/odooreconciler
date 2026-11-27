@@ -20,6 +20,14 @@ import {
   auditLinkedPurchaseOrdersForSaleOrder,
 } from '../services/poJobSummaryAuditService';
 import {
+  checkSaleOrderInvoiceAndPayment,
+  checkSaleOrderInvoicePaymentForInvoice,
+  checkSaleOrderInvoicePaymentForPayment,
+  checkSaleOrderInvoicePaymentForPicking,
+  checkSaleOrderInvoicePaymentForPurchaseOrder,
+  runSaleOrderInvoicePaymentSweep,
+} from '../services/saleOrderInvoicePaymentReminderService';
+import {
   syncStandaloneEtrPoToCompany3,
   syncAllPendingStandaloneEtrPos,
 } from '../services/crossCompanySyncService';
@@ -1153,6 +1161,10 @@ async function handleOdooSyncWebhook(req: Request, res: Response) {
         shopFloorCache.clearPrefix('shop-floor-dashboard:');
         shopFloorCache.clearPrefix('shop-floor:receipts:');
         shopFloorCache.clearPrefix('shop-floor:deliveries:');
+        const pickingId =
+          parsePositiveInteger(payload.id) ||
+          parsePositiveInteger(payload.picking_id) ||
+          parsePositiveInteger(req.query.id);
         await Promise.allSettled([
           deleteShopFloorSharedCachePrefix('shop-floor:receipts:'),
           deleteShopFloorSharedCachePrefix('shop-floor:deliveries:'),
@@ -1160,6 +1172,13 @@ async function handleOdooSyncWebhook(req: Request, res: Response) {
           refreshStockMirror(),
           refreshSharedWorkOrders(),
           syncPendingProcessesFromOdoo(true),
+          pickingId
+            ? (async () => {
+                const settings = await getSettings();
+                const client = new OdooClient(settings.odoo);
+                await checkSaleOrderInvoicePaymentForPicking(client, pickingId);
+              })()
+            : Promise.resolve(),
         ]);
       } else if (resolvedType === 'stock') {
         shopFloorCache.clearPrefix('shop-floor-dashboard:');
@@ -1197,13 +1216,26 @@ async function handleOdooSyncWebhook(req: Request, res: Response) {
 
         const settings = await getSettings();
         const client = new OdooClient(settings.odoo);
+        const rawRecordId =
+          parsePositiveInteger(payload.id) ||
+          parsePositiveInteger(payload.res_id) ||
+          parsePositiveInteger(req.query.id);
 
         if (poId) {
           await Promise.allSettled([
             auditPurchaseOrderAgainstJobSummary(client, poId),
             syncStandaloneEtrPoToCompany3(client, poId),
+            checkSaleOrderInvoicePaymentForPurchaseOrder(client, poId),
           ]);
           void syncPendingProcessesFromOdoo(true).catch(() => null);
+        } else if (rawModel === 'account.move' && rawRecordId) {
+          await Promise.allSettled([
+            checkSaleOrderInvoicePaymentForInvoice(client, rawRecordId),
+          ]);
+        } else if (rawModel === 'account.payment' && rawRecordId) {
+          await Promise.allSettled([
+            checkSaleOrderInvoicePaymentForPayment(client, rawRecordId),
+          ]);
         } else {
           await Promise.allSettled([
             runPoBillSchedulerCycle('cron'),
@@ -1249,8 +1281,18 @@ async function handleOdooSyncWebhook(req: Request, res: Response) {
                 latestExtracted.resultJson as ParsedJobSummaryResult,
               );
             }
+            await checkSaleOrderInvoiceAndPayment(client, orderId).catch(() => null);
           } catch {
             // Non-critical reminder close failure
+          }
+        } else if (orderId) {
+          await runSchedulerCycle('cron');
+          try {
+            const settings = await getSettings();
+            const client = new OdooClient(settings.odoo);
+            await checkSaleOrderInvoiceAndPayment(client, orderId).catch(() => null);
+          } catch {
+            // Non-critical billing check
           }
         } else {
           // Full Sales Order scheduler cycle run
@@ -1315,6 +1357,39 @@ router.all('/jobs/cleanup-mismatch-chatter', async (req: Request, res: Response)
   try {
     const result = await cleanPreexistingMismatchChatter();
     return res.json({ ok: true, deletedCount: result.deletedCount, deletedIds: result.deletedIds });
+  } catch (error) {
+    return res.status(500).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+router.all('/jobs/sale-order-invoice-payment-check', async (req: Request, res: Response) => {
+  const token = getWebhookToken(req);
+  const authorized =
+    (await isAuthorizedCronRequest(token)) ||
+    (await isAuthorizedPoBillCronRequest(token)) ||
+    (Boolean(env.ODOO_WEBHOOK_TOKEN) && token === env.ODOO_WEBHOOK_TOKEN);
+  if (!authorized && req.authUser?.role !== 'admin') {
+    return res.status(401).json({ ok: false, error: 'Unauthorized.' });
+  }
+  try {
+    const dryRun = String(req.query.dryRun || req.body?.dryRun || '').toLowerCase() === 'true';
+    const lookbackDays = Number(req.query.lookbackDays || req.body?.lookbackDays || 0) || undefined;
+    const summary = await runSaleOrderInvoicePaymentSweep({ dryRun, lookbackDays });
+    return res.json({
+      ok: true,
+      dryRun,
+      scannedOrders: summary.scannedOrders,
+      poTriggeredChecked: summary.poTriggeredChecked,
+      nonPo48hChecked: summary.nonPo48hChecked,
+      waiting48hCount: summary.waiting48hCount,
+      compliantCount: summary.compliantCount,
+      missingInvoiceCount: summary.missingInvoiceCount,
+      draftInvoiceOnlyCount: summary.draftInvoiceOnlyCount,
+      missingPaymentCount: summary.missingPaymentCount,
+      activitiesCreated: summary.activitiesCreated,
+      activitiesAlreadyOpen: summary.activitiesAlreadyOpen,
+      activitiesClosed: summary.activitiesClosed,
+    });
   } catch (error) {
     return res.status(500).json({ ok: false, error: error instanceof Error ? error.message : String(error) });
   }
