@@ -41,12 +41,13 @@ export interface BoardAttributes {
   thickness: string | null;
   thicknessMm: number | null;
   substrate: 'mdf' | 'particle' | 'plywood' | 'block_board' | 'eco_board' | 'hardboard' | 'waterproof' | 'other';
+  finish: 'gloss' | 'matt' | 'textured' | 'standard';
   colorFamily: string;
 }
 
 export interface BoardMismatchResult {
   hasMismatch: boolean;
-  mismatchType: 'substrate' | 'size' | 'substrate_and_size';
+  mismatchType: 'substrate' | 'size' | 'substrate_and_size' | 'finish';
   requiredAttributes: BoardAttributes;
   loggedAttributes: BoardAttributes;
   description: string;
@@ -95,6 +96,15 @@ export function extractBoardAttributes(value: string | null | undefined): BoardA
     substrate = 'eco_board';
   }
 
+  let finish: BoardAttributes['finish'] = 'standard';
+  if (/\b(gloss|high gloss|super gloss|mirror gloss|hg)\b/i.test(normalized)) {
+    finish = 'gloss';
+  } else if (/\b(matt|matte|super matt|sm)\b/i.test(normalized)) {
+    finish = 'matt';
+  } else if (/\b(textured|embossed)\b/i.test(normalized)) {
+    finish = 'textured';
+  }
+
   const color = normalized
     .replace(/\b\d+(?:\.\d+)?\s*mm\b/g, ' ')
     .replace(/\b\d+\s*[xX]\s*\d+\b/g, ' ')
@@ -110,8 +120,18 @@ export function extractBoardAttributes(value: string | null | undefined): BoardA
     thickness,
     thicknessMm,
     substrate,
+    finish,
     colorFamily: color,
   };
+}
+
+export function areCompatibleFinishes(finishA?: string | null, finishB?: string | null): boolean {
+  const a = (finishA || 'standard').toLowerCase();
+  const b = (finishB || 'standard').toLowerCase();
+  if (a === b) return true;
+  // Gloss must NEVER match non-gloss (matt, standard, textured)
+  if (a === 'gloss' || b === 'gloss') return false;
+  return true;
 }
 
 export function areSameColorFamily(colorA: string, colorB: string): boolean {
@@ -152,7 +172,9 @@ export function detectBoardMismatch(
     logAttr.thicknessMm !== null &&
     Math.abs(reqAttr.thicknessMm - logAttr.thicknessMm) > 0.1;
 
-  if (!substrateDiff && !sizeDiff) {
+  const finishDiff = !areCompatibleFinishes(reqAttr.finish, logAttr.finish);
+
+  if (!substrateDiff && !sizeDiff && !finishDiff) {
     return null;
   }
 
@@ -161,6 +183,8 @@ export function detectBoardMismatch(
     mismatchType = 'substrate_and_size';
   } else if (sizeDiff) {
     mismatchType = 'size';
+  } else if (finishDiff) {
+    mismatchType = 'finish';
   }
 
   const substrateLabels: Record<BoardAttributes['substrate'], string> = {
@@ -183,6 +207,11 @@ export function detectBoardMismatch(
   if (sizeDiff) {
     reasons.push(
       `Thickness mismatch: required ${reqAttr.thickness || 'unspecified'} vs logged ${logAttr.thickness || 'unspecified'}`,
+    );
+  }
+  if (finishDiff) {
+    reasons.push(
+      `Finish mismatch: required ${reqAttr.finish.toUpperCase()} vs logged ${logAttr.finish.toUpperCase()}`,
     );
   }
 

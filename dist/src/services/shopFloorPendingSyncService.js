@@ -614,10 +614,12 @@ async function matchRetroactiveBoardLogsForActiveMos(client, activeMOs, boardMov
                 : true;
             if (!substrateMatch)
                 continue;
+            const finishMatch = (0, boardProductClassifier_1.areCompatibleFinishes)(moveAttr.finish, logAttr.finish);
+            if (!finishMatch)
+                continue;
             const colorMatch = (0, boardProductClassifier_1.areSameColorFamily)(moveAttr.colorFamily, logAttr.colorFamily) ||
                 (productId > 0 && logProdId > 0 && productId === logProdId) ||
-                (0, boardProductClassifier_1.normalizeBoardProductName)(productName).includes((0, boardProductClassifier_1.normalizeBoardProductName)(log.product_name)) ||
-                (0, boardProductClassifier_1.normalizeBoardProductName)(log.product_name).includes((0, boardProductClassifier_1.normalizeBoardProductName)(productName));
+                (0, boardProductClassifier_1.normalizeBoardProductName)(productName) === (0, boardProductClassifier_1.normalizeBoardProductName)(log.product_name);
             if (!colorMatch)
                 continue;
             // 3. Quantity closeness: "quantity is very close"

@@ -4448,14 +4448,17 @@ async function claimBoardIntakeQueueEntry(id) {
     WHERE id = ? AND status IN ('pending', 'failed')`, [id]);
     return result.affectedRows > 0;
 }
-async function getDueBoardIntakeQueueEntries(limit = 5) {
+async function getDueBoardIntakeQueueEntries(limit = 15) {
     return (0, db_1.queryAll)(`SELECT * FROM board_intake_queue
     WHERE ((status = 'pending')
-       OR (status = 'failed' AND (next_retry_at IS NULL OR next_retry_at <= CURRENT_TIMESTAMP))
+       OR (status = 'failed' AND retry_count < 5 AND (next_retry_at IS NULL OR next_retry_at <= CURRENT_TIMESTAMP))
        OR (status = 'processing' AND updated_at < ${(0, db_1.getDatabaseDialect)() === 'mysql' ? 'DATE_SUB(CURRENT_TIMESTAMP, INTERVAL 10 MINUTE)' : "datetime(CURRENT_TIMESTAMP, '-10 minutes')"}))
       AND partner_id > 0
       AND customer_name != 'Pending Client Matching'
-    ORDER BY created_at ASC LIMIT ?`, [Math.max(1, Math.min(20, limit))]);
+    ORDER BY 
+      CASE WHEN status = 'pending' THEN 0 ELSE 1 END ASC,
+      created_at DESC
+    LIMIT ?`, [Math.max(1, Math.min(20, limit))]);
 }
 async function releaseStaleBoardIntakeQueueEntry(id) {
     await (0, db_1.execute)(`UPDATE board_intake_queue SET status = 'failed', next_retry_at = CURRENT_TIMESTAMP,

@@ -59,3 +59,15 @@ const boardProductClassifier_1 = require("./boardProductClassifier");
     // Non-board product
     strict_1.default.equal((0, boardProductClassifier_1.detectBoardMismatch)('Soft Close Hinge', 'WHITE MDF 18mm'), null);
 });
+(0, node_test_1.default)('detectBoardMismatch flags finish mismatch between Gloss and Standard/Matt (e.g. Gloss Dark Grey vs Dark Grey)', () => {
+    const glossAttr = (0, boardProductClassifier_1.extractBoardAttributes)('Gloss Dark Grey Particle 18mm');
+    const mattAttr = (0, boardProductClassifier_1.extractBoardAttributes)('Dark Grey Particle 18mm');
+    strict_1.default.equal(glossAttr.finish, 'gloss');
+    strict_1.default.equal(mattAttr.finish, 'standard');
+    strict_1.default.equal((0, boardProductClassifier_1.areCompatibleFinishes)(glossAttr.finish, mattAttr.finish), false);
+    const mismatch = (0, boardProductClassifier_1.detectBoardMismatch)('Gloss Dark Grey Particle 18mm', 'Dark Grey Particle 18mm');
+    strict_1.default.ok(mismatch);
+    strict_1.default.equal(mismatch.hasMismatch, true);
+    strict_1.default.equal(mismatch.mismatchType, 'finish');
+    strict_1.default.match(mismatch.description, /Finish mismatch/i);
+});

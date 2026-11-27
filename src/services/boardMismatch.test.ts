@@ -4,6 +4,7 @@ import {
   extractBoardAttributes,
   detectBoardMismatch,
   areSameColorFamily,
+  areCompatibleFinishes,
 } from './boardProductClassifier';
 
 test('Board attribute extraction correctly parses thickness, substrate, and color', () => {
@@ -67,4 +68,19 @@ test('detectBoardMismatch ignores matching boards or different colors', () => {
 
   // Non-board product
   assert.equal(detectBoardMismatch('Soft Close Hinge', 'WHITE MDF 18mm'), null);
+});
+
+test('detectBoardMismatch flags finish mismatch between Gloss and Standard/Matt (e.g. Gloss Dark Grey vs Dark Grey)', () => {
+  const glossAttr = extractBoardAttributes('Gloss Dark Grey Particle 18mm');
+  const mattAttr = extractBoardAttributes('Dark Grey Particle 18mm');
+
+  assert.equal(glossAttr.finish, 'gloss');
+  assert.equal(mattAttr.finish, 'standard');
+  assert.equal(areCompatibleFinishes(glossAttr.finish, mattAttr.finish), false);
+
+  const mismatch = detectBoardMismatch('Gloss Dark Grey Particle 18mm', 'Dark Grey Particle 18mm');
+  assert.ok(mismatch);
+  assert.equal(mismatch.hasMismatch, true);
+  assert.equal(mismatch.mismatchType, 'finish');
+  assert.match(mismatch.description, /Finish mismatch/i);
 });

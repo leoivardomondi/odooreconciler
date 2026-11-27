@@ -16,6 +16,7 @@ import {
   normalizeBoardProductName,
   extractBoardAttributes,
   areSameColorFamily,
+  areCompatibleFinishes,
 } from './boardProductClassifier';
 import { extractSoNameFromOrigin } from './poJobSummaryAuditService';
 import { PendingShopFloorProcess } from '../models/types';
@@ -796,10 +797,12 @@ export async function matchRetroactiveBoardLogsForActiveMos(
         : true;
       if (!substrateMatch) continue;
 
+      const finishMatch = areCompatibleFinishes(moveAttr.finish, logAttr.finish);
+      if (!finishMatch) continue;
+
       const colorMatch = areSameColorFamily(moveAttr.colorFamily, logAttr.colorFamily) ||
         (productId > 0 && logProdId > 0 && productId === logProdId) ||
-        normalizeBoardProductName(productName).includes(normalizeBoardProductName(log.product_name)) ||
-        normalizeBoardProductName(log.product_name).includes(normalizeBoardProductName(productName));
+        normalizeBoardProductName(productName) === normalizeBoardProductName(log.product_name);
       if (!colorMatch) continue;
 
       // 3. Quantity closeness: "quantity is very close"
