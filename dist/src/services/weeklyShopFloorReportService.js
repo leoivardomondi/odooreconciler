@@ -1008,8 +1008,10 @@ async function fetchWorkOrdersBeforeBoardLogsAudit(client, companyId, warehouseI
 }
 function mergeOperationsBoardLoggingRows(operators, rawBoardLogging) {
     const normalizeName = (s) => s.toLowerCase().replace(/\s+/g, ' ').trim();
+    const eligibleOperators = operators.filter((op) => !(0, shopFloorReporting_1.isExcludedFromBoardLogs)({ name: op.name }));
+    const eligibleRawLogs = rawBoardLogging.filter((raw) => !(0, shopFloorReporting_1.isExcludedFromBoardLogs)({ name: raw.name, email: raw.email }));
     const matchedRawIndices = new Set();
-    const merged = operators.map((op) => {
+    const merged = eligibleOperators.map((op) => {
         const opNorm = normalizeName(op.name);
         let email = '';
         let records = 0;
@@ -1019,7 +1021,7 @@ function mergeOperationsBoardLoggingRows(operators, rawBoardLogging) {
         let reverted = 0;
         let pending = 0;
         let lastLoggedAt = null;
-        rawBoardLogging.forEach((raw, idx) => {
+        eligibleRawLogs.forEach((raw, idx) => {
             if (matchedRawIndices.has(idx))
                 return;
             const rawNorm = normalizeName(raw.name || '');
@@ -1044,10 +1046,11 @@ function mergeOperationsBoardLoggingRows(operators, rawBoardLogging) {
     return merged.sort((a, b) => b.records - a.records || b.boards - a.boards || a.name.localeCompare(b.name));
 }
 function buildBoardLoggingEncouragementNote(rows) {
-    if (!rows.length) {
+    const eligibleRows = rows.filter((r) => !(0, shopFloorReporting_1.isExcludedFromBoardLogs)({ name: r.name, email: r.email }));
+    if (!eligibleRows.length) {
         return 'NOTE: Operations operators are encouraged to lock in and consistently record every incoming board at intake before work orders are started.';
     }
-    const sorted = [...rows].sort((a, b) => b.records - a.records || b.boards - a.boards || a.name.localeCompare(b.name));
+    const sorted = [...eligibleRows].sort((a, b) => b.records - a.records || b.boards - a.boards || a.name.localeCompare(b.name));
     const totalRecords = sorted.reduce((sum, r) => sum + r.records, 0);
     if (totalRecords === 0) {
         return 'NOTE: No Operations operators recorded board intake logs during this period. The entire team is encouraged to lock in and consistently log every incoming board before starting work orders.';

@@ -216,22 +216,26 @@ const weeklyShopFloorReportService_1 = require("./weeklyShopFloorReportService")
         strict_1.default.equal(candy.multiDaySessionCount, 1);
         strict_1.default.equal(candy.sessions[0].status, 'Multi-day (unclosed)');
     });
-    await t.test('mergeOperationsBoardLoggingRows includes 0-log Operations operators and encouragement note calls on them to lock in and emulate leaders', () => {
+    await t.test('mergeOperationsBoardLoggingRows excludes Janet Awino Amollo and includes 0-log eligible Operations operators', () => {
         const merged = (0, weeklyShopFloorReportService_1.mergeOperationsBoardLoggingRows)([
             { id: 9, name: 'Janet Awino Amollo' },
+            { id: 6, name: 'Onyango Bitcher Akulo' },
             { id: 5, name: 'Joel Ochango' },
             { id: 7, name: 'Thomas Ollinga' },
             { id: 23, name: 'Michael Ochieng Okoth' },
         ], [
-            { name: 'Janet Awino Amollo', email: 'janet@example.com', records: 12, boards: 40, synced: 12, failed: 0, reverted: 0, pending: 0, lastLoggedAt: '2026-11-24 14:00:00' },
+            { name: 'Janet Awino Amollo', email: 'janetamollo01@gmail.com', records: 12, boards: 40, synced: 12, failed: 0, reverted: 0, pending: 0, lastLoggedAt: '2026-11-24 14:00:00' },
+            { name: 'Onyango Bitcher Akulo', email: 'bitcher@example.com', records: 12, boards: 40, synced: 12, failed: 0, reverted: 0, pending: 0, lastLoggedAt: '2026-11-24 14:00:00' },
             { name: 'Joel Ochango', email: 'joel@example.com', records: 10, boards: 25, synced: 10, failed: 0, reverted: 0, pending: 0, lastLoggedAt: '2026-11-24 12:00:00' },
             { name: 'Thomas Ollinga', email: 'thomas@example.com', records: 1, boards: 2, synced: 1, failed: 0, reverted: 0, pending: 0, lastLoggedAt: '2026-11-20 10:00:00' },
             { name: 'Charles Onyango', email: 'charles@example.com', records: 2, boards: 4, synced: 2, failed: 0, reverted: 0, pending: 0, lastLoggedAt: '2026-11-21 10:00:00' },
         ]);
-        strict_1.default.equal(merged.length, 4); // Non-operations Charles excluded; 0-log Michael included
+        strict_1.default.equal(merged.length, 4); // Janet Awino Amollo & non-operations Charles excluded; 0-log Michael included
+        strict_1.default.ok(!merged.some((m) => /janet/i.test(m.name)));
         strict_1.default.equal(merged.find((m) => m.name === 'Michael Ochieng Okoth')?.records, 0);
         const note = (0, weeklyShopFloorReportService_1.buildBoardLoggingEncouragementNote)(merged);
-        strict_1.default.match(note, /Janet Awino Amollo/i);
+        strict_1.default.ok(!/janet/i.test(note));
+        strict_1.default.match(note, /Onyango Bitcher Akulo/i);
         strict_1.default.match(note, /Thomas Ollinga/i);
         strict_1.default.match(note, /Michael Ochieng Okoth/i);
         strict_1.default.match(note, /lock in/i);

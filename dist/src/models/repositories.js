@@ -4476,6 +4476,8 @@ async function getBoardIntakeLoggingReport(startDate, endDate, reportingStartDat
     rows.forEach((row) => {
         const email = String(row.actor_email || '').trim().toLowerCase();
         const name = String(row.actor_name || email || 'Unknown operator').trim();
+        if ((0, shopFloorReporting_1.isExcludedFromBoardLogs)({ name, email }))
+            return;
         const key = email || name.toLowerCase();
         const item = byOperator.get(key) || { name, email, records: 0, boards: 0, synced: 0, failed: 0, reverted: 0, pending: 0, lastLoggedAt: row.created_at };
         item.records += 1;

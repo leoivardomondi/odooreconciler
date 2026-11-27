@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.getPwaBadgeBreakdown = getPwaBadgeBreakdown;
 const repositories_1 = require("../models/repositories");
 const authService_1 = require("./authService");
+const shopFloorReporting_1 = require("../utils/shopFloorReporting");
 const badgeCache = new Map();
 const BADGE_CACHE_TTL_MS = 60 * 1000;
 function specialReminderRecipient(email) {
@@ -48,7 +49,9 @@ async function getPwaBadgeBreakdown(authUser) {
     const mpesaCount = authUser && (0, authService_1.canAccessPath)(authUser, 'GET', '/mpesa-reconciliation')
         ? (await (0, repositories_1.getMpesaStatementBatchesWithOpenReviewCounts)()).length
         : 0;
-    const shopFloorCount = authUser && (0, authService_1.canAccessPath)(authUser, 'GET', '/shop-floor')
+    const shopFloorCount = authUser
+        && (0, authService_1.canAccessPath)(authUser, 'GET', '/shop-floor')
+        && !(0, shopFloorReporting_1.isExcludedFromBoardLogs)({ email: authUser.email })
         ? await countShopFloorDueTasks(authUser.email)
         : 0;
     const value = {

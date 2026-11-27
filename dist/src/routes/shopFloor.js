@@ -58,6 +58,7 @@ const workOrderQuantityReconciliationService_1 = require("../services/workOrderQ
 const cuttingBoMReconciliationService_1 = require("../services/cuttingBoMReconciliationService");
 const siteAttendanceAccess_1 = require("../utils/siteAttendanceAccess");
 const helpers_1 = require("../utils/helpers");
+const shopFloorReporting_1 = require("../utils/shopFloorReporting");
 const operatorPinVerificationService_1 = require("../services/operatorPinVerificationService");
 const db_1 = require("../models/db");
 const router = (0, express_1.Router)();
@@ -812,7 +813,7 @@ async function buildInstantMysqlOperatorDashboard(userEmail) {
         manufacturingTimelineData: userSnapshot?.data?.manufacturingTimelineData || null,
         boardRegistrationSummary: reconcileBoardRegistrationWithStockAlerts(userSnapshot?.data?.boardRegistrationSummary || null, stockAlerts),
         teamPenalties,
-        isLimitedDashboard: false,
+        isLimitedDashboard: (0, shopFloorReporting_1.isExcludedFromBoardLogs)({ name: employee?.name, email: normalizedEmail }),
         machines: userSnapshot?.data?.machines || [],
         error: null,
         reservedBoardsCount,

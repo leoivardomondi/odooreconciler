@@ -5,7 +5,7 @@ import { OdooClient } from './odooClient';
 import { sendMailWithConfig } from './mailTransport';
 import { logEvent } from './logService';
 import { env } from '../utils/env';
-import { clampShopFloorReportingDate } from '../utils/shopFloorReporting';
+import { clampShopFloorReportingDate, isExcludedFromBoardLogs } from '../utils/shopFloorReporting';
 import { classifyAttendanceRecords, completedAttendanceCoversWorkday, type AttendanceRecord } from '../utils/attendanceReconciliation';
 
 export const CORE_OPERATOR_IDS = [6, 5, 7, 23] as const; // Bitcher, Joel, Thomas, Michael
@@ -142,6 +142,7 @@ export function computeOperatorMasteryScores(input: {
   matchedClientActions: number;
   completeMetadataLogs: number;
   attendanceRate: number;
+  excludeBoardLogs?: boolean;
 }) {
   const closedSessions = Math.max(0, input.sessionsCount - input.openTimersCount);
   const timerDisciplineRate = input.sessionsCount > 0
@@ -188,10 +189,12 @@ export function computeOperatorMasteryScores(input: {
   const blMetadataPts = input.totalLogs > 0 ? Math.round((metadataCompletenessRate / 100) * 15) : 0;
   const boardLogMasteryScore = Math.min(100, blVolumePts + blAccuracyPts + blClientPts + blMetadataPts);
 
-  const overallMasteryScore = Math.min(
-    100,
-    Math.round(shopFloorMasteryScore * 0.45 + boardLogMasteryScore * 0.35 + Math.min(100, Math.max(0, input.attendanceRate)) * 0.20),
-  );
+  const overallMasteryScore = input.excludeBoardLogs
+    ? Math.min(100, Math.round(shopFloorMasteryScore * 0.70 + Math.min(100, Math.max(0, input.attendanceRate)) * 0.30))
+    : Math.min(
+        100,
+        Math.round(shopFloorMasteryScore * 0.45 + boardLogMasteryScore * 0.35 + Math.min(100, Math.max(0, input.attendanceRate)) * 0.20),
+      );
 
   const masteryTier: OperatorProfileMetrics['masteryTier'] = overallMasteryScore >= 85
     ? 'Master'
@@ -250,14 +253,16 @@ function buildInsights(profile: Omit<OperatorProfileMetrics, 'strengths' | 'reco
     }
   }
 
-  if (profile.boardLog.totalLogs === 0 && profile.boardLog.matchedClientActions === 0) {
-    recommendations.push('No Board Log entries recorded in this period — verify if operator is assigned gate/board intake duties or needs onboarding on Board Log.');
-  } else {
-    if (profile.boardLog.revertedLogs > 0) {
-      recommendations.push(`${profile.boardLog.revertedLogs} board log(s) required revert — double-check board thickness, quantity, and client before submitting.`);
-    }
-    if (profile.boardLog.totalLogs > 0 && profile.boardLog.metadataCompletenessRate < 70) {
-      recommendations.push(`Metadata completeness is ${profile.boardLog.metadataCompletenessRate}% — include vehicle registration, gate, and arrival time consistently.`);
+  if (!isExcludedFromBoardLogs({ name: profile.operator.name, email: profile.operator.workEmail })) {
+    if (profile.boardLog.totalLogs === 0 && profile.boardLog.matchedClientActions === 0) {
+      recommendations.push('No Board Log entries recorded in this period — verify if operator is assigned gate/board intake duties or needs onboarding on Board Log.');
+    } else {
+      if (profile.boardLog.revertedLogs > 0) {
+        recommendations.push(`${profile.boardLog.revertedLogs} board log(s) required revert — double-check board thickness, quantity, and client before submitting.`);
+      }
+      if (profile.boardLog.totalLogs > 0 && profile.boardLog.metadataCompletenessRate < 70) {
+        recommendations.push(`Metadata completeness is ${profile.boardLog.metadataCompletenessRate}% — include vehicle registration, gate, and arrival time consistently.`);
+      }
     }
   }
 
@@ -469,6 +474,7 @@ export async function buildOperatorProfileReport(
     matchedClientActions,
     completeMetadataLogs,
     attendanceRate,
+    excludeBoardLogs: isExcludedFromBoardLogs({ name: opMeta!.name, email: opMeta!.workEmail }),
   });
 
   const baseProfile: Omit<OperatorProfileMetrics, 'strengths' | 'recommendations'> = {

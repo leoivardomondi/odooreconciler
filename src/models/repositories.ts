@@ -56,7 +56,7 @@ import {
 } from '../utils/helpers';
 import { appDateTimeFromNow, appDateTime } from '../utils/dateTime';
 import { env } from '../utils/env';
-import { clampShopFloorReportingDate, normalizeShopFloorReportingStartDate } from '../utils/shopFloorReporting';
+import { clampShopFloorReportingDate, isExcludedFromBoardLogs, normalizeShopFloorReportingStartDate } from '../utils/shopFloorReporting';
 
 function nowMinusMinutesIso(windowMinutes: number): string {
   return appDateTimeFromNow(-Math.max(1, windowMinutes) * 60 * 1000);
@@ -6021,6 +6021,7 @@ export async function getBoardIntakeLoggingReport(startDate: string, endDate: st
   rows.forEach((row) => {
     const email = String(row.actor_email || '').trim().toLowerCase();
     const name = String(row.actor_name || email || 'Unknown operator').trim();
+    if (isExcludedFromBoardLogs({ name, email })) return;
     const key = email || name.toLowerCase();
     const item = byOperator.get(key) || { name, email, records: 0, boards: 0, synced: 0, failed: 0, reverted: 0, pending: 0, lastLoggedAt: row.created_at };
     item.records += 1;

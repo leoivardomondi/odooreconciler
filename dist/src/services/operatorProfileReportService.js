@@ -112,7 +112,9 @@ function computeOperatorMasteryScores(input) {
     const blClientPts = effectiveBoardActivity > 0 ? Math.round((clientMatchRate / 100) * 20) : 0;
     const blMetadataPts = input.totalLogs > 0 ? Math.round((metadataCompletenessRate / 100) * 15) : 0;
     const boardLogMasteryScore = Math.min(100, blVolumePts + blAccuracyPts + blClientPts + blMetadataPts);
-    const overallMasteryScore = Math.min(100, Math.round(shopFloorMasteryScore * 0.45 + boardLogMasteryScore * 0.35 + Math.min(100, Math.max(0, input.attendanceRate)) * 0.20));
+    const overallMasteryScore = input.excludeBoardLogs
+        ? Math.min(100, Math.round(shopFloorMasteryScore * 0.70 + Math.min(100, Math.max(0, input.attendanceRate)) * 0.30))
+        : Math.min(100, Math.round(shopFloorMasteryScore * 0.45 + boardLogMasteryScore * 0.35 + Math.min(100, Math.max(0, input.attendanceRate)) * 0.20));
     const masteryTier = overallMasteryScore >= 85
         ? 'Master'
         : overallMasteryScore >= 70
@@ -163,15 +165,17 @@ function buildInsights(profile) {
             recommendations.push('Started work orders without marking any Finished — confirm operator clicks Finish when cutting/edging completes.');
         }
     }
-    if (profile.boardLog.totalLogs === 0 && profile.boardLog.matchedClientActions === 0) {
-        recommendations.push('No Board Log entries recorded in this period — verify if operator is assigned gate/board intake duties or needs onboarding on Board Log.');
-    }
-    else {
-        if (profile.boardLog.revertedLogs > 0) {
-            recommendations.push(`${profile.boardLog.revertedLogs} board log(s) required revert — double-check board thickness, quantity, and client before submitting.`);
+    if (!(0, shopFloorReporting_1.isExcludedFromBoardLogs)({ name: profile.operator.name, email: profile.operator.workEmail })) {
+        if (profile.boardLog.totalLogs === 0 && profile.boardLog.matchedClientActions === 0) {
+            recommendations.push('No Board Log entries recorded in this period — verify if operator is assigned gate/board intake duties or needs onboarding on Board Log.');
         }
-        if (profile.boardLog.totalLogs > 0 && profile.boardLog.metadataCompletenessRate < 70) {
-            recommendations.push(`Metadata completeness is ${profile.boardLog.metadataCompletenessRate}% — include vehicle registration, gate, and arrival time consistently.`);
+        else {
+            if (profile.boardLog.revertedLogs > 0) {
+                recommendations.push(`${profile.boardLog.revertedLogs} board log(s) required revert — double-check board thickness, quantity, and client before submitting.`);
+            }
+            if (profile.boardLog.totalLogs > 0 && profile.boardLog.metadataCompletenessRate < 70) {
+                recommendations.push(`Metadata completeness is ${profile.boardLog.metadataCompletenessRate}% — include vehicle registration, gate, and arrival time consistently.`);
+            }
         }
     }
     if (profile.attendance.expectedWorkdays > 0 && profile.attendance.attendanceRate < 80) {
@@ -338,6 +342,7 @@ async function buildOperatorProfileReport(operatorId, scope) {
         matchedClientActions,
         completeMetadataLogs,
         attendanceRate,
+        excludeBoardLogs: (0, shopFloorReporting_1.isExcludedFromBoardLogs)({ name: opMeta.name, email: opMeta.workEmail }),
     });
     const baseProfile = {
         operator: {

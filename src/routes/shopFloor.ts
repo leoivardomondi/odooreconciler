@@ -107,6 +107,7 @@ import { selectBestBoardComponent } from '../services/cuttingBoMReconciliationSe
 import { isAllowedAttendanceIp, normalizeIpAddress } from '../utils/siteAttendanceAccess';
 import { normalizeBoardLogRecipients } from '../utils/helpers';
 import { isAccountDeactivated } from '../utils/accountStatus';
+import { isExcludedFromBoardLogs } from '../utils/shopFloorReporting';
 import { verifyEmployeeAttendancePin } from '../services/operatorPinVerificationService';
 import { queryAll } from '../models/db';
 
@@ -1121,7 +1122,7 @@ export async function buildInstantMysqlOperatorDashboard(userEmail: string): Pro
       stockAlerts,
     ),
     teamPenalties,
-    isLimitedDashboard: false,
+    isLimitedDashboard: isExcludedFromBoardLogs({ name: employee?.name, email: normalizedEmail }),
     machines: userSnapshot?.data?.machines || [],
     error: null,
     reservedBoardsCount,

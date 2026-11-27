@@ -1,6 +1,7 @@
 import { getMpesaStatementBatchesWithOpenReviewCounts, getPendingShopFloorProcessesCount, getShopFloorDashboardSnapshot } from '../models/repositories';
 import { AuthSessionUser } from '../models/types';
 import { canAccessPath } from './authService';
+import { isExcludedFromBoardLogs } from '../utils/shopFloorReporting';
 
 type CacheEntry = {
   value: PwaBadgeBreakdown;
@@ -62,7 +63,9 @@ export async function getPwaBadgeBreakdown(authUser: AuthSessionUser | null | un
     ? (await getMpesaStatementBatchesWithOpenReviewCounts()).length
     : 0;
 
-  const shopFloorCount = authUser && canAccessPath(authUser, 'GET', '/shop-floor')
+  const shopFloorCount = authUser
+    && canAccessPath(authUser, 'GET', '/shop-floor')
+    && !isExcludedFromBoardLogs({ email: authUser.email })
     ? await countShopFloorDueTasks(authUser.email)
     : 0;
 

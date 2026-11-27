@@ -13,6 +13,7 @@ import { sendMailWithConfig } from './mailTransport';
 import { OdooClient } from './odooClient';
 import { getPwaBadgeBreakdown } from './pwaBadgeService';
 import { logEvent } from './logService';
+import { isExcludedFromBoardLogs } from '../utils/shopFloorReporting';
 
 export interface ShopFloorDueTask {
   id: string;
@@ -142,7 +143,7 @@ export async function getShopFloorDueTasksForUser(user: AuthSessionUser, channel
     }
 
     // 2. Incoming boards from local MySQL pending processes
-    if ((badge?.shopFloorCount || 0) > 0) {
+    if (!isExcludedFromBoardLogs({ email: user.email }) && (badge?.shopFloorCount || 0) > 0) {
       tasks.push({
         id: 'incoming-boards',
         title: 'Incoming boards need recording',
@@ -183,14 +184,17 @@ export async function getShopFloorDueTasksForUser(user: AuthSessionUser, channel
     }
   }
 
-  const badge = await getPwaBadgeBreakdown(user).catch(() => null);
-  if ((badge?.shopFloorCount || 0) > 0) {
-    tasks.push({
-      id: 'incoming-boards',
-      title: 'Incoming boards need recording',
-      detail: `${badge!.shopFloorCount} expected board item(s) still need to be counted and recorded.`,
-      url: '/shop-floor/boards',
-    });
+  const excludedFromBoards = isExcludedFromBoardLogs({ name: employee?.name, email: user.email });
+  if (!excludedFromBoards) {
+    const badge = await getPwaBadgeBreakdown(user).catch(() => null);
+    if ((badge?.shopFloorCount || 0) > 0) {
+      tasks.push({
+        id: 'incoming-boards',
+        title: 'Incoming boards need recording',
+        detail: `${badge!.shopFloorCount} expected board item(s) still need to be counted and recorded.`,
+        url: '/shop-floor/boards',
+      });
+    }
   }
 
   if (user.role === 'admin' || (user.apps || []).includes('shop-floor-admin')) {
@@ -224,12 +228,14 @@ function escapeHtml(value: unknown) {
 }
 
 async function getOperatorMorningSummary(user: AuthApprovedUser) {
+  if (isExcludedFromBoardLogs({ email: user.email })) return null;
   const settings = await getSettings();
   if (!hasOdooConfiguration(settings)) return null;
   const client = new OdooClient(settings.odoo);
   const employee = await client.findEmployeeByUserEmail(user.email)
     || await client.findEmployeeByWorkEmail(user.email);
   if (!employee) return null;
+  if (isExcludedFromBoardLogs({ name: employee.name, email: user.email })) return null;
 
   const reportDate = previousWorkingDate();
   const [boardLogging, attendance] = await Promise.all([

@@ -10,6 +10,7 @@ const mailTransport_1 = require("./mailTransport");
 const odooClient_1 = require("./odooClient");
 const pwaBadgeService_1 = require("./pwaBadgeService");
 const logService_1 = require("./logService");
+const shopFloorReporting_1 = require("../utils/shopFloorReporting");
 const NEVER_SHOP_FLOOR_REMINDER_EMAILS = new Set([
     'raphael@urbanvibeinteriordesign.co.ke',
 ]);
@@ -127,7 +128,7 @@ async function getShopFloorDueTasksForUser(user, channel = 'app') {
             }
         }
         // 2. Incoming boards from local MySQL pending processes
-        if ((badge?.shopFloorCount || 0) > 0) {
+        if (!(0, shopFloorReporting_1.isExcludedFromBoardLogs)({ email: user.email }) && (badge?.shopFloorCount || 0) > 0) {
             tasks.push({
                 id: 'incoming-boards',
                 title: 'Incoming boards need recording',
@@ -165,14 +166,17 @@ async function getShopFloorDueTasksForUser(user, channel = 'app') {
             tasks.push({ id: 'attendance-check-out', title: 'Check out is pending', detail: 'You checked in but have not checked out.', url: '/shop-floor?refresh=true' });
         }
     }
-    const badge = await (0, pwaBadgeService_1.getPwaBadgeBreakdown)(user).catch(() => null);
-    if ((badge?.shopFloorCount || 0) > 0) {
-        tasks.push({
-            id: 'incoming-boards',
-            title: 'Incoming boards need recording',
-            detail: `${badge.shopFloorCount} expected board item(s) still need to be counted and recorded.`,
-            url: '/shop-floor/boards',
-        });
+    const excludedFromBoards = (0, shopFloorReporting_1.isExcludedFromBoardLogs)({ name: employee?.name, email: user.email });
+    if (!excludedFromBoards) {
+        const badge = await (0, pwaBadgeService_1.getPwaBadgeBreakdown)(user).catch(() => null);
+        if ((badge?.shopFloorCount || 0) > 0) {
+            tasks.push({
+                id: 'incoming-boards',
+                title: 'Incoming boards need recording',
+                detail: `${badge.shopFloorCount} expected board item(s) still need to be counted and recorded.`,
+                url: '/shop-floor/boards',
+            });
+        }
     }
     if (user.role === 'admin' || (user.apps || []).includes('shop-floor-admin')) {
         const penalties = await client.getTeamPenalties(settings.stock).catch(() => null);
@@ -201,6 +205,8 @@ function escapeHtml(value) {
     })[character] || character);
 }
 async function getOperatorMorningSummary(user) {
+    if ((0, shopFloorReporting_1.isExcludedFromBoardLogs)({ email: user.email }))
+        return null;
     const settings = await (0, repositories_1.getSettings)();
     if (!(0, helpers_1.hasOdooConfiguration)(settings))
         return null;
@@ -208,6 +214,8 @@ async function getOperatorMorningSummary(user) {
     const employee = await client.findEmployeeByUserEmail(user.email)
         || await client.findEmployeeByWorkEmail(user.email);
     if (!employee)
+        return null;
+    if ((0, shopFloorReporting_1.isExcludedFromBoardLogs)({ name: employee.name, email: user.email }))
         return null;
     const reportDate = previousWorkingDate();
     const [boardLogging, attendance] = await Promise.all([

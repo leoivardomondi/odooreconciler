@@ -16,7 +16,7 @@ import { findExcludedPoBillVendor, PO_BILL_SUPPORTED_MIMETYPES } from './poBillA
 import { isBoardProductName } from './boardProductClassifier';
 import { isMatchingBoardProduct, isMatchingClient } from './boardLogStockMatcher';
 import { env } from '../utils/env';
-import { clampShopFloorReportingDate } from '../utils/shopFloorReporting';
+import { clampShopFloorReportingDate, isExcludedFromBoardLogs } from '../utils/shopFloorReporting';
 import { resolveFromProjectRoot } from '../utils/paths';
 import { extractSoNameFromOrigin } from '../utils/helpers';
 import { completedAttendanceCoversWorkday, classifyAttendanceRecords, type AttendanceRecord } from '../utils/attendanceReconciliation';
@@ -1418,9 +1418,11 @@ export function mergeOperationsBoardLoggingRows(
   }>,
 ): OperatorBoardLoggingRow[] {
   const normalizeName = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
+  const eligibleOperators = operators.filter((op) => !isExcludedFromBoardLogs({ name: op.name }));
+  const eligibleRawLogs = rawBoardLogging.filter((raw) => !isExcludedFromBoardLogs({ name: raw.name, email: raw.email }));
   const matchedRawIndices = new Set<number>();
 
-  const merged: OperatorBoardLoggingRow[] = operators.map((op) => {
+  const merged: OperatorBoardLoggingRow[] = eligibleOperators.map((op) => {
     const opNorm = normalizeName(op.name);
     let email = '';
     let records = 0;
@@ -1431,7 +1433,7 @@ export function mergeOperationsBoardLoggingRows(
     let pending = 0;
     let lastLoggedAt: string | null = null;
 
-    rawBoardLogging.forEach((raw, idx) => {
+    eligibleRawLogs.forEach((raw, idx) => {
       if (matchedRawIndices.has(idx)) return;
       const rawNorm = normalizeName(raw.name || '');
       if (!rawNorm) return;
@@ -1457,11 +1459,12 @@ export function mergeOperationsBoardLoggingRows(
 }
 
 export function buildBoardLoggingEncouragementNote(rows: OperatorBoardLoggingRow[]): string {
-  if (!rows.length) {
+  const eligibleRows = rows.filter((r) => !isExcludedFromBoardLogs({ name: r.name, email: r.email }));
+  if (!eligibleRows.length) {
     return 'NOTE: Operations operators are encouraged to lock in and consistently record every incoming board at intake before work orders are started.';
   }
 
-  const sorted = [...rows].sort((a, b) => b.records - a.records || b.boards - a.boards || a.name.localeCompare(b.name));
+  const sorted = [...eligibleRows].sort((a, b) => b.records - a.records || b.boards - a.boards || a.name.localeCompare(b.name));
   const totalRecords = sorted.reduce((sum, r) => sum + r.records, 0);
   if (totalRecords === 0) {
     return 'NOTE: No Operations operators recorded board intake logs during this period. The entire team is encouraged to lock in and consistently log every incoming board before starting work orders.';
