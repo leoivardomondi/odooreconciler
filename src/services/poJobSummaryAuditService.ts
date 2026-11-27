@@ -14,6 +14,12 @@ import {
 } from './boardProductClassifier';
 import { logEvent } from './logService';
 import { createTodoActivity, findOpenActivities, closeActivities } from './odooActivityService';
+import {
+  findAnyOpenMissingJobSummaryActivity,
+  postSingleMissingJobSummarySaleOrderNote,
+  recordMissingJobSummaryActivityCreated,
+  withSaleOrderMissingJsLock,
+} from './jobSummaryReminderService';
 import { OdooClient } from './odooClient';
 import { getPurchaseOrderLines } from './poBillAutomationService';
 import { parseJobSummaryPdf } from './pdfParser';
@@ -676,20 +682,22 @@ export async function auditPurchaseOrderAgainstJobSummary(
   }
 
   // CASE 1: Job Summary is NOT FOUND
-  // User Rule: "what if job summary is not found, create activity for the user Charles to await or request job summary to be attached ASAP to the associated sales Order log note area, before approving the purchase order, this should appear when PO is confirmed"
+  // Unified Rule: At most ONE missing-Job-Summary activity and ONE concise "Job Summary Required" note on the Sales Order
+  // (never duplicated by Sales Background Scheduler, sibling POs, mirrored PO chatter, or concurrent runs).
   if (!parsed || (!parsed.sheetMaterials?.length && !parsed.items?.length)) {
-    const charlesUser = await findOdooUserByTerm(client, 'Charles');
-    const targetActivityUserId = charlesUser?.userId || buyerUserId;
+    return withSaleOrderMissingJsLock(so.id, async () => {
+      const charlesUser = await findOdooUserByTerm(client, 'Charles');
+      const targetActivityUserId = charlesUser?.userId || buyerUserId;
 
-    if (targetActivityUserId) {
-      const existing = await findOpenActivities(client, {
-        modelName: 'purchase.order',
-        recordId: po.id,
-        summary: PO_JOB_SUMMARY_MISSING_ACTIVITY_SUMMARY,
+      const existingActivity = await findAnyOpenMissingJobSummaryActivity(client, {
+        saleOrderId: so.id,
+        saleOrderName: so.name,
+        purchaseOrderId: po.id,
       });
 
-      if (existing.length === 0) {
-        await createTodoActivity(client, {
+      let activityCreated = false;
+      if (targetActivityUserId && !existingActivity.exists) {
+        const createdId = await createTodoActivity(client, {
           modelName: 'purchase.order',
           recordId: po.id,
           userId: targetActivityUserId,
@@ -699,55 +707,43 @@ export async function auditPurchaseOrderAgainstJobSummary(
             `Please await or request the Job Summary PDF to be attached ASAP to the associated Sales Order log note area before approving/releasing Purchase Order ${po.name}.`,
           ],
         });
+        recordMissingJobSummaryActivityCreated(so.id, createdId);
+        activityCreated = true;
       }
-    }
 
-    const charlesMention = charlesUser?.partnerId
-      ? `<a href="#" data-oe-model="res.partner" data-oe-id="${charlesUser.partnerId}">@${charlesUser.name}</a>`
-      : '@Charles';
-    const notifyPartnerIds = charlesUser?.partnerId ? [charlesUser.partnerId] : undefined;
+      // Post ONLY ONE clean "Job Summary Required for PO ..." note on the Sales Order chatter (never mirrored from PO chatter)
+      const soNoteResult = await postSingleMissingJobSummarySaleOrderNote(client, {
+        saleOrderId: so.id,
+        poName: po.name,
+      });
 
-    // Post chatter note on PO if not already alerted (postModelChatterMessage checks dedupeSnippet once internally)
-    await client.postModelChatterMessage(
-      'purchase.order',
-      po.id,
-      `<p>⚠️ <strong>Job Summary Missing Alert (${charlesMention}):</strong></p>` +
-        `<p>Associated Sales Order <strong>${so.name}</strong> has no Job Summary PDF attached.</p>` +
-        `<p>Please await or request Job Summary to be attached ASAP to the associated Sales Order log note area before approving Purchase Order <strong>${po.name}</strong>.</p>`,
-      notifyPartnerIds,
-      { skipSoSync: true, dedupeSnippet: 'Job Summary Missing Alert' },
-    );
+      await logEvent('warn', 'PO audit: Job Summary not found on associated Sales Order', {
+        poId: po.id,
+        poName: po.name,
+        soId: so.id,
+        soName: so.name,
+        assignedUserId: targetActivityUserId,
+        activityCreated,
+        existingActivityId: existingActivity.activityId,
+        existingActivityModel: existingActivity.sourceModel,
+        soNotePosted: soNoteResult.posted,
+      });
 
-    // Cross-alert note on Sales Order chatter if not already alerted
-    await client.postModelChatterMessage(
-      'sale.order',
-      so.id,
-      `<p>⚠️ <strong>Job Summary Required for PO ${po.name}:</strong></p>` +
-        `<p>Purchase Order <strong>${po.name}</strong> is confirmed, but no Job Summary PDF is attached to this Sales Order. Please attach the Job Summary PDF ASAP in this log note area so procurement can be verified.</p>`,
-      undefined,
-      { skipSoSync: true, dedupeSnippet: `Job Summary Required for PO ${po.name}` },
-    );
-
-    await logEvent('warn', 'PO audit: Job Summary not found, activity created for Charles', {
-      poId: po.id,
-      poName: po.name,
-      soId: so.id,
-      soName: so.name,
-      assignedUserId: targetActivityUserId,
+      return {
+        poId: po.id,
+        poName: po.name,
+        poState: po.state || null,
+        soId: so.id,
+        soName: so.name,
+        hasShortfall: true,
+        shortfalls: [`Job Summary not found for associated Sales Order ${so.name}.`],
+        verifiedItems: [],
+        actionTaken: 'no_job_summary_found',
+        summary: activityCreated
+          ? `No Job Summary found for ${so.name}. Created activity for Charles to await Job Summary attachment before approving PO ${po.name}.`
+          : `No Job Summary found for ${so.name}. Reused existing missing Job Summary activity without duplicating.`,
+      };
     });
-
-    return {
-      poId: po.id,
-      poName: po.name,
-      poState: po.state || null,
-      soId: so.id,
-      soName: so.name,
-      hasShortfall: true,
-      shortfalls: [`Job Summary not found for associated Sales Order ${so.name}.`],
-      verifiedItems: [],
-      actionTaken: 'no_job_summary_found',
-      summary: `No Job Summary found for ${so.name}. Created activity for Charles to await Job Summary attachment before approving PO ${po.name}.`,
-    };
   }
 
   // CASE 2: Job Summary IS FOUND — Close any open "AWAIT JOB SUMMARY ATTACHMENT" activity on this PO

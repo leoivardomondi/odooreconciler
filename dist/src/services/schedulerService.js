@@ -1280,6 +1280,7 @@ async function runSchedulerCycle(trigger = 'manual', options = {}) {
             },
         }).catch(() => undefined);
         const orderStages = new Map();
+        const missingJobSummaryCheckedOrderIds = new Set();
         const processOrder = async (order) => {
             const markOrderStage = async (stage) => {
                 orderStages.set(order.id, stage);
@@ -1320,7 +1321,14 @@ async function runSchedulerCycle(trigger = 'manual', options = {}) {
                             timezone: reminderWindow.timeZone,
                         };
                     }
+                    else if (missingJobSummaryCheckedOrderIds.has(order.id)) {
+                        reminderOutcome = {
+                            status: 'already_checked_in_run',
+                            reason: `Skipped duplicate missing Job Summary check within the same scheduler run for ${order.name}.`,
+                        };
+                    }
                     else {
+                        missingJobSummaryCheckedOrderIds.add(order.id);
                         try {
                             await markOrderStage('missing_job_summary_reminder');
                             reminderOutcome = await (0, jobSummaryReminderService_1.ensureMissingJobSummaryReminder)(client, order, settings.parser.filenameKeyword, attachments);
@@ -1360,7 +1368,7 @@ async function runSchedulerCycle(trigger = 'manual', options = {}) {
                 }
                 let reminderCloseResult = null;
                 try {
-                    reminderCloseResult = await (0, jobSummaryReminderService_1.closeOpenJobSummaryReminderActivities)(client, order.id, `Job Summary PDF ${latestJobSummary.name} was detected.`);
+                    reminderCloseResult = await (0, jobSummaryReminderService_1.closeOpenJobSummaryReminderActivities)(client, order.id, `Job Summary PDF ${latestJobSummary.name} was detected.`, order.name);
                 }
                 catch (reminderError) {
                     const reminderMessage = reminderError instanceof Error ? reminderError.message : 'Unknown reminder close error.';

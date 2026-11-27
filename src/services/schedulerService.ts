@@ -1526,6 +1526,7 @@ export async function runSchedulerCycle(
     }).catch(() => undefined);
 
     const orderStages = new Map<number, string>();
+    const missingJobSummaryCheckedOrderIds = new Set<number>();
     const processOrder = async (order: (typeof orders)[number]) => {
       const markOrderStage = async (stage: string) => {
         orderStages.set(order.id, stage);
@@ -1570,7 +1571,13 @@ export async function runSchedulerCycle(
               allowedWindow: reminderWindow.allowedWindow,
               timezone: reminderWindow.timeZone,
             };
+          } else if (missingJobSummaryCheckedOrderIds.has(order.id)) {
+            reminderOutcome = {
+              status: 'already_checked_in_run',
+              reason: `Skipped duplicate missing Job Summary check within the same scheduler run for ${order.name}.`,
+            };
           } else {
+            missingJobSummaryCheckedOrderIds.add(order.id);
             try {
               await markOrderStage('missing_job_summary_reminder');
               reminderOutcome = await ensureMissingJobSummaryReminder(
@@ -1621,6 +1628,7 @@ export async function runSchedulerCycle(
             client,
             order.id,
             `Job Summary PDF ${latestJobSummary.name} was detected.`,
+            order.name,
           );
         } catch (reminderError) {
           const reminderMessage =
