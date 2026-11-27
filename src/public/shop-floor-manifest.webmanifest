@@ -1,10 +1,10 @@
 {
   "name": "SHOP FLOOR",
   "short_name": "SHOP FLOOR",
-  "description": "Urban Vibe Shop Floor kiosk app for starting, pausing, and finishing Odoo manufacturing work orders.",
-  "id": "/public/shop-floor",
+  "description": "Urban Vibe Shop Floor app for managing work orders, operations, and factory production.",
+  "id": "/shop-floor-app",
   "start_url": "/public/shop-floor",
-  "scope": "/public/shop-floor",
+  "scope": "/",
   "display": "standalone",
   "display_override": ["window-controls-overlay", "standalone"],
   "orientation": "any",
@@ -16,13 +16,39 @@
       "src": "/public/icons/odoo-shop-floor-192.png",
       "sizes": "192x192",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "/public/icons/odoo-shop-floor-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
     },
     {
       "src": "/public/icons/odoo-shop-floor-512.png",
       "sizes": "512x512",
       "type": "image/png",
-      "purpose": "any maskable"
+      "purpose": "any"
+    },
+    {
+      "src": "/public/icons/odoo-shop-floor-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "All Operations",
+      "short_name": "Operations",
+      "url": "/public/shop-floor",
+      "icons": [{ "src": "/public/icons/odoo-shop-floor-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "Board Logs",
+      "short_name": "Board Logs",
+      "url": "/public/board-logs",
+      "icons": [{ "src": "/public/icons/odoo-shop-floor-192.png", "sizes": "192x192", "type": "image/png" }]
     }
   ]
 }

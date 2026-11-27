@@ -1796,7 +1796,13 @@ router.get('/shop-floor', async (req, res) => {
         const featureFlags = await featureFlagsPromise;
         res.render('shop-floor', {
             pageTitle: 'Shop Floor',
-            appName: env_1.env.APP_NAME,
+            appName: 'SHOP FLOOR',
+            pwaManifest: '/public/shop-floor/manifest.webmanifest',
+            pwaAppName: 'SHOP FLOOR',
+            pwaThemeColor: '#714B67',
+            pwaFavicon: '/public/icons/odoo-shop-floor-192.png',
+            pwaIcon512: '/public/icons/odoo-shop-floor-512.png',
+            pwaSkipRootSw: true,
             data,
             breakdownCatalog: machineBreakdownCatalog_1.MACHINE_BREAKDOWN_CATALOG,
             authUser: req.authUser,
@@ -2847,6 +2853,13 @@ async function handlePublicBoardLogs(req, res) {
         const customers = await (0, customerMirrorService_1.getCustomersForPage)().catch(() => []);
         res.render('public-board-logs', {
             pageTitle: 'Board Intake Logs',
+            appName: 'SHOP FLOOR',
+            pwaManifest: '/public/shop-floor/manifest.webmanifest',
+            pwaAppName: 'SHOP FLOOR',
+            pwaThemeColor: '#714B67',
+            pwaFavicon: '/public/icons/odoo-shop-floor-192.png',
+            pwaIcon512: '/public/icons/odoo-shop-floor-512.png',
+            pwaSkipRootSw: true,
             dateGroups,
             summary,
             targetDate,
@@ -3660,7 +3673,13 @@ router.get('/shop-floor/boards', async (req, res) => {
         }
         res.render('shop-floor-boards', {
             pageTitle: 'Board Intake & Auto-Reserve',
-            appName: env_1.env.APP_NAME,
+            appName: 'SHOP FLOOR',
+            pwaManifest: '/public/shop-floor/manifest.webmanifest',
+            pwaAppName: 'SHOP FLOOR',
+            pwaThemeColor: '#714B67',
+            pwaFavicon: '/public/icons/odoo-shop-floor-192.png',
+            pwaIcon512: '/public/icons/odoo-shop-floor-512.png',
+            pwaSkipRootSw: true,
             products,
             stockMirror,
             recentIntakes,

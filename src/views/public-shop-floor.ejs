@@ -417,8 +417,8 @@
         </div>
       </div>
 
-      <!-- Install Desktop PWA Button (shown when installable) -->
-      <button type="button" class="odoo-nav-pill d-none align-items-center gap-1" id="installShopFloorPwaBtn" title="Install SHOP FLOOR desktop app">
+      <!-- Install Desktop PWA Button -->
+      <button type="button" class="odoo-nav-pill d-inline-flex align-items-center gap-1" id="installShopFloorPwaBtn" title="Install SHOP FLOOR desktop app">
         <img src="/public/icons/odoo-shop-floor-192.png" alt="" width="15" height="15" style="border-radius: 3px;" />
         <span>Install App</span>
       </button>
@@ -1743,47 +1743,97 @@
     if ('serviceWorker' in navigator) {
       window.addEventListener('load', function () {
         navigator.serviceWorker
-          .register('/public/shop-floor/sw.js', { scope: '/public/shop-floor' })
+          .register('/public/shop-floor/sw.js', { scope: '/' })
           .catch(function () {});
       });
     }
 
     let deferredShopFloorInstallPrompt = null;
+    const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+
     window.addEventListener('beforeinstallprompt', function (event) {
       event.preventDefault();
       deferredShopFloorInstallPrompt = event;
       const installPwaBtn = document.getElementById('installShopFloorPwaBtn');
-      if (installPwaBtn) {
-        installPwaBtn.classList.remove('d-none');
-        installPwaBtn.classList.add('d-inline-flex');
+      if (installPwaBtn && !isStandalone) {
+        installPwaBtn.style.display = 'inline-flex';
       }
     });
+
     window.addEventListener('appinstalled', function () {
       deferredShopFloorInstallPrompt = null;
       const installPwaBtn = document.getElementById('installShopFloorPwaBtn');
       if (installPwaBtn) {
-        installPwaBtn.classList.add('d-none');
-        installPwaBtn.classList.remove('d-inline-flex');
+        installPwaBtn.style.display = 'none';
       }
       if (typeof window.appNotify === 'function') {
         window.appNotify('SHOP FLOOR desktop app installed!', { type: 'success', title: 'Installed' });
       }
     });
+
     document.addEventListener('DOMContentLoaded', function () {
       const installPwaBtn = document.getElementById('installShopFloorPwaBtn');
       if (installPwaBtn) {
+        if (isStandalone) {
+          installPwaBtn.style.display = 'none';
+          return;
+        }
         installPwaBtn.addEventListener('click', async function () {
-          if (!deferredShopFloorInstallPrompt) return;
-          deferredShopFloorInstallPrompt.prompt();
-          await deferredShopFloorInstallPrompt.userChoice.catch(function () { return null; });
-          deferredShopFloorInstallPrompt = null;
-          installPwaBtn.classList.add('d-none');
-          installPwaBtn.classList.remove('d-inline-flex');
+          if (deferredShopFloorInstallPrompt) {
+            deferredShopFloorInstallPrompt.prompt();
+            const choice = await deferredShopFloorInstallPrompt.userChoice.catch(function () { return null; });
+            if (choice && choice.outcome === 'accepted') {
+              deferredShopFloorInstallPrompt = null;
+              installPwaBtn.style.display = 'none';
+            }
+          } else {
+            const modalEl = document.getElementById('installShopFloorModal');
+            if (modalEl && window.bootstrap && window.bootstrap.Modal) {
+              const modal = window.bootstrap.Modal.getOrCreateInstance(modalEl);
+              modal.show();
+            } else if (typeof window.appNotify === 'function') {
+              window.appNotify('To install SHOP FLOOR, click the Install icon in your browser address bar or menu.', { title: 'Install SHOP FLOOR', type: 'info' });
+            }
+          }
         });
       }
     });
   })();
 </script>
+
+<!-- Install SHOP FLOOR Guide Modal -->
+<div class="modal fade" id="installShopFloorModal" tabindex="-1" aria-labelledby="installShopFloorModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered" style="max-width: 480px;">
+    <div class="modal-content" style="border-radius: 16px; border: none; box-shadow: 0 20px 40px rgba(0,0,0,0.18);">
+      <div class="modal-header border-0 pb-0 pt-4 px-4 align-items-start">
+        <div class="d-flex align-items-center gap-3">
+          <img src="/public/icons/odoo-shop-floor-192.png" alt="Shop Floor" width="56" height="56" style="border-radius: 14px; box-shadow: 0 4px 12px rgba(113,75,103,0.25);" />
+          <div>
+            <h5 class="modal-title fw-bold mb-0 text-dark" id="installShopFloorModalLabel" style="font-size: 1.25rem;">Install SHOP FLOOR</h5>
+            <small class="text-muted">Dedicated Kiosk & Factory App</small>
+          </div>
+        </div>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body px-4 py-3">
+        <p class="text-muted small mb-3">
+          Install SHOP FLOOR on your desktop, laptop, or tablet for instant full-screen kiosk access, offline support, and dedicated factory shortcuts.
+        </p>
+        <div class="p-3 bg-light rounded-3 mb-2 border">
+          <div class="fw-semibold text-dark small mb-1">💻 On Chrome or Edge (Desktop):</div>
+          <div class="text-muted small">Look for the <strong>Install</strong> icon in the address bar (<i class="bi bi-box-arrow-down"></i> or <i class="bi bi-plus-circle"></i>), or open the browser menu (<strong>⋮</strong>) and choose <strong>"Install SHOP FLOOR"</strong>.</div>
+        </div>
+        <div class="p-3 bg-light rounded-3 border">
+          <div class="fw-semibold text-dark small mb-1">📱 On Safari / iPad / iPhone:</div>
+          <div class="text-muted small">Tap the <strong>Share</strong> button (<i class="bi bi-share"></i>) in Safari, then select <strong>"Add to Home Screen"</strong>.</div>
+        </div>
+      </div>
+      <div class="modal-footer border-0 pt-0 px-4 pb-4">
+        <button type="button" class="btn btn-secondary px-4 rounded-pill" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <%- include('partials/footer') %>
 

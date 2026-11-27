@@ -1,4 +1,4 @@
-const CACHE_NAME = 'urban-vibe-shop-floor-pwa-v1';
+const CACHE_NAME = 'urban-vibe-shop-floor-pwa-v2';
 const STATIC_ASSETS = [
   '/public/vendor/bootstrap/bootstrap.min.css',
   '/public/vendor/bootstrap/bootstrap.bundle.min.js',
@@ -6,6 +6,7 @@ const STATIC_ASSETS = [
   '/public/js/main.js',
   '/public/icons/odoo-shop-floor-192.png',
   '/public/icons/odoo-shop-floor-512.png',
+  '/public/shop-floor/manifest.webmanifest',
 ];
 
 self.addEventListener('install', (event) => {
@@ -40,6 +41,8 @@ self.addEventListener('fetch', (event) => {
   if (
     request.mode === 'navigate' ||
     url.pathname.startsWith('/public/shop-floor') ||
+    url.pathname.startsWith('/public-shop-floor') ||
+    url.pathname.startsWith('/shop-floor') ||
     url.pathname.startsWith('/public/board-logs')
   ) {
     event.respondWith(

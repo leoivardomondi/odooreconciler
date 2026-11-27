@@ -3541,3 +3541,13 @@ document.addEventListener('click', function(e) {
     </form>
   </div>
 </div>
+
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', function () {
+      navigator.serviceWorker
+        .register('/public/shop-floor/sw.js', { scope: '/' })
+        .catch(function () {});
+    });
+  }
+</script>

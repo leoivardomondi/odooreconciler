@@ -168,13 +168,13 @@ app.get('/service-worker.js', (_req: Request, res: Response) => {
   res.sendFile('sw.js', { root: publicPath });
 });
 
-app.get('/public/shop-floor/manifest.webmanifest', (_req: Request, res: Response) => {
+app.get(['/public/shop-floor/manifest.webmanifest', '/shop-floor/manifest.webmanifest', '/public-shop-floor/manifest.webmanifest'], (_req: Request, res: Response) => {
   res.type('application/manifest+json');
   res.sendFile('shop-floor-manifest.webmanifest', { root: publicPath });
 });
 
-app.get('/public/shop-floor/sw.js', (_req: Request, res: Response) => {
-  res.setHeader('Service-Worker-Allowed', '/public/shop-floor');
+app.get(['/public/shop-floor/sw.js', '/shop-floor/sw.js', '/public-shop-floor/sw.js'], (_req: Request, res: Response) => {
+  res.setHeader('Service-Worker-Allowed', '/');
   res.type('application/javascript');
   res.sendFile('shop-floor-sw.js', { root: publicPath });
 });

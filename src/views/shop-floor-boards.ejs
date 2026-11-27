@@ -4040,4 +4040,14 @@
         }) ();
     </script>
 
+    <script>
+      if ('serviceWorker' in navigator) {
+        window.addEventListener('load', function () {
+          navigator.serviceWorker
+            .register('/public/shop-floor/sw.js', { scope: '/' })
+            .catch(function () {});
+        });
+      }
+    </script>
+
     <%- include('partials/footer') %>

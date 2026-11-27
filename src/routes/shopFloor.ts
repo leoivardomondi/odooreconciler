@@ -2227,7 +2227,13 @@ router.get('/shop-floor', async (req: Request, res: Response) => {
     const featureFlags = await featureFlagsPromise;
     res.render('shop-floor', {
       pageTitle: 'Shop Floor',
-      appName: env.APP_NAME,
+      appName: 'SHOP FLOOR',
+      pwaManifest: '/public/shop-floor/manifest.webmanifest',
+      pwaAppName: 'SHOP FLOOR',
+      pwaThemeColor: '#714B67',
+      pwaFavicon: '/public/icons/odoo-shop-floor-192.png',
+      pwaIcon512: '/public/icons/odoo-shop-floor-512.png',
+      pwaSkipRootSw: true,
       data,
       breakdownCatalog: MACHINE_BREAKDOWN_CATALOG,
       authUser: req.authUser,
@@ -3335,6 +3341,13 @@ async function handlePublicBoardLogs(req: Request, res: Response): Promise<void>
 
     res.render('public-board-logs', {
       pageTitle: 'Board Intake Logs',
+      appName: 'SHOP FLOOR',
+      pwaManifest: '/public/shop-floor/manifest.webmanifest',
+      pwaAppName: 'SHOP FLOOR',
+      pwaThemeColor: '#714B67',
+      pwaFavicon: '/public/icons/odoo-shop-floor-192.png',
+      pwaIcon512: '/public/icons/odoo-shop-floor-512.png',
+      pwaSkipRootSw: true,
       dateGroups,
       summary,
       targetDate,
@@ -4279,7 +4292,13 @@ router.get('/shop-floor/boards', async (req: Request, res: Response) => {
 
     res.render('shop-floor-boards', {
       pageTitle: 'Board Intake & Auto-Reserve',
-      appName: env.APP_NAME,
+      appName: 'SHOP FLOOR',
+      pwaManifest: '/public/shop-floor/manifest.webmanifest',
+      pwaAppName: 'SHOP FLOOR',
+      pwaThemeColor: '#714B67',
+      pwaFavicon: '/public/icons/odoo-shop-floor-192.png',
+      pwaIcon512: '/public/icons/odoo-shop-floor-512.png',
+      pwaSkipRootSw: true,
       products,
       stockMirror,
       recentIntakes,
