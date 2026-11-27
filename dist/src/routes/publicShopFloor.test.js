@@ -212,3 +212,31 @@ function createMockRes() {
     strict_1.default.match(syncRes.getPayload()?.message, /locked mode/i);
     shopFloor_1.inFlightWorkOrderSyncs.delete(moId);
 });
+(0, node_test_1.default)('logOperatorMoChatterNote logs operator note on Manufacturing Order for start, pause, and close', async () => {
+    const calls = [];
+    const mockClient = {
+        postModelChatterMessage: async (model, id, msg) => {
+            calls.push({ model, id, msg });
+            return 1;
+        },
+    };
+    // 1. Started
+    await (0, shopFloor_1.logOperatorMoChatterNote)(mockClient, 5501, 'start', 'Joel Ochango');
+    strict_1.default.equal(calls[0].model, 'mrp.production');
+    strict_1.default.equal(calls[0].id, 5501);
+    strict_1.default.match(calls[0].msg, /Work Order Started/);
+    strict_1.default.match(calls[0].msg, /Joel Ochango/);
+    strict_1.default.match(calls[0].msg, /EAT/);
+    // 2. Paused
+    await (0, shopFloor_1.logOperatorMoChatterNote)(mockClient, 5501, 'pause', 'Onyango Bitcher Akulo');
+    strict_1.default.equal(calls[1].model, 'mrp.production');
+    strict_1.default.equal(calls[1].id, 5501);
+    strict_1.default.match(calls[1].msg, /Work Order Paused/);
+    strict_1.default.match(calls[1].msg, /Onyango Bitcher Akulo/);
+    // 3. Closed / Completed
+    await (0, shopFloor_1.logOperatorMoChatterNote)(mockClient, 5501, 'finish', 'Thomas Ollinga');
+    strict_1.default.equal(calls[2].model, 'mrp.production');
+    strict_1.default.equal(calls[2].id, 5501);
+    strict_1.default.match(calls[2].msg, /Work Order Closed \/ Completed/);
+    strict_1.default.match(calls[2].msg, /Thomas Ollinga/);
+});

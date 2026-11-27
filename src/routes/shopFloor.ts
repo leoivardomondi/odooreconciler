@@ -3818,6 +3818,63 @@ export async function handlePublicShopFloorVerifyPin(req: Request, res: Response
   }
 }
 
+/**
+ * Logs an operator tracking note directly into the Odoo Manufacturing Order (mrp.production) chatter
+ * whenever a work order is started, paused, or closed.
+ */
+export async function logOperatorMoChatterNote(
+  client: { postModelChatterMessage: (model: string, id: number, msg: string, partnerIds?: number[], options?: any) => Promise<any> },
+  moId: number,
+  action: 'start' | 'pause' | 'finish' | 'resume',
+  operatorName: string,
+): Promise<void> {
+  try {
+    const timeEat = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Africa/Nairobi',
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    }).format(new Date());
+
+    let icon = '▶️';
+    let actionTitle = 'Work Order Started';
+    if (action === 'pause') {
+      icon = '⏸️';
+      actionTitle = 'Work Order Paused';
+    } else if (action === 'resume') {
+      icon = '▶️';
+      actionTitle = 'Work Order Resumed';
+    } else if (action === 'finish') {
+      icon = '✅';
+      actionTitle = 'Work Order Closed / Completed';
+    }
+
+    const noteHtml = `<div>` +
+      `<p style="margin:0 0 4px 0; font-size:13px;">${icon} <strong>${actionTitle}</strong></p>` +
+      `<p style="margin:0; font-size:12px; color:#374151;">` +
+      `Operator: <strong>${operatorName || 'Factory Operator'}</strong><br/>` +
+      `Time: <strong>${timeEat} EAT</strong>` +
+      `</p>` +
+      `</div>`;
+
+    await client.postModelChatterMessage(
+      'mrp.production',
+      moId,
+      noteHtml,
+      undefined,
+      {
+        skipSoSync: false,
+        dedupeWindowMs: 5000,
+      },
+    );
+  } catch (err) {
+    console.warn(`[ShopFloor] Could not log ${action} operator note on MO ${moId}:`, err);
+  }
+}
+
 export async function handlePublicWorkOrderAction(req: Request, res: Response) {
   const moId = Number(req.params.id || req.body.moId || req.body.id);
   const action = req.body.action;
@@ -3930,6 +3987,7 @@ export async function handlePublicWorkOrderAction(req: Request, res: Response) {
         } else {
           await client.advanceManufacturingOrder(moId, action, operatorId, stockCheck);
         }
+        await logOperatorMoChatterNote(client, moId, isResuming ? 'resume' : action, operatorName);
         await optimisticallyUpdateSharedWorkOrderState(moId, targetState, operatorName);
         const sharedMoEntry = shopFloorCache.getEntry('shop-floor:shared-work-orders:v1');
         if (sharedMoEntry) {
@@ -4457,6 +4515,7 @@ async function handleAdvanceMo(req: Request, res: Response) {
         const settings = await getSettings();
         const client = new OdooClient(settings.odoo);
         const advanceResult = await client.advanceManufacturingOrder(moId, action, employeeId, stockCheck || undefined);
+        await logOperatorMoChatterNote(client, moId, isResuming ? 'resume' : action, actorName);
         await optimisticallyUpdateSharedWorkOrderState(moId, targetState, actorName, viewedEmail);
         const sharedMoEntry = shopFloorCache.getEntry('shop-floor:shared-work-orders:v1');
         if (sharedMoEntry) {
@@ -4595,6 +4654,7 @@ async function handlePauseMo(req: Request, res: Response) {
     void (async () => {
       try {
         await client.pauseManufacturingOrder(moId, { createBackorder, qtyProduced }, employeeId);
+        await logOperatorMoChatterNote(client, moId, 'pause', actorName);
         await optimisticallyUpdateSharedWorkOrderState(moId, 'paused', actorName, viewedEmail);
         const sharedMoEntry = shopFloorCache.getEntry('shop-floor:shared-work-orders:v1');
         if (sharedMoEntry) {

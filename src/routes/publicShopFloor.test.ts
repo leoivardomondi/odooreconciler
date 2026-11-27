@@ -6,6 +6,7 @@ import {
   handlePublicShopFloorVerifyPin,
   handlePublicWorkOrderAction,
   inFlightWorkOrderSyncs,
+  logOperatorMoChatterNote,
 } from './shopFloor';
 
 test('groupWorkOrdersByAreaAndClient groups work orders by operation area and then by client name', () => {
@@ -237,4 +238,36 @@ test('handlePublicWorkOrderAction rejects with 409 and locked mode notification 
   assert.match(syncRes.getPayload()?.message, /locked mode/i);
 
   inFlightWorkOrderSyncs.delete(moId);
+});
+
+test('logOperatorMoChatterNote logs operator note on Manufacturing Order for start, pause, and close', async () => {
+  const calls: { model: string; id: number; msg: string }[] = [];
+  const mockClient = {
+    postModelChatterMessage: async (model: string, id: number, msg: string) => {
+      calls.push({ model, id, msg });
+      return 1;
+    },
+  };
+
+  // 1. Started
+  await logOperatorMoChatterNote(mockClient as any, 5501, 'start', 'Joel Ochango');
+  assert.equal(calls[0].model, 'mrp.production');
+  assert.equal(calls[0].id, 5501);
+  assert.match(calls[0].msg, /Work Order Started/);
+  assert.match(calls[0].msg, /Joel Ochango/);
+  assert.match(calls[0].msg, /EAT/);
+
+  // 2. Paused
+  await logOperatorMoChatterNote(mockClient as any, 5501, 'pause', 'Onyango Bitcher Akulo');
+  assert.equal(calls[1].model, 'mrp.production');
+  assert.equal(calls[1].id, 5501);
+  assert.match(calls[1].msg, /Work Order Paused/);
+  assert.match(calls[1].msg, /Onyango Bitcher Akulo/);
+
+  // 3. Closed / Completed
+  await logOperatorMoChatterNote(mockClient as any, 5501, 'finish', 'Thomas Ollinga');
+  assert.equal(calls[2].model, 'mrp.production');
+  assert.equal(calls[2].id, 5501);
+  assert.match(calls[2].msg, /Work Order Closed \/ Completed/);
+  assert.match(calls[2].msg, /Thomas Ollinga/);
 });
