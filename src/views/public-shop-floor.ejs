@@ -165,6 +165,9 @@
     border-color: var(--odoo-primary);
     box-shadow: 0 3px 8px rgba(113, 75, 103, 0.25);
   }
+  .area-tab-btn.active .area-icon-svg {
+    color: #ffffff !important;
+  }
   .area-tab-btn.active .badge {
     background: #ffffff !important;
     color: var(--odoo-primary) !important;
@@ -453,19 +456,52 @@
           <span class="badge rounded-pill bg-light text-dark px-2 py-0.5"><%= summary.totalOrders %></span>
         </button>
 
-        <% (areaGroups || []).forEach((ag) => { 
-             let icon = '⚙️';
-             if (ag.areaName.includes('Table Saw')) icon = '🪚';
-             else if (ag.areaName.includes('Edge Banding')) icon = '⚡';
-             else if (ag.areaName.includes('Panel Rack')) icon = '📦';
-             else if (ag.areaName.includes('Sharpening')) icon = '🔪';
+        <%
+          function getAreaIconSvg(areaName, size) {
+            const s = size || 18;
+            const n = String(areaName || '').toLowerCase();
+            if (n.includes('table saw') || n.includes('saw') || n.includes('cutting')) {
+              // Circular Saw Blade: disc with sharp angled perimeter cutting teeth, expansion slots, and arbor center hole
+              return '<svg class="area-icon-svg" viewBox="0 0 24 24" width="' + s + '" height="' + s + '" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -2.5px; flex-shrink: 0;" aria-label="Circular saw blade">' +
+                '<path d="M12 2.2l1.3 2.5 2.7-.9.5 2.8 2.8.5-.3 2.8 2.5 1.3-1.1 2.6 1.9 2.1-1.9 2 .8 2.7-2.6 1.2-.1 2.9-2.8.4-.5 2.8-2.6-.9L12 21.8l-1.3-2.5-2.7.9-.5-2.8-2.8-.5.3-2.8-2.5-1.3 1.1-2.6-1.9-2.1 1.9-2-.8-2.7 2.6-1.2.1-2.9 2.8-.4.5-2.8 2.6.9L12 2.2z" fill="currentColor" fill-opacity="0.22" stroke="currentColor" stroke-width="1.6"/>' +
+                '<circle cx="12" cy="12" r="3" fill="currentColor" fill-opacity="0.1" stroke="currentColor" stroke-width="1.8"/>' +
+                '<circle cx="12" cy="12" r="1.2" fill="currentColor"/>' +
+                '<path d="M12 5.5v1.8M12 16.7v1.8M5.5 12h1.8M16.7 12h1.8" stroke="currentColor" stroke-width="1.2"/>' +
+                '</svg>';
+            }
+            if (n.includes('edge banding') || n.includes('edgeband') || n.includes('edging')) {
+              // Edge Band Roll: roll of edgeband tape with concentric coils and unrolling tape feed
+              return '<svg class="area-icon-svg" viewBox="0 0 24 24" width="' + s + '" height="' + s + '" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -2.5px; flex-shrink: 0;" aria-label="Edge band roll">' +
+                '<circle cx="9.5" cy="11.5" r="7.5" fill="currentColor" fill-opacity="0.2"/>' +
+                '<circle cx="9.5" cy="11.5" r="5" stroke-dasharray="1.5 2"/>' +
+                '<circle cx="9.5" cy="11.5" r="2.5" fill="currentColor"/>' +
+                '<path d="M9.5 19H21a1.5 1.5 0 0 0 1.5-1.5v-1a1.5 1.5 0 0 0-1.5-1.5h-5" stroke-width="2"/>' +
+                '<path d="M4 14.5l-1.5 1.5" stroke-width="1.5"/>' +
+                '</svg>';
+            }
+            if (n.includes('panel rack') || n.includes('panel') || n.includes('rack')) {
+              // Panels: multiple upright sheet panels / boards in storage rack
+              return '<svg class="area-icon-svg" viewBox="0 0 24 24" width="' + s + '" height="' + s + '" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: -2.5px; flex-shrink: 0;" aria-label="Panels">' +
+                '<path d="M8 2h10a1.5 1.5 0 0 1 1.5 1.5v13" stroke-opacity="0.6"/>' +
+                '<path d="M5 5h10a1.5 1.5 0 0 1 1.5 1.5v13" stroke-opacity="0.8"/>' +
+                '<rect x="2" y="8" width="10.5" height="13.5" rx="1.5" fill="currentColor" fill-opacity="0.22"/>' +
+                '<line x1="2" y1="21.5" x2="22" y2="21.5" stroke-width="2"/>' +
+                '</svg>';
+            }
+            if (n.includes('sharpening')) {
+              return '🔪';
+            }
+            return '⚙️';
+          }
         %>
+
+        <% (areaGroups || []).forEach((ag) => { %>
           <button
             type="button"
             class="area-tab-btn d-inline-flex align-items-center gap-2"
             data-area-filter="<%= ag.areaKey %>"
           >
-            <span><%= icon %> <%= ag.areaName %></span>
+            <span class="d-inline-flex align-items-center gap-1.5"><%- getAreaIconSvg(ag.areaName, 18) %> <span><%= ag.areaName %></span></span>
             <span class="badge rounded-pill bg-light text-dark px-2 py-0.5"><%= ag.totalOrders %></span>
             <% if (ag.inProgressOrders > 0) { %>
               <span class="badge rounded-pill bg-primary text-white px-1.5 py-0.5" style="font-size: 0.65rem;" title="<%= ag.inProgressOrders %> in progress">
@@ -512,11 +548,10 @@
       </div>
     <% } else { %>
       <% areaGroups.forEach((area) => { 
-           let areaIcon = '⚙️';
            let areaBadgeColor = 'var(--odoo-primary)';
-           if (area.areaName.includes('Table Saw')) { areaIcon = '🪚'; areaBadgeColor = '#7c3aed'; }
-           else if (area.areaName.includes('Edge Banding')) { areaIcon = '⚡'; areaBadgeColor = '#c2410c'; }
-           else if (area.areaName.includes('Panel Rack')) { areaIcon = '📦'; areaBadgeColor = '#0f766e'; }
+           if (area.areaName.includes('Table Saw')) { areaBadgeColor = '#7c3aed'; }
+           else if (area.areaName.includes('Edge Banding')) { areaBadgeColor = '#c2410c'; }
+           else if (area.areaName.includes('Panel Rack')) { areaBadgeColor = '#0f766e'; }
       %>
         <section
           class="operation-area-section mb-4"
@@ -526,7 +561,9 @@
           <!-- Operation Area Header Strip -->
           <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 p-3 mb-3 rounded-4 shadow-sm bg-white" style="border-left: 6px solid <%= areaBadgeColor %>;">
             <div class="d-flex align-items-center gap-2.5">
-              <span class="fs-4" style="line-height: 1;"><%= areaIcon %></span>
+              <span class="d-inline-flex align-items-center justify-content-center p-2 rounded-3" style="background: <%= areaBadgeColor %>18; color: <%= areaBadgeColor %>; line-height: 1;">
+                <%- getAreaIconSvg(area.areaName, 26) %>
+              </span>
               <div>
                 <h2 class="h5 fw-bold mb-0 text-dark" style="letter-spacing: -0.01em;">
                   <%= area.areaName %>
