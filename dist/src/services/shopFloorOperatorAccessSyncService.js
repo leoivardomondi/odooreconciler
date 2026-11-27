@@ -15,6 +15,7 @@ const env_1 = require("../utils/env");
 const logService_1 = require("./logService");
 const odooClient_1 = require("./odooClient");
 const paths_1 = require("../utils/paths");
+const shopFloorReporting_1 = require("../utils/shopFloorReporting");
 const SYNC_INTERVAL_MS = 5 * 60 * 1000; // Run every 5 minutes
 let inFlightSyncPromise = null;
 let intervalHandle = null;
@@ -196,6 +197,8 @@ async function syncShopFloorOperatorsData(forceRefresh = false) {
                 const userEmail = String(account.email || '').trim().toLowerCase();
                 if (!userEmail)
                     continue;
+                if ((0, shopFloorReporting_1.isExcludedFromOperators)({ email: userEmail }))
+                    continue;
                 const linkedEmp = allOdooEmployees.find((e) => {
                     if (e.active === false)
                         return false;
@@ -219,6 +222,8 @@ async function syncShopFloorOperatorsData(forceRefresh = false) {
                     return false;
                 });
                 if (!linkedEmp)
+                    continue;
+                if ((0, shopFloorReporting_1.isExcludedFromOperators)({ name: linkedEmp.name, email: userEmail, workEmail: linkedEmp.work_email }))
                     continue;
                 if (seenEmpIds.has(linkedEmp.id))
                     continue;
@@ -254,6 +259,8 @@ async function syncShopFloorOperatorsData(forceRefresh = false) {
             // Also include any active workcenter operators or operations / management employees from Odoo
             for (const emp of allOdooEmployees) {
                 if (emp.active === false)
+                    continue;
+                if ((0, shopFloorReporting_1.isExcludedFromOperators)({ name: emp.name, workEmail: emp.work_email }))
                     continue;
                 if (seenEmpIds.has(emp.id))
                     continue;

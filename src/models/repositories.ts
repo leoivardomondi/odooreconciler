@@ -56,7 +56,7 @@ import {
 } from '../utils/helpers';
 import { appDateTimeFromNow, appDateTime } from '../utils/dateTime';
 import { env } from '../utils/env';
-import { clampShopFloorReportingDate, isExcludedFromBoardLogs, normalizeShopFloorReportingStartDate } from '../utils/shopFloorReporting';
+import { clampShopFloorReportingDate, isExcludedFromBoardLogs, isExcludedFromOperators, normalizeShopFloorReportingStartDate } from '../utils/shopFloorReporting';
 
 function nowMinusMinutesIso(windowMinutes: number): string {
   return appDateTimeFromNow(-Math.max(1, windowMinutes) * 60 * 1000);
@@ -5236,7 +5236,7 @@ export async function getShopFloorOperatorsFromDb(): Promise<ShopFloorOperatorEn
       active: Boolean(r.active),
       syncedAt: formatDbDateString(r.synced_at),
       pin: r.pin ? String(r.pin).trim() : null,
-    }));
+    })).filter((op) => !isExcludedFromOperators({ name: op.name, workEmail: op.workEmail }));
     shopFloorOperatorsRamCache = { data: result, freshUntil: now + 30 * 1000 };
     return result;
   } catch (_err) {

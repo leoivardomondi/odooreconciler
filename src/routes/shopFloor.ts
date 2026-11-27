@@ -107,7 +107,7 @@ import { selectBestBoardComponent } from '../services/cuttingBoMReconciliationSe
 import { isAllowedAttendanceIp, normalizeIpAddress } from '../utils/siteAttendanceAccess';
 import { normalizeBoardLogRecipients } from '../utils/helpers';
 import { isAccountDeactivated } from '../utils/accountStatus';
-import { isExcludedFromBoardLogs } from '../utils/shopFloorReporting';
+import { isExcludedFromBoardLogs, isExcludedFromOperators } from '../utils/shopFloorReporting';
 import { verifyEmployeeAttendancePin } from '../services/operatorPinVerificationService';
 import { queryAll } from '../models/db';
 
@@ -2758,9 +2758,10 @@ router.get('/shop-floor/operators', async (req: Request, res: Response) => {
       }
     }
 
-    // Clean / filter inactive or corrupted entries
+    // Clean / filter inactive, excluded, or corrupted entries
     allOperators = allOperators.filter((op) => {
       if (!op || !op.id || !op.name) return false;
+      if (isExcludedFromOperators({ name: op.name, workEmail: op.workEmail })) return false;
       const n = op.name.trim();
       const prefix = String(op.workEmail || '').split('@')[0].trim().toLowerCase();
       if (n.toLowerCase() === prefix) return false;
@@ -3630,6 +3631,7 @@ export function filterPublicShopFloorOperators<T extends { id?: number; odoo_emp
   operators: T[],
 ): T[] {
   const matched = (operators || []).filter((op) => {
+    if (isExcludedFromOperators({ name: op.name })) return false;
     const empId = Number(op.odoo_employee_id || op.id || 0);
     if (empId > 0 && PUBLIC_SHOP_FLOOR_ALLOWED_OPERATOR_IDS.has(empId)) {
       return true;

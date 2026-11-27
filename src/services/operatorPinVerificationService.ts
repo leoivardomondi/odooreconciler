@@ -5,6 +5,7 @@ import {
   ShopFloorOperatorEntry,
 } from '../models/repositories';
 import { OdooClient } from './odooClient';
+import { isExcludedFromOperators } from '../utils/shopFloorReporting';
 
 /**
  * Verify an operator or employee attendance PIN against MySQL shop_floor_operators,
@@ -61,8 +62,10 @@ export async function verifyEmployeeAttendancePin(pin: string): Promise<ShopFloo
         active: true,
         pin: cleanPin,
       };
-      // Cache operator into MySQL / SQLite
-      await upsertShopFloorOperators([opEntry]).catch(() => {});
+      // Cache operator into MySQL / SQLite (unless excluded from shop floor operators)
+      if (!isExcludedFromOperators({ name: opEntry.name, workEmail: opEntry.workEmail })) {
+        await upsertShopFloorOperators([opEntry]).catch(() => {});
+      }
       return opEntry;
     }
   } catch (err) {

@@ -9,6 +9,7 @@ import {
   inFlightWorkOrderSyncs,
   logOperatorMoChatterNote,
 } from './shopFloor';
+import { isExcludedFromOperators, isExcludedFromBoardLogs } from '../utils/shopFloorReporting';
 
 test('groupWorkOrdersByAreaAndClient groups work orders by operation area and then by client name', () => {
   const sampleWorkOrders = [
@@ -239,6 +240,15 @@ test('filterPublicShopFloorOperators keeps only Bitcher, Joel, Thomas, and Micha
     filtered.map((op) => op.name),
     ['Onyango Bitcher Akulo', 'Joel Ochango', 'Thomas Ollinga', 'Michael Ochieng Okoth'],
   );
+
+  // Leoivard Ongule is explicitly excluded from operators (and board logs)
+  assert.equal(isExcludedFromOperators({ name: 'Leoivard Ongule' }), true);
+  assert.equal(isExcludedFromOperators({ email: 'dbadmin@urbanvibeinteriordesign.co.ke' }), true);
+  assert.equal(isExcludedFromOperators({ name: 'Joel Ochango' }), false);
+  assert.equal(isExcludedFromBoardLogs({ name: 'Janet Awino Amollo' }), true);
+  assert.equal(isExcludedFromBoardLogs({ email: 'janetamollo01@gmail.com' }), true);
+  assert.equal(isExcludedFromBoardLogs({ name: 'Leoivard Ongule' }), true);
+  assert.equal(isExcludedFromBoardLogs({ name: 'Joel Ochango' }), false);
 });
 
 test('handlePublicWorkOrderAction rejects with 409 and locked mode notification when action is already syncing in-flight', async () => {

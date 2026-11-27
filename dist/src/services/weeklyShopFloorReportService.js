@@ -1084,6 +1084,8 @@ async function getOperators(client, companyId) {
             const valid = cached.data.allOperators.filter((op) => {
                 if (!op || !op.id || !op.name)
                     return false;
+                if ((0, shopFloorReporting_1.isExcludedFromOperators)({ name: op.name, workEmail: op.workEmail }))
+                    return false;
                 const n = op.name.trim();
                 const prefix = String(op.workEmail || '').split('@')[0].trim().toLowerCase();
                 if (n.toLowerCase() === prefix)
@@ -1122,7 +1124,7 @@ async function getOperators(client, companyId) {
             fields: ['id', 'name', 'department_id'],
             limit: 200,
         });
-        const operationsEmployees = employees.filter((e) => isOperationsDept(e.department_id));
+        const operationsEmployees = employees.filter((e) => !(0, shopFloorReporting_1.isExcludedFromOperators)({ name: e.name }) && isOperationsDept(e.department_id));
         return [...new Map(operationsEmployees.map((e) => [e.id, { id: e.id, name: e.name }])).values()];
     }
     catch (err) {

@@ -3894,7 +3894,7 @@ async function getShopFloorOperatorsFromDb() {
             active: Boolean(r.active),
             syncedAt: formatDbDateString(r.synced_at),
             pin: r.pin ? String(r.pin).trim() : null,
-        }));
+        })).filter((op) => !(0, shopFloorReporting_1.isExcludedFromOperators)({ name: op.name, workEmail: op.workEmail }));
         shopFloorOperatorsRamCache = { data: result, freshUntil: now + 30 * 1000 };
         return result;
     }

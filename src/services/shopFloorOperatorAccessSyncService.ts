@@ -16,6 +16,7 @@ import { env } from '../utils/env';
 import { logEvent } from './logService';
 import { OdooClient, isSchedulerRunActive, runWithOdooPriority } from './odooClient';
 import { storageDirectoryPath } from '../utils/paths';
+import { isExcludedFromOperators } from '../utils/shopFloorReporting';
 
 const SYNC_INTERVAL_MS = 5 * 60 * 1000; // Run every 5 minutes
 let inFlightSyncPromise: Promise<{ allOperators: ShopFloorOperatorEntry[]; departments: string[] }> | null = null;
@@ -199,6 +200,7 @@ export async function syncShopFloorOperatorsData(forceRefresh = false): Promise<
       for (const account of activeAccounts) {
         const userEmail = String(account.email || '').trim().toLowerCase();
         if (!userEmail) continue;
+        if (isExcludedFromOperators({ email: userEmail })) continue;
 
         const linkedEmp = allOdooEmployees.find((e) => {
           if (e.active === false) return false;
@@ -223,6 +225,7 @@ export async function syncShopFloorOperatorsData(forceRefresh = false): Promise<
         });
 
         if (!linkedEmp) continue;
+        if (isExcludedFromOperators({ name: linkedEmp.name, email: userEmail, workEmail: linkedEmp.work_email })) continue;
         if (seenEmpIds.has(linkedEmp.id)) continue;
         seenEmpIds.add(linkedEmp.id);
 
@@ -260,6 +263,7 @@ export async function syncShopFloorOperatorsData(forceRefresh = false): Promise<
       // Also include any active workcenter operators or operations / management employees from Odoo
       for (const emp of allOdooEmployees) {
         if (emp.active === false) continue;
+        if (isExcludedFromOperators({ name: emp.name, workEmail: emp.work_email })) continue;
         if (seenEmpIds.has(emp.id)) continue;
         const isWc = workcenterOperatorIds.has(emp.id);
         const dept = cleanOdooDepartment(emp);

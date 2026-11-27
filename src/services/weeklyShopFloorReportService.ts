@@ -16,7 +16,7 @@ import { findExcludedPoBillVendor, PO_BILL_SUPPORTED_MIMETYPES } from './poBillA
 import { isBoardProductName } from './boardProductClassifier';
 import { isMatchingBoardProduct, isMatchingClient } from './boardLogStockMatcher';
 import { env } from '../utils/env';
-import { clampShopFloorReportingDate, isExcludedFromBoardLogs } from '../utils/shopFloorReporting';
+import { clampShopFloorReportingDate, isExcludedFromBoardLogs, isExcludedFromOperators } from '../utils/shopFloorReporting';
 import { resolveFromProjectRoot } from '../utils/paths';
 import { extractSoNameFromOrigin } from '../utils/helpers';
 import { completedAttendanceCoversWorkday, classifyAttendanceRecords, type AttendanceRecord } from '../utils/attendanceReconciliation';
@@ -1508,6 +1508,7 @@ export async function getOperators(client: OdooClient, companyId: number): Promi
     if (cached?.data?.allOperators && cached.data.allOperators.length > 0) {
       const valid = cached.data.allOperators.filter((op) => {
         if (!op || !op.id || !op.name) return false;
+        if (isExcludedFromOperators({ name: op.name, workEmail: op.workEmail })) return false;
         const n = op.name.trim();
         const prefix = String(op.workEmail || '').split('@')[0].trim().toLowerCase();
         if (n.toLowerCase() === prefix) return false;
@@ -1545,7 +1546,7 @@ export async function getOperators(client: OdooClient, companyId: number): Promi
       fields: ['id', 'name', 'department_id'],
       limit: 200,
     });
-    const operationsEmployees = employees.filter((e) => isOperationsDept(e.department_id));
+    const operationsEmployees = employees.filter((e) => !isExcludedFromOperators({ name: e.name }) && isOperationsDept(e.department_id));
     return [...new Map(operationsEmployees.map((e) => [e.id, { id: e.id, name: e.name }])).values()];
   } catch (err) {
     console.warn('[weekly-report] Batch department/employee search failed:', err);

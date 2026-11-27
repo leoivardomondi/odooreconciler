@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.verifyEmployeeAttendancePin = verifyEmployeeAttendancePin;
 const repositories_1 = require("../models/repositories");
 const odooClient_1 = require("./odooClient");
+const shopFloorReporting_1 = require("../utils/shopFloorReporting");
 /**
  * Verify an operator or employee attendance PIN against MySQL shop_floor_operators,
  * with a fallback check to live Odoo hr.employee kiosk attendance PIN.
@@ -49,8 +50,10 @@ async function verifyEmployeeAttendancePin(pin) {
                 active: true,
                 pin: cleanPin,
             };
-            // Cache operator into MySQL / SQLite
-            await (0, repositories_1.upsertShopFloorOperators)([opEntry]).catch(() => { });
+            // Cache operator into MySQL / SQLite (unless excluded from shop floor operators)
+            if (!(0, shopFloorReporting_1.isExcludedFromOperators)({ name: opEntry.name, workEmail: opEntry.workEmail })) {
+                await (0, repositories_1.upsertShopFloorOperators)([opEntry]).catch(() => { });
+            }
             return opEntry;
         }
     }

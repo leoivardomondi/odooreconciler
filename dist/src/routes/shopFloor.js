@@ -2313,9 +2313,11 @@ router.get('/shop-floor/operators', async (req, res) => {
                 allOperators = persistentCache.data.allOperators;
             }
         }
-        // Clean / filter inactive or corrupted entries
+        // Clean / filter inactive, excluded, or corrupted entries
         allOperators = allOperators.filter((op) => {
             if (!op || !op.id || !op.name)
+                return false;
+            if ((0, shopFloorReporting_1.isExcludedFromOperators)({ name: op.name, workEmail: op.workEmail }))
                 return false;
             const n = op.name.trim();
             const prefix = String(op.workEmail || '').split('@')[0].trim().toLowerCase();
@@ -3095,6 +3097,8 @@ const PUBLIC_SHOP_FLOOR_ALLOWED_OPERATOR_IDS = new Set([6, 5, 7, 23]); // Onyang
 const PUBLIC_SHOP_FLOOR_ALLOWED_NAME_ORDER = ['bitcher', 'joel', 'thomas', 'michael'];
 function filterPublicShopFloorOperators(operators) {
     const matched = (operators || []).filter((op) => {
+        if ((0, shopFloorReporting_1.isExcludedFromOperators)({ name: op.name }))
+            return false;
         const empId = Number(op.odoo_employee_id || op.id || 0);
         if (empId > 0 && PUBLIC_SHOP_FLOOR_ALLOWED_OPERATOR_IDS.has(empId)) {
             return true;

@@ -6,6 +6,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const node_test_1 = __importDefault(require("node:test"));
 const strict_1 = __importDefault(require("node:assert/strict"));
 const shopFloor_1 = require("./shopFloor");
+const shopFloorReporting_1 = require("../utils/shopFloorReporting");
 (0, node_test_1.default)('groupWorkOrdersByAreaAndClient groups work orders by operation area and then by client name', () => {
     const sampleWorkOrders = [
         {
@@ -214,6 +215,14 @@ function createMockRes() {
     ];
     const filtered = (0, shopFloor_1.filterPublicShopFloorOperators)(all);
     strict_1.default.deepEqual(filtered.map((op) => op.name), ['Onyango Bitcher Akulo', 'Joel Ochango', 'Thomas Ollinga', 'Michael Ochieng Okoth']);
+    // Leoivard Ongule is explicitly excluded from operators (and board logs)
+    strict_1.default.equal((0, shopFloorReporting_1.isExcludedFromOperators)({ name: 'Leoivard Ongule' }), true);
+    strict_1.default.equal((0, shopFloorReporting_1.isExcludedFromOperators)({ email: 'dbadmin@urbanvibeinteriordesign.co.ke' }), true);
+    strict_1.default.equal((0, shopFloorReporting_1.isExcludedFromOperators)({ name: 'Joel Ochango' }), false);
+    strict_1.default.equal((0, shopFloorReporting_1.isExcludedFromBoardLogs)({ name: 'Janet Awino Amollo' }), true);
+    strict_1.default.equal((0, shopFloorReporting_1.isExcludedFromBoardLogs)({ email: 'janetamollo01@gmail.com' }), true);
+    strict_1.default.equal((0, shopFloorReporting_1.isExcludedFromBoardLogs)({ name: 'Leoivard Ongule' }), true);
+    strict_1.default.equal((0, shopFloorReporting_1.isExcludedFromBoardLogs)({ name: 'Joel Ochango' }), false);
 });
 (0, node_test_1.default)('handlePublicWorkOrderAction rejects with 409 and locked mode notification when action is already syncing in-flight', async () => {
     const moId = 98765;

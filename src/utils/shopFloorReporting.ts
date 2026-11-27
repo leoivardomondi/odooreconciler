@@ -4,12 +4,32 @@ const BOARD_LOG_EXCLUDED_EMAILS = new Set([
   'janetamollo01@gmail.com',
 ]);
 
-export function isExcludedFromBoardLogs(
-  input: { name?: string | null; email?: string | null } | string | null | undefined,
+const EXCLUDED_OPERATOR_EMAILS = new Set([
+  'dbadmin@urbanvibeinteriordesign.co.ke',
+]);
+
+export function isExcludedFromOperators(
+  input: { name?: string | null; email?: string | null; workEmail?: string | null } | string | null | undefined,
 ): boolean {
   if (!input) return false;
   const rawName = typeof input === 'string' ? input : String(input.name || '');
-  const rawEmail = typeof input === 'string' ? input : String(input.email || '');
+  const rawEmail = typeof input === 'string' ? input : String(input.email || input.workEmail || '');
+  const normEmail = rawEmail.trim().toLowerCase();
+  if (normEmail && (EXCLUDED_OPERATOR_EMAILS.has(normEmail) || normEmail.includes('leoivard'))) {
+    return true;
+  }
+  const normName = rawName.trim().toLowerCase().replace(/\s+/g, ' ');
+  if (!normName) return false;
+  return normName.includes('leoivard') || normName.includes('ongule');
+}
+
+export function isExcludedFromBoardLogs(
+  input: { name?: string | null; email?: string | null; workEmail?: string | null } | string | null | undefined,
+): boolean {
+  if (!input) return false;
+  if (isExcludedFromOperators(input)) return true;
+  const rawName = typeof input === 'string' ? input : String(input.name || '');
+  const rawEmail = typeof input === 'string' ? input : String(input.email || input.workEmail || '');
   const normEmail = rawEmail.trim().toLowerCase();
   if (normEmail && (BOARD_LOG_EXCLUDED_EMAILS.has(normEmail) || normEmail.startsWith('janetamollo'))) {
     return true;
