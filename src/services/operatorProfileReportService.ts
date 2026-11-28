@@ -7,6 +7,7 @@ import { logEvent } from './logService';
 import { env } from '../utils/env';
 import { clampShopFloorReportingDate, isExcludedFromBoardLogs } from '../utils/shopFloorReporting';
 import { classifyAttendanceRecords, completedAttendanceCoversWorkday, type AttendanceRecord } from '../utils/attendanceReconciliation';
+import { drawPdfPieChart } from '../utils/pdfPieChart';
 
 export const CORE_OPERATOR_IDS = [6, 5, 7, 23] as const; // Bitcher, Joel, Thomas, Michael
 export const LEOIVARD_REPORT_EMAIL = 'dbadmin@urbanvibeinteriordesign.co.ke';
@@ -585,6 +586,69 @@ export async function renderOperatorProfilePdf(profile: OperatorProfileMetrics):
     doc.font('Helvetica').fontSize(7.5).fillColor(muted).text(kpi.sub, x + 8, cardY + 44, { width: cardWidth - 16, lineBreak: false });
   });
   doc.y = cardY + 78;
+
+  // Visual System Usage & Knowledge Pie Graphs
+  const usagePanelY = doc.y;
+  const usagePanelH = 128;
+  doc.roundedRect(40, usagePanelY, contentWidth, usagePanelH, 8).fillAndStroke('#f8fafc', border);
+  doc.font('Helvetica-Bold').fontSize(8.5).fillColor(navy)
+    .text('SYSTEM USAGE MIX', 52, usagePanelY + 10, { width: 230 })
+    .text('KNOWLEDGE & MASTERY CONTRIBUTION', 300, usagePanelY + 10, { width: 240 });
+
+  const totalUsageEvents = profile.shopFloor.sessionsCount
+    + profile.boardLog.totalLogs
+    + profile.boardLog.matchedClientActions
+    + profile.attendance.daysAttended;
+
+  drawPdfPieChart(doc, {
+    cx: 96,
+    cy: usagePanelY + 72,
+    radius: 40,
+    innerRadius: 19,
+    slices: [
+      { label: 'Shop Floor Timers', value: profile.shopFloor.sessionsCount, color: '#2563eb', sublabel: `${profile.shopFloor.sessionsCount} session(s)` },
+      { label: 'Board Intake Logs', value: profile.boardLog.totalLogs, color: '#059669', sublabel: `${profile.boardLog.totalLogs} log(s)` },
+      { label: 'Client Matches', value: profile.boardLog.matchedClientActions, color: '#d97706', sublabel: `${profile.boardLog.matchedClientActions} match(es)` },
+      { label: 'Attendance Days', value: profile.attendance.daysAttended, color: '#7c3aed', sublabel: `${profile.attendance.daysAttended} day(s)` },
+    ],
+    centerTopText: String(totalUsageEvents),
+    centerBottomText: 'ACTIONS',
+    emptyLabel: 'No usage',
+    legend: {
+      x: 148,
+      y: usagePanelY + 27,
+      width: 138,
+      rowHeight: 22,
+    },
+  });
+
+  const sfWeight = Math.round(profile.shopFloor.masteryScore * 0.45);
+  const blWeight = Math.round(profile.boardLog.masteryScore * 0.35);
+  const attWeight = Math.round(profile.attendance.attendanceRate * 0.20);
+  const gapWeight = Math.max(0, 100 - Math.min(100, sfWeight + blWeight + attWeight));
+
+  drawPdfPieChart(doc, {
+    cx: 344,
+    cy: usagePanelY + 72,
+    radius: 40,
+    innerRadius: 19,
+    slices: [
+      { label: 'Shop Floor Mastery', value: sfWeight, color: '#2563eb', sublabel: `${profile.shopFloor.masteryScore}% score (45% wt)` },
+      { label: 'Board Log Mastery', value: blWeight, color: '#059669', sublabel: `${profile.boardLog.masteryScore}% score (35% wt)` },
+      { label: 'Attendance Discipline', value: attWeight, color: '#7c3aed', sublabel: `${profile.attendance.attendanceRate}% rate (20% wt)` },
+      { label: 'Growth Opportunity', value: gapWeight, color: '#cbd5e1', sublabel: `${gapWeight} pts to 100%` },
+    ],
+    centerTopText: `${profile.overallMasteryScore}%`,
+    centerBottomText: 'KNOWLEDGE',
+    legend: {
+      x: 396,
+      y: usagePanelY + 27,
+      width: 148,
+      rowHeight: 22,
+    },
+  });
+
+  doc.y = usagePanelY + usagePanelH + 14;
 
   // Section 1: Shop Floor App Usage & Mastery
   doc.font('Helvetica-Bold').fontSize(11).fillColor(navy).text('1. Shop Floor App Usage & Mastery', 40, doc.y);

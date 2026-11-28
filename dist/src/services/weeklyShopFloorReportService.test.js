@@ -321,4 +321,57 @@ const weeklyShopFloorReportService_1 = require("./weeklyShopFloorReportService")
         strict_1.default.ok(pdf.length > 2000, 'Expected rendered PDF to have substantial content');
         strict_1.default.equal(pdf.subarray(0, 5).toString('ascii'), '%PDF-');
     });
+    await t.test('computeOperatorSystemUsageSummary calculates usage share percentages, knowledge tiers, and excludes Leoivard', () => {
+        const summary = (0, weeklyShopFloorReportService_1.computeOperatorSystemUsageSummary)({
+            operators: [
+                { id: 4, name: 'Leoivard Ongule', email: 'dbadmin@urbanvibeinteriordesign.co.ke' },
+                { id: 6, name: 'Onyango Bitcher Akulo', email: 'onyangoakulo@gmail.com' },
+                { id: 5, name: 'Joel Ochango', email: 'joelochango22@gmail.com' },
+                { id: 23, name: 'Michael Ochieng Okoth', email: 'okothmike578@gmail.com' },
+            ],
+            workcenterSessionsByOperatorId: new Map([
+                [6, { sessions: 8, workOrdersWorked: 5, openTimers: 0 }],
+                [5, { sessions: 3, workOrdersWorked: 2, openTimers: 1 }],
+            ]),
+            boardLoggingByOperator: [
+                { name: 'Onyango Bitcher Akulo', email: 'onyangoakulo@gmail.com', records: 6, boards: 30, synced: 6, failed: 0, reverted: 0, pending: 0, lastLoggedAt: '2026-11-24 14:00:00' },
+                { name: 'Joel Ochango', email: 'joelochango22@gmail.com', records: 2, boards: 10, synced: 2, failed: 0, reverted: 0, pending: 0, lastLoggedAt: '2026-11-24 12:00:00' },
+                { name: 'Michael Ochieng Okoth', email: 'okothmike578@gmail.com', records: 0, boards: 0, synced: 0, failed: 0, reverted: 0, pending: 0, lastLoggedAt: null },
+            ],
+            attendance: [
+                {
+                    name: 'Onyango Bitcher Akulo',
+                    days: [
+                        { status: 'Present', checkIn: '2026-11-23 05:00:00', checkOut: '2026-11-23 14:00:00' },
+                        { status: 'Present', checkIn: '2026-11-24 05:00:00', checkOut: '2026-11-24 14:00:00' },
+                    ],
+                },
+                {
+                    name: 'Joel Ochango',
+                    days: [
+                        { status: 'Present', checkIn: '2026-11-23 05:00:00', checkOut: '2026-11-23 14:00:00' },
+                        { status: 'Absent', checkIn: null, checkOut: null },
+                    ],
+                },
+                {
+                    name: 'Michael Ochieng Okoth',
+                    days: [
+                        { status: 'Absent', checkIn: null, checkOut: null },
+                        { status: 'Absent', checkIn: null, checkOut: null },
+                    ],
+                },
+            ],
+            appActivityByEmail: new Map([['onyangoakulo@gmail.com', 5]]),
+        });
+        strict_1.default.equal(summary.operators.length, 3); // Leoivard excluded
+        strict_1.default.ok(!summary.operators.some((o) => /leoivard/i.test(o.name)));
+        strict_1.default.equal(summary.operators[0].name, 'Onyango Bitcher Akulo');
+        strict_1.default.equal(summary.operators[0].knowledgeLevel, 'Advanced');
+        strict_1.default.ok(summary.operators[0].usageSharePercent > 50);
+        const michael = summary.operators.find((o) => o.name === 'Michael Ochieng Okoth');
+        strict_1.default.equal(michael.totalUsageActions, 0);
+        strict_1.default.equal(michael.knowledgeLevel, 'Needs Training');
+        strict_1.default.match(summary.insightNote, /Onyango Bitcher Akulo/i);
+        strict_1.default.match(summary.insightNote, /Michael Ochieng Okoth/i);
+    });
 });

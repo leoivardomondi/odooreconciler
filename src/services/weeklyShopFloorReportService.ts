@@ -20,6 +20,8 @@ import { clampShopFloorReportingDate, isExcludedFromBoardLogs, isExcludedFromOpe
 import { resolveFromProjectRoot } from '../utils/paths';
 import { extractSoNameFromOrigin } from '../utils/helpers';
 import { completedAttendanceCoversWorkday, classifyAttendanceRecords, type AttendanceRecord } from '../utils/attendanceReconciliation';
+import { queryAll } from '../models/db';
+import { drawPdfPieChart, PIE_CHART_PALETTE, type PdfPieSlice } from '../utils/pdfPieChart';
 
 const OPERATIONS_DEPARTMENT_NAME = 'Operations';
 const RECIPIENT_NAMES = ['dbadmin', 'charles', 'raphael'];
@@ -1497,6 +1499,152 @@ export function buildBoardLoggingEncouragementNote(rows: OperatorBoardLoggingRow
   return `ENCOURAGEMENT NOTE: Well done to the Operations team for consistent board logging led by ${leaderSummary}. Keep locking in and maintaining this shared standard across every shift.`;
 }
 
+// ─── Operator System Usage & Knowledge Summary (for Pie Graph) ───────
+
+export interface OperatorSystemUsageRow {
+  id: number;
+  name: string;
+  shopFloorSessions: number;
+  workOrdersWorked: number;
+  boardLogRecords: number;
+  attendanceActions: number;
+  appActivityActions: number;
+  totalUsageActions: number;
+  usageSharePercent: number;
+  knowledgeScore: number;
+  knowledgeLevel: 'Advanced' | 'Proficient' | 'Developing' | 'Needs Training';
+}
+
+export interface OperatorSystemUsageSummary {
+  totalTeamActions: number;
+  operators: OperatorSystemUsageRow[];
+  insightNote: string;
+}
+
+export function computeOperatorSystemUsageSummary(input: {
+  operators: Array<{ id: number; name: string; email?: string | null }>;
+  workcenterSessionsByOperatorId: Map<number, { sessions: number; workOrdersWorked: number; openTimers: number }>;
+  boardLoggingByOperator: OperatorBoardLoggingRow[];
+  attendance: Array<{
+    name: string;
+    days: Array<{ status: string; checkIn: string | null; checkOut: string | null }>;
+  }>;
+  appActivityByEmail?: Map<string, number>;
+}): OperatorSystemUsageSummary {
+  const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
+  const eligibleOps = input.operators.filter((op) => !isExcludedFromOperators({ name: op.name, email: op.email }));
+
+  const rawRows = eligibleOps.map((op) => {
+    const opNorm = norm(op.name);
+    const wc = input.workcenterSessionsByOperatorId.get(op.id) || { sessions: 0, workOrdersWorked: 0, openTimers: 0 };
+    const boardRow = input.boardLoggingByOperator.find((b) => {
+      const bn = norm(b.name);
+      return bn === opNorm || bn.includes(opNorm) || opNorm.includes(bn);
+    });
+    const attRow = input.attendance.find((a) => norm(a.name) === opNorm);
+    const excludedFromBoards = isExcludedFromBoardLogs({ name: op.name, email: op.email || boardRow?.email });
+
+    const boardLogRecords = excludedFromBoards ? 0 : Number(boardRow?.records || 0);
+    const boardLogSynced = excludedFromBoards ? 0 : Number(boardRow?.synced || 0);
+    const boardLogReverted = excludedFromBoards ? 0 : Number(boardRow?.reverted || 0);
+
+    let checkIns = 0;
+    let cleanCheckOuts = 0;
+    let expectedDays = 0;
+    if (attRow) {
+      expectedDays = attRow.days.length;
+      for (const day of attRow.days) {
+        if (day.checkIn) checkIns += 1;
+        if (day.checkIn && day.checkOut) cleanCheckOuts += 1;
+      }
+    }
+    const attendanceActions = checkIns + cleanCheckOuts;
+
+    const emailKey = String(op.email || boardRow?.email || '').trim().toLowerCase();
+    const appActivityActions = emailKey && input.appActivityByEmail ? Number(input.appActivityByEmail.get(emailKey) || 0) : 0;
+
+    // Total system interactions (weighted equally by real recorded system actions)
+    const totalUsageActions = wc.sessions + boardLogRecords + attendanceActions + appActivityActions;
+
+    // Knowledge / Proficiency Score (0-100):
+    // Measures how broadly and accurately the operator uses the system:
+    // - Shop Floor Work Orders (40 pts): active sessions + timer discipline
+    // - Board Intake Logging (35 pts): active logs + clean sync accuracy (reallocated if excluded from board logs)
+    // - Attendance & Portal Discipline (25 pts): check-in + clean check-out + app usage
+    const sfUsagePts = wc.sessions > 0
+      ? Math.min(25, Math.round((Math.min(wc.sessions, 6) / 6) * 25))
+      : 0;
+    const sfCleanRatio = wc.sessions > 0 ? Math.max(0, (wc.sessions - wc.openTimers) / wc.sessions) : 0;
+    const sfDisciplinePts = wc.sessions > 0 ? Math.round(sfCleanRatio * 15) : 0;
+    const sfScore = sfUsagePts + sfDisciplinePts; // max 40
+
+    const blUsagePts = boardLogRecords > 0
+      ? Math.min(20, Math.round((Math.min(boardLogRecords, 5) / 5) * 20))
+      : 0;
+    const blAccuracy = boardLogRecords > 0
+      ? Math.max(0, (boardLogSynced - boardLogReverted) / boardLogRecords)
+      : 0;
+    const blQualityPts = boardLogRecords > 0 ? Math.round(blAccuracy * 15) : 0;
+    const blScore = blUsagePts + blQualityPts; // max 35
+
+    const attRatio = expectedDays > 0 ? Math.min(1, cleanCheckOuts / expectedDays) : (cleanCheckOuts > 0 ? 1 : 0);
+    const attPts = Math.round(attRatio * 18);
+    const portalPts = appActivityActions > 0 ? Math.min(7, Math.round((Math.min(appActivityActions, 5) / 5) * 7)) : (checkIns > 0 ? 3 : 0);
+    const attAndPortalScore = Math.min(25, attPts + portalPts); // max 25
+
+    const knowledgeScore = excludedFromBoards
+      ? Math.min(100, Math.round(((sfScore + attAndPortalScore) / 65) * 100))
+      : Math.min(100, sfScore + blScore + attAndPortalScore);
+
+    const knowledgeLevel: OperatorSystemUsageRow['knowledgeLevel'] = knowledgeScore >= 80
+      ? 'Advanced'
+      : knowledgeScore >= 60
+        ? 'Proficient'
+        : knowledgeScore >= 35
+          ? 'Developing'
+          : 'Needs Training';
+
+    return {
+      id: op.id,
+      name: op.name,
+      shopFloorSessions: wc.sessions,
+      workOrdersWorked: wc.workOrdersWorked,
+      boardLogRecords,
+      attendanceActions,
+      appActivityActions,
+      totalUsageActions,
+      usageSharePercent: 0,
+      knowledgeScore,
+      knowledgeLevel,
+    };
+  });
+
+  const totalTeamActions = rawRows.reduce((sum, r) => sum + r.totalUsageActions, 0);
+  const operators = rawRows
+    .map((r) => ({
+      ...r,
+      usageSharePercent: totalTeamActions > 0 ? Math.round((r.totalUsageActions / totalTeamActions) * 100) : 0,
+    }))
+    .sort((a, b) => b.totalUsageActions - a.totalUsageActions || b.knowledgeScore - a.knowledgeScore || a.name.localeCompare(b.name));
+
+  let insightNote: string;
+  if (!operators.length || totalTeamActions === 0) {
+    insightNote = 'SYSTEM KNOWLEDGE INSIGHT: No system usage actions were recorded for Operations operators in this period. Conduct hands-on refresher training on Shop Floor timers, Board Logs, and Attendance.';
+  } else {
+    const leaders = operators.filter((o) => o.knowledgeScore >= 60).slice(0, 2);
+    const needsTraining = operators.filter((o) => o.knowledgeScore < 50);
+    const leaderText = leaders.length
+      ? `Strongest system command: ${leaders.map((l) => `${l.name} (${l.usageSharePercent}% usage share, ${l.knowledgeScore}% knowledge)`).join(' and ')}.`
+      : `Highest usage share: ${operators[0].name} (${operators[0].usageSharePercent}% of team actions).`;
+    const trainingText = needsTraining.length
+      ? ` Coaching / training recommended for ${needsTraining.map((n) => `${n.name} (${n.knowledgeScore}%)`).join(', ')} to improve consistent system adoption.`
+      : ' All tracked operators demonstrated active system usage across the period.';
+    insightNote = `SYSTEM KNOWLEDGE INSIGHT: ${leaderText}${trainingText}`;
+  }
+
+  return { totalTeamActions, operators, insightNote };
+}
+
 // ─── Operators Lookup ────────────────────────────────────────────────
 
 export async function getOperators(client: OdooClient, companyId: number): Promise<Array<{ id: number; name: string }>> {
@@ -1704,6 +1852,66 @@ export async function buildWeeklyShopFloorReport(scope?: { fromDate?: string; to
     reportEnd,
   );
 
+  // Batch fetch workcenter productivity sessions + portal activity for System Usage & Knowledge Pie Graph
+  const operatorIds = operators.map((o) => o.id).filter((id) => id > 0);
+  const [wcProductivityRows, appActivityRows] = await Promise.all([
+    operatorIds.length > 0
+      ? client.searchReadRecords<{
+          id: number;
+          employee_id: [number, string] | number | false;
+          workorder_id: [number, string] | false;
+          date_end: string | false;
+        }>('mrp.workcenter.productivity', {
+          domain: [
+            ['employee_id', 'in', operatorIds],
+            ['date_start', '>=', `${reportStart} 00:00:00`],
+            ['date_start', '<=', `${reportEnd} 23:59:59`],
+          ],
+          fields: ['id', 'employee_id', 'workorder_id', 'date_end'],
+          limit: 1000,
+        }).catch(() => [])
+      : Promise.resolve([]),
+    queryAll<{ email: string | null; cnt: number }>(
+      `SELECT LOWER(email) as email, COUNT(*) as cnt
+       FROM auth_login_events
+       WHERE success = 1 AND created_at >= ? AND created_at <= ?
+       GROUP BY LOWER(email)`,
+      [`${reportStart} 00:00:00`, `${reportEnd} 23:59:59`],
+    ).catch(() => []),
+  ]);
+
+  const wcMap = new Map<number, { sessions: number; woSet: Set<number>; openTimers: number }>();
+  for (const row of wcProductivityRows) {
+    const empId = Array.isArray(row.employee_id) ? Number(row.employee_id[0]) : Number(row.employee_id || 0);
+    if (!empId) continue;
+    const entry = wcMap.get(empId) || { sessions: 0, woSet: new Set<number>(), openTimers: 0 };
+    entry.sessions += 1;
+    if (Array.isArray(row.workorder_id) && row.workorder_id[0]) {
+      entry.woSet.add(Number(row.workorder_id[0]));
+    }
+    if (!row.date_end) {
+      entry.openTimers += 1;
+    }
+    wcMap.set(empId, entry);
+  }
+  const workcenterSessionsByOperatorId = new Map<number, { sessions: number; workOrdersWorked: number; openTimers: number }>();
+  wcMap.forEach((v, k) => {
+    workcenterSessionsByOperatorId.set(k, { sessions: v.sessions, workOrdersWorked: v.woSet.size, openTimers: v.openTimers });
+  });
+
+  const appActivityByEmail = new Map<string, number>();
+  for (const row of appActivityRows) {
+    if (row.email) appActivityByEmail.set(String(row.email).trim().toLowerCase(), Number(row.cnt || 0));
+  }
+
+  const operatorSystemUsage = computeOperatorSystemUsageSummary({
+    operators,
+    workcenterSessionsByOperatorId,
+    boardLoggingByOperator,
+    attendance,
+    appActivityByEmail,
+  });
+
   return {
     generatedAt: new Date(),
     start: reportStart,
@@ -1714,6 +1922,7 @@ export async function buildWeeklyShopFloorReport(scope?: { fromDate?: string; to
     boardSummary,
     boardLoggingByOperator,
     boardLoggingEncouragementNote,
+    operatorSystemUsage,
     penalties,
     moCompletion,
     poVsFinanceDocs,
@@ -1726,7 +1935,9 @@ export async function buildWeeklyShopFloorReport(scope?: { fromDate?: string; to
 // ─── PDF Renderer ────────────────────────────────────────────────────
 
 export async function renderWeeklyShopFloorReportPdf(
-  reportInput?: Awaited<ReturnType<typeof buildWeeklyShopFloorReport>>,
+  reportInput?: Omit<Awaited<ReturnType<typeof buildWeeklyShopFloorReport>>, 'operatorSystemUsage'> & {
+    operatorSystemUsage?: OperatorSystemUsageSummary;
+  },
   scope?: { fromDate?: string; toDate?: string },
 ): Promise<Buffer> {
   const report = reportInput || await buildWeeklyShopFloorReport(scope);
@@ -2070,6 +2281,71 @@ export async function renderWeeklyShopFloorReportPdf(
     bg: '#f0fdf4',
     stroke: '#86efac',
     textColor: '#14532d',
+    bold: true,
+  });
+
+  // ── 4B. System Usage & Knowledge per Operator (Pie Graph) ──
+  const systemUsageSummary: OperatorSystemUsageSummary = report.operatorSystemUsage || computeOperatorSystemUsageSummary({
+    operators: report.attendance.map((a, idx) => ({ id: idx + 1, name: a.name })),
+    workcenterSessionsByOperatorId: new Map(),
+    boardLoggingByOperator: report.boardLoggingByOperator,
+    attendance: report.attendance,
+  });
+
+  const pieRowCount = Math.max(4, systemUsageSummary.operators.length);
+  const pieCardHeight = Math.max(156, 26 + pieRowCount * 24 + 14);
+  ensureSpace(pieCardHeight + 90);
+  section(
+    'System usage & knowledge per operator',
+    `Visual share of total system interactions (Shop Floor work-order timers, Board Intake logs, Attendance check-in/out, and portal activity) from ${report.start} to ${report.end}, paired with each operator's system proficiency level.`,
+  );
+
+  const pieCardY = document.y;
+  document.roundedRect(42, pieCardY, contentWidth, pieCardHeight, 8).fillAndStroke('#f8fafc', border);
+
+  const pieSlices: PdfPieSlice[] = systemUsageSummary.operators.map((op, idx) => {
+    const badgePalette = op.knowledgeLevel === 'Advanced'
+      ? { color: '#065f46', bg: '#d1fae5' }
+      : op.knowledgeLevel === 'Proficient'
+        ? { color: '#1d4ed8', bg: '#dbeafe' }
+        : op.knowledgeLevel === 'Developing'
+          ? { color: '#92400e', bg: '#fef3c7' }
+          : { color: '#991b1b', bg: '#fee2e2' };
+    return {
+      label: op.name,
+      value: op.totalUsageActions,
+      color: PIE_CHART_PALETTE[idx % PIE_CHART_PALETTE.length],
+      sublabel: `SF Timers: ${op.shopFloorSessions} · Boards: ${op.boardLogRecords} · Att: ${op.attendanceActions}${op.appActivityActions > 0 ? ` · App: ${op.appActivityActions}` : ''} (${op.totalUsageActions} total)`,
+      badgeText: `${op.knowledgeScore}% ${op.knowledgeLevel}`,
+      badgeColor: badgePalette.color,
+      badgeBg: badgePalette.bg,
+    };
+  });
+
+  const pieCenterY = pieCardY + pieCardHeight / 2;
+  drawPdfPieChart(document, {
+    cx: 122,
+    cy: pieCenterY,
+    radius: 58,
+    innerRadius: 28,
+    slices: pieSlices,
+    centerTopText: String(systemUsageSummary.totalTeamActions),
+    centerBottomText: 'SYSTEM ACTIONS',
+    emptyLabel: 'No usage',
+    legend: {
+      x: 202,
+      y: pieCardY + 12,
+      width: contentWidth - 172,
+      rowHeight: 24,
+      title: 'OPERATOR SHARE & SYSTEM KNOWLEDGE',
+    },
+  });
+
+  document.y = pieCardY + pieCardHeight + 8;
+  calloutBox(systemUsageSummary.insightNote, {
+    bg: '#eff6ff',
+    stroke: '#93c5fd',
+    textColor: '#1e3a8a',
     bold: true,
   });
 
