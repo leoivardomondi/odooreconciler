@@ -1934,6 +1934,25 @@ export async function buildWeeklyShopFloorReport(scope?: { fromDate?: string; to
 
 // ─── PDF Renderer ────────────────────────────────────────────────────
 
+export function buildWeeklyPoSummaryPoint(poPrimary: MonSatPoVsDocsWeekRow): string {
+  return `PO vs Finance receipts (Mon ${poPrimary.monday} to Sat ${poPrimary.saturday} — different day range from main report): ${poPrimary.posConfirmed} confirmed PO(s) created vs ${poPrimary.docsEligibleInvoices} eligible Finance invoice/receipt doc(s) uploaded (${poPrimary.minMissingReceipts} min. missing receipt(s)).`;
+}
+
+export function buildWeeklyReceiptsAndMoPoint(params: {
+  undoneReceipts: number;
+  completed: number;
+  eligible: number;
+  completionPercent: number;
+  end: string;
+}): string {
+  const undoneReceipts = Math.max(0, Number(params.undoneReceipts || 0));
+  const openMos = Math.max(0, Number(params.eligible || 0) - Number(params.completed || 0));
+  const receiptReason = undoneReceipts > 0 || openMos > 0
+    ? ' Reason: pending board intake logs automatically validate purchased-board receipts once recorded — operators, especially assistants/helpers, need to work on board intake logging promptly so receipts auto-validate and Manufacturing Orders are not delayed.'
+    : ' All purchased-board receipts have been auto-validated via board intake logs.';
+  return `${undoneReceipts} purchased-board receipt(s) need validation; ${params.completed} of ${params.eligible} eligible MO(s) created in the period were completed by ${params.end} (${params.completionPercent}%).${receiptReason}`;
+}
+
 export async function renderWeeklyShopFloorReportPdf(
   reportInput?: Omit<Awaited<ReturnType<typeof buildWeeklyShopFloorReport>>, 'operatorSystemUsage'> & {
     operatorSystemUsage?: OperatorSystemUsageSummary;
@@ -2059,7 +2078,7 @@ export async function renderWeeklyShopFloorReportPdf(
     : 'No off-hours overtime or overnight shifts logged.';
 
   const poPrimary = report.poVsFinanceDocs.primaryWeek;
-  const poSummaryPoint = `PO vs Finance receipts (Mon ${poPrimary.monday} to Sat ${poPrimary.saturday} — different day range from main report): ${poPrimary.posConfirmed} confirmed PO(s) created vs ${poPrimary.docsEligibleInvoices} eligible Finance invoice/receipt doc(s) uploaded (${poPrimary.minMissingReceipts} min. missing receipt(s); ${poPrimary.posUnbilledInOdoo} confirmed PO(s) unbilled in Odoo).`;
+  const poSummaryPoint = buildWeeklyPoSummaryPoint(poPrimary);
 
   const preLogAudit = report.workOrdersBeforeBoardLogs;
   const preLogPoint = preLogAudit.violations.length > 0
@@ -2070,11 +2089,19 @@ export async function renderWeeklyShopFloorReportPdf(
     ? `Sharon & Candy check-in/out: ${report.salesTeamAttendance.map((s) => `${s.name} (${s.daysWithCheckIn}/${s.expectedWorkdays}d checked in, ${s.missingCheckoutCount} open, ${s.multiDaySessionCount} multi-day unclosed)`).join('; ')}.`
     : 'Sharon & Candy attendance records were not available for this period.';
 
+  const receiptsAndMoPoint = buildWeeklyReceiptsAndMoPoint({
+    undoneReceipts: report.penalties?.undoneReceipts || 0,
+    completed: report.moCompletion.completed,
+    eligible: report.moCompletion.eligible,
+    completionPercent: report.moCompletion.completionPercent,
+    end: report.end,
+  });
+
   const criticalPoints = [
     `${report.boardSummary?.missingBoards || 0} cutting MO(s) from ${report.start} to ${report.end} have no same-day board inventory log; current coverage is ${coverage}%.`,
     preLogPoint,
     poSummaryPoint,
-    `${report.penalties?.undoneReceipts || 0} purchased-board receipt(s) need validation; ${report.moCompletion.completed} of ${report.moCompletion.eligible} eligible MO(s) created in the period were completed by ${report.end} (${report.moCompletion.completionPercent}%).`,
+    receiptsAndMoPoint,
     `${attendanceTotals.absent} Operations absence record(s) across ${report.attendance[0]?.days.length || 0} working day(s), ${attendanceTotals.late} late check-in(s) after 8:20 AM EAT. ${missingCheckoutSummary}`,
     salesCheckInPoint,
     overtimePoint,
@@ -2103,7 +2130,7 @@ export async function renderWeeklyShopFloorReportPdf(
   document.font('Helvetica-Bold').fontSize(7).fillColor(adoptionColor).text(adoptionLabel, 54, assessmentY + 34, { width: 84 });
   const usageEvidence = [
     { label: 'MO board logging', score: coverage, issue: `${report.boardSummary?.missingBoards || 0} MOs missing` },
-    { label: 'Receipt validation', score: receiptUsageScore, issue: `${report.penalties?.undoneReceipts || 0} pending` },
+    { label: 'Receipt validation', score: receiptUsageScore, issue: `${report.penalties?.undoneReceipts || 0} pending (needs board intake logs)` },
     { label: 'MO completion rate', score: moUsageScore, issue: `${report.moCompletion.completed}/${report.moCompletion.eligible} completed; ${report.moCompletion.open} open` },
     { label: 'Checkout data integrity', score: attendanceDataCompleteness, issue: `${attendanceTotals.noCheckout} blank checkout; ${attendanceTotals.absent} regular absence(s)` },
   ];
@@ -2116,9 +2143,12 @@ export async function renderWeeklyShopFloorReportPdf(
   });
   document.y = assessmentY + 64;
   const usageActions = usageEvidence.filter((item) => item.score < 90).map((item) => item.label);
+  const receiptActionHint = receiptUsageScore < 90
+    ? ' Note: board intake logs automatically validate pending purchased-board receipts, so operators (especially assistants/helpers) must prioritize board intake logging.'
+    : '';
   document.font('Helvetica-Bold').fontSize(7.5).fillColor(usageActions.length ? '#dc2626' : '#16a34a').text(
     usageActions.length
-      ? `DIRECTOR ACTION: Require completion of ${usageActions.join(', ')} and review exceptions with the responsible operators.`
+      ? `DIRECTOR ACTION: Require completion of ${usageActions.join(', ')} and review exceptions with the responsible operators.${receiptActionHint}`
       : `DIRECTOR NOTE: Checkout data integrity is complete. ${attendanceTotals.absent} regular-shift absence(s) and separate overnight/overtime records are reported independently.`,
     42,
     document.y,
@@ -2147,13 +2177,12 @@ export async function renderWeeklyShopFloorReportPdf(
     document.moveDown(0.5);
   } else {
     const poCols = [
-      { label: 'WEEK (MON – SAT)', x: 48, width: 122 },
-      { label: 'CONFIRMED POs', x: 174, width: 60, align: 'center' as const },
-      { label: 'DRAFT/CXL', x: 236, width: 46, align: 'center' as const },
-      { label: 'FINANCE DOCS', x: 284, width: 58, align: 'center' as const },
-      { label: 'ELIGIBLE DOCS', x: 344, width: 58, align: 'center' as const },
-      { label: 'GAP (MISSING)', x: 404, width: 74, align: 'center' as const },
-      { label: 'UNBILLED POs', x: 480, width: 68, align: 'center' as const },
+      { label: 'WEEK (MON – SAT)', x: 48, width: 138 },
+      { label: 'CONFIRMED POs', x: 190, width: 68, align: 'center' as const },
+      { label: 'DRAFT/CXL', x: 262, width: 54, align: 'center' as const },
+      { label: 'FINANCE DOCS', x: 320, width: 70, align: 'center' as const },
+      { label: 'ELIGIBLE DOCS', x: 394, width: 70, align: 'center' as const },
+      { label: 'GAP (MISSING)', x: 468, width: 80, align: 'center' as const },
     ];
     ensureSpace(26 + report.poVsFinanceDocs.weeks.length * 26 + 26);
     tableHeader(poCols);
@@ -2170,18 +2199,16 @@ export async function renderWeeklyShopFloorReportPdf(
           : '0 (matched)';
       const gapColor = week.netGap < 0 ? '#dc2626' : '#16a34a';
       document.font(week.isPrimary ? 'Helvetica-Bold' : 'Helvetica').fontSize(7.1).fillColor(ink)
-        .text(`${week.monday} – ${week.saturday}${week.isPrimary ? ' *' : ''}`, 48, y + 8, { width: 122, lineBreak: false });
+        .text(`${week.monday} – ${week.saturday}${week.isPrimary ? ' *' : ''}`, 48, y + 8, { width: 138, lineBreak: false });
       document.font('Helvetica-Bold').fontSize(7.4).fillColor(ink)
-        .text(String(week.posConfirmed), 174, y + 8, { width: 60, align: 'center' });
+        .text(String(week.posConfirmed), 190, y + 8, { width: 68, align: 'center' });
       document.font('Helvetica').fontSize(7.2).fillColor(muted)
-        .text(String(week.posDraftOrCancel), 236, y + 8, { width: 46, align: 'center' });
+        .text(String(week.posDraftOrCancel), 262, y + 8, { width: 54, align: 'center' });
       document.font('Helvetica').fontSize(7.2).fillColor(ink)
-        .text(String(week.docsTotal), 284, y + 8, { width: 58, align: 'center' })
-        .text(String(week.docsEligibleInvoices), 344, y + 8, { width: 58, align: 'center' });
+        .text(String(week.docsTotal), 320, y + 8, { width: 70, align: 'center' })
+        .text(String(week.docsEligibleInvoices), 394, y + 8, { width: 70, align: 'center' });
       document.font('Helvetica-Bold').fontSize(7.2).fillColor(gapColor)
-        .text(gapLabel, 404, y + 8, { width: 74, align: 'center' });
-      document.font('Helvetica-Bold').fontSize(7.2).fillColor(week.posUnbilledInOdoo > 0 ? '#b45309' : '#16a34a')
-        .text(`${week.posUnbilledInOdoo}/${week.posConfirmed}`, 480, y + 8, { width: 68, align: 'center' });
+        .text(gapLabel, 468, y + 8, { width: 80, align: 'center' });
       document.y = y + 25;
     });
 
@@ -2196,15 +2223,13 @@ export async function renderWeeklyShopFloorReportPdf(
         ? `+${poTot.netGap} surplus`
         : '0 (matched)';
     document.font('Helvetica-Bold').fontSize(7.3).fillColor(navy)
-      .text(`${report.poVsFinanceDocs.weeks.length}-Week Total`, 48, ty + 8, { width: 122, lineBreak: false })
-      .text(String(poTot.posConfirmed), 174, ty + 8, { width: 60, align: 'center' })
-      .text(String(poTot.posDraftOrCancel), 236, ty + 8, { width: 46, align: 'center' })
-      .text(String(poTot.docsTotal), 284, ty + 8, { width: 58, align: 'center' })
-      .text(String(poTot.docsEligibleInvoices), 344, ty + 8, { width: 58, align: 'center' });
+      .text(`${report.poVsFinanceDocs.weeks.length}-Week Total`, 48, ty + 8, { width: 138, lineBreak: false })
+      .text(String(poTot.posConfirmed), 190, ty + 8, { width: 68, align: 'center' })
+      .text(String(poTot.posDraftOrCancel), 262, ty + 8, { width: 54, align: 'center' })
+      .text(String(poTot.docsTotal), 320, ty + 8, { width: 70, align: 'center' })
+      .text(String(poTot.docsEligibleInvoices), 394, ty + 8, { width: 70, align: 'center' });
     document.fillColor(poTot.netGap < 0 ? '#dc2626' : '#16a34a')
-      .text(totalGapLabel, 404, ty + 8, { width: 74, align: 'center' });
-    document.fillColor(poTot.posUnbilledInOdoo > 0 ? '#b45309' : '#16a34a')
-      .text(`${poTot.posUnbilledInOdoo}/${poTot.posConfirmed}`, 480, ty + 8, { width: 68, align: 'center' });
+      .text(totalGapLabel, 468, ty + 8, { width: 80, align: 'center' });
     document.y = ty + 29;
 
     const unfiledNote = report.poVsFinanceDocs.unfiledNoFolderDocsInRange > 0
@@ -2737,7 +2762,7 @@ export interface CachedWeeklyPdfData {
 }
 
 export function getWeeklyReportCacheKey(start: string, end: string): string {
-  return `shop-floor:weekly-report-pdf:v2:${start}:${end}`;
+  return `shop-floor:weekly-report-pdf:v3:${start}:${end}`;
 }
 
 export async function getOrBuildWeeklyShopFloorReportPdf(

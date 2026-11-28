@@ -374,4 +374,37 @@ const weeklyShopFloorReportService_1 = require("./weeklyShopFloorReportService")
         strict_1.default.match(summary.insightNote, /Onyango Bitcher Akulo/i);
         strict_1.default.match(summary.insightNote, /Michael Ochieng Okoth/i);
     });
+    await t.test('director report summary omits unbilled Odoo POs and explains pending receipts via board intake auto-validation', () => {
+        const poSummary = (0, weeklyShopFloorReportService_1.buildWeeklyPoSummaryPoint)({
+            monday: '2026-11-16',
+            saturday: '2026-11-21',
+            label: '2026-11-16 – 2026-11-21',
+            isPrimary: true,
+            posTotal: 37,
+            posConfirmed: 35,
+            posDraftOrCancel: 2,
+            posBilledInOdoo: 3,
+            posUnbilledInOdoo: 32,
+            docsTotal: 25,
+            docsEligibleInvoices: 20,
+            docsValidated: 18,
+            docsDeliveryNotes: 3,
+            docsExcludedVendor: 2,
+            netGap: -15,
+            minMissingReceipts: 15,
+        });
+        strict_1.default.ok(!/unbilled/i.test(poSummary), 'PO summary must not mention unbilled POs in Odoo');
+        strict_1.default.match(poSummary, /35 confirmed PO\(s\) created vs 20 eligible Finance invoice\/receipt doc\(s\) uploaded \(15 min\. missing receipt\(s\)\)\./);
+        const receiptSummary = (0, weeklyShopFloorReportService_1.buildWeeklyReceiptsAndMoPoint)({
+            undoneReceipts: 29,
+            completed: 77,
+            eligible: 141,
+            completionPercent: 55,
+            end: '2026-11-28',
+        });
+        strict_1.default.match(receiptSummary, /29 purchased-board receipt\(s\) need validation; 77 of 141 eligible MO\(s\) created in the period were completed by 2026-11-28 \(55%\)\./);
+        strict_1.default.match(receiptSummary, /Reason:.*board intake logs automatically validate purchased-board receipts/i);
+        strict_1.default.match(receiptSummary, /assistants\/helpers/i);
+        strict_1.default.equal((0, weeklyShopFloorReportService_1.getWeeklyReportCacheKey)('2026-11-18', '2026-11-24'), 'shop-floor:weekly-report-pdf:v3:2026-11-18:2026-11-24');
+    });
 });
