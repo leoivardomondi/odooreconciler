@@ -406,7 +406,7 @@ const weeklyShopFloorReportService_1 = require("./weeklyShopFloorReportService")
         strict_1.default.match(receiptSummary, /29 purchased-board receipt\(s\) need validation; 77 of 141 eligible MO\(s\) created in the period were completed by 2026-11-28 \(55%\)\./);
         strict_1.default.match(receiptSummary, /Reason:.*board intake logs automatically validate purchased-board receipts/i);
         strict_1.default.match(receiptSummary, /assistants\/helpers/i);
-        strict_1.default.equal((0, weeklyShopFloorReportService_1.getWeeklyReportCacheKey)('2026-11-18', '2026-11-24'), 'shop-floor:weekly-report-pdf:v5:2026-11-18:2026-11-24');
+        strict_1.default.equal((0, weeklyShopFloorReportService_1.getWeeklyReportCacheKey)('2026-11-18', '2026-11-24'), 'shop-floor:weekly-report-pdf:v6:2026-11-18:2026-11-24');
     });
     await t.test('overtime summary counts distinct overtimes covered by the production team instead of inflated hours/reminders', () => {
         const sampleAttendance = [

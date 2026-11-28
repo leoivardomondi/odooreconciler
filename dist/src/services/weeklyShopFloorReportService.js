@@ -1843,20 +1843,12 @@ async function renderWeeklyShopFloorReportPdf(reportInput, scope) {
     }
     else {
         document.font('Helvetica-Bold').fontSize(7.8).fillColor(muted).text(`CHECKED CUTTING WOs: ${preLogAudit.totalChecked}   |   COMPLIANT: ${preLogAudit.compliantCount}   |   STARTED BEFORE LOG: ${preLogAudit.startedBeforeLogCount}   |   STARTED & FINISHED BEFORE LOG: ${preLogAudit.startedAndFinishedBeforeLogCount}`, 42, document.y, { width: contentWidth });
-        document.moveDown(0.25);
-        if (preLogAudit.byOperator.length > 0) {
-            document.font('Helvetica-Bold').fontSize(7.6).fillColor(ink).text(`BY OPERATOR   ${preLogAudit.byOperator.map((o) => `${o.operatorName}: ${o.total} (${o.startedAndFinished} finished, ${o.startedOnly} started)`).join('   |   ')}`, 42, document.y, { width: contentWidth, lineGap: 1.5 });
-            document.moveDown(0.45);
-        }
-        else {
-            document.moveDown(0.25);
-        }
+        document.moveDown(0.35);
         const preLogCols = [
-            { label: 'MO / CLIENT', x: 48, width: 114 },
-            { label: 'BOARD / WORK ORDER', x: 164, width: 116 },
-            { label: 'OPERATOR', x: 282, width: 82 },
-            { label: 'STARTED / FINISHED', x: 366, width: 90 },
-            { label: 'BOARD LOG STATUS', x: 458, width: 92 },
+            { label: 'MO / CLIENT', x: 48, width: 136 },
+            { label: 'BOARD / WORK ORDER', x: 188, width: 152 },
+            { label: 'STARTED / FINISHED', x: 344, width: 96 },
+            { label: 'BOARD LOG STATUS', x: 444, width: 104 },
         ];
         tableHeader(preLogCols);
         if (!preLogAudit.violations.length) {
@@ -1873,19 +1865,18 @@ async function renderWeeklyShopFloorReportPdf(reportInput, scope) {
                 const y = document.y;
                 const isFinishedViolation = item.violationType === 'started_and_finished_before_log' || item.violationType === 'started_and_finished_no_log';
                 document.rect(42, y, contentWidth, 32).fill(index % 2 ? '#fff7f7' : '#ffffff');
-                document.font('Helvetica-Bold').fontSize(6.9).fillColor(ink).text(item.moName, 48, y + 5, { width: 114, height: 10, ellipsis: true });
-                document.font('Helvetica').fontSize(6.1).fillColor(muted).text(`${item.origin !== '-' ? `${item.origin} · ` : ''}${item.clientName}`, 48, y + 16, { width: 114, height: 12, ellipsis: true });
-                document.font('Helvetica').fontSize(6.6).fillColor(ink).text(item.missingBoardNames.join(', ') || item.productName, 164, y + 6, { width: 116, height: 22, ellipsis: true });
-                document.font('Helvetica').fontSize(6.6).fillColor(ink).text(item.operatorName, 282, y + 8, { width: 82, height: 18, ellipsis: true });
+                document.font('Helvetica-Bold').fontSize(6.9).fillColor(ink).text(item.moName, 48, y + 5, { width: 136, height: 10, ellipsis: true });
+                document.font('Helvetica').fontSize(6.1).fillColor(muted).text(`${item.origin !== '-' ? `${item.origin} · ` : ''}${item.clientName}`, 48, y + 16, { width: 136, height: 12, ellipsis: true });
+                document.font('Helvetica').fontSize(6.6).fillColor(ink).text(item.missingBoardNames.join(', ') || item.productName, 188, y + 6, { width: 152, height: 22, ellipsis: true });
                 const timingText = item.finishedAt
                     ? `S: ${nairobiDateTime(item.startedAt)}\nF: ${nairobiDateTime(item.finishedAt)}`
                     : `S: ${nairobiDateTime(item.startedAt)}\nIn progress`;
-                document.font('Helvetica').fontSize(6.1).fillColor(ink).text(timingText, 366, y + 5, { width: 90, height: 24, lineGap: 1 });
+                document.font('Helvetica').fontSize(6.1).fillColor(ink).text(timingText, 344, y + 5, { width: 96, height: 24, lineGap: 1 });
                 const boardStatusText = item.firstBoardLogAtDisplay
                     ? `${item.violationLabel}\nLogged: ${item.firstBoardLogAtDisplay}`
                     : item.violationLabel;
                 document.font('Helvetica-Bold').fontSize(6.1).fillColor(isFinishedViolation ? '#dc2626' : '#b45309')
-                    .text(boardStatusText, 458, y + 5, { width: 92, height: 24, lineGap: 1 });
+                    .text(boardStatusText, 444, y + 5, { width: 104, height: 24, lineGap: 1 });
                 document.y = y + 32;
             });
             if (preLogAudit.violations.length > MAX_VIOLATION_ROWS) {
@@ -2159,7 +2150,7 @@ function startWeeklyShopFloorReportInterval() {
     startWeeklyShopFloorReportWarmup();
 }
 function getWeeklyReportCacheKey(start, end) {
-    return `shop-floor:weekly-report-pdf:v5:${start}:${end}`;
+    return `shop-floor:weekly-report-pdf:v6:${start}:${end}`;
 }
 async function getOrBuildWeeklyShopFloorReportPdf(scope, options) {
     const settings = await (0, repositories_1.getSettings)();
