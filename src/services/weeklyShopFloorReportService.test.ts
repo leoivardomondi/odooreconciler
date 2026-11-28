@@ -12,6 +12,8 @@ import {
   buildBoardLoggingEncouragementNote,
   buildWeeklyPoSummaryPoint,
   buildWeeklyReceiptsAndMoPoint,
+  summarizeProductionTeamOvertimes,
+  buildWeeklyOvertimeSummaryPoint,
   computeOperatorSystemUsageSummary,
   getWeeklyReportCacheKey,
   renderWeeklyShopFloorReportPdf,
@@ -455,6 +457,54 @@ test('weeklyShopFloorReportService - Sharon & Candy Attendance & Board Logging E
     assert.match(receiptSummary, /Reason:.*board intake logs automatically validate purchased-board receipts/i);
     assert.match(receiptSummary, /assistants\/helpers/i);
 
-    assert.equal(getWeeklyReportCacheKey('2026-11-18', '2026-11-24'), 'shop-floor:weekly-report-pdf:v3:2026-11-18:2026-11-24');
+    assert.equal(getWeeklyReportCacheKey('2026-11-18', '2026-11-24'), 'shop-floor:weekly-report-pdf:v4:2026-11-18:2026-11-24');
+  });
+
+  await t.test('overtime summary counts distinct overtimes covered by the production team instead of inflated hours/reminders', () => {
+    const sampleAttendance = [
+      {
+        name: 'Joel Ochango',
+        overtimeRecords: [
+          { dateRange: '2026-11-25 -> 2026-11-26', checkIn: '2026-11-25 15:43:27', checkOut: '2026-11-26 16:17:55', workedHours: 24.57, shiftType: 'Overnight Shift' },
+          { dateRange: '2026-11-27 -> 2026-11-28', checkIn: '2026-11-27 17:41:36', checkOut: '2026-11-28 04:39:46', workedHours: 10.97, shiftType: 'Overnight Shift' },
+        ],
+      },
+      {
+        name: 'Onyango Bitcher Akulo',
+        overtimeRecords: [
+          { dateRange: '2026-11-24 -> 2026-11-25', checkIn: '2026-11-24 17:25:06', checkOut: '2026-11-24 22:52:33', workedHours: 5.46, shiftType: 'Overnight Shift' },
+          { dateRange: '2026-11-27 -> 2026-11-28', checkIn: '2026-11-27 17:41:05', checkOut: '2026-11-28 04:40:16', workedHours: 10.99, shiftType: 'Overnight Shift' },
+        ],
+      },
+      {
+        name: 'Michael Ochieng Okoth',
+        overtimeRecords: [
+          { dateRange: '2026-11-27 -> 2026-11-28', checkIn: '2026-11-27 07:27:26', checkOut: '2026-11-28 04:36:05', workedHours: 21.14, shiftType: 'Overnight Shift' },
+        ],
+      },
+    ];
+
+    const summary = summarizeProductionTeamOvertimes(sampleAttendance);
+    assert.equal(summary.teamOvertimeCount, 3);
+    assert.equal(summary.operatorShiftCount, 5);
+    assert.deepEqual(summary.overtimeDates, ['2026-11-24', '2026-11-25', '2026-11-27']);
+    assert.deepEqual(summary.byOperator, [
+      { name: 'Joel Ochango', count: 2 },
+      { name: 'Onyango Bitcher Akulo', count: 2 },
+      { name: 'Michael Ochieng Okoth', count: 1 },
+    ]);
+
+    const bullet = buildWeeklyOvertimeSummaryPoint(sampleAttendance);
+    assert.equal(
+      bullet,
+      'Production team covered 3 overtime(s) during the period (2026-11-24, 2026-11-25, 2026-11-27) — covered by Joel Ochango (2), Onyango Bitcher Akulo (2), Michael Ochieng Okoth (1).',
+    );
+    assert.ok(!/exceeded 8h/i.test(bullet));
+    assert.ok(!/73\.1h/i.test(bullet));
+
+    assert.equal(
+      buildWeeklyOvertimeSummaryPoint([{ name: 'Joel Ochango', overtimeRecords: [] }]),
+      'Production team covered 0 overtimes during the period.',
+    );
   });
 });

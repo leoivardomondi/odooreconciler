@@ -1953,6 +1953,62 @@ export function buildWeeklyReceiptsAndMoPoint(params: {
   return `${undoneReceipts} purchased-board receipt(s) need validation; ${params.completed} of ${params.eligible} eligible MO(s) created in the period were completed by ${params.end} (${params.completionPercent}%).${receiptReason}`;
 }
 
+export interface ProductionTeamOvertimeSummary {
+  teamOvertimeCount: number;
+  operatorShiftCount: number;
+  overtimeDates: string[];
+  byOperator: Array<{ name: string; count: number }>;
+}
+
+export function summarizeProductionTeamOvertimes(
+  attendance: Array<{
+    name: string;
+    overtimeRecords: Array<{ dateRange: string; checkIn: string | null; checkOut: string | null; workedHours: number; shiftType: string }>;
+  }>,
+): ProductionTeamOvertimeSummary {
+  const teamDates = new Set<string>();
+  const operatorDates = new Map<string, Set<string>>();
+  let operatorShiftCount = 0;
+
+  for (const person of attendance) {
+    for (const rec of person.overtimeRecords || []) {
+      operatorShiftCount += 1;
+      const dateKey = nairobiDateKey(rec.checkIn) || String(rec.dateRange || '').split(' -> ')[0].trim();
+      if (!dateKey) continue;
+      teamDates.add(dateKey);
+      if (!operatorDates.has(person.name)) operatorDates.set(person.name, new Set());
+      operatorDates.get(person.name)!.add(dateKey);
+    }
+  }
+
+  const overtimeDates = [...teamDates].sort();
+  const byOperator = [...operatorDates.entries()]
+    .map(([name, dates]) => ({ name, count: dates.size }))
+    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+
+  return {
+    teamOvertimeCount: overtimeDates.length,
+    operatorShiftCount,
+    overtimeDates,
+    byOperator,
+  };
+}
+
+export function buildWeeklyOvertimeSummaryPoint(
+  attendance: Array<{
+    name: string;
+    overtimeRecords: Array<{ dateRange: string; checkIn: string | null; checkOut: string | null; workedHours: number; shiftType: string }>;
+  }>,
+): string {
+  const summary = summarizeProductionTeamOvertimes(attendance);
+  if (summary.teamOvertimeCount === 0) {
+    return 'Production team covered 0 overtimes during the period.';
+  }
+  const dateList = summary.overtimeDates.join(', ');
+  const staffBreakdown = summary.byOperator.map((item) => `${item.name} (${item.count})`).join(', ');
+  return `Production team covered ${summary.teamOvertimeCount} overtime(s) during the period (${dateList}) — covered by ${staffBreakdown}.`;
+}
+
 export async function renderWeeklyShopFloorReportPdf(
   reportInput?: Omit<Awaited<ReturnType<typeof buildWeeklyShopFloorReport>>, 'operatorSystemUsage'> & {
     operatorSystemUsage?: OperatorSystemUsageSummary;
@@ -2069,13 +2125,8 @@ export async function renderWeeklyShopFloorReportPdf(
   const missingCheckoutSummary = attendanceTotals.noCheckout
     ? `Did not check out: ${attendanceTotals.noCheckout} employee record(s)${missingCheckoutNames.length ? ` - ${missingCheckoutNames.join(', ')}` : ''}.`
     : 'Missing checkouts: 0';
-  const totalOvertimeShifts = report.attendance.reduce((sum, p) => sum + p.overtimeRecords.length, 0);
-  const totalOvertimeHours = report.attendance.reduce((sum, p) => sum + p.totalOvertimeHours, 0);
-  const overtimeStaff = [...new Set(report.attendance.filter((p) => p.overtimeRecords.length).map((p) => p.name))];
-  const exceededSessions = report.attendance.flatMap((p) => p.overtimeRecords.filter((r) => r.workedHours > 8));
-  const overtimePoint = totalOvertimeShifts
-    ? `${totalOvertimeShifts} off-hours overtime / overnight shift(s) logged (${totalOvertimeHours.toFixed(1)}h total) by ${overtimeStaff.join(', ')}.${exceededSessions.length ? ` Reminder: ${exceededSessions.length} session(s) exceeded 8h—operators are reminded to check out from overtime before the morning shift starts.` : ''}`
-    : 'No off-hours overtime or overnight shifts logged.';
+  const overtimeSummary = summarizeProductionTeamOvertimes(report.attendance);
+  const overtimePoint = buildWeeklyOvertimeSummaryPoint(report.attendance);
 
   const poPrimary = report.poVsFinanceDocs.primaryWeek;
   const poSummaryPoint = buildWeeklyPoSummaryPoint(poPrimary);
@@ -2496,7 +2547,10 @@ export async function renderWeeklyShopFloorReportPdf(
   const allOvertimeEntries = report.attendance.flatMap((person) =>
     person.overtimeRecords.map((session) => ({ name: person.name, session })),
   );
-  section('Overnight and overtime records (Operations)', 'Off-hours overtime is recorded when an operator logs in after daytime operators have checked out for the day, on a Sunday, or on an overnight shift.');
+  section(
+    'Overnight and overtime records (Operations)',
+    `Production team covered ${overtimeSummary.teamOvertimeCount} overtime(s) during this period. Off-hours overtime is recorded when an operator logs in after daytime operators have checked out for the day, on a Sunday, or on an overnight shift.`,
+  );
   if (allOvertimeEntries.length) {
     const overtimeCols = [
       { label: 'EMPLOYEE', x: 48, width: 140 },
@@ -2560,7 +2614,8 @@ export async function renderWeeklyShopFloorReportPdf(
     document.font('Helvetica').fontSize(7.5).fillColor(checkInRate >= 90 ? '#16a34a' : checkInRate >= 75 ? '#d97706' : '#dc2626').text(`${checkInRate}%`, 198, y + 9, { width: 60, align: 'center' });
     document.fillColor(checkOutRate >= 90 ? '#16a34a' : checkOutRate >= 75 ? '#d97706' : '#dc2626').text(`${checkOutRate}%`, 262, y + 9, { width: 66, align: 'center' });
     document.fillColor(ink).text(`${completeShifts}/${expectedDays}`, 332, y + 9, { width: 66, align: 'center' });
-    document.font('Helvetica-Bold').fontSize(7.2).fillColor(person.overtimeRecords.length ? '#b45309' : muted).text(person.overtimeRecords.length ? `${person.totalOvertimeHours.toFixed(1)}h` : '-', 402, y + 9, { width: 74, align: 'center' });
+    const operatorOvertimeCount = overtimeSummary.byOperator.find((item) => item.name === person.name)?.count || 0;
+    document.font('Helvetica-Bold').fontSize(7.2).fillColor(operatorOvertimeCount ? '#b45309' : muted).text(operatorOvertimeCount ? `${operatorOvertimeCount} OT` : '-', 402, y + 9, { width: 74, align: 'center' });
     document.font('Helvetica-Bold').fontSize(7.5).fillColor(systemRate >= 90 ? '#16a34a' : systemRate >= 75 ? '#d97706' : '#dc2626').text(`${systemRate}%`, 480, y + 9, { width: 66, align: 'center' });
     document.y = y + 28;
   });
@@ -2762,7 +2817,7 @@ export interface CachedWeeklyPdfData {
 }
 
 export function getWeeklyReportCacheKey(start: string, end: string): string {
-  return `shop-floor:weekly-report-pdf:v3:${start}:${end}`;
+  return `shop-floor:weekly-report-pdf:v4:${start}:${end}`;
 }
 
 export async function getOrBuildWeeklyShopFloorReportPdf(
