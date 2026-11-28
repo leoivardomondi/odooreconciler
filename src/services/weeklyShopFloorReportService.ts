@@ -1935,7 +1935,7 @@ export async function buildWeeklyShopFloorReport(scope?: { fromDate?: string; to
 // ─── PDF Renderer ────────────────────────────────────────────────────
 
 export function buildWeeklyPoSummaryPoint(poPrimary: MonSatPoVsDocsWeekRow): string {
-  return `PO vs Finance receipts (Mon ${poPrimary.monday} to Sat ${poPrimary.saturday} — different day range from main report): ${poPrimary.posConfirmed} confirmed PO(s) created vs ${poPrimary.docsEligibleInvoices} eligible Finance invoice/receipt doc(s) uploaded (${poPrimary.minMissingReceipts} min. missing receipt(s)).`;
+  return `PO vs Finance receipts (Mon ${poPrimary.monday} to Sat ${poPrimary.saturday} — different day range from main report): ${poPrimary.posConfirmed} confirmed PO(s) created vs ${poPrimary.docsEligibleInvoices} eligible Finance invoice/receipt doc(s) uploaded (${poPrimary.minMissingReceipts} min. missing receipt(s)). Recommendation: all POs must be created and delivered with receipts, which should then be scanned or sent via email to Odoo as trained.`;
 }
 
 export function buildWeeklyReceiptsAndMoPoint(params: {
@@ -2287,7 +2287,7 @@ export async function renderWeeklyShopFloorReportPdf(
       ? ` Unfiled alert: ${report.poVsFinanceDocs.unfiledNoFolderDocsPrimaryWeek} document(s) in the primary Mon–Sat week (${report.poVsFinanceDocs.unfiledNoFolderDocsInRange} across the ${report.poVsFinanceDocs.weeks.length}-week window) were uploaded with no folder assigned and should be checked/moved to Finance.`
       : '';
     document.font('Helvetica').fontSize(6.9).fillColor(muted).text(
-      `* Highlighted row = latest completed Monday–Saturday week (${report.poVsFinanceDocs.primaryMonday} to ${report.poVsFinanceDocs.primarySaturday}). Confirmed POs represent the minimum number of supplier invoices/receipts expected in Odoo Documents (Finance).${unfiledNote}`,
+      `* Highlighted row = latest completed Monday–Saturday week (${report.poVsFinanceDocs.primaryMonday} to ${report.poVsFinanceDocs.primarySaturday}). Confirmed POs represent the minimum number of supplier invoices/receipts expected in Odoo Documents (Finance). All POs must be created and delivered with receipts, which should then be scanned or sent via email to Odoo as trained.${unfiledNote}`,
       42,
       document.y,
       { width: contentWidth, lineGap: 1.5 },
@@ -2817,7 +2817,7 @@ export interface CachedWeeklyPdfData {
 }
 
 export function getWeeklyReportCacheKey(start: string, end: string): string {
-  return `shop-floor:weekly-report-pdf:v4:${start}:${end}`;
+  return `shop-floor:weekly-report-pdf:v5:${start}:${end}`;
 }
 
 export async function getOrBuildWeeklyShopFloorReportPdf(

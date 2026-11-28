@@ -1432,7 +1432,7 @@ async function buildWeeklyShopFloorReport(scope) {
 }
 // ─── PDF Renderer ────────────────────────────────────────────────────
 function buildWeeklyPoSummaryPoint(poPrimary) {
-    return `PO vs Finance receipts (Mon ${poPrimary.monday} to Sat ${poPrimary.saturday} — different day range from main report): ${poPrimary.posConfirmed} confirmed PO(s) created vs ${poPrimary.docsEligibleInvoices} eligible Finance invoice/receipt doc(s) uploaded (${poPrimary.minMissingReceipts} min. missing receipt(s)).`;
+    return `PO vs Finance receipts (Mon ${poPrimary.monday} to Sat ${poPrimary.saturday} — different day range from main report): ${poPrimary.posConfirmed} confirmed PO(s) created vs ${poPrimary.docsEligibleInvoices} eligible Finance invoice/receipt doc(s) uploaded (${poPrimary.minMissingReceipts} min. missing receipt(s)). Recommendation: all POs must be created and delivered with receipts, which should then be scanned or sent via email to Odoo as trained.`;
 }
 function buildWeeklyReceiptsAndMoPoint(params) {
     const undoneReceipts = Math.max(0, Number(params.undoneReceipts || 0));
@@ -1720,7 +1720,7 @@ async function renderWeeklyShopFloorReportPdf(reportInput, scope) {
         const unfiledNote = report.poVsFinanceDocs.unfiledNoFolderDocsInRange > 0
             ? ` Unfiled alert: ${report.poVsFinanceDocs.unfiledNoFolderDocsPrimaryWeek} document(s) in the primary Mon–Sat week (${report.poVsFinanceDocs.unfiledNoFolderDocsInRange} across the ${report.poVsFinanceDocs.weeks.length}-week window) were uploaded with no folder assigned and should be checked/moved to Finance.`
             : '';
-        document.font('Helvetica').fontSize(6.9).fillColor(muted).text(`* Highlighted row = latest completed Monday–Saturday week (${report.poVsFinanceDocs.primaryMonday} to ${report.poVsFinanceDocs.primarySaturday}). Confirmed POs represent the minimum number of supplier invoices/receipts expected in Odoo Documents (Finance).${unfiledNote}`, 42, document.y, { width: contentWidth, lineGap: 1.5 });
+        document.font('Helvetica').fontSize(6.9).fillColor(muted).text(`* Highlighted row = latest completed Monday–Saturday week (${report.poVsFinanceDocs.primaryMonday} to ${report.poVsFinanceDocs.primarySaturday}). Confirmed POs represent the minimum number of supplier invoices/receipts expected in Odoo Documents (Finance). All POs must be created and delivered with receipts, which should then be scanned or sent via email to Odoo as trained.${unfiledNote}`, 42, document.y, { width: contentWidth, lineGap: 1.5 });
         document.moveDown(0.35);
     }
     // ── 4. Board Logging by Operator + Encouragement Note ──
@@ -2159,7 +2159,7 @@ function startWeeklyShopFloorReportInterval() {
     startWeeklyShopFloorReportWarmup();
 }
 function getWeeklyReportCacheKey(start, end) {
-    return `shop-floor:weekly-report-pdf:v4:${start}:${end}`;
+    return `shop-floor:weekly-report-pdf:v5:${start}:${end}`;
 }
 async function getOrBuildWeeklyShopFloorReportPdf(scope, options) {
     const settings = await (0, repositories_1.getSettings)();

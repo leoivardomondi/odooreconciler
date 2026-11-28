@@ -445,6 +445,7 @@ test('weeklyShopFloorReportService - Sharon & Candy Attendance & Board Logging E
     });
     assert.ok(!/unbilled/i.test(poSummary), 'PO summary must not mention unbilled POs in Odoo');
     assert.match(poSummary, /35 confirmed PO\(s\) created vs 20 eligible Finance invoice\/receipt doc\(s\) uploaded \(15 min\. missing receipt\(s\)\)\./);
+    assert.match(poSummary, /all POs must be created and delivered with receipts, which should then be scanned or sent via email to Odoo as trained\./i);
 
     const receiptSummary = buildWeeklyReceiptsAndMoPoint({
       undoneReceipts: 29,
@@ -457,7 +458,7 @@ test('weeklyShopFloorReportService - Sharon & Candy Attendance & Board Logging E
     assert.match(receiptSummary, /Reason:.*board intake logs automatically validate purchased-board receipts/i);
     assert.match(receiptSummary, /assistants\/helpers/i);
 
-    assert.equal(getWeeklyReportCacheKey('2026-11-18', '2026-11-24'), 'shop-floor:weekly-report-pdf:v4:2026-11-18:2026-11-24');
+    assert.equal(getWeeklyReportCacheKey('2026-11-18', '2026-11-24'), 'shop-floor:weekly-report-pdf:v5:2026-11-18:2026-11-24');
   });
 
   await t.test('overtime summary counts distinct overtimes covered by the production team instead of inflated hours/reminders', () => {
