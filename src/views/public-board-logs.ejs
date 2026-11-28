@@ -1074,6 +1074,10 @@
                 const res = await fetch('/public/board-logs/status?ids=' + encodeURIComponent(syncingIds.join(',')), {
                   headers: { Accept: 'application/json' },
                 });
+                if (res.status === 401) {
+                  window.location.reload();
+                  return;
+                }
                 if (!res.ok) return;
                 const data = await res.json();
                 const statuses = Array.isArray(data && data.statuses) ? data.statuses : [];

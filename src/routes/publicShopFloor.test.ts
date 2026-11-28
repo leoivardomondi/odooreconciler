@@ -13,8 +13,10 @@ import { isExcludedFromOperators, isExcludedFromBoardLogs } from '../utils/shopF
 import {
   authorizeShopFloorDevice,
   clearShopFloorDeviceAuthCache,
+  clearUnauthorizedAttemptAlertCooldowns,
   requireAuthorizedShopFloorDevice,
   revokeShopFloorTrustedDevice,
+  setDeviceSecurityAlertSenderForTests,
   SHOP_FLOOR_DEVICE_COOKIE_NAME,
 } from '../services/shopFloorDeviceAuthService';
 
@@ -329,6 +331,9 @@ test('handlePublicShopFloorOperatorAvatar serves cached operator avatar with pro
 
 test('requireAuthorizedShopFloorDevice blocks new unrecognized devices, allows authorized device cookie, and blocks immediately after revocation', async () => {
   clearShopFloorDeviceAuthCache();
+  clearUnauthorizedAttemptAlertCooldowns();
+  setDeviceSecurityAlertSenderForTests(async () => undefined);
+  try {
 
   // 1. Unrecognized device requesting JSON/API is blocked with 401 device_not_authorized
   const unauthApi = createMockRes();
@@ -418,4 +423,77 @@ test('requireAuthorizedShopFloorDevice blocks new unrecognized devices, allows a
   assert.equal(revokedNextCalled, false);
   assert.equal(revokedApi.getStatus(), 401);
   assert.equal(revokedApi.getPayload()?.code, 'device_not_authorized');
+  } finally {
+    setDeviceSecurityAlertSenderForTests(null);
+  }
+});
+
+test('requireAuthorizedShopFloorDevice protects /public/board-logs and emails dbadmin + leoivardomondi@gmail.com on unauthorized attempts', async () => {
+  clearShopFloorDeviceAuthCache();
+  clearUnauthorizedAttemptAlertCooldowns();
+
+  const sentAlerts: Array<{ recipients: string[]; subject: string; text: string }> = [];
+  setDeviceSecurityAlertSenderForTests(async (recipients, subject, _html, text) => {
+    sentAlerts.push({ recipients, subject, text });
+  });
+
+  try {
+    let renderedView = '';
+    let renderedLocals: any = null;
+    const htmlRes: any = {
+      statusCode: 200,
+      headers: {} as Record<string, string>,
+      setHeader(k: string, v: string) { this.headers[k] = v; },
+      status(c: number) { this.statusCode = c; return this; },
+      render(view: string, locals: any) { renderedView = view; renderedLocals = locals; return this; },
+    };
+    let nextCalled = false;
+    await requireAuthorizedShopFloorDevice(
+      {
+        path: '/public/board-logs',
+        originalUrl: '/public/board-logs?date=2026-11-28',
+        headers: { accept: 'text/html', 'user-agent': 'Mozilla/5.0 (iPhone) Safari/604.1' },
+        query: { date: '2026-11-28' },
+        ip: '102.215.32.10',
+        get: (h: string) => (h.toLowerCase() === 'accept' ? 'text/html' : h.toLowerCase() === 'user-agent' ? 'Mozilla/5.0 (iPhone) Safari/604.1' : ''),
+      } as any,
+      htmlRes,
+      () => { nextCalled = true; },
+    );
+
+    // Wait a tick for fire-and-forget alert promise
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    assert.equal(nextCalled, false);
+    assert.equal(renderedView, 'public-shop-floor-device-auth');
+    assert.equal(renderedLocals?.targetResourceLabel, 'Board Logs Full Records');
+    assert.equal(renderedLocals?.returnTo, '/public/board-logs?date=2026-11-28');
+
+    assert.equal(sentAlerts.length, 1);
+    assert.ok(sentAlerts[0].recipients.includes('dbadmin@urbanvibeinteriordesign.co.ke'));
+    assert.ok(sentAlerts[0].recipients.includes('leoivardomondi@gmail.com'));
+    assert.match(sentAlerts[0].subject, /Board Logs Full Records/i);
+    assert.match(sentAlerts[0].text, /102\.215\.32\.10/);
+
+    // Unrecognized device calling /public/board-logs/status is rejected with 401 JSON
+    const statusRes = createMockRes();
+    let statusNext = false;
+    await requireAuthorizedShopFloorDevice(
+      {
+        path: '/public/board-logs/status',
+        originalUrl: '/public/board-logs/status?ids=1,2',
+        headers: { accept: 'application/json' },
+        query: { ids: '1,2' },
+        ip: '102.215.32.10',
+        get: () => 'application/json',
+      } as any,
+      statusRes.res,
+      () => { statusNext = true; },
+    );
+    assert.equal(statusNext, false);
+    assert.equal(statusRes.getStatus(), 401);
+    assert.equal(statusRes.getPayload()?.code, 'device_not_authorized');
+  } finally {
+    setDeviceSecurityAlertSenderForTests(null);
+  }
 });

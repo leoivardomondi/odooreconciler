@@ -128,8 +128,8 @@
     </div>
     <h1 class="sf-gate-title">New Device Verification Required</h1>
     <p class="sf-gate-subtitle">
-      This device has not previously been authorized for Urban Vibe Shop Floor.
-      An Administrator must approve it once before operators can use it.
+      This device has not previously been authorized for Urban Vibe <strong><%= typeof targetResourceLabel !== 'undefined' ? targetResourceLabel : 'Shop Floor' %></strong>.
+      An Administrator must approve it once before access is granted.
     </p>
   </div>
 
@@ -168,6 +168,7 @@
         </div>
         <form method="post" action="/public/shop-floor/device-auth/authorize">
           <input type="hidden" name="mode" value="quick" />
+          <input type="hidden" name="next" value="<%= typeof returnTo !== 'undefined' ? returnTo : '/public/shop-floor' %>" />
           <div class="mb-2">
             <label for="quickDeviceLabel" class="form-label small fw-semibold mb-1">Device Name (optional)</label>
             <input
@@ -187,6 +188,7 @@
       </div>
     <% } else { %>
       <form method="post" action="/public/shop-floor/device-auth/authorize" id="deviceAuthForm">
+        <input type="hidden" name="next" value="<%= typeof returnTo !== 'undefined' ? returnTo : '/public/shop-floor' %>" />
         <div class="mb-3">
           <label for="deviceLabel" class="form-label small fw-semibold text-secondary mb-1">Device Name</label>
           <input

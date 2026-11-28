@@ -113,11 +113,13 @@ import {
   authorizeShopFloorDevice,
   isRequestOnSiteNetwork,
   listShopFloorTrustedDevices,
+  notifyAttemptedUnauthorizedDeviceAccess,
   renderShopFloorDeviceAuthGate,
   requestShopFloorDeviceAuthCode,
   requireAuthorizedShopFloorDevice,
   revokeAllShopFloorTrustedDevices,
   revokeShopFloorTrustedDevice,
+  sanitizeDeviceAuthReturnPath,
   verifyAndAuthorizeShopFloorDeviceByCredential,
 } from '../services/shopFloorDeviceAuthService';
 import { getRequestContext } from '../services/authService';
@@ -3381,10 +3383,10 @@ async function handlePublicBoardLogs(req: Request, res: Response): Promise<void>
   }
 }
 
-router.get('/public/board-logs', handlePublicBoardLogs);
-router.get('/board-logs', handlePublicBoardLogs);
+router.get('/public/board-logs', requireAuthorizedShopFloorDevice, handlePublicBoardLogs);
+router.get('/board-logs', requireAuthorizedShopFloorDevice, handlePublicBoardLogs);
 
-router.get('/public/board-logs/partners/search', async (req: Request, res: Response) => {
+router.get('/public/board-logs/partners/search', requireAuthorizedShopFloorDevice, async (req: Request, res: Response) => {
   try {
     const query = typeof req.query.q === 'string' ? req.query.q : '';
     const results = await searchCustomers(query, 100);
@@ -3396,7 +3398,7 @@ router.get('/public/board-logs/partners/search', async (req: Request, res: Respo
   }
 });
 
-router.get('/public/board-logs/status', async (req: Request, res: Response) => {
+router.get('/public/board-logs/status', requireAuthorizedShopFloorDevice, async (req: Request, res: Response) => {
   try {
     const rawIds = typeof req.query.ids === 'string'
       ? req.query.ids.split(',').map((s) => s.trim()).filter(Boolean)
@@ -3426,7 +3428,7 @@ router.get('/public/board-logs/status', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/public/board-logs/match-client', async (req: Request, res: Response) => {
+router.post('/public/board-logs/match-client', requireAuthorizedShopFloorDevice, async (req: Request, res: Response) => {
   const wantsJson = Boolean(req.xhr || req.headers.accept?.includes('application/json') || req.is('json') || req.body?.ajax === 'true');
   const entryId = String(req.body.id || req.body.entry_id || req.body.intake_id || '').trim();
   const partnerId = Number(req.body.partner_id || 0);
@@ -4134,20 +4136,30 @@ export async function handlePublicWorkOrderAction(req: Request, res: Response) {
 router.post('/public/shop-floor/device-auth/request-code', async (req: Request, res: Response) => {
   const email = String(req.body?.email || '').trim();
   const deviceLabel = String(req.body?.deviceLabel || '').trim();
+  const returnTo = sanitizeDeviceAuthReturnPath(req.body?.next);
   const context = getRequestContext(req);
   try {
     await requestShopFloorDeviceAuthCode({ email, ipAddress: context.ipAddress });
     renderShopFloorDeviceAuthGate(req, res, {
       email,
       deviceLabel,
+      returnTo,
       codeSent: true,
       message: `A 6-digit verification code was sent to ${email.toLowerCase()}. Enter it below to authorize this device.`,
     });
   } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : 'Could not send verification code.';
+    void notifyAttemptedUnauthorizedDeviceAccess({
+      req,
+      attemptKind: 'failed_authorization',
+      attemptedEmail: email || null,
+      reason: errorMessage,
+    });
     renderShopFloorDeviceAuthGate(req, res, {
       email,
       deviceLabel,
-      error: err instanceof Error ? err.message : 'Could not send verification code.',
+      returnTo,
+      error: errorMessage,
     });
   }
 });
@@ -4157,7 +4169,11 @@ router.post('/public/shop-floor/device-auth/authorize', async (req: Request, res
   const deviceLabel = String(req.body?.deviceLabel || '').trim();
   const email = String(req.body?.email || '').trim();
   const credential = String(req.body?.credential || '').trim();
+  const returnTo = sanitizeDeviceAuthReturnPath(req.body?.next);
   const context = getRequestContext(req);
+
+  const appendAuthMessage = (target: string, msg: string) =>
+    `${target}${target.includes('?') ? '&' : '?'}message=${encodeURIComponent(msg)}`;
 
   try {
     if (mode === 'quick' && req.authUser && canManageShopFloor(req)) {
@@ -4169,7 +4185,7 @@ router.post('/public/shop-floor/device-auth/authorize', async (req: Request, res
         isSiteNetwork: isRequestOnSiteNetwork(req),
       });
       res.setHeader('Set-Cookie', authorized.cookieHeader);
-      res.redirect('/public/shop-floor?message=' + encodeURIComponent(`Device "${authorized.device.deviceLabel}" authorized for Shop Floor.`));
+      res.redirect(appendAuthMessage(returnTo, `Device "${authorized.device.deviceLabel}" authorized.`));
       return;
     }
 
@@ -4178,6 +4194,7 @@ router.post('/public/shop-floor/device-auth/authorize', async (req: Request, res
       renderShopFloorDeviceAuthGate(req, res, {
         email,
         deviceLabel,
+        returnTo,
         codeSent: true,
         message: `A 6-digit verification code was sent to ${email.toLowerCase()}. Enter it below to authorize this device.`,
       });
@@ -4191,12 +4208,20 @@ router.post('/public/shop-floor/device-auth/authorize', async (req: Request, res
       req,
     });
     res.setHeader('Set-Cookie', authorized.cookieHeader);
-    res.redirect('/public/shop-floor?message=' + encodeURIComponent(`Device "${authorized.device.deviceLabel}" authorized for Shop Floor.`));
+    res.redirect(appendAuthMessage(returnTo, `Device "${authorized.device.deviceLabel}" authorized.`));
   } catch (err) {
+    const errorMessage = err instanceof Error ? err.message : 'Device authorization failed.';
+    void notifyAttemptedUnauthorizedDeviceAccess({
+      req,
+      attemptKind: 'failed_authorization',
+      attemptedEmail: email || null,
+      reason: errorMessage,
+    });
     renderShopFloorDeviceAuthGate(req, res, {
       email,
       deviceLabel,
-      error: err instanceof Error ? err.message : 'Device authorization failed.',
+      returnTo,
+      error: errorMessage,
     });
   }
 });

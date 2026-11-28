@@ -2884,9 +2884,9 @@ async function handlePublicBoardLogs(req, res) {
         });
     }
 }
-router.get('/public/board-logs', handlePublicBoardLogs);
-router.get('/board-logs', handlePublicBoardLogs);
-router.get('/public/board-logs/partners/search', async (req, res) => {
+router.get('/public/board-logs', shopFloorDeviceAuthService_1.requireAuthorizedShopFloorDevice, handlePublicBoardLogs);
+router.get('/board-logs', shopFloorDeviceAuthService_1.requireAuthorizedShopFloorDevice, handlePublicBoardLogs);
+router.get('/public/board-logs/partners/search', shopFloorDeviceAuthService_1.requireAuthorizedShopFloorDevice, async (req, res) => {
     try {
         const query = typeof req.query.q === 'string' ? req.query.q : '';
         const results = await (0, customerMirrorService_1.searchCustomers)(query, 100);
@@ -2898,7 +2898,7 @@ router.get('/public/board-logs/partners/search', async (req, res) => {
         res.status(500).json({ ok: false, results: [] });
     }
 });
-router.get('/public/board-logs/status', async (req, res) => {
+router.get('/public/board-logs/status', shopFloorDeviceAuthService_1.requireAuthorizedShopFloorDevice, async (req, res) => {
     try {
         const rawIds = typeof req.query.ids === 'string'
             ? req.query.ids.split(',').map((s) => s.trim()).filter(Boolean)
@@ -2918,7 +2918,7 @@ router.get('/public/board-logs/status', async (req, res) => {
         res.status(500).json({ ok: false, error: err instanceof Error ? err.message : 'Failed to fetch status' });
     }
 });
-router.post('/public/board-logs/match-client', async (req, res) => {
+router.post('/public/board-logs/match-client', shopFloorDeviceAuthService_1.requireAuthorizedShopFloorDevice, async (req, res) => {
     const wantsJson = Boolean(req.xhr || req.headers.accept?.includes('application/json') || req.is('json') || req.body?.ajax === 'true');
     const entryId = String(req.body.id || req.body.entry_id || req.body.intake_id || '').trim();
     const partnerId = Number(req.body.partner_id || 0);
@@ -3534,21 +3534,31 @@ async function handlePublicWorkOrderAction(req, res) {
 router.post('/public/shop-floor/device-auth/request-code', async (req, res) => {
     const email = String(req.body?.email || '').trim();
     const deviceLabel = String(req.body?.deviceLabel || '').trim();
+    const returnTo = (0, shopFloorDeviceAuthService_1.sanitizeDeviceAuthReturnPath)(req.body?.next);
     const context = (0, authService_1.getRequestContext)(req);
     try {
         await (0, shopFloorDeviceAuthService_1.requestShopFloorDeviceAuthCode)({ email, ipAddress: context.ipAddress });
         (0, shopFloorDeviceAuthService_1.renderShopFloorDeviceAuthGate)(req, res, {
             email,
             deviceLabel,
+            returnTo,
             codeSent: true,
             message: `A 6-digit verification code was sent to ${email.toLowerCase()}. Enter it below to authorize this device.`,
         });
     }
     catch (err) {
+        const errorMessage = err instanceof Error ? err.message : 'Could not send verification code.';
+        void (0, shopFloorDeviceAuthService_1.notifyAttemptedUnauthorizedDeviceAccess)({
+            req,
+            attemptKind: 'failed_authorization',
+            attemptedEmail: email || null,
+            reason: errorMessage,
+        });
         (0, shopFloorDeviceAuthService_1.renderShopFloorDeviceAuthGate)(req, res, {
             email,
             deviceLabel,
-            error: err instanceof Error ? err.message : 'Could not send verification code.',
+            returnTo,
+            error: errorMessage,
         });
     }
 });
@@ -3557,7 +3567,9 @@ router.post('/public/shop-floor/device-auth/authorize', async (req, res) => {
     const deviceLabel = String(req.body?.deviceLabel || '').trim();
     const email = String(req.body?.email || '').trim();
     const credential = String(req.body?.credential || '').trim();
+    const returnTo = (0, shopFloorDeviceAuthService_1.sanitizeDeviceAuthReturnPath)(req.body?.next);
     const context = (0, authService_1.getRequestContext)(req);
+    const appendAuthMessage = (target, msg) => `${target}${target.includes('?') ? '&' : '?'}message=${encodeURIComponent(msg)}`;
     try {
         if (mode === 'quick' && req.authUser && canManageShopFloor(req)) {
             const authorized = await (0, shopFloorDeviceAuthService_1.authorizeShopFloorDevice)({
@@ -3568,7 +3580,7 @@ router.post('/public/shop-floor/device-auth/authorize', async (req, res) => {
                 isSiteNetwork: (0, shopFloorDeviceAuthService_1.isRequestOnSiteNetwork)(req),
             });
             res.setHeader('Set-Cookie', authorized.cookieHeader);
-            res.redirect('/public/shop-floor?message=' + encodeURIComponent(`Device "${authorized.device.deviceLabel}" authorized for Shop Floor.`));
+            res.redirect(appendAuthMessage(returnTo, `Device "${authorized.device.deviceLabel}" authorized.`));
             return;
         }
         if (!credential) {
@@ -3576,6 +3588,7 @@ router.post('/public/shop-floor/device-auth/authorize', async (req, res) => {
             (0, shopFloorDeviceAuthService_1.renderShopFloorDeviceAuthGate)(req, res, {
                 email,
                 deviceLabel,
+                returnTo,
                 codeSent: true,
                 message: `A 6-digit verification code was sent to ${email.toLowerCase()}. Enter it below to authorize this device.`,
             });
@@ -3588,13 +3601,21 @@ router.post('/public/shop-floor/device-auth/authorize', async (req, res) => {
             req,
         });
         res.setHeader('Set-Cookie', authorized.cookieHeader);
-        res.redirect('/public/shop-floor?message=' + encodeURIComponent(`Device "${authorized.device.deviceLabel}" authorized for Shop Floor.`));
+        res.redirect(appendAuthMessage(returnTo, `Device "${authorized.device.deviceLabel}" authorized.`));
     }
     catch (err) {
+        const errorMessage = err instanceof Error ? err.message : 'Device authorization failed.';
+        void (0, shopFloorDeviceAuthService_1.notifyAttemptedUnauthorizedDeviceAccess)({
+            req,
+            attemptKind: 'failed_authorization',
+            attemptedEmail: email || null,
+            reason: errorMessage,
+        });
         (0, shopFloorDeviceAuthService_1.renderShopFloorDeviceAuthGate)(req, res, {
             email,
             deviceLabel,
-            error: err instanceof Error ? err.message : 'Device authorization failed.',
+            returnTo,
+            error: errorMessage,
         });
     }
 });

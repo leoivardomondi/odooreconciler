@@ -4,6 +4,11 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.SHOP_FLOOR_DEVICE_COOKIE_NAME = void 0;
+exports.setDeviceSecurityAlertSenderForTests = setDeviceSecurityAlertSenderForTests;
+exports.clearUnauthorizedAttemptAlertCooldowns = clearUnauthorizedAttemptAlertCooldowns;
+exports.getDeviceSecurityAlertRecipients = getDeviceSecurityAlertRecipients;
+exports.sanitizeDeviceAuthReturnPath = sanitizeDeviceAuthReturnPath;
+exports.notifyAttemptedUnauthorizedDeviceAccess = notifyAttemptedUnauthorizedDeviceAccess;
 exports.hashShopFloorDeviceToken = hashShopFloorDeviceToken;
 exports.parseCookieHeader = parseCookieHeader;
 exports.buildShopFloorDeviceCookie = buildShopFloorDeviceCookie;
@@ -29,14 +34,177 @@ const dateTime_1 = require("../utils/dateTime");
 const accountStatus_1 = require("../utils/accountStatus");
 const siteAttendanceAccess_1 = require("../utils/siteAttendanceAccess");
 const logService_1 = require("./logService");
+const mailTransport_1 = require("./mailTransport");
 const authService_1 = require("./authService");
 exports.SHOP_FLOOR_DEVICE_COOKIE_NAME = 'oj_sf_device';
 const DEVICE_TTL_MS = 5 * 365 * 24 * 60 * 60 * 1000; // 5 years
 const DEVICE_CACHE_TTL_MS = 15 * 1000; // 15 seconds
 const LAST_SEEN_TOUCH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+const UNAUTHORIZED_ALERT_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes per IP + area + kind
+const SECURITY_ALERT_RECIPIENTS = [
+    'dbadmin@urbanvibeinteriordesign.co.ke',
+    'leoivardomondi@gmail.com',
+];
 const deviceLookupCache = new Map();
 const lastSeenTouchCache = new Map();
+const unauthorizedAlertCooldown = new Map();
 let tableEnsured = false;
+let customAlertSenderForTests = null;
+function setDeviceSecurityAlertSenderForTests(sender) {
+    customAlertSenderForTests = sender;
+}
+function clearUnauthorizedAttemptAlertCooldowns() {
+    unauthorizedAlertCooldown.clear();
+}
+function getDeviceSecurityAlertRecipients() {
+    const list = [
+        ...SECURITY_ALERT_RECIPIENTS,
+        String(env_1.env.DBADMIN_EMAIL || '').trim().toLowerCase(),
+    ].filter(Boolean);
+    return [...new Set(list.map((e) => e.trim().toLowerCase()))];
+}
+function sanitizeDeviceAuthReturnPath(rawPath) {
+    const value = String(rawPath || '').trim();
+    if (!value.startsWith('/') || value.startsWith('//')) {
+        return '/public/shop-floor';
+    }
+    const allowedPrefixes = ['/public/shop-floor', '/public-shop-floor', '/public/board-logs', '/board-logs'];
+    if (!allowedPrefixes.some((p) => value === p || value.startsWith(`${p}?`) || value.startsWith(`${p}/`))) {
+        return '/public/shop-floor';
+    }
+    return value;
+}
+function getTargetResourceLabel(pathOrUrl) {
+    const lower = String(pathOrUrl || '').toLowerCase();
+    if (lower.includes('board-logs'))
+        return 'Board Logs Full Records';
+    return 'Shop Floor';
+}
+function escapeHtml(value) {
+    return String(value ?? '').replace(/[&<>'"]/g, (ch) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        "'": '&#39;',
+        '"': '&quot;',
+    }[ch] || ch));
+}
+async function notifyAttemptedUnauthorizedDeviceAccess(input) {
+    const recipients = getDeviceSecurityAlertRecipients();
+    let context;
+    try {
+        context = (0, authService_1.getRequestContext)(input.req);
+    }
+    catch {
+        context = {
+            ipAddress: String(input.req.ip || input.req.socket?.remoteAddress || 'unknown'),
+            userAgent: String(input.req.headers?.['user-agent'] || ''),
+            location: { label: 'Unknown', source: 'fallback' },
+        };
+    }
+    const ip = context.ipAddress || 'unknown';
+    const targetUrl = String(input.req.originalUrl || input.req.path || '/public/shop-floor');
+    const resourceLabel = getTargetResourceLabel(targetUrl);
+    const cooldownKey = `${ip}:${resourceLabel}:${input.attemptKind}:${String(input.attemptedEmail || '').toLowerCase()}`;
+    const lastSent = unauthorizedAlertCooldown.get(cooldownKey) || 0;
+    if (Date.now() - lastSent < UNAUTHORIZED_ALERT_COOLDOWN_MS) {
+        return { sent: false, throttled: true, recipients };
+    }
+    unauthorizedAlertCooldown.set(cooldownKey, Date.now());
+    const isSite = isRequestOnSiteNetwork(input.req);
+    const deviceSummary = inferFriendlyDeviceLabel(context.userAgent);
+    const timestampEat = new Intl.DateTimeFormat('en-GB', {
+        timeZone: env_1.env.APP_TIMEZONE || 'Africa/Nairobi',
+        year: 'numeric',
+        month: 'short',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+    }).format(new Date());
+    const appBaseUrl = String(env_1.env.APP_BASE_URL || 'https://app.urbanvibeinteriordesign.co.ke').replace(/\/+$/, '');
+    const manageUrl = `${appBaseUrl}/shop-floor/operators`;
+    const heading = input.attemptKind === 'failed_authorization'
+        ? `Failed Device Authorization Attempt (${resourceLabel})`
+        : `Unauthorized Device Attempted Access (${resourceLabel})`;
+    const subject = `[Security Alert] ${heading} — ${isSite ? 'Site Network' : 'Remote IP'} (${ip})`;
+    const signedInUser = input.req.authUser?.email || 'None (Unauthenticated)';
+    const text = [
+        heading,
+        `Time (EAT): ${timestampEat}`,
+        `Requested URL: ${targetUrl}`,
+        `Network: ${isSite ? 'Factory Site Network' : 'REMOTE NETWORK'}`,
+        `IP Address: ${ip}${context.location?.label ? ` (${context.location.label})` : ''}`,
+        `Device: ${deviceSummary}`,
+        `User-Agent: ${context.userAgent || 'Unknown'}`,
+        `Signed-in App User: ${signedInUser}`,
+        ...(input.attemptedEmail ? [`Attempted Email: ${input.attemptedEmail}`] : []),
+        ...(input.reason ? [`Reason: ${input.reason}`] : []),
+        `Manage Authorized Devices: ${manageUrl}`,
+    ].join('\n');
+    const html = `
+    <div style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;color:#1e293b;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
+      <div style="background:${isSite ? '#714B67' : '#b91c1c'};color:#ffffff;padding:18px 22px;">
+        <h2 style="margin:0;font-size:18px;">🔒 ${escapeHtml(heading)}</h2>
+        <p style="margin:6px 0 0;font-size:13px;opacity:0.92;">
+          An unrecognized device attempted to access <strong>${escapeHtml(resourceLabel)}</strong> and was blocked pending administrator authorization.
+        </p>
+      </div>
+      <div style="padding:18px 22px;background:#ffffff;">
+        <table style="width:100%;border-collapse:collapse;font-size:13px;">
+          <tr><td style="padding:7px 10px;border-bottom:1px solid #f1f5f9;color:#64748b;width:165px;"><strong>Time (EAT)</strong></td><td style="padding:7px 10px;border-bottom:1px solid #f1f5f9;">${escapeHtml(timestampEat)}</td></tr>
+          <tr><td style="padding:7px 10px;border-bottom:1px solid #f1f5f9;color:#64748b;"><strong>Target Area</strong></td><td style="padding:7px 10px;border-bottom:1px solid #f1f5f9;"><strong>${escapeHtml(resourceLabel)}</strong> (<code>${escapeHtml(targetUrl)}</code>)</td></tr>
+          <tr><td style="padding:7px 10px;border-bottom:1px solid #f1f5f9;color:#64748b;"><strong>Network</strong></td><td style="padding:7px 10px;border-bottom:1px solid #f1f5f9;"><strong style="color:${isSite ? '#047857' : '#b91c1c'};">${isSite ? 'Factory Site Network' : '⚠️ REMOTE NETWORK'}</strong></td></tr>
+          <tr><td style="padding:7px 10px;border-bottom:1px solid #f1f5f9;color:#64748b;"><strong>IP Address</strong></td><td style="padding:7px 10px;border-bottom:1px solid #f1f5f9;"><code>${escapeHtml(ip)}</code>${context.location?.label ? ` · ${escapeHtml(context.location.label)}` : ''}</td></tr>
+          <tr><td style="padding:7px 10px;border-bottom:1px solid #f1f5f9;color:#64748b;"><strong>Device</strong></td><td style="padding:7px 10px;border-bottom:1px solid #f1f5f9;">${escapeHtml(deviceSummary)}</td></tr>
+          <tr><td style="padding:7px 10px;border-bottom:1px solid #f1f5f9;color:#64748b;"><strong>Signed-in User</strong></td><td style="padding:7px 10px;border-bottom:1px solid #f1f5f9;">${escapeHtml(signedInUser)}</td></tr>
+          ${input.attemptedEmail ? `<tr><td style="padding:7px 10px;border-bottom:1px solid #f1f5f9;color:#64748b;"><strong>Attempted Email</strong></td><td style="padding:7px 10px;border-bottom:1px solid #f1f5f9;">${escapeHtml(input.attemptedEmail)}</td></tr>` : ''}
+          ${input.reason ? `<tr><td style="padding:7px 10px;border-bottom:1px solid #f1f5f9;color:#64748b;"><strong>Details</strong></td><td style="padding:7px 10px;border-bottom:1px solid #f1f5f9;color:#b91c1c;">${escapeHtml(input.reason)}</td></tr>` : ''}
+          <tr><td style="padding:7px 10px;color:#64748b;vertical-align:top;"><strong>User-Agent</strong></td><td style="padding:7px 10px;font-size:11px;color:#64748b;word-break:break-all;">${escapeHtml(context.userAgent || 'Unknown')}</td></tr>
+        </table>
+        <div style="margin-top:18px;">
+          <a href="${escapeHtml(manageUrl)}" style="display:inline-block;background:#714B67;color:#ffffff;text-decoration:none;padding:9px 18px;border-radius:8px;font-size:13px;font-weight:700;">Review Authorized Devices</a>
+        </div>
+      </div>
+    </div>
+  `;
+    try {
+        if (customAlertSenderForTests) {
+            await customAlertSenderForTests(recipients, subject, html, text);
+        }
+        else {
+            const settings = await (0, repositories_1.getSettings)();
+            await (0, mailTransport_1.sendMailWithConfig)(settings.mail, {
+                to: recipients.join(', '),
+                subject,
+                text,
+                html,
+            });
+        }
+        await (0, logService_1.logEvent)('warn', 'Unauthorized Shop Floor / Board Logs device alert emailed', {
+            attemptKind: input.attemptKind,
+            resourceLabel,
+            targetUrl,
+            ipAddress: ip,
+            isSiteNetwork: isSite,
+            deviceSummary,
+            attemptedEmail: input.attemptedEmail || null,
+            recipients,
+        }).catch(() => undefined);
+        return { sent: true, throttled: false, recipients };
+    }
+    catch (err) {
+        console.warn('[ShopFloorDeviceAuth] Failed to email unauthorized access alert:', err instanceof Error ? err.message : err);
+        await (0, logService_1.logEvent)('error', 'Failed to send unauthorized device access alert email', {
+            targetUrl,
+            ipAddress: ip,
+            recipients,
+            error: err instanceof Error ? err.message : String(err),
+        }).catch(() => undefined);
+        return { sent: false, throttled: false, recipients };
+    }
+}
 function getDeviceSecret() {
     const secret = String(env_1.env.APP_SESSION_SECRET || '').trim();
     return secret || 'urban-vibe-shop-floor-device-fallback-secret';
@@ -361,7 +529,10 @@ function isShopFloorApiOrAssetRequest(req) {
     if (path.endsWith('/data')
         || path.endsWith('/verify-pin')
         || path.includes('/work-order/')
-        || path.includes('/avatar')) {
+        || path.includes('/avatar')
+        || path.includes('/partners/search')
+        || path.endsWith('/board-logs/status')
+        || path.endsWith('/board-logs/match-client')) {
         return true;
     }
     if (req.query?.format === 'json' || req.xhr)
@@ -374,9 +545,11 @@ function isShopFloorApiOrAssetRequest(req) {
 function renderShopFloorDeviceAuthGate(req, res, options = {}) {
     const context = (0, authService_1.getRequestContext)(req);
     const canQuickAuthorize = Boolean(req.authUser && (req.authUser.role === 'admin' || req.authUser.apps?.includes('shop-floor-admin')));
+    const returnTo = sanitizeDeviceAuthReturnPath(options.returnTo || req.originalUrl || req.path);
+    const targetResourceLabel = getTargetResourceLabel(returnTo);
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, max-age=0');
     res.status(200).render('public-shop-floor-device-auth', {
-        pageTitle: 'Authorize Shop Floor Device',
+        pageTitle: `Authorize ${targetResourceLabel} Device`,
         appName: 'SHOP FLOOR',
         pwaManifest: '/public/shop-floor/manifest.webmanifest',
         pwaAppName: 'SHOP FLOOR',
@@ -391,13 +564,16 @@ function renderShopFloorDeviceAuthGate(req, res, options = {}) {
         signedInAdminEmail: canQuickAuthorize ? req.authUser?.email : null,
         email: options.email || '',
         codeSent: Boolean(options.codeSent),
+        returnTo,
+        targetResourceLabel,
         message: options.message || null,
         error: options.error || null,
     });
 }
 /**
- * Middleware protecting /public/shop-floor and all of its sub-routes.
- * Any unrecognized/new device must first be authorized by an Admin or Shop Floor Admin.
+ * Middleware protecting /public/shop-floor, /public/board-logs, and all sub-routes.
+ * Any unrecognized/new device must first be authorized by an Admin or Shop Floor Admin,
+ * and triggers a security alert email to dbadmin & leoivardomondi@gmail.com.
  */
 async function requireAuthorizedShopFloorDevice(req, res, next) {
     try {
@@ -407,17 +583,24 @@ async function requireAuthorizedShopFloorDevice(req, res, next) {
             next();
             return;
         }
+        // Notify dbadmin and leoivardomondi@gmail.com in the background (with cooldown deduplication)
+        void notifyAttemptedUnauthorizedDeviceAccess({
+            req,
+            attemptKind: 'blocked_access',
+            reason: 'Unrecognized or revoked device attempted to open protected Shop Floor / Board Logs link.',
+        }).catch(() => undefined);
         if (isShopFloorApiOrAssetRequest(req)) {
             res.status(401).json({
                 ok: false,
                 code: 'device_not_authorized',
-                message: 'This device is not authorized to access Shop Floor. Please ask an administrator to authorize this device.',
+                message: 'This device is not authorized to access Shop Floor or Board Logs. Please ask an administrator to authorize this device.',
             });
             return;
         }
         renderShopFloorDeviceAuthGate(req, res, {
             error: typeof req.query?.error === 'string' ? req.query.error : null,
             message: typeof req.query?.message === 'string' ? req.query.message : null,
+            returnTo: req.originalUrl || req.path,
         });
     }
     catch (err) {
@@ -428,6 +611,7 @@ async function requireAuthorizedShopFloorDevice(req, res, next) {
         }
         renderShopFloorDeviceAuthGate(req, res, {
             error: 'Could not verify device authorization. Please try again.',
+            returnTo: req.originalUrl || req.path,
         });
     }
 }
