@@ -293,6 +293,93 @@
     <% }) %>
   </div>
 
+  <!-- Authorized Shop Floor Devices -->
+  <% const safeTrustedDevices = Array.isArray(locals.trustedDevices) ? locals.trustedDevices : []; %>
+  <% const activeTrustedCount = safeTrustedDevices.filter(function(d) { return !d.revoked; }).length; %>
+  <div class="app-card mt-5 p-4">
+    <div class="d-flex flex-wrap align-items-center justify-content-between gap-3 mb-3">
+      <div>
+        <p class="text-uppercase small fw-semibold text-muted mb-1">Shop Floor Security</p>
+        <h2 class="h5 fw-bold mb-0">
+          Authorized Shop Floor Devices
+          <span class="badge rounded-pill text-bg-success ms-2"><%= activeTrustedCount %> Active</span>
+        </h2>
+        <p class="small text-muted mb-0 mt-1">
+          Only devices authorized here can access <code>/public/shop-floor</code>. New or unrecognized devices must be approved once by an administrator.
+        </p>
+      </div>
+      <% if (activeTrustedCount > 0) { %>
+        <form method="post" action="/shop-floor/devices/revoke-all" data-confirm="Revoke access for ALL Shop Floor devices? Every terminal will need administrator re-authorization.">
+          <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+          <button type="submit" class="btn btn-sm btn-outline-danger rounded-pill fw-semibold px-3">
+            Revoke All Devices
+          </button>
+        </form>
+      <% } %>
+    </div>
+
+    <% if (!safeTrustedDevices.length) { %>
+      <div class="text-muted small py-3">
+        No devices have been authorized yet. Open <code>/public/shop-floor</code> on a factory tablet or PC and approve it with an administrator account.
+      </div>
+    <% } else { %>
+      <div class="table-responsive">
+        <table class="table table-sm align-middle mb-0">
+          <thead class="table-light">
+            <tr>
+              <th>Device</th>
+              <th>Authorized By</th>
+              <th>Network / Last IP</th>
+              <th>Last Seen</th>
+              <th>Status</th>
+              <th class="text-end">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            <% safeTrustedDevices.forEach(function(device) { %>
+              <tr class="<%= device.revoked ? 'opacity-50' : '' %>">
+                <td>
+                  <div class="fw-semibold"><%= device.deviceLabel %></div>
+                  <div class="small text-muted">Added <%= formatDateTime(device.createdAt) %></div>
+                </td>
+                <td class="small"><%= device.authorizedBy %></td>
+                <td class="small">
+                  <% if (device.isSiteNetwork) { %>
+                    <span class="badge text-bg-success-subtle text-success border border-success-subtle rounded-pill me-1">Site</span>
+                  <% } else { %>
+                    <span class="badge text-bg-warning-subtle text-warning-emphasis border border-warning-subtle rounded-pill me-1">Remote</span>
+                  <% } %>
+                  <span class="font-monospace text-muted"><%= device.lastIpAddress || device.ipAddress || '-' %></span>
+                </td>
+                <td class="small text-muted"><%= formatDateTime(device.lastSeenAt) %></td>
+                <td>
+                  <% if (device.revoked) { %>
+                    <span class="badge rounded-pill text-bg-secondary">Revoked</span>
+                    <% if (device.revokedBy) { %>
+                      <div class="small text-muted" style="font-size:0.72rem;">by <%= device.revokedBy %></div>
+                    <% } %>
+                  <% } else { %>
+                    <span class="badge rounded-pill text-bg-success">Authorized</span>
+                  <% } %>
+                </td>
+                <td class="text-end">
+                  <% if (!device.revoked) { %>
+                    <form method="post" action="/shop-floor/devices/<%= encodeURIComponent(device.id) %>/revoke" data-confirm="Revoke Shop Floor access for <%= device.deviceLabel %>?" class="d-inline">
+                      <input type="hidden" name="_csrf" value="<%= csrfToken || '' %>" />
+                      <button type="submit" class="btn btn-sm btn-outline-danger rounded-pill px-3">Revoke</button>
+                    </form>
+                  <% } else { %>
+                    <span class="small text-muted">—</span>
+                  <% } %>
+                </td>
+              </tr>
+            <% }); %>
+          </tbody>
+        </table>
+      </div>
+    <% } %>
+  </div>
+
   <!-- Modal: Update Operator Photo -->
   <div class="modal fade" id="editOperatorPhotoModal" tabindex="-1" aria-labelledby="editOperatorPhotoModalLabel" aria-hidden="true">
     <div class="modal-dialog modal-dialog-centered" style="max-width: 440px;">

@@ -60,6 +60,8 @@ const siteAttendanceAccess_1 = require("../utils/siteAttendanceAccess");
 const helpers_1 = require("../utils/helpers");
 const shopFloorReporting_1 = require("../utils/shopFloorReporting");
 const operatorPinVerificationService_1 = require("../services/operatorPinVerificationService");
+const shopFloorDeviceAuthService_1 = require("../services/shopFloorDeviceAuthService");
+const authService_1 = require("../services/authService");
 const db_1 = require("../models/db");
 const router = (0, express_1.Router)();
 // Department names to search for operators (case-insensitive match)
@@ -2330,6 +2332,7 @@ router.get('/shop-floor/operators', async (req, res) => {
         const departments = [...new Set(allOperators.map((op) => op.department).filter((d) => Boolean(d)))];
         // Non-blocking background warmup of weekly PDF snapshot so download is instant (<50ms)
         void (0, weeklyShopFloorReportService_1.getOrBuildWeeklyShopFloorReportPdf)().catch(() => { });
+        const trustedDevices = await (0, shopFloorDeviceAuthService_1.listShopFloorTrustedDevices)(50).catch(() => []);
         const csrfToken = req.csrfToken || '';
         res.render('shop-floor-operators', {
             pageTitle: 'Shop Floor Operators',
@@ -2338,6 +2341,7 @@ router.get('/shop-floor/operators', async (req, res) => {
             departments,
             total: allOperators.length,
             checkedInCount: allOperators.filter((o) => o && o.checkedIn).length,
+            trustedDevices,
             authUser: req.authUser,
             csrfToken,
             message: typeof req.query.message === 'string' ? req.query.message : null,
@@ -3527,15 +3531,113 @@ async function handlePublicWorkOrderAction(req, res) {
         res.status(500).json({ ok: false, message });
     }
 }
-router.get('/public/shop-floor', handlePublicShopFloor);
-router.get('/public-shop-floor', handlePublicShopFloor);
-router.get('/public/shop-floor/data', handlePublicShopFloorData);
-router.get('/public/shop-floor/operator/:id/avatar', handlePublicShopFloorOperatorAvatar);
-router.post('/public/shop-floor/verify-pin', handlePublicShopFloorVerifyPin);
-router.post('/public/shop-floor/work-order/:id/action', handlePublicWorkOrderAction);
-router.post('/public/shop-floor/work-order/:id/start', (req, res) => { req.body.action = 'start'; return handlePublicWorkOrderAction(req, res); });
-router.post('/public/shop-floor/work-order/:id/pause', (req, res) => { req.body.action = 'pause'; return handlePublicWorkOrderAction(req, res); });
-router.post('/public/shop-floor/work-order/:id/finish', (req, res) => { req.body.action = 'finish'; return handlePublicWorkOrderAction(req, res); });
+router.post('/public/shop-floor/device-auth/request-code', async (req, res) => {
+    const email = String(req.body?.email || '').trim();
+    const deviceLabel = String(req.body?.deviceLabel || '').trim();
+    const context = (0, authService_1.getRequestContext)(req);
+    try {
+        await (0, shopFloorDeviceAuthService_1.requestShopFloorDeviceAuthCode)({ email, ipAddress: context.ipAddress });
+        (0, shopFloorDeviceAuthService_1.renderShopFloorDeviceAuthGate)(req, res, {
+            email,
+            deviceLabel,
+            codeSent: true,
+            message: `A 6-digit verification code was sent to ${email.toLowerCase()}. Enter it below to authorize this device.`,
+        });
+    }
+    catch (err) {
+        (0, shopFloorDeviceAuthService_1.renderShopFloorDeviceAuthGate)(req, res, {
+            email,
+            deviceLabel,
+            error: err instanceof Error ? err.message : 'Could not send verification code.',
+        });
+    }
+});
+router.post('/public/shop-floor/device-auth/authorize', async (req, res) => {
+    const mode = String(req.body?.mode || '').trim();
+    const deviceLabel = String(req.body?.deviceLabel || '').trim();
+    const email = String(req.body?.email || '').trim();
+    const credential = String(req.body?.credential || '').trim();
+    const context = (0, authService_1.getRequestContext)(req);
+    try {
+        if (mode === 'quick' && req.authUser && canManageShopFloor(req)) {
+            const authorized = await (0, shopFloorDeviceAuthService_1.authorizeShopFloorDevice)({
+                authorizedBy: req.authUser.email,
+                deviceLabel,
+                ipAddress: context.ipAddress,
+                userAgent: context.userAgent,
+                isSiteNetwork: (0, shopFloorDeviceAuthService_1.isRequestOnSiteNetwork)(req),
+            });
+            res.setHeader('Set-Cookie', authorized.cookieHeader);
+            res.redirect('/public/shop-floor?message=' + encodeURIComponent(`Device "${authorized.device.deviceLabel}" authorized for Shop Floor.`));
+            return;
+        }
+        if (!credential) {
+            await (0, shopFloorDeviceAuthService_1.requestShopFloorDeviceAuthCode)({ email, ipAddress: context.ipAddress });
+            (0, shopFloorDeviceAuthService_1.renderShopFloorDeviceAuthGate)(req, res, {
+                email,
+                deviceLabel,
+                codeSent: true,
+                message: `A 6-digit verification code was sent to ${email.toLowerCase()}. Enter it below to authorize this device.`,
+            });
+            return;
+        }
+        const authorized = await (0, shopFloorDeviceAuthService_1.verifyAndAuthorizeShopFloorDeviceByCredential)({
+            email,
+            credential,
+            deviceLabel,
+            req,
+        });
+        res.setHeader('Set-Cookie', authorized.cookieHeader);
+        res.redirect('/public/shop-floor?message=' + encodeURIComponent(`Device "${authorized.device.deviceLabel}" authorized for Shop Floor.`));
+    }
+    catch (err) {
+        (0, shopFloorDeviceAuthService_1.renderShopFloorDeviceAuthGate)(req, res, {
+            email,
+            deviceLabel,
+            error: err instanceof Error ? err.message : 'Device authorization failed.',
+        });
+    }
+});
+router.post('/shop-floor/devices/:id/revoke', async (req, res) => {
+    if (!canManageShopFloor(req)) {
+        res.status(403).redirect('/dashboard');
+        return;
+    }
+    const deviceId = String(req.params.id || '').trim();
+    if (!deviceId) {
+        res.redirect('/shop-floor/operators?error=' + encodeURIComponent('Missing device ID.'));
+        return;
+    }
+    try {
+        await (0, shopFloorDeviceAuthService_1.revokeShopFloorTrustedDevice)(deviceId, req.authUser.email);
+        res.redirect('/shop-floor/operators?message=' + encodeURIComponent('Shop Floor device access revoked immediately.'));
+    }
+    catch (err) {
+        res.redirect('/shop-floor/operators?error=' + encodeURIComponent(err instanceof Error ? err.message : 'Could not revoke device.'));
+    }
+});
+router.post('/shop-floor/devices/revoke-all', async (req, res) => {
+    if (!canManageShopFloor(req)) {
+        res.status(403).redirect('/dashboard');
+        return;
+    }
+    try {
+        await (0, shopFloorDeviceAuthService_1.revokeAllShopFloorTrustedDevices)(req.authUser.email);
+        res.redirect('/shop-floor/operators?message=' + encodeURIComponent('All Shop Floor devices have been revoked. New authorization is required on every terminal.'));
+    }
+    catch (err) {
+        res.redirect('/shop-floor/operators?error=' + encodeURIComponent(err instanceof Error ? err.message : 'Could not revoke devices.'));
+    }
+});
+router.get('/public/shop-floor', shopFloorDeviceAuthService_1.requireAuthorizedShopFloorDevice, handlePublicShopFloor);
+router.get('/public-shop-floor', shopFloorDeviceAuthService_1.requireAuthorizedShopFloorDevice, handlePublicShopFloor);
+router.get('/public/shop-floor/data', shopFloorDeviceAuthService_1.requireAuthorizedShopFloorDevice, handlePublicShopFloorData);
+router.get('/public/shop-floor/operator/:id/avatar', shopFloorDeviceAuthService_1.requireAuthorizedShopFloorDevice, handlePublicShopFloorOperatorAvatar);
+router.post('/public/shop-floor/verify-pin', shopFloorDeviceAuthService_1.requireAuthorizedShopFloorDevice, handlePublicShopFloorVerifyPin);
+router.post('/public/shop-floor/work-order/:id/action', shopFloorDeviceAuthService_1.requireAuthorizedShopFloorDevice, handlePublicWorkOrderAction);
+router.post('/public/shop-floor/work-order/:id/start', shopFloorDeviceAuthService_1.requireAuthorizedShopFloorDevice, (req, res) => { req.body.action = 'start'; return handlePublicWorkOrderAction(req, res); });
+router.post('/public/shop-floor/work-order/:id/pause', shopFloorDeviceAuthService_1.requireAuthorizedShopFloorDevice, (req, res) => { req.body.action = 'pause'; return handlePublicWorkOrderAction(req, res); });
+router.post('/public/shop-floor/work-order/:id/finish', shopFloorDeviceAuthService_1.requireAuthorizedShopFloorDevice, (req, res) => { req.body.action = 'finish'; return handlePublicWorkOrderAction(req, res); });
 /**
  * GET /shop-floor/boards — Board Intake & Auto-Reserve dashboard.
  */

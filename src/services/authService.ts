@@ -756,6 +756,106 @@ export async function verifyLocalPasswordLogin(input: {
   throw new Error('The email or password is invalid.');
 }
 
+/**
+ * Verifies an approved user's password or 6-digit email OTP WITHOUT creating
+ * a persistent oj_auth session cookie (used for authorizing shared kiosk devices).
+ */
+export async function verifyUserCredentialWithoutSession(input: {
+  email: string;
+  credential: string;
+  ipAddress: string;
+}): Promise<{ email: string; role: AuthRole; apps: import('../models/types').AppFeature[]; method: 'otp' | 'password' }> {
+  const email = normalizeEmailAddress(input.email);
+  const credential = String(input.credential || '').trim();
+
+  if (!isValidEmailFormat(email) || !credential) {
+    throw new Error('Enter a valid work email address and your password or 6-digit code.');
+  }
+
+  const approvedUser = await getApprovedAuthUserByEmail(email);
+  if (approvedUser && isAccountDeactivated(approvedUser.active, isConfiguredLocalAdmin(email))) {
+    throw new AccountDeactivatedError();
+  }
+
+  // 1. 6-digit email OTP verification
+  if (/^\d{6}$/.test(credential)) {
+    if (await isWithinRecentLimit('otp_verify', email, input.ipAddress)) {
+      throw new Error('Too many verification attempts. Please request a new code in a few minutes.');
+    }
+    const challenge = await getLatestActiveAuthLoginChallenge(email);
+    if (!challenge) {
+      await insertAuthAttempt({ scope: 'otp_verify', email, ipAddress: input.ipAddress, success: false });
+      throw new Error('The verification code is missing or expired. Click "Send 6-Digit Code" to get a fresh one.');
+    }
+    const providedHash = hashValue(`${email}:${credential}`);
+    const providedBuffer = Buffer.from(providedHash, 'hex');
+    const storedBuffer = Buffer.from(challenge.codeHash, 'hex');
+    const isMatch =
+      providedBuffer.length === storedBuffer.length &&
+      crypto.timingSafeEqual(providedBuffer, storedBuffer);
+    if (!isMatch) {
+      await updateAuthLoginChallenge(challenge.id, {
+        attemptsRemaining: Math.max(0, challenge.attemptsRemaining - 1),
+        consumed: challenge.attemptsRemaining - 1 <= 0,
+      });
+      await insertAuthAttempt({ scope: 'otp_verify', email, ipAddress: input.ipAddress, success: false });
+      throw new Error('The 6-digit code is invalid. Check your email and try again.');
+    }
+    const approvedAccess = await getOdooAccess(email);
+    if (!approvedAccess.allowed) {
+      await updateAuthLoginChallenge(challenge.id, { consumed: true });
+      throw new Error('This email address is not an active approved app user.');
+    }
+    await updateAuthLoginChallenge(challenge.id, { consumed: true });
+    await insertAuthAttempt({ scope: 'otp_verify', email, ipAddress: input.ipAddress, success: true });
+    return {
+      email,
+      role: approvedAccess.role,
+      apps: approvedAccess.apps || [],
+      method: 'otp',
+    };
+  }
+
+  // 2. Password verification (approved user scrypt hash OR configured local admin password)
+  if (await isWithinRecentFailedPasswordLimit(email, input.ipAddress)) {
+    throw new Error('Too many failed sign-in attempts. Please wait a few minutes and try again.');
+  }
+
+  if (
+    approvedUser?.active &&
+    approvedUser?.passwordHash &&
+    await verifyApprovedUserPassword(credential, approvedUser.passwordHash)
+  ) {
+    await insertAuthAttempt({ scope: 'password_login', email, ipAddress: input.ipAddress, success: true });
+    return {
+      email,
+      role: normalizeAuthRole(approvedUser.role),
+      apps: approvedUser.apps || [],
+      method: 'password',
+    };
+  }
+
+  const configuredEmail = normalizeEmailAddress(env.AUTH_LOCAL_ADMIN_EMAIL || '');
+  const configuredPassword = env.AUTH_LOCAL_ADMIN_PASSWORD || '';
+  if (
+    configuredEmail &&
+    configuredPassword &&
+    timingSafeEqualStrings(email, configuredEmail) &&
+    timingSafeEqualStrings(credential, configuredPassword)
+  ) {
+    await insertAuthAttempt({ scope: 'password_login', email, ipAddress: input.ipAddress, success: true });
+    return {
+      email,
+      role: 'admin',
+      apps: [],
+      method: 'password',
+    };
+  }
+
+  await insertAuthAttempt({ scope: 'password_login', email, ipAddress: input.ipAddress, success: false });
+  throw new Error('Invalid email or password. You can also leave the field blank and click "Send 6-Digit Code".');
+}
+
 export function getAuthenticationState(req: Request): {
   user: AuthSessionUser | null;
   csrfToken: string | null;

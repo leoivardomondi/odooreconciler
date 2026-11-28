@@ -10,6 +10,13 @@ import {
   logOperatorMoChatterNote,
 } from './shopFloor';
 import { isExcludedFromOperators, isExcludedFromBoardLogs } from '../utils/shopFloorReporting';
+import {
+  authorizeShopFloorDevice,
+  clearShopFloorDeviceAuthCache,
+  requireAuthorizedShopFloorDevice,
+  revokeShopFloorTrustedDevice,
+  SHOP_FLOOR_DEVICE_COOKIE_NAME,
+} from '../services/shopFloorDeviceAuthService';
 
 test('groupWorkOrdersByAreaAndClient groups work orders by operation area and then by client name', () => {
   const sampleWorkOrders = [
@@ -318,4 +325,97 @@ test('handlePublicShopFloorOperatorAvatar serves cached operator avatar with pro
   assert.equal(getStatus(), 200);
   assert.equal(getHeader('content-type'), 'image/png');
   assert.match(getHeader('cache-control') || '', /public/);
+});
+
+test('requireAuthorizedShopFloorDevice blocks new unrecognized devices, allows authorized device cookie, and blocks immediately after revocation', async () => {
+  clearShopFloorDeviceAuthCache();
+
+  // 1. Unrecognized device requesting JSON/API is blocked with 401 device_not_authorized
+  const unauthApi = createMockRes();
+  let apiNextCalled = false;
+  await requireAuthorizedShopFloorDevice(
+    {
+      path: '/public/shop-floor/data',
+      headers: { accept: 'application/json' },
+      query: {},
+      get: (h: string) => (h.toLowerCase() === 'accept' ? 'application/json' : ''),
+    } as any,
+    unauthApi.res,
+    () => { apiNextCalled = true; },
+  );
+  assert.equal(apiNextCalled, false);
+  assert.equal(unauthApi.getStatus(), 401);
+  assert.equal(unauthApi.getPayload()?.code, 'device_not_authorized');
+
+  // 2. Unrecognized device loading HTML page renders device authorization gate
+  let renderedView = '';
+  const htmlRes: any = {
+    statusCode: 200,
+    headers: {} as Record<string, string>,
+    setHeader(k: string, v: string) { this.headers[k] = v; },
+    status(c: number) { this.statusCode = c; return this; },
+    render(view: string) { renderedView = view; return this; },
+  };
+  let htmlNextCalled = false;
+  await requireAuthorizedShopFloorDevice(
+    {
+      path: '/public/shop-floor',
+      headers: { accept: 'text/html', 'user-agent': 'Mozilla/5.0 (Windows NT 10.0) Chrome/120.0' },
+      query: {},
+      ip: '41.90.10.20',
+      get: (h: string) => (h.toLowerCase() === 'accept' ? 'text/html' : h.toLowerCase() === 'user-agent' ? 'Mozilla/5.0 (Windows NT 10.0) Chrome/120.0' : ''),
+    } as any,
+    htmlRes,
+    () => { htmlNextCalled = true; },
+  );
+  assert.equal(htmlNextCalled, false);
+  assert.equal(renderedView, 'public-shop-floor-device-auth');
+
+  // 3. Authorizing a device produces a cookie that passes the guard
+  const authorized = await authorizeShopFloorDevice({
+    authorizedBy: 'dbadmin@urbanvibeinteriordesign.co.ke',
+    deviceLabel: 'Test Workshop Tablet',
+    ipAddress: '127.0.0.1',
+    userAgent: 'TestAgent/1.0',
+    isSiteNetwork: true,
+  });
+  assert.ok(authorized.cookieHeader.includes(`${SHOP_FLOOR_DEVICE_COOKIE_NAME}=`));
+
+  let allowedNextCalled = false;
+  const authReq: any = {
+    path: '/public/shop-floor/data',
+    headers: { cookie: `${SHOP_FLOOR_DEVICE_COOKIE_NAME}=${authorized.rawToken}`, accept: 'application/json' },
+    query: {},
+    ip: '127.0.0.1',
+    get: () => 'application/json',
+  };
+  const allowedApi = createMockRes();
+  await requireAuthorizedShopFloorDevice(authReq, allowedApi.res, () => { allowedNextCalled = true; });
+  assert.equal(allowedNextCalled, true);
+  assert.equal(authReq.shopFloorTrustedDevice?.id, authorized.device.id);
+
+  // 4. Tampered token is rejected
+  let tamperedNextCalled = false;
+  const tamperedApi = createMockRes();
+  await requireAuthorizedShopFloorDevice(
+    {
+      path: '/public/shop-floor/data',
+      headers: { cookie: `${SHOP_FLOOR_DEVICE_COOKIE_NAME}=${'f'.repeat(64)}`, accept: 'application/json' },
+      query: {},
+      get: () => 'application/json',
+    } as any,
+    tamperedApi.res,
+    () => { tamperedNextCalled = true; },
+  );
+  assert.equal(tamperedNextCalled, false);
+  assert.equal(tamperedApi.getStatus(), 401);
+
+  // 5. Revoking the device immediately locks it out
+  await revokeShopFloorTrustedDevice(authorized.device.id, 'dbadmin@urbanvibeinteriordesign.co.ke');
+  let revokedNextCalled = false;
+  const revokedApi = createMockRes();
+  await requireAuthorizedShopFloorDevice(authReq, revokedApi.res, () => { revokedNextCalled = true; });
+  assert.equal(revokedNextCalled, false);
+  assert.equal(revokedApi.getStatus(), 401);
+  assert.equal(revokedApi.getPayload()?.code, 'device_not_authorized');
 });

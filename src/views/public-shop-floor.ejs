@@ -1329,6 +1329,10 @@
 
         try {
           const res = await fetch('/public/shop-floor/data', { headers: { 'Accept': 'application/json' } });
+          if (res.status === 401) {
+            window.location.reload();
+            return;
+          }
           if (!res.ok) return;
           const data = await res.json();
           if (!data || !data.areaGroups) return;
@@ -1470,6 +1474,10 @@
         });
 
         const result = await response.json();
+        if (response.status === 401 && result && result.code === 'device_not_authorized') {
+          window.location.reload();
+          return;
+        }
         if (!response.ok || !result.ok) {
           if (result.code === 'sync_in_progress') {
             notifySyncing(moName, result.action || action);

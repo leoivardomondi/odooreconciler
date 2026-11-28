@@ -1089,6 +1089,23 @@ async function ensureSqliteDatabase(config: RuntimeDatabaseConfig) {
 
     CREATE INDEX IF NOT EXISTS idx_sf_operators_active ON shop_floor_operators(active, priority, name);
     CREATE INDEX IF NOT EXISTS idx_sf_operators_email ON shop_floor_operators(work_email);
+
+    CREATE TABLE IF NOT EXISTS shop_floor_trusted_devices (
+      id TEXT PRIMARY KEY,
+      token_hash TEXT NOT NULL UNIQUE,
+      device_label TEXT NOT NULL,
+      authorized_by TEXT NOT NULL,
+      ip_address TEXT,
+      last_ip_address TEXT,
+      user_agent TEXT,
+      is_site_network INTEGER NOT NULL DEFAULT 0,
+      revoked INTEGER NOT NULL DEFAULT 0,
+      revoked_by TEXT,
+      revoked_at TEXT,
+      last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_sf_trusted_devices_revoked ON shop_floor_trusted_devices(revoked, created_at);
     CREATE INDEX IF NOT EXISTS idx_sf_snapshots_synced ON shop_floor_dashboard_snapshots(synced_at);
     CREATE INDEX IF NOT EXISTS idx_sf_pending_status_partner ON shop_floor_pending_processes(status, partner_id);
     CREATE INDEX IF NOT EXISTS idx_sf_pending_mo_product ON shop_floor_pending_processes(mo_id, product_id);
@@ -1837,6 +1854,26 @@ async function ensureMysqlDatabase(config: RuntimeDatabaseConfig) {
       KEY idx_sf_operators_active (active, priority, name),
       KEY idx_sf_operators_email (work_email),
       KEY idx_sf_operators_pin (pin)
+    )
+  `);
+
+  await query('create shop floor trusted devices table', `
+    CREATE TABLE IF NOT EXISTS shop_floor_trusted_devices (
+      id VARCHAR(64) PRIMARY KEY,
+      token_hash VARCHAR(128) NOT NULL,
+      device_label VARCHAR(255) NOT NULL,
+      authorized_by VARCHAR(255) NOT NULL,
+      ip_address VARCHAR(255) NULL,
+      last_ip_address VARCHAR(255) NULL,
+      user_agent TEXT NULL,
+      is_site_network TINYINT(1) NOT NULL DEFAULT 0,
+      revoked TINYINT(1) NOT NULL DEFAULT 0,
+      revoked_by VARCHAR(255) NULL,
+      revoked_at DATETIME NULL,
+      last_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uq_sf_trusted_devices_token (token_hash),
+      KEY idx_sf_trusted_devices_revoked (revoked, created_at)
     )
   `);
 
